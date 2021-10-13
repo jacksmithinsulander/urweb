@@ -339,6 +339,8 @@ fun monoType env =
                     (L'.TFun (mt env dtmap t, (L'.TFfi ("Basis", "string"), loc)), loc)
                   | L.CApp ((L.CFfi ("Basis", "sql_injectable"), _), t) =>
                     (L'.TFun (mt env dtmap t, (L'.TFfi ("Basis", "string"), loc)), loc)
+                  | L.CApp ((L.CFfi ("Basis", "trigrammable"), _), t) =>
+                    (L'.TFun (mt env dtmap t, (L'.TRecord [], loc)), loc)
                   | L.CApp ((L.CApp ((L.CFfi ("Basis", "nullify"), _), _), _), _) =>
                     (L'.TRecord [], loc)
                   | L.CApp ((L.CApp ((L.CFfi ("Basis", "sql_unary"), _), _), _), _) =>
@@ -2081,6 +2083,13 @@ fun monoExp (env, st, fm) (all as (e, loc)) =
                  fm)
             end
 
+          | L.EFfi ("Basis", "trigrammable_string") =>
+            ((L'.ERecord [], loc),
+             fm)
+          | L.EFfi ("Basis", "trigrammable_option_string") =>
+            ((L'.ERecord [], loc),
+             fm)
+
           | L.ECApp ((L.EFfi ("Basis", "nullify_option"), _), _) =>
             ((L'.ERecord [], loc), fm)
           | L.ECApp ((L.EFfi ("Basis", "nullify_prim"), _), _) =>
@@ -2352,15 +2361,18 @@ fun monoExp (env, st, fm) (all as (e, loc)) =
                        str "/"), loc), fm)
           | L.EFfi ("Basis", "sql_mod") =>
             (str "%", fm)
+          | L.EFfi ("Basis", "sql_concat") =>
+            (str "||", fm)
 
           | L.EFfi ("Basis", "sql_like") =>
             (str "LIKE", fm)
-          | L.EFfi ("Basis", "sql_distance") =>
+          | L.ECApp ((L.EFfi ("Basis", "sql_distance"), _), _) =>
             ((case #supportsSimilar (Settings.currentDbms ()) of
                   NONE => ErrorMsg.errorAt loc "The DBMS you've selected doesn't support <->."
                 | _ => ());
              uses_similar := true;
-             (str "<->", fm))
+             (((L'.EAbs ("_", (L'.TRecord [], loc), (L'.TFfi ("Basis", "string"), loc),
+                         str "<->"), loc), fm)))
 
           | L.ECApp (
             (L.ECApp (
@@ -3034,13 +3046,16 @@ fun monoExp (env, st, fm) (all as (e, loc)) =
                                                        str ")"]), loc)), loc)), loc),
                  fm)
             end
-
-          | L.EFfi ("Basis", "sql_similarity") =>
+          | (L.ECApp (
+                  (L.EFfi ("Basis", "sql_similarity"), _),
+                  _)) =>
             ((case #supportsSimilar (Settings.currentDbms ()) of
                   NONE => ErrorMsg.errorAt loc "The DBMS you've selected doesn't support SIMILAR."
                 | _ => ());
              uses_similar := true;
-             (str "similarity", fm))
+             ((L'.EAbs ("_", (L'.TRecord [], loc), (L'.TFfi ("Basis", "string"), loc),
+                        str "similarity"), loc),
+              fm))
 
           | (L.ECApp (
              (L.ECApp (
@@ -4673,7 +4688,7 @@ fun monoDecl (env, fm) (all as (d, loc)) =
                                                   L.CName x =>
                                                   (case #1 m of
                                                        L.ECApp ((L.EFfi ("Basis", "equality"), _), _) => SOME (x, L'.Equality)
-                                                     | L.EFfi ("Basis", "trigram") => SOME (x, L'.Trigram)
+                                                     | L.EApp ((L.ECApp ((L.EFfi ("Basis", "trigram"), _), _), _), _) => SOME (x, L'.Trigram)
                                                      | L.ECApp ((L.EFfi ("Basis", "skipped"), _), _) => SOME (x, L'.Skipped)
                                                      | _ => (failed := true; NONE))
                                                 | _ => (failed := true; NONE)) xms
