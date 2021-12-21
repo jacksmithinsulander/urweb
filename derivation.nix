@@ -7,24 +7,9 @@ stdenv.mkDerivation rec {
   name = "urweb-${version}";
   version = "2018-06-22";
   
-  # src = fetchurl {
-  #   url = "http://www.impredicative.com/ur/${name}.tgz";
-  #   sha256 = "17qh9mcmlhbv6r52yij8l9ik7j7x6x7c09lf6pznnbdh4sf8p5wb";
-  # };
-
-  # src = fetchFromGitHub {
-  #   owner = "FrigoEU";
-  #   repo = "urweb";
-  #   rev = "e52ce9f542f64750941cfd84efdb6d993ee20ff0";
-  #   sha256 = "19ba5n7g1dxy7q9949aakqplchsyzwrrnxv8v604vx5sg7fdfn3b";
-  # };
   src = ./.;
 
   buildInputs = [ openssl mlton libmysqlclient postgresql sqlite automake autoconf libtool icu.dev openssl.dev];
-
-  # prePatch = ''
-  #   sed -e 's@/usr/bin/file@${file}/bin/file@g' -i configure
-  # '';
 
   configureFlags = "--with-openssl=${openssl.dev}";
 
