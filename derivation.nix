@@ -1,6 +1,6 @@
 { stdenv, lib, fetchFromGitHub, file, openssl, mlton
 , libmysqlclient, postgresql, sqlite, gcc
-, automake, autoconf, libtool, icu
+, automake, autoconf, libtool, icu67
 }:
 
 stdenv.mkDerivation rec {
@@ -9,7 +9,7 @@ stdenv.mkDerivation rec {
   
   src = ./.;
 
-  buildInputs = [ openssl mlton libmysqlclient postgresql sqlite automake autoconf libtool icu.dev openssl.dev];
+  buildInputs = [ openssl mlton libmysqlclient postgresql sqlite automake autoconf libtool icu67.dev openssl.dev];
 
   configureFlags = "--with-openssl=${openssl.dev}";
 
@@ -18,16 +18,16 @@ stdenv.mkDerivation rec {
     export PGHEADER="${postgresql}/include/libpq-fe.h";
     export MSHEADER="${libmysqlclient.dev}/include/mysql/mysql.h";
     export SQHEADER="${sqlite.dev}/include/sqlite3.h";
-    export ICU_LIBS="-L${icu.out}/lib";
-    export ICU_INCLUDES="-I${icu.dev}/include";
+    export ICU_LIBS="-L${icu67.out}/lib";
+    export ICU_INCLUDES="-I${icu67.dev}/include";
     export CC="${gcc}/bin/gcc";
     export CCARGS="-I$out/include \
-                   -I${icu.dev}/include \
+                   -I${icu67.dev}/include \
                    -L${openssl.out}/lib \
                    -L${libmysqlclient}/lib \
                    -L${postgresql.lib}/lib \
                    -L${sqlite.out}/lib \
-                   -L${icu.out}/lib";
+                   -L${icu67.out}/lib";
   '';
 
   # Be sure to keep the statically linked libraries
