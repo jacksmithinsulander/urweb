@@ -3263,13 +3263,13 @@ char *uw_Basis_sqlifyCalendardateN(uw_context ctx, uw_Basis_calendardate *t) {
 
 
 char *uw_Basis_ensqlBool(uw_Basis_bool b) {
-  static uw_Basis_int true = 1;
-  static uw_Basis_int false = 0;
+  static uw_Basis_int tru = 1;
+  static uw_Basis_int fals = 0;
 
   if (!b)
-    return (char *)&false;
+    return (char *)&fals;
   else
-    return (char *)&true;
+    return (char *)&tru;
 }
 
 uw_Basis_string uw_Basis_intToString(uw_context ctx, uw_Basis_int n) {
@@ -3395,13 +3395,13 @@ uw_Basis_char *uw_Basis_stringToChar(uw_context ctx, uw_Basis_string s) {
 
 uw_Basis_bool *uw_Basis_stringToBool(uw_context ctx, uw_Basis_string s) {
   (void)ctx;
-  static uw_Basis_bool true = uw_Basis_True;
-  static uw_Basis_bool false = uw_Basis_False;
+  static uw_Basis_bool tru = uw_Basis_True;
+  static uw_Basis_bool fals = uw_Basis_False;
 
   if (!strcasecmp (s, "True"))
-    return &true;
+    return &tru;
   else if (!strcasecmp (s, "False"))
-    return &false;
+    return &fals;
   else
     return NULL;
 }
