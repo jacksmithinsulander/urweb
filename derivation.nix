@@ -11,7 +11,7 @@ stdenv.mkDerivation rec {
 
   buildInputs = [ openssl mlton libmysqlclient postgresql sqlite automake autoconf libtool icu67.dev openssl.dev];
 
-  configureFlags = "--with-openssl=${openssl.dev}";
+  configureFlags = ["--with-openssl=${openssl.dev}"];
 
   preConfigure = ''
     ./autogen.sh
