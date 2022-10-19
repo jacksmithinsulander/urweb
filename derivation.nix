@@ -23,7 +23,7 @@ stdenv.mkDerivation rec {
     export CC="${gcc}/bin/gcc";
     export CCARGS="-I$out/include \
                    -I${icu67.dev}/include \
-                   -pthread
+                   -pthread \
                    -L${openssl.out}/lib \
                    -L${libmysqlclient}/lib \
                    -L${postgresql.lib}/lib \
