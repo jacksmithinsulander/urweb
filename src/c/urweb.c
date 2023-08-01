@@ -3457,7 +3457,13 @@ uw_Basis_clocktime *uw_Basis_stringToClocktime(uw_context ctx, uw_Basis_string s
   struct tm stm = {};
   stm.tm_isdst = -1;
 
-  if (strptime(s, "%H:%M:%S", &stm) == end) {
+  if (strptime(s, "%H:%M:%S.%f", &stm) == end) {
+    uw_Basis_clocktime *r = uw_malloc(ctx, sizeof(uw_Basis_clocktime));
+    r->hour = stm.tm_hour;
+    r->minute = stm.tm_min;
+    r->second = stm.tm_sec;
+    return r;
+  } else if (strptime(s, "%H:%M:%S", &stm) == end) {
     uw_Basis_clocktime *r = uw_malloc(ctx, sizeof(uw_Basis_clocktime));
     r->hour = stm.tm_hour;
     r->minute = stm.tm_min;
