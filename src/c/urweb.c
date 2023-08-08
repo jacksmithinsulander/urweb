@@ -1504,7 +1504,7 @@ void uw_write_header(uw_context ctx, uw_Basis_string s) {
 }
 
 int uw_has_contentLength(uw_context ctx) {
-  return strstr(ctx->outHeaders.start, "Content-length: ") != NULL;
+  return strstr(ctx->outHeaders.start, "Content-Length: ") != NULL;
 }
 
 void uw_clear_headers(uw_context ctx) {
