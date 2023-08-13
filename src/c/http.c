@@ -109,7 +109,6 @@ static void *worker(void *data) {
 
       if (back - buf == buf_size - 1) {
         char *new_buf;
-        size_t old_buf_size = buf_size;
         size_t new_buf_size = buf_size*2;
         if (new_buf_size > max_buf_size) {
           qfprintf(stderr, "HTTP input exceeds buffer-size limit of %u bytes.\n", max_buf_size);
@@ -125,7 +124,7 @@ static void *worker(void *data) {
           break;
         }
         buf_size = new_buf_size;
-        back = new_buf + (back - old_buf_size);
+        back = new_buf + (back - buf);
         buf = new_buf;
       }
 
@@ -170,7 +169,6 @@ static void *worker(void *data) {
           }
 
           while (back - body < clen) {
-            size_t old_buf_size = buf_size;
             if (back - buf == buf_size - 1) {
               char *new_buf;
               size_t new_buf_size = buf_size * 2;
@@ -189,14 +187,14 @@ static void *worker(void *data) {
               }
 
               buf_size = new_buf_size;
-              back = new_buf + (back - old_buf_size);
-              body = new_buf + (body - old_buf_size);
-              s = new_buf + (s - old_buf_size);
+              back = new_buf + (back - buf);
+              body = new_buf + (body - buf);
+              s = new_buf + (s - buf);
 
               buf = new_buf;
             }
 
-            r = recv(sock, back, buf_size - 1 - (back - old_buf_size), 0);
+            r = recv(sock, back, buf_size - 1 - (back - buf), 0);
 
             if (r < 0) {
               qfprintf(stderr, "Recv failed while receiving content, retcode %d errno %m\n", r);
