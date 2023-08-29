@@ -245,6 +245,8 @@ fun oneRun args =
                     NONE),
               ("sqlcache", call_true Settings.setSqlcache,
                     NONE),
+              ("disablesqlstructurecheck", call_true Settings.setDisableSqlStructureCheck,
+                    NONE),
               ("heuristic", ONE ("<h>", Sqlcache.setHeuristic),
                     NONE),
               ("moduleOf", ONE ("<file>", printModuleOf),

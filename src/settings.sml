@@ -53,6 +53,7 @@ val urlPrefixFull = ref "/"
 val urlPrefix = ref "/"
 val urlPrePrefix = ref ""
 val timeout = ref 0
+val disableSqlStructureCheck = ref false
 val headers = ref ([] : string list)
 val scripts = ref ([] : string list)
 
@@ -93,6 +94,9 @@ fun setUrlPrefix p =
 
 fun getTimeout () = !timeout
 fun setTimeout n = timeout := n
+
+fun getDisableSqlStructureCheck () = !disableSqlStructureCheck
+fun setDisableSqlStructureCheck n = disableSqlStructureCheck := n
 
 fun getHeaders () = !headers
 fun setHeaders ls = headers := ls

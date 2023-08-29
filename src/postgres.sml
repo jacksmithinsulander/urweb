@@ -245,7 +245,9 @@ fun init {dbstring, prepared = ss, tables, views, sequences} =
                   string "PGresult *res;",
                   newline,
                   newline,
-                  checkTablesAndViews tables views,
+                  if Settings.getDisableSqlStructureCheck ()
+                  then newline
+                  else (checkTablesAndViews tables views),
 
                   p_list_sep newline
                              (fn s =>

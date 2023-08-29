@@ -63,6 +63,10 @@ signature SETTINGS = sig
     val setTimeout : int -> unit
     val getTimeout : unit -> int
 
+    (* Disable SQL structure check? *)
+    val getDisableSqlStructureCheck : unit -> bool
+    val setDisableSqlStructureCheck : bool -> unit
+
     (* Which C header files are needed? *)
     val setHeaders : string list -> unit
     val getHeaders : unit -> string list
