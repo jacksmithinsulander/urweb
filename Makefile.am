@@ -148,4 +148,9 @@ test:
 	else \
 		echo "Skipped IPv6 tests."; \
 	fi
+	bin/urweb -boot -noEmacs tests/float2
+	tests/float2.exe -q -a 127.0.0.1 & echo $$! >$(TESTPID)
+	sleep 1
+	(curl -s 'http://localhost:8080/main' | grep -Fq 0.6) || (kill `cat $(TESTPID)`; echo "Test 'float2' failed"; /bin/false)
+	kill `cat $(TESTPID)`
 	echo Tests succeeded.
