@@ -709,6 +709,7 @@ decl   : CON SYMBOL cargl2 kopt EQ cexp (let
        | FFI SYMBOL ffi_modes COLON cexp([(DFfi (SYMBOL, ffi_modes, cexp), s (FFIleft, cexpright))])
 
 dtype  : SYMBOL dargs EQ barOpt dcons   (SYMBOL, dargs, dcons)
+       | SYMBOL dargs                   (SYMBOL, dargs, [])
 
 dtypes : dtype                          ([dtype])
        | dtype AND dtypes               (dtype :: dtypes)
