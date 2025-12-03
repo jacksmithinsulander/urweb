@@ -114,7 +114,7 @@ static FCGI_Record *fastcgi_recv(FCGI_Input *i) {
       i->used = sizeof(FCGI_Record) - 65535
         + ((i->r.contentLengthB1 << 8) | i->r.contentLengthB0)
         + i->r.paddingLength;
-      
+
       return &i->r;
     }
 
@@ -248,14 +248,14 @@ static char *get_header(void *data, const char *h) {
     if ((s = search_nvps(hs->nvps, hs->uppercased + 5)))
       return s;
   }
-  
+
   return search_nvps(hs->nvps, hs->uppercased);
 }
 
 static char *get_env(void *data, const char *h) {
   headers *hs = (headers *)data;
-  
-  return search_nvps(hs->nvps, h);
+  char *v = search_nvps(hs->nvps, h);
+  return v ? v : getenv(h);
 }
 
 static int read_funny_len(unsigned char **buf, int *len) {
@@ -428,7 +428,7 @@ static void *worker(void *data) {
           hs.nvps[hs.n_nvps-1].name_len = 1;
           hs.nvps[hs.n_nvps-1].value_len = 0;
         }
-        
+
         if (read_nvp(&buf, len - (buf - r->contentData), &hs.nvps[used_nvps]) < 0) {
           write_stderr(out, "Error reading FCGI_PARAMS name-value pair\n");
           goto done;
@@ -571,7 +571,7 @@ int main(int argc, char *argv[]) {
   int run_client_pruner = 1;
 
   char *fwsa = getenv("FCGI_WEB_SERVER_ADDRS"), *nthreads_s = getenv("URWEB_NUM_THREADS");
- 
+
   if (nthreads_s) {
     nthreads = atoi(nthreads_s);
     if (nthreads <= 0) {
@@ -637,7 +637,7 @@ int main(int argc, char *argv[]) {
   }
 
   for (i = 0; i < nthreads; ++i) {
-    pthread_t thread;    
+    pthread_t thread;
     names[i] = i;
     if (pthread_create_big(&thread, NULL, worker, &names[i])) {
       fprintf(stderr, "Error creating worker thread #%d\n", i);
