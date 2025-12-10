@@ -4062,6 +4062,8 @@ int uw_commit(uw_context ctx) {
     }
   }
 
+  ctx->transaction_started = 0;
+
   for (i = ctx->used_transactionals-1; i >= 0; --i)
     if (ctx->transactionals[i].rollback == NULL)
       if (ctx->transactionals[i].commit) {
