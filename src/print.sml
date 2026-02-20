@@ -36,7 +36,7 @@ val openOut = SM.openOut
 
 type 'a printer = 'a -> PD.pp_desc
 
-fun box ds = PD.hovBox (PD.PPS.Rel 0, ds)
+fun box ds = PD.hovBox (PD.PPS.Rel 1, ds)
 fun vbox ds = PD.vBox (PD.PPS.Rel 0, ds)
 fun parenIf b d =
     if b then

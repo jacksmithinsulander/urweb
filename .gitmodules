@@ -1,0 +1,6 @@
+[submodule "vendor/samurai"]
+	path = vendor/samurai
+	url = https://github.com/michaelforney/samurai.git
+[submodule "vendor/BearSSL"]
+	path = vendor/BearSSL
+	url = https://www.bearssl.org/git/BearSSL

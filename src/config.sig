@@ -9,7 +9,7 @@ signature CONFIG = sig
 
     val ccompiler : string
     val ccArgs : string
-    val openssl : string
+    val bearssl : string
 
     val pgheader : string
     val msheader : string
@@ -21,6 +21,6 @@ signature CONFIG = sig
     val pthreadCflags : string
     val pthreadLibs : string
 
-    val icuIncludes : string
-    val icuLibs : string
+    val libunistringIncludes : string
+    val libunistringLibs : string
 end

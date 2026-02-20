@@ -32,8 +32,8 @@ val configLib = ref Config.lib
 val configSrcLib = ref Config.srclib
 val configInclude = ref Config.includ
 val configSitelisp = ref Config.sitelisp
-val configIcuIncludes = ref Config.icuIncludes
-val configIcuLibs = ref Config.icuLibs
+val configLibunistringIncludes = ref Config.libunistringIncludes
+val configLibunistringLibs = ref Config.libunistringLibs
 val configCCompiler = ref Config.ccompiler
 
 fun getCCompiler () = !configCCompiler
@@ -764,7 +764,7 @@ val monoInline = ref 5
 fun setMonoInline n = monoInline := n
 fun getMonoInline () = !monoInline
 
-val staticLinking = ref false
+val staticLinking = ref true
 fun setStaticLinking b = staticLinking := b
 fun getStaticLinking () = !staticLinking
 
@@ -1063,7 +1063,7 @@ fun reset () =
      endpoints := NONE;
      coreInline := 5;
      monoInline := 5;
-     staticLinking := false;
+     staticLinking := true;
      deadlines := false;
      sigFile := NONE;
      safeGet := SS.empty;

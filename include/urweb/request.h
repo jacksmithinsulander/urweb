@@ -10,6 +10,7 @@ typedef struct uw_rc *uw_request_context;
 
 void uw_request_init(uw_app *app, uw_loggers* ls);
 void uw_sign(const char *in, char *out);
+int uw_rand_bytes(unsigned char *buf, size_t len);
 
 uw_request_context uw_new_request_context(void);
 void uw_free_request_context(uw_request_context);

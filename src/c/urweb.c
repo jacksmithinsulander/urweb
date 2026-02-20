@@ -13,19 +13,26 @@
 #include <stdint.h>
 #include <sys/types.h>
 #include <sys/socket.h>
-#include <openssl/rand.h>
-#include <openssl/sha.h>
 #include <time.h>
 #include <math.h>
 
 #include <pthread.h>
 
-#include <unicode/utf8.h>
-#include <unicode/uchar.h>
+#include "unicode-compat.h"
 
 #include "types.h"
 
+#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
+#  define UW_NORETURN _Noreturn
+#elif defined(__GNUC__) || defined(__clang__)
+#  define UW_NORETURN __attribute__((noreturn))
+#else
+#  define UW_NORETURN
+#endif
+
 #include "uthash.h"
+#include "request.h"
+#include <bearssl_hash.h>
 
 uw_unit uw_unit_v = 0;
 
@@ -106,7 +113,7 @@ int uw_buffer_check(uw_buffer *b, size_t extra) {
   return 0;
 }
 
-__attribute__((noreturn)) void uw_error(uw_context, failure_kind, const char *, ...);
+UW_NORETURN void uw_error(uw_context, failure_kind, const char *, ...);
 
 static void ctx_uw_buffer_check(uw_context ctx, const char *kind, uw_buffer *b, size_t extra) {
   if (uw_buffer_check(b, extra))
@@ -177,7 +184,7 @@ void uw_copy_client_data(void *dst, void *src);
 
 static int my_rand(uw_context ctx) {
   unsigned int ret;
-  if (RAND_bytes((unsigned char *)&ret, sizeof ret)) {
+  if (uw_rand_bytes((unsigned char *)&ret, sizeof ret)) {
     ret >>= 1; // clear top bit
     return ret;
   } else
@@ -767,7 +774,7 @@ int uw_has_error(uw_context ctx) {
   return ctx->error_message[0] != 0;
 }
 
-__attribute__((noreturn)) void uw_error(uw_context ctx, failure_kind fk, const char *fmt, ...) {
+UW_NORETURN void uw_error(uw_context ctx, failure_kind fk, const char *fmt, ...) {
   cleanup *cl;
 
   va_list ap;
@@ -3263,13 +3270,13 @@ char *uw_Basis_sqlifyCalendardateN(uw_context ctx, uw_Basis_calendardate *t) {
 
 
 char *uw_Basis_ensqlBool(uw_Basis_bool b) {
-  static uw_Basis_int true = 1;
-  static uw_Basis_int false = 0;
+  static uw_Basis_int tru = 1;
+  static uw_Basis_int fals = 0;
 
   if (!b)
-    return (char *)&false;
+    return (char *)&fals;
   else
-    return (char *)&true;
+    return (char *)&tru;
 }
 
 uw_Basis_string uw_Basis_intToString(uw_context ctx, uw_Basis_int n) {
@@ -3395,13 +3402,13 @@ uw_Basis_char *uw_Basis_stringToChar(uw_context ctx, uw_Basis_string s) {
 
 uw_Basis_bool *uw_Basis_stringToBool(uw_context ctx, uw_Basis_string s) {
   (void)ctx;
-  static uw_Basis_bool true = uw_Basis_True;
-  static uw_Basis_bool false = uw_Basis_False;
+  static uw_Basis_bool tru = uw_Basis_True;
+  static uw_Basis_bool fals = uw_Basis_False;
 
   if (!strcasecmp (s, "True"))
-    return &true;
+    return &tru;
   else if (!strcasecmp (s, "False"))
-    return &false;
+    return &fals;
   else
     return NULL;
 }
@@ -4062,6 +4069,8 @@ int uw_commit(uw_context ctx) {
     }
   }
 
+  ctx->transaction_started = 0;
+
   for (i = ctx->used_transactionals-1; i >= 0; --i)
     if (ctx->transactionals[i].rollback == NULL)
       if (ctx->transactionals[i].commit) {
@@ -4590,7 +4599,7 @@ static char *old_headers(uw_context ctx) {
   }
 }
 
-__attribute__((noreturn)) void uw_return_blob(uw_context ctx, uw_Basis_blob b, uw_Basis_string mimeType) {
+UW_NORETURN void uw_return_blob(uw_context ctx, uw_Basis_blob b, uw_Basis_string mimeType) {
   cleanup *cl;
   int len;
   char *oldh;
@@ -4628,7 +4637,7 @@ void uw_replace_page(uw_context ctx, const char *data, size_t size) {
   ctx_uw_buffer_append(ctx, "page", &ctx->page, data, size);
 }
 
-__attribute__((noreturn)) void uw_return_blob_from_page(uw_context ctx, uw_Basis_string mimeType) {
+UW_NORETURN void uw_return_blob_from_page(uw_context ctx, uw_Basis_string mimeType) {
   cleanup *cl;
   int len;
   char *oldh;
@@ -4658,7 +4667,7 @@ __attribute__((noreturn)) void uw_return_blob_from_page(uw_context ctx, uw_Basis
   longjmp(ctx->jmp_buf, RETURN_INDIRECTLY);
 }
 
-__attribute__((noreturn)) void uw_redirect(uw_context ctx, uw_Basis_string url) {
+UW_NORETURN void uw_redirect(uw_context ctx, uw_Basis_string url) {
   cleanup *cl;
   char *s;
   char *oldh;
@@ -5085,72 +5094,72 @@ void uw_set_global(uw_context ctx, char *name, void *data, void (*free)(void*)) 
 
 uw_Basis_bool uw_Basis_isalnum(uw_context ctx, uw_Basis_char c) {
   (void)ctx;
-  return !!u_hasBinaryProperty(c, UCHAR_POSIX_ALNUM);
+  return !!(uc_is_property_alphabetic(c) || uc_is_property_decimal_digit(c));
 }
 
 uw_Basis_bool uw_Basis_isalpha(uw_context ctx, uw_Basis_char c) {
   (void)ctx;
-  return !!u_hasBinaryProperty(c, UCHAR_ALPHABETIC);
+  return !!uc_is_property_alphabetic(c);
 }
 
 uw_Basis_bool uw_Basis_isblank(uw_context ctx, uw_Basis_char c) {
   (void)ctx;
-  return !!u_hasBinaryProperty(c, UCHAR_POSIX_BLANK);
+  return !!(uc_is_property_white_space(c) && (c == 0x09 || c == 0x20));
 }
 
 uw_Basis_bool uw_Basis_iscntrl(uw_context ctx, uw_Basis_char c) {
   (void)ctx;
-  return !!(u_charType(c)==U_CONTROL_CHAR);
+  return !!uc_is_general_category(c, UC_CATEGORY_Cc);
 }
 
 uw_Basis_bool uw_Basis_isdigit(uw_context ctx, uw_Basis_char c) {
   (void)ctx;
-  return !!u_isdigit(c);
+  return !!uc_is_property_decimal_digit(c);
 }
 
 uw_Basis_bool uw_Basis_isgraph(uw_context ctx, uw_Basis_char c) {
   (void)ctx;
-  return !!u_hasBinaryProperty(c, UCHAR_POSIX_GRAPH);
+  return !!(!uc_is_property_white_space(c) && !uc_is_general_category(c, UC_CATEGORY_Cc));
 }
 
 uw_Basis_bool uw_Basis_islower(uw_context ctx, uw_Basis_char c) {
   (void)ctx;
-  return !!u_hasBinaryProperty(c, UCHAR_LOWERCASE);
+  return !!uc_is_property_lowercase(c);
 }
 
 uw_Basis_bool uw_Basis_isprint(uw_context ctx, uw_Basis_char c) {
   (void)ctx;
-  return !!u_hasBinaryProperty(c, UCHAR_POSIX_PRINT);
+  return !!(!uc_is_general_category(c, UC_CATEGORY_Cc));
 }
 
 uw_Basis_bool uw_Basis_ispunct(uw_context ctx, uw_Basis_char c) {
   (void)ctx;
-  return !!u_ispunct(c);
+  return !!uc_is_property_punctuation(c);
 }
 
 uw_Basis_bool uw_Basis_isspace(uw_context ctx, uw_Basis_char c) {
   (void)ctx;
-  return !!u_hasBinaryProperty(c, UCHAR_WHITE_SPACE);
+  return !!uc_is_property_white_space(c);
 }
 
 uw_Basis_bool uw_Basis_isupper(uw_context ctx, uw_Basis_char c) {
   (void)ctx;
-  return !!u_hasBinaryProperty(c, UCHAR_UPPERCASE);
+  return !!uc_is_property_uppercase(c);
 }
 
 uw_Basis_bool uw_Basis_isxdigit(uw_context ctx, uw_Basis_char c) {
   (void)ctx;
-  return !!(c <= 0x7f && u_isxdigit(c));
+  return !!(c <= 0x7f && uc_is_property_hex_digit(c));
 }
 
 uw_Basis_char uw_Basis_tolower(uw_context ctx, uw_Basis_char c) {
   (void)ctx;
-  return u_tolower(c);
+  return uc_tolower(c);
 }
 
 uw_Basis_char uw_Basis_toupper(uw_context ctx, uw_Basis_char c) {
   (void)ctx;
-  return u_toupper(c);
+  return uc_toupper(c);
 }
 
 uw_Basis_int uw_Basis_ord(uw_context ctx, uw_Basis_char c) {
@@ -5886,7 +5895,7 @@ static int is_valid_hash(uw_Basis_string hash) {
 
 uw_unit uw_Basis_cache_file(uw_context ctx, uw_Basis_blob contents) {
   char *dir = ctx->app->file_cache, path[1024], tempfile[1024];
-  unsigned char *res, *hash;
+  unsigned char *hash;
   char *hash_encoded;
   int fd, len, i;
   ssize_t written_so_far = 0;
@@ -5894,15 +5903,18 @@ uw_unit uw_Basis_cache_file(uw_context ctx, uw_Basis_blob contents) {
   if (!dir)
     return uw_unit_v;
 
-  hash = uw_malloc(ctx, SHA512_DIGEST_LENGTH);
-  res = SHA512((unsigned char *)contents.data, contents.size, hash);
-  if (!res)
-    uw_error(ctx, FATAL, "Can't hash file contents");
+  hash = uw_malloc(ctx, br_sha512_SIZE);
+  {
+    br_sha512_context ctx_sha;
+    br_sha512_init(&ctx_sha);
+    br_sha512_update(&ctx_sha, contents.data, contents.size);
+    br_sha512_out(&ctx_sha, hash);
+  }
 
-  hash_encoded = uw_malloc(ctx, SHA512_DIGEST_LENGTH * 2 + 1);
-  for (i = 0; i < SHA512_DIGEST_LENGTH; ++i)
+  hash_encoded = uw_malloc(ctx, br_sha512_SIZE * 2 + 1);
+  for (i = 0; i < br_sha512_SIZE; ++i)
     sprintf(hash_encoded + 2 * i, "%02x", (int)hash[i]);
-  hash_encoded[SHA512_DIGEST_LENGTH * 2] = 0;
+  hash_encoded[br_sha512_SIZE * 2] = 0;
 
   len = snprintf(tempfile, sizeof tempfile, "%s/tmpXXXXXX", dir);
   if (len < 0 || len >= sizeof tempfile)

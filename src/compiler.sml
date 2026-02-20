@@ -362,7 +362,7 @@ fun enableBoot () =
   Settings.configSrcLib := OS.Path.joinDirFile {dir = Config.builddir, file = "lib"};
   (* joinDirFile is annoying... (ArcError; it doesn't like
    * slashes in file) *)
-  Settings.configLib := Config.builddir ^ "/src/c/.libs";
+  Settings.configLib := Config.builddir ^ "/src/c";
   Settings.configInclude := OS.Path.joinDirFile {dir = Config.builddir ^ "/include", file = "urweb"};
   Settings.configSitelisp := Config.builddir ^ "/src/elisp";
   addPath ("", Settings.libUr ()))
@@ -1618,11 +1618,11 @@ fun compileC {cname, oname, ename, libs, profile, debug, linker, link = link'} =
         val lib = if Settings.getBootLinking () then
                       !Settings.configLib ^ "/" ^ #linkStatic proto ^ " " ^
                       !Settings.configLib ^ "/liburweb.a " ^
-                      !Settings.configIcuLibs ^ " -licui18n -licuuc -licudata -licuio"
+                      !Settings.configLibunistringLibs
                   else if Settings.getStaticLinking () then
                       " -static " ^ !Settings.configLib ^ "/" ^ #linkStatic
                       proto ^ " " ^ !Settings.configLib ^ "/liburweb.a " ^
-                      !Settings.configIcuLibs ^ " -licui18n -licuuc -licudata -licuio"
+                      !Settings.configLibunistringLibs
                   else
                       "-L" ^ !Settings.configLib ^ " " ^ #linkDynamic proto ^ " -lurweb"
 
@@ -1633,7 +1633,7 @@ fun compileC {cname, oname, ename, libs, profile, debug, linker, link = link'} =
 
         val compile = (Settings.getCCompiler ()) ^ " " ^ Config.ccArgs ^ " " ^ Config.pthreadCflags ^ " -Wimplicit -Werror -Wno-unused-value"
                       ^ opt ^ " -I " ^ !Settings.configInclude
-		      ^ " " ^ !Settings.configIcuIncludes
+		      ^ " " ^ !Settings.configLibunistringIncludes
                       ^ " " ^ #compile proto
                       ^ " -c " ^ escapeFilename cname ^ " -o " ^ escapeFilename oname
 
@@ -1648,10 +1648,7 @@ fun compileC {cname, oname, ename, libs, profile, debug, linker, link = link'} =
 
         val linker = Option.getOpt (linker, (Settings.getCCompiler ()) ^ " -Werror" ^ opt ^ " " ^ args)
 
-        val ssl = if Settings.getStaticLinking () then
-                      Config.openssl ^ " -ldl -lz"
-                  else
-                      Config.openssl
+        val ssl = Config.bearssl
 
         val link = linker
                    ^ " " ^ escapeFilename oname ^ " " ^ lib ^ " -lm " ^ ssl ^ " " ^ libs ^ " -o " ^ escapeFilename ename

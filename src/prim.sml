@@ -38,10 +38,20 @@ datatype t =
 open Print.PD
 open Print
 
+(* MLton's Real64.toString prints doubles that have no fractional part the same
+ * as integers. This doesn't play well with C, since C won't convert integers to
+ * doubles unless it absolutely has to; for example, it will evaluate 3/5 to 0
+ * instead of 0.6. To avoid this, always print doubles in scientific notation,
+ * which forces the C parser to parse them as doubles. Print with 17 significant
+ * digits (16 after the decimal place), since that's the maximum precision of a
+ * double.
+ *)
+val realToString = Real64.fmt (StringCvt.SCI (SOME 16))
+
 fun p_t t =
     case t of
         Int n => string (Int64.toString n)
-      | Float n => string (Real64.toString n)
+      | Float n => string (realToString n)
       | String (_, s) => box [string "\"", string (String.toString s), string "\""]
       | Char ch => box [string "#\"", string (String.toString (String.str ch)), string "\""]
 
@@ -57,7 +67,7 @@ fun int2s' n =
     else
         Int64.toString n
 
-val float2s = String.translate (fn #"~" => "-" | ch => str ch) o Real64.toString
+val float2s = String.translate (fn #"~" => "-" | ch => str ch) o realToString
 
 fun toString t =
     case t of

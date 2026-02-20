@@ -13,19 +13,35 @@
 #include <stdarg.h>
 #include <sys/un.h>
 
+#include <ctype.h>
+#include <errno.h>
 #include <pthread.h>
 
 #include "urweb.h"
 #include "request.h"
 #include "queue.h"
 
+#ifndef HAVE_STRCASESTR
+static char *uw_strcasestr(const char *haystack, const char *needle) {
+  size_t nlen = strlen(needle);
+  if (nlen == 0) return (char *)haystack;
+  for (; *haystack; haystack++) {
+    if (tolower((unsigned char)*haystack) == tolower((unsigned char)*needle) &&
+        strncasecmp(haystack, needle, nlen) == 0)
+      return (char *)haystack;
+  }
+  return NULL;
+}
+#define strcasestr uw_strcasestr
+#endif
+
 extern uw_app uw_application;
 
 int uw_backlog = SOMAXCONN;
 static int keepalive = 0, quiet = 0;
 
-#define qfprintf(f, fmt, args...) do { if(!quiet) fprintf(f, fmt, ##args); } while(0)
-#define qprintf(fmt, args...) do { if(!quiet) printf(fmt, ##args); } while(0)
+#define qfprintf(f, fmt, ...) do { if(!quiet) fprintf(f, fmt, ##__VA_ARGS__); } while(0)
+#define qprintf(fmt, ...) do { if(!quiet) printf(fmt, ##__VA_ARGS__); } while(0)
 
 static char *get_header(void *data, const char *h) {
   char *s = data;
@@ -107,7 +123,8 @@ static void *worker(void *data) {
       int r;
       char *method, *path, *query_string, *headers, *body, *after, *s, *s2;
 
-      if (back - buf == buf_size - 1) {
+      size_t backbuf = back - buf;
+      if (backbuf == buf_size - 1) {
         char *new_buf;
         size_t new_buf_size = buf_size*2;
         if (new_buf_size > max_buf_size) {
@@ -124,7 +141,7 @@ static void *worker(void *data) {
           break;
         }
         buf_size = new_buf_size;
-        back = new_buf + (back - buf);
+        back = new_buf + backbuf;
         buf = new_buf;
       }
 
@@ -134,7 +151,7 @@ static void *worker(void *data) {
         r = recv(sock, back, buf_size - 1 - (back - buf), 0);
 
         if (r < 0) {
-          qfprintf(stderr, "Recv failed while receiving header, retcode %d errno %m\n", r);
+          qfprintf(stderr, "Recv failed while receiving header, retcode %d errno %s\n", r, strerror(errno));
           close(sock);
           sock = 0;
           break;
@@ -200,7 +217,7 @@ static void *worker(void *data) {
             r = recv(sock, back, buf_size - 1 - (back - buf), 0);
 
             if (r < 0) {
-              qfprintf(stderr, "Recv failed while receiving content, retcode %d errno %m\n", r);
+              qfprintf(stderr, "Recv failed while receiving content, retcode %d errno %s\n", r, strerror(errno));
               close(sock);
               sock = 0;
               goto done;
@@ -237,13 +254,14 @@ static void *worker(void *data) {
         headers = s + 2;
         method = s = buf;
 
-        strsep(&s, " ");
+        s = strchr(s, ' ');
         if (!s) {
           fprintf(stderr, "No first space in HTTP command\n");
           close(sock);
           sock = 0;
           goto done;
         }
+        *s++ = '\0';
         path = s;
 
         if ((s = strchr(path, ' ')))
@@ -562,7 +580,7 @@ int main(int argc, char *argv[]) {
         tv.tv_sec = recv_timeout_sec;
         ret = setsockopt(new_fd, SOL_SOCKET, SO_RCVTIMEO, (char *)&tv, sizeof(struct timeval));
         if(ret != 0) {
-          qfprintf(stderr, "Timeout setting failed, errcode %d errno '%m'\n", ret);
+          qfprintf(stderr, "Timeout setting failed, errcode %d errno '%s'\n", ret, strerror(errno));
         }
       }
 
