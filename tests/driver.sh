@@ -15,8 +15,10 @@ TESTSRV="./${Name}.exe"
 
 rm -f "$TESTDB" "$TESTSQL" "$TESTPID" "$TESTSRV"
 
+printf '  compiling...' >&2
 "$URWEB" -boot -noEmacs -dbms sqlite -db "$TESTDB" -sql "$TESTSQL" "$Name" \
-    || { printf 'FAIL [%s]: urweb compile failed\n' "$Name" >&2; exit 1; }
+    || { printf ' FAIL\n' >&2; printf 'FAIL [%s]: urweb compile failed\n' "$Name" >&2; exit 1; }
+printf ' run...' >&2
 
 [ -f "$TESTSQL" ] && sqlite3 "$TESTDB" < "$TESTSQL"
 
@@ -35,4 +37,5 @@ export PORT TESTNAME
 . ./lib.sh
 . ./"${Name}.sh"
 
+printf ' ok\n' >&2
 printf 'PASS: %s\n' "$Name"

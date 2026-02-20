@@ -55,9 +55,22 @@ if ICU_LIBS=$(pkg-config --libs icu-i18n 2>/dev/null) && \
    ICU_INCLUDES=$(pkg-config --cflags icu-i18n 2>/dev/null); then
     printf 'ok (%s)\n' "$ICU_LIBS"
 else
-    printf 'not found via pkg-config\n' >&2
-    printf 'Hint: set PKG_CONFIG_PATH to your ICU lib/pkgconfig directory\n' >&2
-    exit 1
+    # Try common Homebrew locations for icu4c
+    for icu_pc in /opt/homebrew/opt/icu4c/lib/pkgconfig /usr/local/opt/icu4c/lib/pkgconfig; do
+        if [ -d "$icu_pc" ]; then
+            export PKG_CONFIG_PATH="${icu_pc}${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+            if ICU_LIBS=$(pkg-config --libs icu-i18n 2>/dev/null) && \
+               ICU_INCLUDES=$(pkg-config --cflags icu-i18n 2>/dev/null); then
+                printf 'ok via %s (%s)\n' "$icu_pc" "$ICU_LIBS"
+                break
+            fi
+        fi
+    done
+    if [ -z "$ICU_LIBS" ] || [ -z "$ICU_INCLUDES" ]; then
+        printf 'not found via pkg-config\n' >&2
+        printf 'Hint: set PKG_CONFIG_PATH to your ICU lib/pkgconfig directory\n' >&2
+        exit 1
+    fi
 fi
 
 # ── libunistring ──────────────────────────────────────────────────────────────

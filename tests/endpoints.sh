@@ -11,7 +11,8 @@ TESTSRV="./${TEST}.exe"
 
 rm -f "$TESTENDPOINTS" "$TESTPID" "$TESTSRV"
 
-../bin/urweb -boot -noEmacs -endpoints "$TESTENDPOINTS" "$TEST" \
+URWEB="${URWEB:-../bin/urweb}"
+"$URWEB" -boot -noEmacs -endpoints "$TESTENDPOINTS" "$TEST" \
     || { printf 'FAIL [endpoints]: urweb compile failed\n' >&2; exit 1; }
 
 "$TESTSRV" -q -a 127.0.0.1 &

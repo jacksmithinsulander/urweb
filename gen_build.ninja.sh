@@ -74,8 +74,9 @@ rule mlton
   description = MLton $out
 
 rule mlton_compiler
-  command = echo "Compiling Ur/Web compiler with MLton (2-3 minutes)..." && $MLTON -mlb-path-var 'SRC $srcdir/src' -mlb-path-var 'BUILD $builddir/src' -output $out $in && echo "Compiler build complete."
+  command = ( echo ""; echo "[$$(date +%H:%M:%S)] Compiling Ur/Web compiler with MLton (2-3 min)..."; ( while sleep 30; do echo "  [$$(date +%H:%M:%S)] ... still compiling (MLton produces no output until done)"; done ) & p=$$!; trap 'kill $$p 2>/dev/null' EXIT; $MLTON -mlb-path-var 'SRC $srcdir/src' -mlb-path-var 'BUILD $builddir/src' -output $out $in; r=$$?; kill $$p 2>/dev/null; echo "[$$(date +%H:%M:%S)] Compiler build complete."; echo ""; exit $$r )
   description = MLton compiler (2-3 min)
+  pool = console
 
 rule cc
   command = $CC $CPPFLAGS $CFLAGS -c $in -o $out
@@ -104,8 +105,9 @@ NINJAEOF
 if test "$BEARSSL_USE_VENDOR" = "1"; then
   cat <<'NINJABEAR'
 rule build_bearssl
-  command = make -C $srcdir/vendor/BearSSL
+  command = echo "[$$(date +%H:%M:%S)] Building BearSSL..." && make -C $srcdir/vendor/BearSSL 2>&1 | sed 's/^/  /' && echo "[$$(date +%H:%M:%S)] BearSSL done."
   description = Build vendored BearSSL
+  pool = console
 
 build bearssl: build_bearssl
 
@@ -192,9 +194,11 @@ echo "build uninstall: uninstall_cmd"
 echo ""
 
 # Test (requires bin/urweb, sqlite3, curl)
+# pool = console gives direct terminal access so output appears in real time
 echo "rule test_cmd"
 echo "  command = sh $srcdir/run-tests.sh $srcdir $builddir"
-echo "  description = Run tests"
+echo "  description = Run tests (demo + 21)"
+echo "  pool = console"
 echo ""
 echo "build test: test_cmd | $builddir/bin/urweb"
 echo ""
