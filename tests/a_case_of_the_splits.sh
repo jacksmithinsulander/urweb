@@ -1,0 +1,1 @@
+run_playwright a_case_of_the_splits

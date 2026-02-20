@@ -1,5 +1,5 @@
 #!/bin/sh
-# Run Ur/Web tests. Requires: bin/urweb (or build.ninja to build it), sqlite3, curl
+# Run Ur/Web tests. Requires: bin/urweb (or build.ninja to build it), sqlite3, curl, node+npm
 # Optional: jq (for endpoints test), gcc (for cffi test)
 set -e
 TESTDB="${TESTDB:-/tmp/urweb.db}"
@@ -41,9 +41,13 @@ echo "Demo test passed."
 # Driver-based tests (each test has a .sh that is sourced by driver.sh after starting the app)
 # Exclude: driver, lib (infra); cffi, endpoints, dbupload2 (standalone scripts)
 testsdir="$srcdir/tests"
-DRIVER_TESTS="aborter aborter2 agg align ascdesc attrs_escape bindpat bool both both2 case caseMod cdataF cdataL entities fact filter jsonTest utf8"
+if [ -f "$testsdir/package.json" ]; then
+  echo "[$(_ts)] Installing test deps (Playwright)..."
+  (cd "$testsdir" && npm install && npx playwright install chromium) || { echo "Playwright install failed"; exit 1; }
+fi
+DRIVER_TESTS="aborter aborter2 agg align alert ascdesc attrMangle attrs_escape a_case_of_the_splits bindpat bodyClick bool both both2 button case caseMod ccheckbox cdataF cdataL cradio DynChannel entities fact filter jsonTest jsbspace utf8"
 n=0
-total_driver=18
+total_driver=27
 echo ""
 echo "=== Driver tests ($total_driver tests, ~15-30s each to compile) ==="
 for base in $DRIVER_TESTS; do

@@ -36,6 +36,26 @@ check_absent() {
     curl -fs "$_full" | grep -qF "$2" && fail "GET $1: should not contain: $2" || true
 }
 
+# check_xpath PATH XPATH [EXPECTED_TEXT] -- assert XPath matches at least one node (uses Playwright)
+# Caller must run from tests/ (driver.sh does this).
+check_xpath() {
+    _full=$(_url_full "$1")
+    _xpath="$2"
+    _expected="${3-}"
+    if [ -n "$_expected" ]; then
+        node ./playwright-check.js "$_full" "$_xpath" "$_expected" || fail "GET $1: xpath $_xpath: $3"
+    else
+        node ./playwright-check.js "$_full" "$_xpath" || fail "GET $1: xpath $_xpath matched nothing"
+    fi
+}
+
+# run_playwright TESTNAME -- run interactive Playwright test (clicks, alerts, etc.)
+# Test module: playwright-tests/<TESTNAME>.js exports async (page, baseUrl) => void
+run_playwright() {
+    _base="http://localhost:$PORT"
+    node ./playwright-run.js "$1" "$_base" || fail "Playwright test $1 failed"
+}
+
 # nth_href PAGE_PATH N -- extract Nth anchor href from page (1-indexed)
 nth_href() {
     _full=$(_url_full "$1")

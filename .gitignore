@@ -67,6 +67,9 @@ Makefile.coq
 # SQL
 *.sql
 
+# Node (tests)
+tests/node_modules/
+
 # Python
 __pycache__/
 *.py[cod]

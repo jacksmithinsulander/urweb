@@ -26,14 +26,17 @@ URWEB="${URWEB:-../bin/urweb}"
 
 [ -f "$TESTSQL" ] && sqlite3 "$TESTDB" < "$TESTSQL"
 
-"$TESTSRV" -q -a 127.0.0.1 &
+PORT=${PORT:-8080}
+export PORT
+"$TESTSRV" -q -a 127.0.0.1 -p "$PORT" &
 printf '%s\n' "$!" > "$TESTPID"
 sleep 1
 
 cleanup() { kill "$(cat "$TESTPID" 2>/dev/null)" 2>/dev/null || true; }
 trap cleanup EXIT
 
-# test 1: form 1 triggers JS button alerts -- requires browser, skipped
+# test 1: form 1 triggers JS button alerts
+run_playwright cffi
 
 # test 2: submit form 2 (xact) -> "All good."
 post_form_n "Cffi/main" 2 "" "All good."

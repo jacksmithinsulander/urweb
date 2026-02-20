@@ -1,0 +1,11 @@
+{
+  "name": "urweb-tests",
+  "private": true,
+  "description": "Test harness dependencies for Ur/Web",
+  "scripts": {
+    "install-browsers": "playwright install chromium"
+  },
+  "devDependencies": {
+    "playwright": "^1.49.0"
+  }
+}
