@@ -35,7 +35,7 @@ wget http://localhost:8080/Hello/main -O -
 Build with the Ninja-compatible build system (samurai or ninja). Dependencies: MLton, BearSSL (vendored), libunistring. OpenSSL is not used.
 
 ```sh
-# If cloning from git, get submodules (BearSSL, samurai, 9front):
+# If cloning from git, get submodules (BearSSL, samurai):
 git clone --recurse-submodules <repo-url>    # or: git submodule update --init
 
 ./configure

@@ -1,7 +1,7 @@
 #!/bin/sh
 # Fetch vendored dependencies for building Ur/Web.
 #
-# Submodules: BearSSL (TLS/crypto), samurai (ninja-compatible build tool), 9front (Plan 9 fork)
+# Submodules: BearSSL (TLS/crypto), samurai (ninja-compatible build tool)
 # This script initializes all submodules when in a git repo. When not in a git repo
 # (e.g. tarball), only samurai can be cloned; BearSSL and 9front require git submodules.
 
@@ -14,7 +14,7 @@ if test -d "$rootdir/.git" && git -C "$rootdir" rev-parse --git-dir >/dev/null 2
   echo "  Initializing submodules..."
   git -C "$rootdir" submodule update --init --recursive
 else
-  # No git (e.g. tarball): clone BearSSL and samurai (9front requires submodules)
+  # No git (e.g. tarball): clone BearSSL and samurai
   if test -d BearSSL; then
     echo "  BearSSL: already present"
   else

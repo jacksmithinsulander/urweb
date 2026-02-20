@@ -1,5 +1,5 @@
 #!/bin/sh
-# Run Ur/Web tests. Requires: bin/urweb, sqlite3, curl
+# Run Ur/Web tests. Requires: bin/urweb (or build.ninja to build it), sqlite3, curl
 # Optional: jq (for endpoints test), gcc (for cffi test)
 set -e
 TESTDB="${TESTDB:-/tmp/urweb.db}"
@@ -11,6 +11,17 @@ URWEB="$(cd "$builddir" && pwd)/bin/urweb"
 export URWEB
 
 _ts() { date +%H:%M:%S 2>/dev/null || true; }
+
+# Build compiler if missing
+if [ ! -f "$URWEB" ]; then
+  if [ -f "$builddir/build.ninja" ]; then
+    echo "[$(_ts)] urweb compiler not found, building..."
+    (cd "$builddir" && (samu bin/urweb 2>/dev/null || ninja bin/urweb)) || { echo "Failed to build urweb"; exit 1; }
+  else
+    echo "urweb compiler not found at $URWEB and no build.ninja to build it" >&2
+    exit 1
+  fi
+fi
 
 # Demo test
 echo ""

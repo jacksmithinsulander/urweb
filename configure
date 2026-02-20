@@ -238,7 +238,7 @@ srcdir="$srcdir" builddir="$builddir" \
     LIBUNISTRING_LIBS="$UNISTRING_LIBS" \
     PTHREAD_CFLAGS="$PTHREAD_CFLAGS" \
     PTHREAD_LIBS="$PTHREAD_LIBS" \
-    sh "$srcdir/gen_build.ninja.sh" > "$builddir/build.ninja"
+    sh "$srcdir/scripts/gen_build.ninja.sh" > "$builddir/build.ninja"
 
 printf 'Generated %s\n' "$builddir/build.ninja"
 
