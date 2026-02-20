@@ -21,7 +21,7 @@ ${CC:-gcc} -pthread -Wimplicit -Werror -Wno-unused-value \
 
 # Compile the Ur/Web app
 URWEB="${URWEB:-../bin/urweb}"
-"$URWEB" -boot -noEmacs -dbms sqlite -db "$TESTDB" -sql "$TESTSQL" "$Name" \
+"$URWEB" ${URWEB_ARGS:+$URWEB_ARGS }-boot -noEmacs -dbms sqlite -db "$TESTDB" -sql "$TESTSQL" "$Name" \
     || { printf 'FAIL [%s]: urweb compile failed\n' "$Name" >&2; exit 1; }
 
 [ -f "$TESTSQL" ] && sqlite3 "$TESTDB" < "$TESTSQL"

@@ -196,16 +196,26 @@ echo ""
 # Test (requires bin/urweb, sqlite3, curl)
 # pool = console gives direct terminal access so output appears in real time
 echo "rule test_cmd"
-echo "  command = sh $srcdir/scripts/run-tests.sh $srcdir $builddir"
+echo "  command = URWEB_ARGS=\"-timing\" sh $srcdir/scripts/run-tests.sh $srcdir $builddir"
 echo "  description = Run tests (demo + 21)"
 echo "  pool = console"
 echo ""
 echo "build test: test_cmd"
 echo ""
 
-# Default target
-cat <<'NINJAEOF3'
-build all: phony $builddir/bin/urweb $builddir/src/c/liburweb.a $builddir/src/c/liburweb_http.a $builddir/src/c/liburweb_cgi.a $builddir/src/c/liburweb_fastcgi.a $builddir/src/c/liburweb_static.a
-
-default all
-NINJAEOF3
+# Out-of-tree build: copy lib to builddir (no symlinks)
+if [ "$builddir" != "$srcdir" ]; then
+  echo "rule copy_lib"
+  echo "  command = mkdir -p $builddir/lib/ur $builddir/lib/js && cp -r $srcdir/lib/ur/* $builddir/lib/ur/ && cp -r $srcdir/lib/js/* $builddir/lib/js/ && touch $builddir/lib/.stamp"
+  echo "  description = Copy lib to build dir (out-of-tree, no symlinks)"
+  echo ""
+  echo "build $builddir/lib/.stamp: copy_lib"
+  echo ""
+  echo "build all: phony $builddir/bin/urweb $builddir/src/c/liburweb.a $builddir/src/c/liburweb_http.a $builddir/src/c/liburweb_cgi.a $builddir/src/c/liburweb_fastcgi.a $builddir/src/c/liburweb_static.a $builddir/lib/.stamp"
+else
+  echo "build all: phony $builddir/bin/urweb $builddir/src/c/liburweb.a $builddir/src/c/liburweb_http.a $builddir/src/c/liburweb_cgi.a $builddir/src/c/liburweb_fastcgi.a $builddir/src/c/liburweb_static.a"
+fi
+echo ""
+echo "default all"
+echo ""
+echo "default all"

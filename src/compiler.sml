@@ -355,11 +355,13 @@ val pathmap = ref (M.insert (M.empty, "", Settings.libUr ()))
 
 fun addPath (k, v) = pathmap := M.insert (!pathmap, k, v)
 
-(* XXX ezyang: this is not right; it probably doesn't work in
- * the case of separate build and src trees *)
 fun enableBoot () =
  (Settings.configBin := OS.Path.joinDirFile {dir = Config.builddir, file = "bin"};
-  Settings.configSrcLib := OS.Path.joinDirFile {dir = Config.builddir, file = "lib"};
+  (* Use srcdir/lib when builddir/lib doesn't exist (out-of-tree builds); avoid symlinks *)
+  Settings.configSrcLib :=
+    (if OS.FileSys.access (OS.Path.joinDirFile {dir = Config.builddir, file = "lib"}, [])
+     then OS.Path.joinDirFile {dir = Config.builddir, file = "lib"}
+     else OS.Path.joinDirFile {dir = Config.srcdir, file = "lib"});
   (* joinDirFile is annoying... (ArcError; it doesn't like
    * slashes in file) *)
   Settings.configLib := Config.builddir ^ "/src/c";
@@ -1615,14 +1617,17 @@ fun compileC {cname, oname, ename, libs, profile, debug, linker, link = link'} =
     let
         val proto = Settings.currentProtocol ()
 
+        (* macOS ld does not support -static; link .a files by path instead *)
+        val staticLibs = !Settings.configLib ^ "/" ^ #linkStatic proto ^ " " ^
+                        !Settings.configLib ^ "/liburweb.a " ^
+                        !Settings.configLibunistringLibs
         val lib = if Settings.getBootLinking () then
-                      !Settings.configLib ^ "/" ^ #linkStatic proto ^ " " ^
-                      !Settings.configLib ^ "/liburweb.a " ^
-                      !Settings.configLibunistringLibs
+                      staticLibs
                   else if Settings.getStaticLinking () then
-                      " -static " ^ !Settings.configLib ^ "/" ^ #linkStatic
-                      proto ^ " " ^ !Settings.configLib ^ "/liburweb.a " ^
-                      !Settings.configLibunistringLibs
+                      if Config.isDarwin <> 0 then
+                          staticLibs
+                      else
+                          " -static " ^ staticLibs
                   else
                       "-L" ^ !Settings.configLib ^ " " ^ #linkDynamic proto ^ " -lurweb"
 

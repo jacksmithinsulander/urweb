@@ -21,13 +21,23 @@ done
 
 BIN=${BIN:-$prefix/bin}
 LIB=${LIB:-$prefix/lib}
+# Compiler lib path: builddir when building from source, else prefix lib (for install)
+[ -z "${COMPILER_LIB+y}" ] && [ -f "$srcdir/lib/ur/basis.urs" ] && COMPILER_LIB="$builddir/src/c"
+COMPILER_LIB=${COMPILER_LIB:-$prefix/lib}
+# Use in-tree lib when building from source (basis.urs exists) and SRCLIB not set
+[ -z "${SRCLIB+y}" ] && [ -f "$srcdir/lib/ur/basis.urs" ] && SRCLIB="$srcdir/lib"
 SRCLIB=${SRCLIB:-$prefix/lib/urweb}
+# Use builddir include when building from source so config.h is found
+[ -z "${INCLUDE+y}" ] && [ -f "$srcdir/lib/ur/basis.urs" ] && INCLUDE="$builddir/include/urweb"
 INCLUDE=${INCLUDE:-$prefix/include/urweb}
 SITELISP=${SITELISP:-$prefix/share/emacs/site-lisp/urweb-mode}
 
 printf 'srcdir:   %s\n' "$srcdir"
 printf 'builddir: %s\n' "$builddir"
 printf 'prefix:   %s\n' "$prefix"
+printf 'srclib:   %s\n' "$SRCLIB"
+printf 'include:  %s\n' "$INCLUDE"
+printf 'lib:      %s\n' "$COMPILER_LIB"
 printf 'CC:       %s\n' "$CC"
 
 # ── Required tools ────────────────────────────────────────────────────────────
@@ -77,6 +87,7 @@ fi
 printf 'Checking libunistring... '
 UNISTRING_INCLUDES=
 UNISTRING_LIBS=-lunistring
+UNISTRING_STATIC=
 for dir in /opt/homebrew/include /usr/local/include /usr/include; do
     if [ -f "$dir/unistr.h" ]; then
         UNISTRING_INCLUDES="-I$dir"
@@ -84,9 +95,12 @@ for dir in /opt/homebrew/include /usr/local/include /usr/include; do
     fi
 done
 for dir in /opt/homebrew/lib /usr/local/lib /usr/lib; do
-    if [ -f "$dir/libunistring.a" ] || \
-       [ -f "$dir/libunistring.dylib" ] || \
-       [ -f "$dir/libunistring.so" ]; then
+    if [ -f "$dir/libunistring.a" ]; then
+        # Prefer static library; use full path on macOS (ld prefers .dylib over .a)
+        UNISTRING_STATIC="$dir/libunistring.a"
+        UNISTRING_LIBS="$dir/libunistring.a"
+        break
+    elif [ -f "$dir/libunistring.dylib" ] || [ -f "$dir/libunistring.so" ]; then
         UNISTRING_LIBS="-L$dir -lunistring"
         break
     fi
@@ -142,6 +156,12 @@ else
     HAVE_PTHREAD_PRIO_INHERIT=0
 fi
 
+# ── Platform ──────────────────────────────────────────────────────────────────
+case "$(uname -s)" in
+    Darwin*) IS_DARWIN=1 ;;
+    *)       IS_DARWIN=0 ;;
+esac
+
 # ── git version ───────────────────────────────────────────────────────────────
 GIT_HASH=$(git -C "$srcdir" log -1 --format='%H' 2>/dev/null || printf '?')
 VERSION="20200209 + $GIT_HASH"
@@ -193,10 +213,12 @@ cat > "$CONFIG_SML" << SMLEOF
 structure Config :> CONFIG = struct
 
 val builddir = "$builddir"
+val srcdir = "$srcdir"
+val isDarwin = $IS_DARWIN
 
 val bin = "$BIN"
 val srclib = "$SRCLIB"
-val lib = "$LIB"
+val lib = "$COMPILER_LIB"
 val includ = "$INCLUDE"
 val sitelisp = "$SITELISP"
 
@@ -214,6 +236,7 @@ val bearssl = "$BEARSSL_LIB_FILE"
 
 val libunistringIncludes = "$UNISTRING_INCLUDES"
 val libunistringLibs = "$UNISTRING_LIBS"
+val libunistringStatic = "$UNISTRING_STATIC"
 
 val versionNumber  = "$VERSION"
 val versionString  = "The Ur/Web compiler, version " ^ versionNumber

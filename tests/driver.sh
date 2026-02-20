@@ -16,7 +16,7 @@ TESTSRV="./${Name}.exe"
 rm -f "$TESTDB" "$TESTSQL" "$TESTPID" "$TESTSRV"
 
 printf '  compiling...' >&2
-"$URWEB" -boot -noEmacs -dbms sqlite -db "$TESTDB" -sql "$TESTSQL" "$Name" \
+"$URWEB" ${URWEB_ARGS:+$URWEB_ARGS }-boot -noEmacs -dbms sqlite -db "$TESTDB" -sql "$TESTSQL" "$Name" \
     || { printf ' FAIL\n' >&2; printf 'FAIL [%s]: urweb compile failed\n' "$Name" >&2; exit 1; }
 printf ' run...' >&2
 
