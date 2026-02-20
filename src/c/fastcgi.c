@@ -22,7 +22,13 @@
 
 #include "fastcgi.h"
 
-#define THREAD_LOCAL __thread
+#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
+#  define THREAD_LOCAL _Thread_local
+#elif defined(__GNUC__) || defined(__clang__)
+#  define THREAD_LOCAL __thread
+#else
+#  error "No thread-local storage support detected"
+#endif
 
 extern uw_app uw_application;
 

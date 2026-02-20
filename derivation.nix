@@ -1,36 +1,32 @@
-{ stdenv, lib, fetchFromGitHub, file, openssl, mlton
+{ stdenv, lib, mlton
 , libmysqlclient, postgresql, sqlite, gcc
-, automake, autoconf, libtool, icu67
+, libunistring, samurai
 }:
 
 stdenv.mkDerivation rec {
   name = "urweb-${version}";
-  version = "2018-06-22";
-  
+  version = "20200209";
+
   src = ./.;
 
-  buildInputs = [ openssl mlton libmysqlclient postgresql sqlite automake autoconf libtool icu67.dev openssl.dev];
-
-  configureFlags = ["--with-openssl=${openssl.dev}"];
+  buildInputs = [ mlton libmysqlclient postgresql sqlite libunistring samurai ];
 
   preConfigure = ''
-    ./autogen.sh
     export PGHEADER="${postgresql}/include/libpq-fe.h";
     export MSHEADER="${libmysqlclient.dev}/include/mysql/mysql.h";
     export SQHEADER="${sqlite.dev}/include/sqlite3.h";
-    export ICU_LIBS="-L${icu67.out}/lib";
-    export ICU_INCLUDES="-I${icu67.dev}/include";
+    export LIBUNISTRING_INCLUDES="-I${libunistring.dev}/include";
+    export LIBUNISTRING_LIBS="-L${libunistring.out}/lib -lunistring";
     export CC="${gcc}/bin/gcc";
-    export CCARGS="-I$out/include \
-                   -I${icu67.dev}/include \
-                   -L${openssl.out}/lib \
-                   -L${libmysqlclient}/lib \
-                   -L${postgresql.lib}/lib \
-                   -L${sqlite.out}/lib \
-                   -L${icu67.out}/lib";
   '';
 
-  # Be sure to keep the statically linked libraries
+  configureFlags = [ "--prefix=$out" ];
+
+  buildPhase = "samurai";
+  installPhase = "samurai install";
+  checkPhase = "samurai test";
+
+  # BearSSL is vendored in vendor/BearSSL
   dontDisableStatic = true;
 
   meta = {

@@ -37,8 +37,8 @@ signature SETTINGS = sig
     val configSrcLib : string ref
     val configInclude : string ref
     val configSitelisp : string ref
-    val configIcuIncludes : string ref
-    val configIcuLibs : string ref
+    val configLibunistringIncludes : string ref
+    val configLibunistringLibs : string ref
 
     val libUr : unit -> string
     val libC : unit -> string

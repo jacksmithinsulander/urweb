@@ -32,13 +32,22 @@ wget http://localhost:8080/Hello/main -O -
 
 # Simple Installation
 
-The normal UNIX-style build and installation procedure works (where the `make` program needs to be GNU Make, and where `./autogen.sh` must be run first only if starting from a Git checkout rather than a release tarball).
+Build with the Ninja-compatible build system (samurai or ninja). Dependencies: MLton, BearSSL (vendored), libunistring. OpenSSL is not used.
 
 ```sh
+# If cloning from git, get submodules (BearSSL, samurai, 9front):
+git clone --recurse-submodules <repo-url>    # or: git submodule update --init
+
 ./configure
-make
-sudo make install
+samurai          # or: ninja
+samurai test     # run demo + all tests in tests/ (requires sqlite3, curl)
+sudo samurai install   # or: ninja install
+sudo samurai uninstall # or: ninja uninstall  (to remove)
 ```
+
+Install samurai if needed: `brew install samurai` (macOS) or your package manager. Alternatively, run `vendor/fetch-vendors.sh` then `make -C vendor/samurai` and use `./vendor/samurai/samu` instead of `samurai`.
+
+**Note:** The first `samurai test` (or any build that compiles the compiler) uses MLton and may take 2–3 minutes; progress is printed so it is clear the build has not stalled.
 
 However, some popular platforms have standard packages for Ur/Web, making installation and uninstallation even easier.
 

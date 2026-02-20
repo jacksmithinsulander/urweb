@@ -1,0 +1,9 @@
+[submodule "vendor/samurai"]
+	path = vendor/samurai
+	url = https://github.com/michaelforney/samurai.git
+[submodule "vendor/9front"]
+	path = vendor/9front
+	url = git://git.9front.org/plan9front/9front
+[submodule "vendor/BearSSL"]
+	path = vendor/BearSSL
+	url = https://www.bearssl.org/git/BearSSL

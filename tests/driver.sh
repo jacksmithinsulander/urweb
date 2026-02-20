@@ -1,29 +1,38 @@
-#!/bin/bash
+#!/bin/sh
+# driver.sh -- compile an Ur/Web test app, run its shell test, then clean up.
+# Usage: ./driver.sh <testname> [PORT]
+set -e
 
-if [[ $# -eq 0 ]] ; then
-    echo 'Supply at least one argument'
-    exit 1
-fi
+Name=$1
+PORT=${2:-8080}
+cd "$(dirname "$0")"
 
-TESTDB=/tmp/$1.db
-TESTSQL=/tmp/$1.sql
-TESTPID=/tmp/$1.pid
-TESTSRV=./$1.exe
+URWEB="${URWEB:-../bin/urweb}"
+TESTDB="/tmp/uw_${Name}.db"
+TESTSQL="/tmp/uw_${Name}.sql"
+TESTPID="/tmp/uw_${Name}.pid"
+TESTSRV="./${Name}.exe"
 
-rm -f $TESTDB $TESTSQL $TESTPID $TESTSRV
-../bin/urweb -debug -boot -noEmacs -dbms sqlite -db $TESTDB -sql $TESTSQL "$1" || exit 1
+rm -f "$TESTDB" "$TESTSQL" "$TESTPID" "$TESTSRV"
 
-if [ -e $TESTSQL ]
-then
-    sqlite3 $TESTDB < $TESTSQL
-fi
+"$URWEB" -boot -noEmacs -dbms sqlite -db "$TESTDB" -sql "$TESTSQL" "$Name" \
+    || { printf 'FAIL [%s]: urweb compile failed\n' "$Name" >&2; exit 1; }
 
-$TESTSRV -q -a 127.0.0.1 &
-echo $! >> $TESTPID
+[ -f "$TESTSQL" ] && sqlite3 "$TESTDB" < "$TESTSQL"
+
+"$TESTSRV" -q -a 127.0.0.1 -p "$PORT" &
+printf '%s\n' "$!" > "$TESTPID"
 sleep 1
-if [[ $# -eq 1 ]] ; then
-    python3 -m unittest $1.py
-else
-    python3 -m unittest $1.Suite.$2
-fi
-kill `cat $TESTPID`
+
+cleanup() {
+    kill "$(cat "$TESTPID" 2>/dev/null)" 2>/dev/null || true
+    rm -f "$TESTPID" "$TESTSRV"
+}
+trap cleanup EXIT
+
+TESTNAME=$Name
+export PORT TESTNAME
+. ./lib.sh
+. ./"${Name}.sh"
+
+printf 'PASS: %s\n' "$Name"

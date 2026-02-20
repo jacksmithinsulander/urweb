@@ -6,6 +6,7 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <time.h>
 #include <unistd.h>
 #include <signal.h>
 
@@ -80,7 +81,8 @@ static void *ticker(void *data) {
   (void)data;
 
   while (1) {
-    usleep(100000);
+    struct timespec ts = { 0, 100000000L }; /* 100 ms */
+    nanosleep(&ts, NULL);
     ++uw_time;
   }
 

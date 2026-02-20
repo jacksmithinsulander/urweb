@@ -1,10 +1,10 @@
 # Distributed under the terms of the BSD3 license
 
-# This file needs to be renamed to something like "urweb-20110917.ebuild", to reflect the Ur/Web version to use.
+# This file needs to be renamed to something like "urweb-20200209.ebuild", to reflect the Ur/Web version to use.
 
 inherit eutils
 
-EAPI=3
+EAPI=8
 
 DESCRIPTION="A domain-specific functional programming language for modern web applications"
 HOMEPAGE="http://www.impredicative.com/ur/"
@@ -16,8 +16,11 @@ KEYWORDS="~amd64 ~x86"
 IUSE=""
 
 DEPEND="dev-lang/mlton
-	dev-libs/openssl"
+	dev-libs/libunistring
+	dev-build/samurai"
 RDEPEND="${DEPEND}"
+
+# BearSSL is vendored; no OpenSSL or ICU dependency
 
 S="${WORKDIR}/urweb"
 
@@ -26,14 +29,14 @@ src_unpack() {
 }
 
 src_configure() {
-	econf || die
+	./configure --prefix=/usr
 }
 
 src_compile() {
-	emake || die
+	samurai
 }
 
 src_install() {
-	emake DESTDIR=${D} install || die
-	dodoc CHANGELOG || die
+	samurai install DESTDIR=${D}
+	dodoc CHANGELOG
 }

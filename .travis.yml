@@ -8,23 +8,12 @@ compiler:
   - clang
   - gcc
 
-# when https://github.com/travis-ci/apt-package-whitelist/issues/792 is closed, use the container-based infrastructure
-#sudo: false
-#addons:
-#  apt:
-#    packages:
-#    - mlton
-
 before_install:
   - export CONFIGURE_ARGS=""
+  - git submodule update --init --recursive
   - if command -v apt-get &>/dev/null; then sudo apt-get update -qq; fi
-  - if command -v apt-get &>/dev/null; then sudo apt-get install -y mlton libicu-dev; fi
+  - if command -v apt-get &>/dev/null; then sudo apt-get install -y mlton libunistring-dev samurai; fi
   - if command -v brew &>/dev/null; then brew update; fi
-  - if command -v brew &>/dev/null; then brew upgrade libtool; fi
-  - if command -v brew &>/dev/null; then brew install openssl mlton icu4c; fi
-  - if command -v brew &>/dev/null; then export ICU_INCLUDES=-I"`brew --prefix icu4c`/include"; fi
-  - if command -v brew &>/dev/null; then export ICU_LIBS=-L"`brew --prefix icu4c`/lib"; fi
-  - if command -v brew &>/dev/null; then export CONFIGURE_ARGS="--with-openssl=/usr/local/opt/openssl"; fi
+  - if command -v brew &>/dev/null; then brew install mlton libunistring samurai; fi
 
-
-script: ./autogen.sh && ./configure $CONFIGURE_ARGS && make && make test
+script: ./configure $CONFIGURE_ARGS && samurai && samurai test
