@@ -1,5 +1,7 @@
 signature CONFIG = sig
     val builddir : string
+    val srcdir : string
+    val isDarwin : int
 
     val bin : string
     val srclib : string
@@ -23,4 +25,6 @@ signature CONFIG = sig
 
     val libunistringIncludes : string
     val libunistringLibs : string
+    (* Empty on non-macOS or when static lib unavailable; otherwise full path to libunistring.a *)
+    val libunistringStatic : string
 end

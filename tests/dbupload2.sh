@@ -15,7 +15,7 @@ PORT=8083
 URWEB="${URWEB:-../bin/urweb}"
 rm -f "$TESTDB" "$TESTSQL" "$TESTPID" "$TESTSRV"
 
-"$URWEB" -boot -noEmacs -dbms sqlite -db "$TESTDB" -sql "$TESTSQL" "$Name" \
+"$URWEB" ${URWEB_ARGS:+$URWEB_ARGS }-boot -noEmacs -dbms sqlite -db "$TESTDB" -sql "$TESTSQL" "$Name" \
   || { printf 'FAIL [%s]: urweb compile failed\n' "$Name" >&2; exit 1; }
 [ -f "$TESTSQL" ] && sqlite3 "$TESTDB" < "$TESTSQL"
 
