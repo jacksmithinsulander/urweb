@@ -223,6 +223,32 @@ fun runPrintCoreFuncs (tr : ('src, Core.file) transform) input =
                     | Core.DValRec xts => app (fn (x, _, t, _, _) => Print.preface(x, CorePrint.p_con CoreEnv.empty t)) xts
                     | _ => ()) file))
 
+(* Parse pre-wrapped signature content ("sig\n" ^ body). First string is filename for errors. *)
+fun parseUrsFromContent (filename, content) =
+    let
+        val fname = OS.FileSys.tmpName ()
+        val outf = TextIO.openOut fname
+        val () = TextIO.output (outf, content)
+        val () = TextIO.closeOut outf
+        val () = (ErrorMsg.resetErrors ();
+                  ErrorMsg.resetPositioning fname;
+                  Lex.UserDeclarations.initialize ())
+        val file = FileIO.txtOpenIn fname
+        fun get _ = TextIO.input file
+        fun parseerror (s, p1, p2) = ErrorMsg.errorAt' (p1, p2) s
+        val lexer = LrParser.Stream.streamify (Lex.makeLexer get)
+        val (absyn, _) = UrwebP.parse (30, lexer, parseerror, ())
+        val () = TextIO.closeIn file
+        val () = OS.FileSys.remove fname handle OS.SysErr _ => ()
+    in
+        if ErrorMsg.anyErrors () then NONE
+        else
+            case absyn of
+                [(Source.DSgn ("?", (Source.SgnConst sgis, _)), _)] => SOME sgis
+              | _ => NONE
+    end
+    handle LrParser.ParseError => NONE
+
 val parseUrs =
     {func = fn filename => let
                    val fname = OS.FileSys.tmpName ()

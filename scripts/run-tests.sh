@@ -75,13 +75,17 @@ done
 
 # Standalone tests (own compile + server lifecycle)
 echo ""
-echo "=== Standalone tests (3) ==="
-echo "[$(_ts)] [1/3] cffi"
+echo "=== Standalone tests (5) ==="
+echo "[$(_ts)] [1/5] cffi"
 (cd "$testsdir" && URWEB="$URWEB" ./cffi.sh) || exit 1
-echo "[$(_ts)] [2/3] endpoints"
+echo "[$(_ts)] [2/5] endpoints"
 (cd "$testsdir" && URWEB="$URWEB" ./endpoints.sh) || exit 1
-echo "[$(_ts)] [3/3] dbupload2"
+echo "[$(_ts)] [3/5] dbupload2"
 (cd "$testsdir" && URWEB="$URWEB" ./dbupload2.sh) || exit 1
+echo "[$(_ts)] [4/5] new"
+(cd "$testsdir" && URWEB="$URWEB" ./new.sh) || exit 1
+echo "[$(_ts)] [5/5] install"
+(cd "$testsdir" && URWEB="$URWEB" ./install.sh) || exit 1
 
 echo ""
 echo "PASS: all"

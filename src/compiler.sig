@@ -95,6 +95,8 @@ signature COMPILER = sig
 
     val parseUr : (string, Source.file) phase
     val parseUrs : (string, Source.sgn_item list) phase
+    (* Parse pre-wrapped signature content ("sig\n" ^ body); for use by formatter *)
+    val parseUrsFromContent : string * string -> Source.sgn_item list option
     val parseUrp : (string, job) phase
     val parseUrp' : (string, {Job : job, Libs : string list}) phase
 
