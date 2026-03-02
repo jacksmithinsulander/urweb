@@ -516,6 +516,18 @@ fun cifyExp (eAll as (e, loc), sm) =
           | L.ESpawn _ => fail "Thread spawn in server-side code"
     end
 
+(* Check whether a Mono type contains TSignal anywhere.
+   Signal-typed declarations are client-only and should be silently
+   dropped rather than emitting "TSignal remains" errors. *)
+fun typHasSignal (t, _) =
+    case t of
+        L.TSignal _ => true
+      | L.TFun (dom, ran) => typHasSignal dom orelse typHasSignal ran
+      | L.TRecord xts => List.exists (fn (_, t) => typHasSignal t) xts
+      | L.TList t => typHasSignal t
+      | L.TOption t => typHasSignal t
+      | _ => false
+
 fun cifyDecl ((d, loc), sm) =
     case d of
         L.DDatatype dts =>
@@ -541,8 +553,23 @@ fun cifyDecl ((d, loc), sm) =
             (SOME (L'.DDatatype dts, loc), NONE, sm)
         end
 
-      | L.DVal (x, n, t, e, _) =>
+      | L.DVal (x, n, t, e, s) =>
+        if typHasSignal t then
+            (* Signal-typed declarations are client-only; silently drop them
+               rather than emitting spurious "TSignal remains" errors. *)
+            (NONE, NONE, sm)
+        else
         let
+            (* For client-side script declarations, use a stub body to avoid
+               erroring on EServerCall/EFfi-client-only nodes, while still
+               emitting the declaration so ENamed references resolve in CjrPrint. *)
+            fun stubBody (mt : L.typ) =
+                case #1 mt of
+                    L.TFun (dom, ran) =>
+                    (L.EAbs ("_", dom, ran, stubBody ran), loc)
+                  | _ => (L.ERecord [], loc)
+            val e = if s = "<script>" then stubBody t else e
+
             val (t, sm) = cifyTyp (t, sm)
 
             val (d, sm) = case #1 t of
@@ -583,9 +610,22 @@ fun cifyDecl ((d, loc), sm) =
         end
       | L.DValRec vis =>
         let
+            (* Drop signal-typed members (client-only); keep only server-side members. *)
+            val vis = List.filter (fn (_, _, t, _, _) => not (typHasSignal t)) vis
+        in
+        if null vis then (NONE, NONE, sm)
+        else
+        let
+            fun stubBody (mt : L.typ) =
+                case #1 mt of
+                    L.TFun (dom, ran) =>
+                    (L.EAbs ("_", dom, ran, stubBody ran), loc)
+                  | _ => (L.ERecord [], loc)
+
             val (vis, sm) = ListUtil.foldlMap
-                            (fn ((x, n, t, e, _), sm) =>
+                            (fn ((x, n, t, e, s), sm) =>
                                 let
+                                    val e = if s = "<script>" then stubBody t else e
                                     val (t, sm) = cifyTyp (t, sm)
 
                                     fun unravel (tAll as (t, _), eAll as (e, _)) =
@@ -610,6 +650,7 @@ fun cifyDecl ((d, loc), sm) =
         in
             (SOME (L'.DFunRec vis, loc), NONE, sm)
         end
+        end (* outer let vis *)
 
       | L.DExport (ek, s, n, ts, t, b) =>
         let

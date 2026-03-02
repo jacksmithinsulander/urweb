@@ -29,16 +29,20 @@ trap cleanup EXIT
 TESTNAME=$Name
 export PORT TESTNAME
 
-# Submit form with file upload: GET page, extract action + __uwsig, POST with file
-_full="http://localhost:$PORT/Dbupload2/main"
+# Submit form with file upload: GET page, extract action + Sig (if present), POST with file
+# Note: .urp has "rewrite all Dbupload2/*" so server serves at /main not /Dbupload2/main
+_full="http://localhost:$PORT/main"
 _page=$(curl -fs "$_full")
 _action=$(printf '%s' "$_page" | sed -n 's/.*<form[^>]* action="\([^"]*\)".*/\1/p' | head -1)
-_sig=$(printf '%s' "$_page" | sed -n 's/.*name="__uwsig"[^>]* value="\([^"]*\)".*/\1/p' | head -1)
+_sig=$(printf '%s' "$_page" | sed -n 's/.*name="Sig" value="\([^"]*\)".*/\1/p' | head -1)
 [ -n "$_action" ] || fail "dbupload2: no form action found"
-[ -n "$_sig" ] || fail "dbupload2: no __uwsig found"
 
 touch /tmp/empty
-_result=$(curl -fs -F "__uwsig=$_sig" -F "File=@/tmp/empty" -F "Param=test" "http://localhost:$PORT$_action")
+if [ -n "$_sig" ]; then
+    _result=$(curl -fs -F "Sig=$_sig" -F "File=@/tmp/empty" -F "Param=test" "http://localhost:$PORT$_action")
+else
+    _result=$(curl -fs -F "File=@/tmp/empty" -F "Param=test" "http://localhost:$PORT$_action")
+fi
 printf '%s' "$_result" | grep -qE '<form|</body>' || fail "upload response should contain form or body"
 # After upload, main() shows the form and any images; we inserted one row so img should appear
 printf '%s' "$_result" | grep -qE '<img|<form' || fail "upload response should show form and uploaded image"

@@ -1,6 +1,6 @@
 #include <stdio.h>
 
-#include "urweb/urweb.h"
+#include "urweb.h"
 
 typedef uw_Basis_string uw_Test_t;
 

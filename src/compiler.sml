@@ -93,19 +93,29 @@ val partialBuild = ref (NONE: string option)
 
 val doDumpSource = ref (fn () => ())
 
+(* When URWEB_TRACE_PHASES is set, append each phase name to that file (for pinpointing hangs). *)
+fun tracePhase name =
+    case OS.Process.getEnv "URWEB_TRACE_PHASES" of
+        NONE => ()
+      | SOME f =>
+        let val out = TextIO.openAppend f
+        in TextIO.output (out, name ^ "\n"); TextIO.closeOut out
+        end
+
 val stop = ref (NONE : string option)
 fun setStop s = stop := SOME s
 
 fun transform (ph : ('src, 'dst) phase) name = {
     func = fn input => let
+                  val () = tracePhase name
                   val () = if !debug then
-                               print ("Starting " ^ name ^ "....\n")
+                               (print ("Starting " ^ name ^ "....\n"); TextIO.flushOut TextIO.stdOut)
                            else
                                ()
                   val v = #func ph input
               in
                   if !debug then
-                      print ("Finished " ^ name ^ ".\n")
+                      (print ("Finished " ^ name ^ ".\n"); TextIO.flushOut TextIO.stdOut)
                   else
                       ();
                   if ErrorMsg.anyErrors () then

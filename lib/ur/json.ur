@@ -503,14 +503,15 @@ fun json_list [a] (j : json a) : json (list a) =
                 else
                     error <xml>YAML list contains weird delimiter.</xml>
             end
+        fun fromYaml b i s = if String.isPrefix {Full = s, Prefix = "[]"} then
+                                ([], String.suffix s 2)
+                            else
+                                fromY b i s
     in
         {ToJson = toJ,
          FromJson = fromJ,
          ToYaml = toY,
-         FromYaml = fn b i s => if String.isPrefix {Full = s, Prefix = "[]"} then
-                                    ([], String.suffix s 2)
-                                else
-                                    fromY b i s}
+         FromYaml = fromYaml}
     end
 
 fun skipOne s =

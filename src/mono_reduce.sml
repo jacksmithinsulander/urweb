@@ -752,10 +752,10 @@ fun reduce' (file : file) =
                              (_, _, SOME e') => #1 e'
                            | _ => e)
                       | ENamed n =>
-                        (case E.lookupENamed env n of
-                             (_, _, SOME e', _) => ((*Print.prefaces "Switch" [("n", Print.PD.string (Int.toString n)),
-                                                                               ("e'", MonoPrint.p_exp env e')];*)
-                                                    #1 e')
+                        (case SOME (E.lookupENamed env n) handle E.UnboundNamed _ => NONE of
+                             SOME (_, _, SOME e', _) => ((*Print.prefaces "Switch" [("n", Print.PD.string (Int.toString n)),
+                                                                                   ("e'", MonoPrint.p_exp env e')];*)
+                                                         #1 e')
                            | _ => e)
 
                       | EApp ((EAbs (x, t, _, e1), loc), e2) =>

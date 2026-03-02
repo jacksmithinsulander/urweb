@@ -196,11 +196,20 @@ echo ""
 # Test (requires bin/urweb, sqlite3, curl)
 # pool = console gives direct terminal access so output appears in real time
 echo "rule test_cmd"
-echo "  command = URWEB_ARGS=\"-timing\" sh $srcdir/scripts/run-tests.sh $srcdir $builddir"
+echo "  command = sh $srcdir/scripts/run-tests.sh $srcdir $builddir"
 echo "  description = Run tests (demo + 21)"
 echo "  pool = console"
 echo ""
 echo "build test: test_cmd"
+echo ""
+
+# Minimal test (demo/hello only, no full demo, ~15s)
+echo "rule test_minimal_cmd"
+echo "  command = sh $srcdir/scripts/run-tests-minimal.sh $srcdir $builddir"
+echo "  description = Run minimal test (hello)"
+echo "  pool = console"
+echo ""
+echo "build test-minimal: test_minimal_cmd"
 echo ""
 
 # Out-of-tree build: copy lib to builddir (no symlinks)

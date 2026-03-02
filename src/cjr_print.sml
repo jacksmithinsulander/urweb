@@ -1733,37 +1733,45 @@ and p_exp' par tail env (e, loc) =
                     getSig (t, [])
                 end
 
+            fun simpleApp () =
+                parenIf par (box [p_exp' true false env f,
+                                  string "(ctx,",
+                                  space,
+                                  p_list_sep (box [string ",", space]) (p_exp' false false env) args,
+                                  string ")"])
+
             fun default () =
                 case (#1 f, args) of
                     (ENamed n, _ :: _ :: _) =>
-                    let
-                        val (args', ret) = getSig n
-                        val args = ListPair.zip (args, args')
-                    in
-                        parenIf par (box [string "({",
-                                          newline,
-                                          p_list_sepi newline
-                                                      (fn i => fn (e, t) =>
-                                                                  box [p_typ env t,
-                                                                       space,
-                                                                       string ("arg" ^ Int.toString i),
-                                                                       space,
-                                                                       string "=",
-                                                                       space,
-                                                                       p_exp' false false env e,
-                                                                       string ";"])
-                                                      args,
-                                          newline,
-                                          p_exp' false false env f,
-                                          string "(ctx,",
-                                          space,
-                                          p_list_sepi (box [string ",", space])
-                                                      (fn i => fn _ =>
-                                                                  string ("arg" ^ Int.toString i)) args,
-                                          string ");",
-                                          newline,
-                                          string "})"])
-                    end
+                    (let
+                         val (args', ret) = getSig n
+                         val args = ListPair.zip (args, args')
+                     in
+                         parenIf par (box [string "({",
+                                           newline,
+                                           p_list_sepi newline
+                                                       (fn i => fn (e, t) =>
+                                                                   box [p_typ env t,
+                                                                        space,
+                                                                        string ("arg" ^ Int.toString i),
+                                                                        space,
+                                                                        string "=",
+                                                                        space,
+                                                                        p_exp' false false env e,
+                                                                        string ";"])
+                                                       args,
+                                           newline,
+                                           p_exp' false false env f,
+                                           string "(ctx,",
+                                           space,
+                                           p_list_sepi (box [string ",", space])
+                                                       (fn i => fn _ =>
+                                                                   string ("arg" ^ Int.toString i)) args,
+                                           string ");",
+                                           newline,
+                                           string "})"])
+                     end
+                     handle E.UnboundNamed _ => simpleApp ())
                   | _ =>
                     parenIf par (box [p_exp' true false env f,
                                       string "(ctx,",
@@ -2649,6 +2657,21 @@ fun sigName fields =
             "Sig"
     end
 
+(* Emit just a forward declaration (prototype) for a function. *)
+fun p_proto env (fx, n, args, ran) =
+    box [string "static",
+         space,
+         p_typ env ran,
+         space,
+         string ("__uwn_" ^ ident fx ^ "_" ^ Int.toString n),
+         string "(uw_context",
+         if null args then box []
+         else box [string ",",
+                   space,
+                   p_list_sep (box [string ",", space])
+                              (fn (_, dom) => p_typ env dom) args],
+         string ");"]
+
 fun p_file env (ds, ps) =
     let
         val () = (clearUrlHandlers ();
@@ -2675,9 +2698,13 @@ fun p_file env (ds, ps) =
 
         val ds = (DDatatype enums, ErrorMsg.dummySpan) :: ds
 
+        (* Pre-build full env so p_decl has access to all named declarations,
+           avoiding UnboundNamed errors from forward references. *)
+        val full_env = foldl (fn (d, env) => E.declBinds env d) env ds
+
         val (pds, env) = ListUtil.foldlMap (fn (d, env) =>
                                                let
-                                                   val d' = p_decl env d
+                                                   val d' = p_decl full_env d
                                                    val hs = latestUrlHandlers ()
                                                    val (protos, defs) = ListPair.unzip hs
                                                in
@@ -2686,17 +2713,51 @@ fun p_file env (ds, ps) =
                                                end)
                              env ds
 
+        (* Global forward declarations for all named functions.
+           Emitted after struct definitions to handle cross-group forward references
+           (e.g. function in DFunRec group A calling a function in later group B). *)
+        (* Partition pds into struct-like declarations and function-like declarations.
+           All struct definitions must be emitted before the global function protos
+           to avoid -Wvisibility: DStruct entries can appear interspersed with DFun
+           entries in ds, so a simple prefix count is incorrect. *)
+        val (struct_pds, func_pds) =
+            let val pairs = ListPair.zip (ds, pds)
+                val structs = List.mapPartial (fn ((d, _), pd) =>
+                                                   case d of
+                                                       DDatatype _ => SOME pd
+                                                     | DDatatypeForward _ => SOME pd
+                                                     | DStruct _ => SOME pd
+                                                     | _ => NONE) pairs
+                val funcs = List.mapPartial (fn ((d, _), pd) =>
+                                                 case d of
+                                                     DDatatype _ => NONE
+                                                   | DDatatypeForward _ => NONE
+                                                   | DStruct _ => NONE
+                                                   | _ => SOME pd) pairs
+            in (structs, funcs) end
+        val global_protos =
+            List.concat (List.map (fn (d, _) =>
+                                      case d of
+                                          DFun vi =>
+                                          let val (fx, n, args, ran, _) = vi
+                                          in [p_proto full_env (fx, n, args, ran)] end
+                                        | DFunRec vis =>
+                                          List.map (fn (fx, n, args, ran, _) =>
+                                                       p_proto full_env (fx, n, args, ran)) vis
+                                        | _ => [])
+                             ds)
+
         fun flatFields always (t : typ) =
             case #1 t of
                 TRecord i =>
                 let
-                    val xts = E.lookupStruct env i
+                    val xts = E.lookupStruct full_env i
                 in
                     SOME ((always @ map #1 xts) :: List.concat (List.mapPartial (flatFields [] o #2) xts))
                 end
               | TList (_, i) =>
                 let
-                    val ts = E.lookupStruct env i
+                    val ts = E.lookupStruct full_env i
                 in
                     case ts of
                         [("1", t'), ("2", _)] => flatFields [] t'
@@ -2710,7 +2771,7 @@ fun p_file env (ds, ps) =
                                    (case List.nth (ts, length ts - 2) of
                                         (TRecord i, loc) =>
                                         let
-                                            val xts = E.lookupStruct env i
+                                            val xts = E.lookupStruct full_env i
                                             val extra = case eff of
                                                             ReadCookieWrite => [sigName xts]
                                                           | _ => []
@@ -3493,7 +3554,11 @@ fun p_file env (ds, ps) =
              end,
              newline,
 
-             p_list_sep newline (fn x => x) pds,
+             p_list_sep newline (fn x => x) struct_pds,
+             newline,
+             if null global_protos then box []
+             else box [p_list_sep newline (fn x => x) global_protos, newline],
+             p_list_sep newline (fn x => x) func_pds,
              newline,
              newline,
              string "static int uw_input_num(const char *name) {",
