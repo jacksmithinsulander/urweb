@@ -1,11 +1,13 @@
 /** Click goofy element (name=beppo, data-role=excellence), expect alert */
 module.exports = async (page, baseUrl) => {
-  await page.goto(baseUrl + '/AttrMangle/main');
-  const dlg = page.waitForEvent('dialog');
+  await page.goto(baseUrl + '/main');
+  let dialogMsg = null;
+  page.once('dialog', async dialog => {
+    dialogMsg = dialog.message();
+    await dialog.accept();
+  });
   await page.click('[name="beppo"][data-role="excellence"]');
-  const alert = await dlg;
-  if (alert.message() !== "You clicked it!  That's some fancy shooting!") {
-    throw new Error(`Expected "You clicked it!...", got: ${alert.message()}`);
+  if (dialogMsg !== "You clicked it!  That's some fancy shooting!") {
+    throw new Error(`Expected "You clicked it!  That's some fancy shooting!", got: ${dialogMsg}`);
   }
-  await alert.accept();
 };

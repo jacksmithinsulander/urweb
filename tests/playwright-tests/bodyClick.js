@@ -3,19 +3,23 @@ module.exports = async (page, baseUrl) => {
   await page.goto(baseUrl + '/BodyClick/main');
   const body = page.locator('body');
 
-  const d1 = page.waitForEvent('dialog');
+  let dialogMsg1 = null;
+  page.once('dialog', async dialog => {
+    dialogMsg1 = dialog.message();
+    await dialog.accept();
+  });
   await body.click();
-  const dialog1 = await d1;
-  if (dialog1.message() !== 'You clicked the body.') {
-    throw new Error(`Expected "You clicked the body.", got: ${dialog1.message()}`);
+  if (dialogMsg1 !== 'You clicked the body.') {
+    throw new Error(`Expected "You clicked the body.", got: ${dialogMsg1}`);
   }
-  await dialog1.accept();
 
-  const d2 = page.waitForEvent('dialog');
+  let dialogMsg2 = null;
+  page.once('dialog', async dialog => {
+    dialogMsg2 = dialog.message();
+    await dialog.accept();
+  });
   await body.press('h');
-  const dialog2 = await d2;
-  if (dialog2.message() !== 'Key') {
-    throw new Error(`Expected "Key", got: ${dialog2.message()}`);
+  if (dialogMsg2 !== 'Key') {
+    throw new Error(`Expected "Key", got: ${dialogMsg2}`);
   }
-  await dialog2.accept();
 };

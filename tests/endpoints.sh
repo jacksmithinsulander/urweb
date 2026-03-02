@@ -28,7 +28,7 @@ if command -v jq >/dev/null 2>&1; then
     # Parse endpoints JSON with jq
     jq -r '.endpoints[] | "\(.method) \(.url)"' "$TESTENDPOINTS" \
     | while IFS=' ' read -r method url; do
-        full="$PREFIX/$url"
+        case "$url" in /*) full="$PREFIX$url" ;; *) full="$PREFIX/$url" ;; esac
         case $method in
             GET)
                 curl -fs "$full" >/dev/null \
@@ -51,7 +51,7 @@ else
         }
     ' "$TESTENDPOINTS" \
     | while IFS=' ' read -r method url; do
-        full="$PREFIX/$url"
+        case "$url" in /*) full="$PREFIX$url" ;; *) full="$PREFIX/$url" ;; esac
         case $method in
             GET)
                 curl -fs "$full" >/dev/null \

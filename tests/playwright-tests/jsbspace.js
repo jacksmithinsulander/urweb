@@ -1,11 +1,13 @@
-/** Click button, alert "Some \btext" (backspace char) */
+/** Click button, alert "Some \btext" (literal backslash-b, not backspace) */
 module.exports = async (page, baseUrl) => {
   await page.goto(baseUrl + '/Jsbspace/main');
-  const dlg = page.waitForEvent('dialog');
+  let dialogMsg = null;
+  page.once('dialog', async dialog => {
+    dialogMsg = dialog.message();
+    await dialog.accept();
+  });
   await page.click('xpath=/html/body/button');
-  const alert = await dlg;
-  if (alert.message() !== 'Some \btext') {
-    throw new Error(`Expected alert "Some \\btext", got: ${JSON.stringify(alert.message())}`);
+  if (dialogMsg !== 'Some \\btext') {
+    throw new Error(`Expected alert "Some \\\\btext", got: ${JSON.stringify(dialogMsg)}`);
   }
-  await alert.accept();
 };

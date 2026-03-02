@@ -19,7 +19,7 @@ if [ ! -f "$URWEB" ]; then
     echo "[$(_ts)] urweb compiler not found, building..."
     (cd "$builddir" && (samu bin/urweb 2>/dev/null || ninja bin/urweb)) || { echo "Failed to build urweb"; exit 1; }
   else
-    echo "urweb compiler not found at $URWEB and no build.ninja to build it" >&2
+    echo "FAIL: urweb compiler not found at $URWEB and no build.ninja to build it" >&2
     exit 1
   fi
 fi
@@ -29,21 +29,25 @@ echo ""
 echo "=== Demo test ==="
 rm -f "$TESTDB"
 echo "[$(_ts)] Building demo app (this may take a few minutes)..."
+echo "  (output logged to $builddir/demo-build.log; if it hangs, inspect that file for last phase)"
 ( while sleep 20; do echo "  [$(_ts)] Still building demo app..."; done ) &
 _demo_heartbeat=$!
-$URWEB $URWEB_ARGS -boot -noEmacs -dbms sqlite -db "$TESTDB" -demo /Demo demo
-_exit=$?
+( $URWEB $URWEB_ARGS -boot -noEmacs -dbms sqlite -db "$TESTDB" -demo /Demo "$srcdir/demo"
+  echo $? > "$builddir/.demo_exit"
+) 2>&1 | tee "$builddir/demo-build.log"
+_exit=$(cat "$builddir/.demo_exit" 2>/dev/null || echo 1)
+rm -f "$builddir/.demo_exit"
 kill $_demo_heartbeat 2>/dev/null || true
 wait $_demo_heartbeat 2>/dev/null || true
-[ $_exit -eq 0 ] || exit 1
+[ $_exit -eq 0 ] || { echo "FAIL: demo - build failed"; exit 1; }
 echo "[$(_ts)] Demo build done. Starting demo server..."
 sqlite3 "$TESTDB" < "$srcdir/demo/demo.sql"
-demo/demo.exe -q -a 127.0.0.1 & echo $! > "$TESTPID"
+"$srcdir/demo/demo.exe" -q -a 127.0.0.1 & echo $! > "$TESTPID"
 sleep 2
-curl -s 'http://localhost:8080/Demo/Hello/main' | diff "$srcdir/tests/hello.html" - || { kill $(cat "$TESTPID") 2>/dev/null; echo "Test Hello failed"; exit 1; }
-curl -s 'http://localhost:8080/Demo/Crud1/create?A=1&B=2&C=3&D=4' | diff "$srcdir/tests/crud1.html" - || { kill $(cat "$TESTPID") 2>/dev/null; echo "Test Crud1 failed"; exit 1; }
+curl -s 'http://localhost:8080/Demo/Hello/main' | diff "$srcdir/tests/hello.html" - || { kill $(cat "$TESTPID") 2>/dev/null; echo "FAIL: demo - Hello response mismatch"; exit 1; }
+curl -s 'http://localhost:8080/Demo/Crud1/create?A=1&B=2&C=3&D=4' | diff "$srcdir/tests/crud1.html" - || { kill $(cat "$TESTPID") 2>/dev/null; echo "FAIL: demo - Crud1 response mismatch"; exit 1; }
 kill $(cat "$TESTPID") 2>/dev/null || true
-echo "Demo test passed."
+echo "PASS: demo"
 
 # Driver-based tests (each test has a .sh that is sourced by driver.sh after starting the app)
 # Exclude: driver, lib (infra); cffi, endpoints, dbupload2 (standalone scripts)
@@ -52,7 +56,7 @@ if [ -f "$testsdir/package.json" ]; then
   echo "[$(_ts)] Installing test deps (Playwright, may take 1–2 min)..."
   ( while sleep 30; do echo "  [$(_ts)] Still installing Playwright..."; done ) &
   _npm_heartbeat=$!
-  (cd "$testsdir" && npm install && npx playwright install chromium) || { kill $_npm_heartbeat 2>/dev/null; echo "Playwright install failed"; exit 1; }
+  (cd "$testsdir" && npm install && npx playwright install chromium) || { kill $_npm_heartbeat 2>/dev/null; echo "FAIL: Playwright install failed"; exit 1; }
   kill $_npm_heartbeat 2>/dev/null || true
   wait $_npm_heartbeat 2>/dev/null || true
   echo "[$(_ts)] Playwright ready."
@@ -80,4 +84,4 @@ echo "[$(_ts)] [3/3] dbupload2"
 (cd "$testsdir" && URWEB="$URWEB" ./dbupload2.sh) || exit 1
 
 echo ""
-echo "All tests passed."
+echo "PASS: all"

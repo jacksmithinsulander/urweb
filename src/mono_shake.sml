@@ -145,6 +145,27 @@ fun shake (file : file) =
                              case IM.find (edef, n) of
                                  NONE => raise Fail "MonoShake: Couldn't find 'val'"
                                | SOME (t, e) => shakeExp s e) s page_es
+
+        (* When any DValRec member is reachable, traverse ALL member bodies.
+           This ensures dependencies of collaterally-kept members are not eliminated. *)
+        fun fixRecGroups s =
+            let
+                val changed = ref false
+                val s' = foldl (fn ((DValRec vis, _), s) =>
+                                   if List.exists (fn (_, n, _, _, _) => IS.member (#exp s, n)) vis then
+                                       foldl (fn ((_, n, _, e, _), s) =>
+                                                 if IS.member (#exp s, n) then s
+                                                 else
+                                                     (changed := true;
+                                                      shakeExp {exp = IS.add (#exp s, n), con = #con s} e))
+                                             s vis
+                                   else s
+                                 | (_, s) => s)
+                               s (#1 file)
+            in
+                if !changed then fixRecGroups s' else s'
+            end
+        val s = fixRecGroups s
     in
         (List.filter (fn (DDatatype dts, _) => List.exists (fn (_, n, _) => IS.member (#con s, n)) dts
                        | (DVal (_, n, _, _, _), _) => IS.member (#exp s, n)

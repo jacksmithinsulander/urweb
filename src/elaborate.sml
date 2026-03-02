@@ -5138,8 +5138,6 @@ fun elabFile basis basis_tm topStr topSgn top_tm env changeEnv file =
             ()
         else
             let
-                fun debug str = (TextIO.output (TextIO.stdErr, str);
-                                 TextIO.flushOut TextIO.stdErr)
                 val () = ElabUtilPos.mliftConInCon := E.mliftConInCon
                 val declSearch = ElabUtilPos.Decl.search
                                      { kind = fn _ => NONE
@@ -5158,39 +5156,39 @@ fun elabFile basis basis_tm topStr topSgn top_tm env changeEnv file =
                                                     NONE => declSearch d
                                                   | SOME found => SOME found
                                 ) NONE file of
-                    NONE => (debug "nope\n")
-                  | SOME c => (debug "yp\n"; declError env'' (Hole c))
+                    NONE => ()
+                  | SOME c => declError env'' (Hole c)
             end
             ;
 
         if stopHere () then
             ()
         else
-            if List.exists kunifsInDecl file then
+            (if List.exists kunifsInDecl file then
                 case U.File.findDecl kunifsInDecl file of
                     NONE => ()
                   | SOME d => declError env'' (KunifsRemain [d])
-            else
-                ();
+             else
+                 ());
         
         if stopHere () then
             ()
         else
-            if List.exists cunifsInDecl file then
+            (if List.exists cunifsInDecl file then
                 case U.File.findDecl cunifsInDecl file of
                     NONE => ()
                   | SOME d => declError env'' (CunifsRemain [d])
-            else
-                ();
+             else
+                 ());
 
         if stopHere () then
             ()
         else
-            app (fn (bls, env, a, b, loc) =>
+            (app (fn (bls, env, a, b, loc) =>
                     case exhaustive (env, a, b, loc) of
                         NONE => ()
                       | SOME p => (Blames.blameAll bls; expError env (Inexhaustive (loc, p))))
-                (!delayedExhaustives);
+                (!delayedExhaustives));
 
         if stopHere () then
             ()

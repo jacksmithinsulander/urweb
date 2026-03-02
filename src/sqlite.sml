@@ -54,15 +54,25 @@ fun checkRel (table, checkNullable) (s, xts) =
         val q = "SELECT COUNT(*) FROM sqlite_master WHERE type = '" ^ table ^ "' AND name = '"
                 ^ s ^ "'"
     in
-        box [string "if (sqlite3_prepare_v2(conn->conn, \"",
-             string q,
-             string "\", -1, &stmt, NULL) != SQLITE_OK) {",
+        box [string "{ int _prepare_rc;",
              newline,
-             box [string "sqlite3_close(conn->conn);",
+             string "do { _prepare_rc = sqlite3_prepare_v2(conn->conn, \"",
+             string q,
+             string "\", -1, &stmt, NULL); if (_prepare_rc == SQLITE_BUSY) sleep(1); } while (_prepare_rc == SQLITE_BUSY);",
+             newline,
+             string "if (_prepare_rc != SQLITE_OK) {",
+             newline,
+             box [string "char _sqlerrmsg[1024];",
                   newline,
-                  string "uw_error(ctx, FATAL, \"Query preparation failed:<br />",
+                  string "strncpy(_sqlerrmsg, sqlite3_errmsg(conn->conn), sizeof(_sqlerrmsg)-1);",
+                  newline,
+                  string "_sqlerrmsg[sizeof(_sqlerrmsg)-1] = 0;",
+                  newline,
+                  string "sqlite3_close(conn->conn);",
+                  newline,
+                  string "uw_error(ctx, FATAL, \"Query preparation failed (%s):<br />",
                   string q,
-                  string "\");",
+                  string "\", _sqlerrmsg); }",
                   newline],
              string "}",
              newline,
@@ -189,7 +199,6 @@ fun init {dbstring, prepared = ss, tables, views, sequences} =
                       newline,
                       string "int res;",
                       newline,
-                      newline,
                       p_list_sep newline (checkRel ("table", true)) tables,
                       p_list_sep newline (fn name => checkRel ("table", true)
                                                               (name, [("id", Settings.Client)])) sequences,
@@ -233,11 +242,15 @@ fun init {dbstring, prepared = ss, tables, views, sequences} =
                                                                    string ");",
                                                                    newline]
                                                       in
-                                                          box [string "if (sqlite3_prepare_v2(conn->conn, \"",
+                                                          box [string "{ int _pr;",
+                                                               newline,
+                                                               string "do { _pr = sqlite3_prepare_v2(conn->conn, \"",
                                                                string (Prim.toCString s),
                                                                string "\", -1, &conn->p",
                                                                string (Int.toString i),
-                                                               string ", NULL) != SQLITE_OK) {",
+                                                               string ", NULL); if (_pr == SQLITE_BUSY) sleep(1); } while (_pr == SQLITE_BUSY);",
+                                                               newline,
+                                                               string "if (_pr != SQLITE_OK) {",
                                                                newline,
                                                                box [string "char msg[1024];",
                                                                     newline,
@@ -247,6 +260,8 @@ fun init {dbstring, prepared = ss, tables, views, sequences} =
                                                                     newline,
                                                                     uhoh false ("Error preparing statement: "
                                                                                 ^ Prim.toCString s ^ "<br />%s") ["msg"]],
+                                                               string "}",
+                                                               newline,
                                                                string "}",
                                                                newline]
                                                       end)
