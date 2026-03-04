@@ -1,0 +1,721 @@
+// Ur/Web LALRPOP grammar
+//
+// This is a faithful skeleton of the urweb.grm ML-Yacc grammar, ported to
+// LALRPOP syntax.  Phase 1 provides the full structure with `todo!()` actions;
+// subsequent phases will fill in the AST construction.
+//
+// Token names match crate::parse::lexical_analyzer::Token variant names.
+
+use crate::error_types::{Located, Span};
+use crate::source::*;
+
+grammar;
+
+// ---------------------------------------------------------------------------
+// External token declaration — use our logos-based lexer
+// ---------------------------------------------------------------------------
+
+extern {
+    type Location = usize;
+    type Error = crate::parse::lexical_analyzer::LexError;
+
+    enum crate::parse::lexical_analyzer::Token {
+        // Literals
+        "INT"     => crate::parse::lexical_analyzer::Token::Int(<i64>),
+        "FLOAT"   => crate::parse::lexical_analyzer::Token::Float(<f64>),
+        "STRING"  => crate::parse::lexical_analyzer::Token::String(<String>),
+        "CHAR"    => crate::parse::lexical_analyzer::Token::Char(<char>),
+
+        // Keywords
+        "and"       => crate::parse::lexical_analyzer::Token::And,
+        "andalso"   => crate::parse::lexical_analyzer::Token::Andalso,
+        "andthen"   => crate::parse::lexical_analyzer::Token::Andthen,
+        "as"        => crate::parse::lexical_analyzer::Token::As,
+        "asc"       => crate::parse::lexical_analyzer::Token::Asc,
+        "avg"       => crate::parse::lexical_analyzer::Token::Avg,
+        "begin"     => crate::parse::lexical_analyzer::Token::Begin,
+        "by"        => crate::parse::lexical_analyzer::Token::By,
+        "cand"      => crate::parse::lexical_analyzer::Token::Cand,
+        "cascade"   => crate::parse::lexical_analyzer::Token::Cascade,
+        "case"      => crate::parse::lexical_analyzer::Token::Case,
+        "check"     => crate::parse::lexical_analyzer::Token::Check,
+        "class"     => crate::parse::lexical_analyzer::Token::Class,
+        "coalesce"  => crate::parse::lexical_analyzer::Token::Coalesce,
+        "con"       => crate::parse::lexical_analyzer::Token::Con,
+        "constraint"  => crate::parse::lexical_analyzer::Token::Constraint,
+        "constraints" => crate::parse::lexical_analyzer::Token::Constraints,
+        "cookie"    => crate::parse::lexical_analyzer::Token::Cookie,
+        "count"     => crate::parse::lexical_analyzer::Token::Count,
+        "cross"     => crate::parse::lexical_analyzer::Token::Cross,
+        "current_timestamp" => crate::parse::lexical_analyzer::Token::CurrentTimestamp,
+        "datatype"  => crate::parse::lexical_analyzer::Token::Datatype,
+        "delete"    => crate::parse::lexical_analyzer::Token::Delete,
+        "desc"      => crate::parse::lexical_analyzer::Token::Desc,
+        "distinct"  => crate::parse::lexical_analyzer::Token::Distinct,
+        "distance"  => crate::parse::lexical_analyzer::Token::Distance,
+        "else"      => crate::parse::lexical_analyzer::Token::Else,
+        "end"       => crate::parse::lexical_analyzer::Token::End,
+        "except"    => crate::parse::lexical_analyzer::Token::Except,
+        "export"    => crate::parse::lexical_analyzer::Token::Export,
+        "false"     => crate::parse::lexical_analyzer::Token::False,
+        "ffi"       => crate::parse::lexical_analyzer::Token::Ffi,
+        "fn"        => crate::parse::lexical_analyzer::Token::Fn,
+        "foreign"   => crate::parse::lexical_analyzer::Token::Foreign,
+        "from"      => crate::parse::lexical_analyzer::Token::From,
+        "full"      => crate::parse::lexical_analyzer::Token::Full,
+        "fun"       => crate::parse::lexical_analyzer::Token::Fun,
+        "functor"   => crate::parse::lexical_analyzer::Token::Functor,
+        "group"     => crate::parse::lexical_analyzer::Token::Group,
+        "having"    => crate::parse::lexical_analyzer::Token::Having,
+        "if"        => crate::parse::lexical_analyzer::Token::If,
+        "in"        => crate::parse::lexical_analyzer::Token::In,
+        "include"   => crate::parse::lexical_analyzer::Token::Include,
+        "index"     => crate::parse::lexical_analyzer::Token::Index,
+        "inner"     => crate::parse::lexical_analyzer::Token::Inner,
+        "insert"    => crate::parse::lexical_analyzer::Token::Insert,
+        "intersect" => crate::parse::lexical_analyzer::Token::Intersect,
+        "into"      => crate::parse::lexical_analyzer::Token::Into,
+        "is"        => crate::parse::lexical_analyzer::Token::Is,
+        "join"      => crate::parse::lexical_analyzer::Token::Join,
+        "key"       => crate::parse::lexical_analyzer::Token::Key,
+        "left"      => crate::parse::lexical_analyzer::Token::Left,
+        "let"       => crate::parse::lexical_analyzer::Token::Let,
+        "like"      => crate::parse::lexical_analyzer::Token::Like,
+        "limit"     => crate::parse::lexical_analyzer::Token::Limit,
+        "ltype"     => crate::parse::lexical_analyzer::Token::Ltype,
+        "map"       => crate::parse::lexical_analyzer::Token::Map,
+        "max"       => crate::parse::lexical_analyzer::Token::Max,
+        "min"       => crate::parse::lexical_analyzer::Token::Min,
+        "no"        => crate::parse::lexical_analyzer::Token::No,
+        "not"       => crate::parse::lexical_analyzer::Token::Not,
+        "null"      => crate::parse::lexical_analyzer::Token::Null,
+        "of"        => crate::parse::lexical_analyzer::Token::Of,
+        "offset"    => crate::parse::lexical_analyzer::Token::Offset,
+        "on"        => crate::parse::lexical_analyzer::Token::On,
+        "open"      => crate::parse::lexical_analyzer::Token::Open,
+        "or"        => crate::parse::lexical_analyzer::Token::Or,
+        "order"     => crate::parse::lexical_analyzer::Token::Order,
+        "orelse"    => crate::parse::lexical_analyzer::Token::Orelse,
+        "outer"     => crate::parse::lexical_analyzer::Token::Outer,
+        "over"      => crate::parse::lexical_analyzer::Token::Over,
+        "partition" => crate::parse::lexical_analyzer::Token::Partition,
+        "policy"    => crate::parse::lexical_analyzer::Token::Policy,
+        "primary"   => crate::parse::lexical_analyzer::Token::Primary,
+        "random"    => crate::parse::lexical_analyzer::Token::Random,
+        "rank"      => crate::parse::lexical_analyzer::Token::Rank,
+        "rec"       => crate::parse::lexical_analyzer::Token::Rec,
+        "references" => crate::parse::lexical_analyzer::Token::References,
+        "restrict"  => crate::parse::lexical_analyzer::Token::Restrict,
+        "right"     => crate::parse::lexical_analyzer::Token::Right,
+        "select"    => crate::parse::lexical_analyzer::Token::Select,
+        "sequence"  => crate::parse::lexical_analyzer::Token::Sequence,
+        "set"       => crate::parse::lexical_analyzer::Token::Set,
+        "sig"       => crate::parse::lexical_analyzer::Token::Sig,
+        "signature" => crate::parse::lexical_analyzer::Token::Signature,
+        "sql"       => crate::parse::lexical_analyzer::Token::Sql,
+        "struct"    => crate::parse::lexical_analyzer::Token::Struct,
+        "structure" => crate::parse::lexical_analyzer::Token::Structure,
+        "style"     => crate::parse::lexical_analyzer::Token::Style,
+        "sum"       => crate::parse::lexical_analyzer::Token::Sum,
+        "table"     => crate::parse::lexical_analyzer::Token::Table,
+        "task"      => crate::parse::lexical_analyzer::Token::Task,
+        "then"      => crate::parse::lexical_analyzer::Token::Then,
+        "true"      => crate::parse::lexical_analyzer::Token::True,
+        "type"      => crate::parse::lexical_analyzer::Token::Type,  // ltype in SML grammar
+        "union"     => crate::parse::lexical_analyzer::Token::Union,
+        "unique"    => crate::parse::lexical_analyzer::Token::Unique,
+        "update"    => crate::parse::lexical_analyzer::Token::Update,
+        "val"       => crate::parse::lexical_analyzer::Token::Val,
+        "values"    => crate::parse::lexical_analyzer::Token::Values,
+        "view"      => crate::parse::lexical_analyzer::Token::View,
+        "where"     => crate::parse::lexical_analyzer::Token::Where,
+
+        // Operators & punctuation
+        "("   => crate::parse::lexical_analyzer::Token::Lparen,
+        ")"   => crate::parse::lexical_analyzer::Token::Rparen,
+        "["   => crate::parse::lexical_analyzer::Token::Lbrack,
+        "]"   => crate::parse::lexical_analyzer::Token::Rbrack,
+        "{"   => crate::parse::lexical_analyzer::Token::Lbrace,
+        "}"   => crate::parse::lexical_analyzer::Token::Rbrace,
+        "()"  => crate::parse::lexical_analyzer::Token::Unit,
+        "->"  => crate::parse::lexical_analyzer::Token::Arrow,
+        "=>"  => crate::parse::lexical_analyzer::Token::Darrow,
+        "==>" => crate::parse::lexical_analyzer::Token::Dkarrow,
+        "-->" => crate::parse::lexical_analyzer::Token::Karrow,
+        "++"  => crate::parse::lexical_analyzer::Token::Plusplus,
+        "--"  => crate::parse::lexical_analyzer::Token::Minusminus,
+        "---" => crate::parse::lexical_analyzer::Token::Minusminusminus,
+        "^"   => crate::parse::lexical_analyzer::Token::Caret,
+        "="   => crate::parse::lexical_analyzer::Token::Eq,
+        "<>"  => crate::parse::lexical_analyzer::Token::Ne,
+        "<"   => crate::parse::lexical_analyzer::Token::Lt,
+        ">"   => crate::parse::lexical_analyzer::Token::Gt,
+        "<="  => crate::parse::lexical_analyzer::Token::Le,
+        ">="  => crate::parse::lexical_analyzer::Token::Ge,
+        ","   => crate::parse::lexical_analyzer::Token::Comma,
+        ":::" => crate::parse::lexical_analyzer::Token::Tcolonwild,
+        "::"  => crate::parse::lexical_analyzer::Token::Dcolon,
+        "::::" => crate::parse::lexical_analyzer::Token::Dcolonwild,
+        ":"   => crate::parse::lexical_analyzer::Token::Colon,
+        "..." => crate::parse::lexical_analyzer::Token::Dotdotdot,
+        "."   => crate::parse::lexical_analyzer::Token::Dot,
+        "$"   => crate::parse::lexical_analyzer::Token::Dollar,
+        "#"   => crate::parse::lexical_analyzer::Token::Hash,
+        "___" => crate::parse::lexical_analyzer::Token::Underunderunder,
+        "__"  => crate::parse::lexical_analyzer::Token::Underunder,
+        "_"   => crate::parse::lexical_analyzer::Token::Under,
+        "~"   => crate::parse::lexical_analyzer::Token::Twiddle,
+        "|"   => crate::parse::lexical_analyzer::Token::Bar,
+        "*"   => crate::parse::lexical_analyzer::Token::Star,
+        "<-"  => crate::parse::lexical_analyzer::Token::Larrow,
+        ";"   => crate::parse::lexical_analyzer::Token::Semi,
+        "!"   => crate::parse::lexical_analyzer::Token::Bang,
+        "+"   => crate::parse::lexical_analyzer::Token::Plus,
+        "-"   => crate::parse::lexical_analyzer::Token::Minus,
+        "/"   => crate::parse::lexical_analyzer::Token::Divide,
+        "%"   => crate::parse::lexical_analyzer::Token::Mod,
+        "@"   => crate::parse::lexical_analyzer::Token::At,
+        "o"   => crate::parse::lexical_analyzer::Token::Compose,
+        "|>"  => crate::parse::lexical_analyzer::Token::Fwdapp,
+        "<|"  => crate::parse::lexical_analyzer::Token::Revapp,
+
+        // Identifiers
+        "IDENT"  => crate::parse::lexical_analyzer::Token::Ident(<String>),
+        "UIDENT" => crate::parse::lexical_analyzer::Token::UpperIdent(<String>),
+        "SYMBOL" => crate::parse::lexical_analyzer::Token::Symbol(<String>),
+        "BACKTICK_PATH" => crate::parse::lexical_analyzer::Token::BacktickPath(<String>),
+
+        // XML
+        "BEGIN_TAG"    => crate::parse::lexical_analyzer::Token::BeginTag(<String>),
+        "END_TAG"      => crate::parse::lexical_analyzer::Token::EndTag(<String>),
+        "XML_BEGIN_END" => crate::parse::lexical_analyzer::Token::XmlBeginEnd,
+        "NOTAGS"       => crate::parse::lexical_analyzer::Token::Notags(<String>),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Start symbol
+// ---------------------------------------------------------------------------
+
+pub File: File = {
+    <decls:Decl*> => decls,
+};
+
+// ---------------------------------------------------------------------------
+// Declarations
+// ---------------------------------------------------------------------------
+
+Decl: LocDecl = {
+    <l:@L> <d:DeclNode> <r:@R> => Located::new(d, Span::from_offsets("", l, r, &[])),
+};
+
+DeclNode: Decl = {
+    // val p = e
+    "val" <p:Pat> "=" <e:Exp> => Decl::Val(p, e),
+
+    // val rec f : t = e and ...
+    "val" "rec" <binds:ValRecBindings> => Decl::ValRec(binds),
+
+    // fun f x = e and ...
+    "fun" <binds:FunBindings> => {
+        // Desugar fun bindings to val rec
+        Decl::ValRec(binds)
+    },
+
+    // type / con declaration
+    "con" <name:"IDENT"> <k:KindAnnot?> "=" <c:Con> =>
+        Decl::Con(name, k.map(Box::new), c),
+
+    // datatype
+    "datatype" <dts:DatatypeDecls> => Decl::Datatype(dts),
+
+    // signature
+    "signature" <name:"UIDENT"> "=" <s:Sgn> => Decl::Sgn(name, s),
+
+    // structure
+    "structure" <name:"UIDENT"> <annot:SgnAnnot?> "=" <st:Str> =>
+        Decl::Str(name, annot, None, st, false),
+
+    // open
+    "open" <path:ModPath> => {
+        let mut v: Vec<String> = path;
+        let last = v.pop().unwrap_or_default();
+        Decl::Open(last, v)
+    },
+
+    // functor
+    "functor" <name:"UIDENT"> "(" <arg:"UIDENT"> ":" <s:Sgn> ")" <ret:SgnAnnot?> "=" <body:Str> =>
+        todo!("functor decl"),
+
+    // table / sequence / view / cookie / style
+    "table" <name:"IDENT"> ":" <c:Con> <pol1:PolicyExp?> <pol2:PolicyExp?> =>
+        Decl::Table(name, c, pol1.unwrap_or_else(|| todo!("default table policy")),
+                              pol2.unwrap_or_else(|| todo!("default table policy"))),
+
+    "sequence" <name:"IDENT"> => Decl::Sequence(name),
+
+    "view" <name:"IDENT"> "=" <e:Exp> => Decl::View(name, e),
+
+    "cookie" <name:"IDENT"> ":" <c:Con> => Decl::Cookie(name, c),
+
+    "style" <name:"IDENT"> => Decl::Style(name),
+
+    // task / policy / on_error
+    "task" <e1:AppExp> "=" <e2:Exp> => Decl::Task(e1, e2),
+
+    "policy" <e:Exp> => Decl::Policy(e),
+
+    // export
+    "export" <st:Str> => Decl::Export(st),
+
+    // FFI
+    "ffi" <name:"IDENT"> <modes:FfiModes> ":" <c:Con> => Decl::Ffi(name, modes, c),
+
+    // constraint
+    "constraint" <c1:Con> "~" <c2:Con> => Decl::Constraint(c1, c2),
+};
+
+// ---------------------------------------------------------------------------
+// Module structures
+// ---------------------------------------------------------------------------
+
+Str: LocStr = {
+    <l:@L> <s:StrNode> <r:@R> => Located::new(s, Span::from_offsets("", l, r, &[])),
+};
+
+StrNode: Str = {
+    "struct" <decls:Decl*> "end" => Str::Const(decls),
+    <name:"UIDENT"> => Str::Var(name),
+    <s:Str> "." <field:"UIDENT"> => Str::Proj(Box::new(s), field),
+    "functor" "(" <arg:"UIDENT"> ":" <sgn:Sgn> ")" <ret:SgnAnnot?> "=>" <body:Str> =>
+        Str::Fun(arg, sgn, ret, Box::new(body)),
+    <f:Str> "(" <x:Str> ")" => Str::App(Box::new(f), Box::new(x)),
+    "(" <s:Str> ")" => s,
+};
+
+// ---------------------------------------------------------------------------
+// Signatures
+// ---------------------------------------------------------------------------
+
+Sgn: LocSgn = {
+    <l:@L> <s:SgnNode> <r:@R> => Located::new(s, Span::from_offsets("", l, r, &[])),
+};
+
+SgnNode: Sgn = {
+    "sig" <items:SgnItem*> "end" => Sgn::Const(items),
+    <name:"UIDENT"> => Sgn::Var(name),
+    "functor" "(" <arg:"UIDENT"> ":" <s1:Sgn> ")" "->" <s2:Sgn> =>
+        Sgn::Fun(arg, Box::new(s1), Box::new(s2)),
+    <s:Sgn> "where" <path:ModPath> "=" <c:Con> => {
+        let mut p = path;
+        let last = p.pop().unwrap_or_default();
+        Sgn::Where(Box::new(s), p, last, c)
+    },
+    "(" <s:Sgn> ")" => s,
+};
+
+SgnItem: LocSgnItem = {
+    <l:@L> <si:SgnItemNode> <r:@R> => Located::new(si, Span::from_offsets("", l, r, &[])),
+};
+
+SgnItemNode: SgnItem = {
+    "con" <name:"IDENT"> "::" <k:Kind> => SgnItem::ConAbs(name, Box::new(k)),
+    "con" <name:"IDENT"> "::" <k:Kind> "=" <c:Con> => SgnItem::Con(name, Some(Box::new(k)), c),
+    "val" <name:"IDENT"> ":" <c:Con> => SgnItem::Val(name, c),
+    "datatype" <dts:DatatypeDecls> => SgnItem::Datatype(dts),
+    "structure" <name:"UIDENT"> ":" <s:Sgn> => SgnItem::Str(name, s),
+    "signature" <name:"UIDENT"> "=" <s:Sgn> => SgnItem::Sgn(name, s),
+    "include" <s:Sgn> => SgnItem::Include(s),
+    "constraint" <c1:Con> "~" <c2:Con> => SgnItem::Constraint(c1, c2),
+    "class" <name:"IDENT"> "::" <k:Kind> => SgnItem::ClassAbs(name, Box::new(k)),
+    "class" <name:"IDENT"> "::" <k:Kind> "=" <c:Con> => SgnItem::Class(name, Box::new(k), c),
+    "table" <name:"IDENT"> ":" <c:Con> <p1:PolicyExp?> <p2:PolicyExp?> =>
+        SgnItem::Table(name, c,
+            p1.unwrap_or_else(|| todo!("default")),
+            p2.unwrap_or_else(|| todo!("default"))),
+};
+
+// ---------------------------------------------------------------------------
+// Kinds
+// ---------------------------------------------------------------------------
+
+Kind: LocKind = {
+    <l:@L> <k:KindNode> <r:@R> => Located::new(k, Span::from_offsets("", l, r, &[])),
+};
+
+KindNode: Kind = {
+    <k1:KindApp> "->" <k2:Kind> => Kind::Arrow(Box::new(k1), Box::new(k2)),
+    <k:KindApp>                 => k.node,
+};
+
+KindApp: LocKind = {
+    <l:@L> <k:KindAtom> <r:@R> => Located::new(k, Span::from_offsets("", l, r, &[])),
+};
+
+KindAtom: Kind = {
+    "*"     => Kind::Type,
+    "Name"  => Kind::Name, // recognised as UIDENT "Name"
+    "#" <k:KindAtom> => Kind::Record(Box::new(Located::dummy(k))),
+    "()"    => Kind::Unit,
+    "(" <k:Kind> ")" => k.node,
+    "_"     => Kind::Wild,
+    <name:"IDENT"> => Kind::Var(name),
+};
+
+KindAnnot: LocKind = {
+    "::" <k:Kind> => k,
+};
+
+// ---------------------------------------------------------------------------
+// Constructors / types
+// ---------------------------------------------------------------------------
+
+Con: LocCon = {
+    <l:@L> <c:ConNode> <r:@R> => Located::new(c, Span::from_offsets("", l, r, &[])),
+};
+
+ConNode: Con = {
+    // function type
+    <c1:AppCon> "->" <c2:Con> => Con::TFun(Box::new(c1), Box::new(c2)),
+
+    // constructor-level function type (explicit)
+    "(" <name:"IDENT"> "::" <k:Kind> ")" "->" <c:Con> =>
+        Con::TCFun(Explicitness::Explicit, name, Box::new(k), Box::new(c)),
+
+    // constructor-level function type (implicit)
+    "[" <name:"IDENT"> <k:KindAnnot?> "]" "->" <c:Con> =>
+        Con::TCFun(Explicitness::Implicit, name,
+            k.map(Box::new).unwrap_or_else(|| Box::new(Located::dummy(Kind::Wild))),
+            Box::new(c)),
+
+    // disjointness constraint
+    "[" <c1:Con> "~" <c2:Con> "]" "=>" <c3:Con> =>
+        Con::TDisjoint(Box::new(c1), Box::new(c2), Box::new(c3)),
+
+    // record type
+    "{" <c:Con> "}" => Con::TRecord(Box::new(c)),
+
+    // kind abstraction
+    "fn" "[" <name:"IDENT"> "]" "=>" <c:Con> =>
+        Con::KAbs(name, Box::new(c)),
+    "fn" "[" <name:"IDENT"> "::" <k:Kind> "]" "=>" <c:Con> =>
+        Con::KAbs(name, Box::new(c)),
+    "fn" <name:"IDENT"> <k:KindAnnot?> "=>" <c:Con> =>
+        Con::Abs(name, k.map(Box::new), Box::new(c)),
+
+    // concatenation
+    <c1:AppCon> "++" <c2:Con> => Con::Concat(Box::new(c1), Box::new(c2)),
+
+    <c:AppCon> => c.node,
+};
+
+AppCon: LocCon = {
+    <l:@L> <c:AppConInner> <r:@R> => Located::new(c, Span::from_offsets("", l, r, &[])),
+};
+
+AppConInner: Con = {
+    <f:AppCon> <x:AtomCon> => Con::App(Box::new(f), Box::new(x)),
+    <c:AtomCon> => c.node,
+};
+
+AtomCon: LocCon = {
+    <l:@L> <c:AtomConNode> <r:@R> => Located::new(c, Span::from_offsets("", l, r, &[])),
+};
+
+AtomConNode: Con = {
+    "()" => Con::Unit,
+    "_"  => Con::Wild(Box::new(Located::dummy(Kind::Wild))),
+    "#" <name:"IDENT"> => Con::Name(name),
+    "#" <name:"UIDENT"> => Con::Name(name),
+    "map" => Con::Map,
+    <path:ModPath> => {
+        let mut v = path;
+        let last = v.pop().unwrap_or_default();
+        Con::Var(v, last)
+    },
+    "[" <fields:ConFields> "]" => Con::Record(fields),
+    "(" <c:Con> ")" => c.node,
+    "(" <cs:ConList2> ")" => Con::Tuple(cs),
+    "(" <c:Con> ":" <k:Kind> ")" => Con::Annot(Box::new(c), Box::new(k)),
+    <c:AtomCon> "." <n:"INT"> => Con::Proj(Box::new(c), n as usize),
+};
+
+ConList2: Vec<LocCon> = {
+    <c1:Con> "," <c2:Con> => vec![c1, c2],
+    <cs:ConList2> "," <c:Con> => { let mut v = cs; v.push(c); v },
+};
+
+ConFields: Vec<(LocCon, LocCon)> = {
+    => vec![],
+    <f:ConField> => vec![f],
+    <fs:ConFields> "," <f:ConField> => { let mut v = fs; v.push(f); v },
+};
+
+ConField: (LocCon, LocCon) = {
+    <name:AtomCon> "=" <c:Con> => (name, c),
+    <name:AtomCon> => {
+        // Punned: [Foo] means [Foo = Foo]
+        (name.clone(), name)
+    },
+};
+
+// ---------------------------------------------------------------------------
+// Patterns
+// ---------------------------------------------------------------------------
+
+Pat: LocPat = {
+    <l:@L> <p:PatNode> <r:@R> => Located::new(p, Span::from_offsets("", l, r, &[])),
+};
+
+PatNode: Pat = {
+    <p:AtomPat> ":" <c:Con> => Pat::Annot(Box::new(p), c),
+    <p:AtomPat> => p.node,
+};
+
+AtomPat: LocPat = {
+    <l:@L> <p:AtomPatNode> <r:@R> => Located::new(p, Span::from_offsets("", l, r, &[])),
+};
+
+AtomPatNode: Pat = {
+    "_" => Pat::Var("_".into()),
+    <name:"IDENT"> => Pat::Var(name),
+    <n:"INT"> => Pat::Prim(crate::primitives::Prim::Int(n)),
+    <f:"FLOAT"> => Pat::Prim(crate::primitives::Prim::Float(f)),
+    <s:"STRING"> => Pat::Prim(crate::primitives::Prim::String(crate::primitives::StringMode::Normal, s)),
+    <ch:"CHAR"> => Pat::Prim(crate::primitives::Prim::Char(ch)),
+    "true"  => Pat::Prim(crate::primitives::Prim::Int(1)), // booleans as ints at pattern level
+    "false" => Pat::Prim(crate::primitives::Prim::Int(0)),
+    <path:UpperPath> <inner:AtomPat?> =>
+        Pat::Con(path_qualifier(&path), path_last(&path), inner.map(Box::new)),
+    "{" <fields:PatFields> <open:DotDotDot?> "}" =>
+        Pat::Record(fields, open.is_some()),
+    "(" <p:Pat> ")" => p.node,
+};
+
+DotDotDot: () = {
+    "..." => (),
+};
+
+PatFields: Vec<(String, LocPat)> = {
+    => vec![],
+    <f:PatField> => vec![f],
+    <fs:PatFields> "," <f:PatField> => { let mut v = fs; v.push(f); v },
+};
+
+PatField: (String, LocPat) = {
+    <name:"IDENT"> "=" <p:Pat> => (name, p),
+    <name:"IDENT"> => {
+        let l = Located::dummy(Pat::Var(name.clone()));
+        (name, l)
+    },
+};
+
+// ---------------------------------------------------------------------------
+// Expressions
+// ---------------------------------------------------------------------------
+
+Exp: LocExp = {
+    <l:@L> <e:ExpNode> <r:@R> => Located::new(e, Span::from_offsets("", l, r, &[])),
+};
+
+ExpNode: Exp = {
+    // Annotations
+    <e:AppExp> ":" <c:Con> => Exp::Annot(Box::new(e), c),
+
+    // Abstractions
+    "fn" <p:Pat> "=>" <e:Exp> => Exp::Abs(
+        // simple variable pattern only for now
+        todo!("fn pat => e"),
+        None,
+        Box::new(e),
+    ),
+
+    // if-then-else (desugars to case)
+    "if" <cond:Exp> "then" <t:Exp> "else" <f:Exp> =>
+        todo!("if-then-else"),
+
+    // case
+    "case" <e:Exp> "of" <arms:CaseArms> =>
+        Exp::Case(Box::new(e), arms),
+
+    // let
+    "let" <decls:EDecl*> "in" <e:Exp> "end" =>
+        Exp::Let(decls, Box::new(e)),
+
+    // andalso / orelse (desugar to if)
+    <e1:Exp> "andalso" <e2:Exp> => todo!("andalso"),
+    <e1:Exp> "orelse"  <e2:Exp> => todo!("orelse"),
+
+    // Sequencing
+    <e1:Exp> ";" <e2:Exp> =>
+        todo!("seq"),
+
+    // Disjoint application
+    <e:AppExp> "[" <c1:Con> "~" <c2:Con> "]" =>
+        Exp::Disjoint(c1, c2, Box::new(e)),
+
+    <e:AppExp> => e.node,
+};
+
+AppExp: LocExp = {
+    <l:@L> <e:AppExpInner> <r:@R> => Located::new(e, Span::from_offsets("", l, r, &[])),
+};
+
+AppExpInner: Exp = {
+    <f:AppExp> <x:AtomExp> => Exp::App(Box::new(f), Box::new(x)),
+    // Constructor-level application
+    <f:AppExp> "[" <c:Con> "]" => Exp::CApp(Box::new(f), c),
+    <e:AtomExp> => e.node,
+};
+
+AtomExp: LocExp = {
+    <l:@L> <e:AtomExpNode> <r:@R> => Located::new(e, Span::from_offsets("", l, r, &[])),
+};
+
+AtomExpNode: Exp = {
+    "()" => Exp::Prim(crate::primitives::Prim::Int(0)), // unit literal placeholder
+    <n:"INT">    => Exp::Prim(crate::primitives::Prim::Int(n)),
+    <f:"FLOAT">  => Exp::Prim(crate::primitives::Prim::Float(f)),
+    <s:"STRING"> => Exp::Prim(crate::primitives::Prim::String(crate::primitives::StringMode::Normal, s)),
+    <ch:"CHAR">  => Exp::Prim(crate::primitives::Prim::Char(ch)),
+    "true"  => Exp::Var(vec!["Basis".into()], "True".into(), Inference::DontInfer),
+    "false" => Exp::Var(vec!["Basis".into()], "False".into(), Inference::DontInfer),
+    <path:ModPath> => {
+        let mut v = path;
+        let last = v.pop().unwrap_or_default();
+        Exp::Var(v, last, Inference::DontInfer)
+    },
+    "{" <fields:ExpFields> "}" => Exp::Record(fields, false),
+    "{" <fields:ExpFields> "," "..." "}" => Exp::Record(fields, true),
+    <e:AtomExp> "." <name:"IDENT"> => todo!("field access"),
+    <e:AtomExp> "." "#" <name:"IDENT"> => Exp::Field(Box::new(e), todo!("field name con")),
+    "(" <e:Exp> ")" => e.node,
+    "_" => Exp::Wild,
+    "?" => Exp::Hole,
+};
+
+ExpFields: Vec<(LocCon, LocExp)> = {
+    => vec![],
+    <f:ExpField> => vec![f],
+    <fs:ExpFields> "," <f:ExpField> => { let mut v = fs; v.push(f); v },
+};
+
+ExpField: (LocCon, LocExp) = {
+    <name:"IDENT"> "=" <e:Exp> => (todo!("field name con from str"), e),
+    <name:"IDENT"> => {
+        // Punning: {x} means {x = x}
+        let e = Located::dummy(Exp::Var(vec![], name.clone(), Inference::DontInfer));
+        (todo!("field name con from str"), e)
+    },
+};
+
+// Case arms
+CaseArms: Vec<(LocPat, LocExp)> = {
+    <arm:CaseArm> => vec![arm],
+    <arms:CaseArms> "|" <arm:CaseArm> => { let mut v = arms; v.push(arm); v },
+};
+
+CaseArm: (LocPat, LocExp) = {
+    <p:Pat> "=>" <e:Exp> => (p, e),
+};
+
+// Local declarations inside let
+EDecl: LocEDecl = {
+    <l:@L> <d:EDeclNode> <r:@R> => Located::new(d, Span::from_offsets("", l, r, &[])),
+};
+
+EDeclNode: EDecl = {
+    "val" <p:Pat> "=" <e:Exp> => EDecl::Val(p, e),
+    "val" "rec" <binds:ValRecBindings> => EDecl::ValRec(binds),
+    "fun" <binds:FunBindings> => EDecl::ValRec(binds),
+};
+
+// ---------------------------------------------------------------------------
+// Shared helpers
+// ---------------------------------------------------------------------------
+
+// A dot-separated path of identifiers: `A.B.c`
+ModPath: Vec<String> = {
+    <name:"IDENT">  => vec![name],
+    <name:"UIDENT"> => vec![name],
+    <path:ModPath> "." <id:"IDENT">  => { let mut v = path; v.push(id); v },
+    <path:ModPath> "." <id:"UIDENT"> => { let mut v = path; v.push(id); v },
+};
+
+UpperPath: Vec<String> = {
+    <name:"UIDENT"> => vec![name],
+    <path:UpperPath> "." <id:"UIDENT"> => { let mut v = path; v.push(id); v },
+};
+
+SgnAnnot: LocSgn = {
+    ":" <s:Sgn> => s,
+};
+
+PolicyExp: LocExp = {
+    // placeholder
+    "where" <e:Exp> => e,
+};
+
+FfiModes: Vec<FfiMode> = {
+    => vec![],
+    <modes:FfiModes> <m:FfiMode> => { let mut v = modes; v.push(m); v },
+};
+
+FfiMode: FfiMode = {
+    "effectful" => FfiMode::Effectful,
+};
+
+DatatypeDecls: Vec<DatatypeDecl> = {
+    <d:DatatypeDecl> => vec![d],
+    <ds:DatatypeDecls> "and" <d:DatatypeDecl> => { let mut v = ds; v.push(d); v },
+};
+
+DatatypeDecl: DatatypeDecl = {
+    <name:"IDENT"> <params:TyParams> "=" <constrs:DtConstrs> =>
+        DatatypeDecl { name, params, constrs },
+    <name:"UIDENT"> <params:TyParams> "=" <constrs:DtConstrs> =>
+        DatatypeDecl { name, params, constrs },
+};
+
+TyParams: Vec<String> = {
+    => vec![],
+    <ps:TyParams> <p:"IDENT"> => { let mut v = ps; v.push(p); v },
+};
+
+DtConstrs: Vec<(String, Option<LocCon>)> = {
+    <c:DtConstr> => vec![c],
+    <cs:DtConstrs> "|" <c:DtConstr> => { let mut v = cs; v.push(c); v },
+};
+
+DtConstr: (String, Option<LocCon>) = {
+    <name:"UIDENT"> "of" <c:Con> => (name, Some(c)),
+    <name:"UIDENT"> => (name, None),
+};
+
+ValRecBindings: Vec<(String, Option<LocCon>, LocExp)> = {
+    <b:ValRecBind> => vec![b],
+    <bs:ValRecBindings> "and" <b:ValRecBind> => { let mut v = bs; v.push(b); v },
+};
+
+ValRecBind: (String, Option<LocCon>, LocExp) = {
+    <name:"IDENT"> <ann:(":" <Con>)?> "=" <e:Exp> => (name, ann, e),
+};
+
+FunBindings: Vec<(String, Option<LocCon>, LocExp)> = {
+    <b:FunBind> => vec![b],
+    <bs:FunBindings> "and" <b:FunBind> => { let mut v = bs; v.push(b); v },
+};
+
+FunBind: (String, Option<LocCon>, LocExp) = {
+    <name:"IDENT"> <params:AtomPat+> <ret:(":" <Con>)?> "=" <e:Exp> => {
+        // Wrap body in nested Abs for each parameter
+        let body = params.into_iter().rev().fold(e, |acc, p| {
+            Located::dummy(Exp::Abs(
+                todo!("extract name from pattern"),
+                None,
+                Box::new(acc),
+            ))
+        });
+        (name, ret, body)
+    },
+};

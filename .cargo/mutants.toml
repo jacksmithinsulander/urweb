@@ -1,0 +1,5 @@
+# cargo-mutants configuration
+# See https://mutants.rs/config-file.html
+#
+# No exclusions: every mutant must be caught or kill the tests.
+# Run: cargo mutants

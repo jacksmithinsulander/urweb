@@ -1,0 +1,22 @@
+[package]
+name = "urweb"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "urweb"
+path = "src/main.rs"
+
+[dev-dependencies]
+tempfile = "3"
+
+[dependencies]
+logos     = "0.14"
+lalrpop-util = { version = "0.20", features = ["lexer"] }
+thiserror = "2"
+anyhow    = "1"
+indexmap  = "=2.6.0"
+toml      = "0.8"
+
+[build-dependencies]
+lalrpop = "0.20"
