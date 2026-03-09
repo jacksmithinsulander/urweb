@@ -1417,3 +1417,156 @@ pub fn reduce_exp(expression: LocatedExpression) -> LocatedExpression {
 pub fn reduce_con(constructor: LocatedConstructor) -> LocatedConstructor {
     simplify_con(&[] as &[EnvItem], constructor)
 }
+
+// ---------------------------------------------------------------------------
+// Unit tests — kill mutants in shift_con, shift_exp, reduce
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::error_types::Located;
+    use crate::primitives::Prim;
+
+    #[test]
+    fn shift_con_rel_at_cutoff_adds_delta() {
+        // Rel(1) with cutoff 1, delta 1 → Rel(2). Kills + -> - and + -> * mutants.
+        let c = Located::dummy(Constructor::Rel(1));
+        let out = shift_con(c, 1, 1);
+        assert!(matches!(out.node, Constructor::Rel(2)));
+    }
+
+    #[test]
+    fn shift_con_rel_below_cutoff_unchanged() {
+        // Rel(0) with cutoff 1 → Rel(0). Kills >= -> < mutant.
+        let c = Located::dummy(Constructor::Rel(0));
+        let out = shift_con(c, 1, 1);
+        assert!(matches!(out.node, Constructor::Rel(0)));
+    }
+
+    #[test]
+    fn shift_con_rel_negative_delta() {
+        // Rel(2) with cutoff 1, delta -1 → Rel(1).
+        let c = Located::dummy(Constructor::Rel(2));
+        let out = shift_con(c, 1, -1);
+        assert!(matches!(out.node, Constructor::Rel(1)));
+    }
+
+    #[test]
+    fn shift_con_tfun_shifts_both_branches() {
+        // TFun(Rel(0), Rel(2)) cutoff 1 delta 1: left stays 0, right 2→3.
+        let left = Located::dummy(Constructor::Rel(0));
+        let right = Located::dummy(Constructor::Rel(2));
+        let c = Located::dummy(Constructor::TFun(Box::new(left), Box::new(right)));
+        let out = shift_con(c, 1, 1);
+        let Constructor::TFun(l, r) = &out.node else {
+            panic!("expected TFun")
+        };
+        assert!(matches!(l.node, Constructor::Rel(0)));
+        assert!(matches!(r.node, Constructor::Rel(3)));
+    }
+
+    #[test]
+    fn shift_con_tcfun_shifts_body_with_cutoff_plus_one() {
+        // TCFun body: shift_con(body, cutoff+1, delta). Rel(2) with cutoff 1, delta 1 → cutoff+1=2, Rel(2)>=2 → Rel(3).
+        let body = Located::dummy(Constructor::Rel(2));
+        let kind = Located::dummy(crate::core::Kind::Type);
+        let c = Located::dummy(Constructor::TCFun(
+            "a".into(),
+            Box::new(kind),
+            Box::new(body),
+        ));
+        let out = shift_con(c, 1, 1);
+        let Constructor::TCFun(_, _, body_out) = &out.node else {
+            panic!("expected TCFun")
+        };
+        assert!(matches!(body_out.node, Constructor::Rel(3)));
+    }
+
+    #[test]
+    fn shift_con_abs_shifts_body_with_cutoff_plus_one() {
+        // Abs body: shift_con(body, cutoff+1, delta). Rel(2) with cutoff 1, delta 1 → Rel(3).
+        let body = Located::dummy(Constructor::Rel(2));
+        let kind = Located::dummy(crate::core::Kind::Type);
+        let c = Located::dummy(Constructor::Abs("x".into(), Box::new(kind), Box::new(body)));
+        let out = shift_con(c, 1, 1);
+        let Constructor::Abs(_, _, body_out) = &out.node else {
+            panic!("expected Abs")
+        };
+        assert!(matches!(body_out.node, Constructor::Rel(3)));
+    }
+
+    #[test]
+    fn shift_exp_abs_shifts_body_with_cutoff_plus_one() {
+        // Abs body: shift_exp with expression_cutoff+1. Rel(2) with cutoff 1, delta 1 → Rel(3).
+        let body = Located::dummy(Expression::Rel(2));
+        let unit = Located::dummy(Constructor::Unit);
+        let e = Located::dummy(Expression::Abs(
+            "x".into(),
+            unit.clone(),
+            unit,
+            Box::new(body),
+        ));
+        let out = shift_exp(e, 1, 1, 0, 0);
+        let Expression::Abs(_, _, _, body_out) = &out.node else {
+            panic!("expected Abs")
+        };
+        assert!(matches!(body_out.node, Expression::Rel(3)));
+    }
+
+    #[test]
+    fn shift_exp_rel_at_cutoff_adds_delta() {
+        // Rel(1) with cutoff 1, delta 1 → Rel(2).
+        let e = Located::dummy(Expression::Rel(1));
+        let out = shift_exp(e, 1, 1, 0, 0);
+        assert!(matches!(out.node, Expression::Rel(2)));
+    }
+
+    #[test]
+    fn shift_exp_rel_below_cutoff_unchanged() {
+        let e = Located::dummy(Expression::Rel(0));
+        let out = shift_exp(e, 1, 1, 0, 0);
+        assert!(matches!(out.node, Expression::Rel(0)));
+    }
+
+    #[test]
+    fn reduce_exp_identity_for_prim() {
+        let e = Located::dummy(Expression::Prim(Prim::Int(42)));
+        let out = reduce_exp(e.clone());
+        assert!(matches!(out.node, Expression::Prim(_)));
+    }
+
+    #[test]
+    fn reduce_con_unit_unchanged() {
+        let c = Located::dummy(Constructor::Unit);
+        let out = reduce_con(c);
+        assert!(matches!(out.node, Constructor::Unit));
+    }
+
+    #[test]
+    fn reduce_empty_file() {
+        let file: crate::core::File = vec![];
+        let out = reduce(file);
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn reduce_val_simplifies_body() {
+        let e = Located::dummy(Expression::Prim(Prim::Int(1)));
+        let decl = Located::dummy(Declaration::Val(
+            "x".into(),
+            0,
+            Located::dummy(Constructor::Unit),
+            e,
+            String::new(),
+        ));
+        let file = vec![decl];
+        let out = reduce(file);
+        assert_eq!(out.len(), 1);
+        if let Declaration::Val(_, _, _, body, _) = &out[0].node {
+            assert!(matches!(body.node, Expression::Prim(_)));
+        } else {
+            panic!("expected Val");
+        }
+    }
+}

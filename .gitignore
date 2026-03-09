@@ -76,3 +76,14 @@ __pycache__/
 
 # BearSSL vendored build output
 vendor/BearSSL/build/
+
+# Cargo / Rust
+target/
+
+# cargo-mutants (mutation testing)
+mutants.out/
+mutants.out.*/
+
+# Rust coverage (lcov)
+lcov.info
+coverage/

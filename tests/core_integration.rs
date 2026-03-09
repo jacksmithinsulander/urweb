@@ -523,7 +523,7 @@ fn integration_expression_exists_record_val_only() {
 #[test]
 fn integration_expression_exists_field_field_c_only() {
     // Field: only field_c matches.
-    let unit = Located::dummy(Constructor::Unit);
+    let _unit = Located::dummy(Constructor::Unit);
     let meta = FieldMeta {
         field: Located::dummy(Constructor::Named(2)),
         rest: Located::dummy(Constructor::Named(3)),
@@ -547,7 +547,7 @@ fn integration_expression_exists_field_field_c_only() {
 #[test]
 fn integration_expression_exists_field_field_only() {
     // Field: only meta.field matches.
-    let unit = Located::dummy(Constructor::Unit);
+    let _unit = Located::dummy(Constructor::Unit);
     let meta = FieldMeta {
         field: Located::dummy(Constructor::Unit),
         rest: Located::dummy(Constructor::Named(2)),
@@ -591,7 +591,7 @@ fn integration_expression_exists_field_rest_only() {
 #[test]
 fn integration_expression_exists_cut_rec_only() {
     // Cut: only rec matches.
-    let unit = Located::dummy(Constructor::Unit);
+    let _unit = Located::dummy(Constructor::Unit);
     let meta = FieldMeta {
         field: Located::dummy(Constructor::Named(1)),
         rest: Located::dummy(Constructor::Named(2)),
@@ -615,7 +615,7 @@ fn integration_expression_exists_cut_rec_only() {
 #[test]
 fn integration_expression_exists_cut_field_c_only() {
     // Cut: only field_c matches.
-    let unit = Located::dummy(Constructor::Unit);
+    let _unit = Located::dummy(Constructor::Unit);
     let meta = FieldMeta {
         field: Located::dummy(Constructor::Named(2)),
         rest: Located::dummy(Constructor::Named(3)),
@@ -639,7 +639,7 @@ fn integration_expression_exists_cut_field_c_only() {
 #[test]
 fn integration_expression_exists_cut_field_only() {
     // Cut: only meta.field matches.
-    let unit = Located::dummy(Constructor::Unit);
+    let _unit = Located::dummy(Constructor::Unit);
     let meta = FieldMeta {
         field: Located::dummy(Constructor::Unit),
         rest: Located::dummy(Constructor::Named(2)),
@@ -687,7 +687,7 @@ fn integration_expression_exists_cut_rest_only() {
 #[test]
 fn integration_expression_exists_cutmulti_rec_only() {
     // CutMulti: only rec matches.
-    let unit = Located::dummy(Constructor::Unit);
+    let _unit = Located::dummy(Constructor::Unit);
     let meta = urweb::core::RestMeta {
         rest: Located::dummy(Constructor::Named(1)),
     };
@@ -710,7 +710,7 @@ fn integration_expression_exists_cutmulti_rec_only() {
 #[test]
 fn integration_expression_exists_cutmulti_field_c_only() {
     // CutMulti: only field_c matches.
-    let unit = Located::dummy(Constructor::Unit);
+    let _unit = Located::dummy(Constructor::Unit);
     let meta = urweb::core::RestMeta {
         rest: Located::dummy(Constructor::Named(2)),
     };
@@ -792,7 +792,7 @@ fn integration_expression_exists_con_cs_only() {
 #[test]
 fn integration_expression_exists_con_arg_only() {
     // Exp::Con: only arg matches
-    let unit = Located::dummy(Constructor::Unit);
+    let _unit = Located::dummy(Constructor::Unit);
     let prim = Located::dummy(urweb::core::Expression::Prim(urweb::primitives::Prim::Int(
         0,
     )));
@@ -848,7 +848,7 @@ fn integration_expression_exists_ffiapp_ac_only() {
 #[test]
 fn integration_expression_exists_abs_body_only() {
     // Abs: only body matches (dom and ran don't). Catches || in dom||ran||body.
-    let unit = Located::dummy(Constructor::Unit);
+    let _unit = Located::dummy(Constructor::Unit);
     let prim = Located::dummy(urweb::core::Expression::Prim(urweb::primitives::Prim::Int(
         0,
     )));
@@ -967,7 +967,7 @@ fn integration_expression_exists_record_name_only() {
 
 #[test]
 fn integration_expression_exists_field_rec_only() {
-    let unit = Located::dummy(Constructor::Unit);
+    let _unit = Located::dummy(Constructor::Unit);
     let meta = FieldMeta {
         field: Located::dummy(Constructor::Named(1)),
         rest: Located::dummy(Constructor::Named(2)),

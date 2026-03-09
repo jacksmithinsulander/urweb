@@ -756,7 +756,7 @@ fn explicit_exp_exists_field_field_only() {
 
 #[test]
 fn explicit_exp_exists_field_e_only() {
-    let unit = Located::dummy(Constructor::Unit);
+    let _unit = Located::dummy(Constructor::Unit);
     let prim = Located::dummy(Expression::Prim(urweb::primitives::Prim::Int(0)));
     let meta = FieldMeta {
         field: Located::dummy(Constructor::Named(1)),
@@ -845,7 +845,7 @@ fn explicit_exp_exists_concat_c2_only() {
 
 #[test]
 fn explicit_exp_exists_cut_e_only() {
-    let unit = Located::dummy(Constructor::Unit);
+    let _unit = Located::dummy(Constructor::Unit);
     let prim = Located::dummy(Expression::Prim(urweb::primitives::Prim::Int(0)));
     let meta = FieldMeta {
         field: Located::dummy(Constructor::Named(1)),

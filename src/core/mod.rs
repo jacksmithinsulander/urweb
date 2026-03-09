@@ -16,9 +16,14 @@
 pub mod dead_code_elimination;
 pub mod effect_analysis;
 pub mod environment;
+pub mod especialize;
 pub mod export_tagging;
+pub mod global_reduction;
 pub mod local_reduction;
+pub mod marshal_check;
 pub mod rpc_elaboration;
+pub mod specialize;
+pub mod unpoly;
 pub mod untangling;
 pub mod utilities;
 

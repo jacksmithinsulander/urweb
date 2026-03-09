@@ -144,5 +144,6 @@ All Core bindings use globally-unique `usize` ids. De Bruijn indices (`Rel`) app
 
 - **Unit and integration tests**: `cargo test`
 - **Mutation testing**: `cargo mutants` (injects small bugs and checks that tests catch them)
+- **Coverage (lcov, 100% line)**: `./scripts/coverage-rust.sh` — generates `lcov.info` and fails if line coverage is below 100%. Requires `cargo install cargo-llvm-cov` (Rust 1.87+; on Rust 1.81 use `cargo install cargo-llvm-cov --version 0.6.21`).
 
 cargo-mutants requires Rust 1.87+ to install. With Rust 1.81, use `cargo +1.87 mutants`.

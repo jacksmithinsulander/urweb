@@ -212,6 +212,15 @@ echo ""
 echo "build test-minimal: test_minimal_cmd"
 echo ""
 
+# Rust coverage (lcov, 100% line; requires cargo-llvm-cov)
+echo "rule coverage_rust_cmd"
+echo "  command = sh $srcdir/scripts/coverage-rust.sh"
+echo "  description = Rust coverage (lcov, 100% line)"
+echo "  pool = console"
+echo ""
+echo "build coverage-rust: coverage_rust_cmd"
+echo ""
+
 # Out-of-tree build: copy lib to builddir (no symlinks)
 if [ "$builddir" != "$srcdir" ]; then
   echo "rule copy_lib"

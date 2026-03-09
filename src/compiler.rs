@@ -172,56 +172,75 @@ pub fn core_untangle(file: crate::core::File) -> crate::core::File {
     crate::core::untangling::untangle(file)
 }
 
-pub fn core_reduce_local(_file: crate::core::File) -> crate::core::File {
-    todo!("core_reduce_local")
+pub fn core_reduce_local(file: crate::core::File) -> crate::core::File {
+    crate::core::local_reduction::reduce(file)
 }
 
 pub fn core_shake(file: crate::core::File) -> crate::core::File {
     crate::core::dead_code_elimination::shake(file)
 }
 
-pub fn core_reduce(_file: crate::core::File) -> crate::core::File {
-    todo!("core_reduce: constant folding")
+pub fn core_reduce(file: crate::core::File, settings: &Settings) -> crate::core::File {
+    crate::core::global_reduction::reduce(file, settings)
 }
 
-pub fn core_especialize(_file: crate::core::File) -> crate::core::File {
-    todo!("core_especialize")
+pub fn core_especialize(file: crate::core::File) -> crate::core::File {
+    crate::core::especialize::especialize(file)
 }
 
-pub fn core_unpoly(_file: crate::core::File) -> crate::core::File {
-    todo!("core_unpoly")
+pub fn core_unpoly(file: crate::core::File) -> crate::core::File {
+    crate::core::unpoly::unpoly(file)
 }
 
-pub fn core_specialize(_file: crate::core::File) -> crate::core::File {
-    todo!("core_specialize")
+pub fn core_specialize(file: crate::core::File) -> crate::core::File {
+    crate::core::specialize::specialize(file)
 }
 
 pub fn core_rpcify(
-    _file: crate::core::File,
+    file: crate::core::File,
     _settings: &Settings,
-    _errors: &mut ErrorReporter,
+    errors: &mut ErrorReporter,
 ) -> Option<crate::core::File> {
-    todo!("core_rpcify")
+    let mut had_errors = false;
+    let result = crate::core::rpc_elaboration::rpcify(file, &mut |span, msg| {
+        errors.report_at(span.clone(), msg);
+        had_errors = true;
+    });
+    if had_errors {
+        None
+    } else {
+        Some(result)
+    }
 }
 
 pub fn core_tag(
-    _file: crate::core::File,
+    file: crate::core::File,
     _settings: &Settings,
-    _errors: &mut ErrorReporter,
+    errors: &mut ErrorReporter,
 ) -> Option<crate::core::File> {
-    todo!("core_tag")
+    let mut had_errors = false;
+    let result = crate::core::export_tagging::tag(file, &mut |span, msg| {
+        errors.report_at(span.clone(), msg);
+        had_errors = true;
+    });
+    if had_errors {
+        None
+    } else {
+        Some(result)
+    }
 }
 
-pub fn core_effectize(_file: crate::core::File) -> crate::core::File {
-    todo!("core_effectize")
+pub fn core_effectize(file: crate::core::File, settings: &Settings) -> crate::core::File {
+    let (result, _warnings) = crate::core::effect_analysis::effectize(file, settings);
+    result
 }
 
 // ---------------------------------------------------------------------------
 // Checks on Core
 // ---------------------------------------------------------------------------
 
-pub fn check_marshal(_file: &crate::core::File, _errors: &mut ErrorReporter) {
-    todo!("check_marshal")
+pub fn check_marshal(file: &crate::core::File, settings: &Settings, errors: &mut ErrorReporter) {
+    crate::core::marshal_check::check(file, settings, errors);
 }
 
 pub fn check_script(_file: &crate::core::File, _errors: &mut ErrorReporter) {
@@ -268,31 +287,49 @@ pub fn monoize(
 // Mono passes
 // ---------------------------------------------------------------------------
 
-pub fn mono_untangle(_file: crate::monomorphized::File) -> crate::monomorphized::File {
-    todo!("mono_untangle")
+pub fn mono_untangle(file: crate::monomorphized::File) -> crate::monomorphized::File {
+    crate::monomorphized::untangle::untangle(file)
 }
 
-pub fn mono_fuse(_file: crate::monomorphized::File) -> crate::monomorphized::File {
-    todo!("mono_fuse")
+pub fn mono_fuse(file: crate::monomorphized::File) -> crate::monomorphized::File {
+    crate::monomorphized::fuse::fuse(file)
 }
 
-pub fn mono_reduce(_file: crate::monomorphized::File) -> crate::monomorphized::File {
-    todo!("mono_reduce")
+pub fn mono_reduce(
+    file: crate::monomorphized::File,
+    settings: &Settings,
+) -> crate::monomorphized::File {
+    crate::monomorphized::mono_reduce::reduce(file, settings)
 }
 
-pub fn mono_opt(_file: crate::monomorphized::File) -> crate::monomorphized::File {
-    todo!("mono_opt")
+pub fn mono_opt(
+    file: crate::monomorphized::File,
+    settings: &Settings,
+    errors: &mut ErrorReporter,
+) -> crate::monomorphized::File {
+    crate::monomorphized::mono_opt::optimize(file, settings, errors)
 }
 
-pub fn mono_shake(_file: crate::monomorphized::File) -> crate::monomorphized::File {
-    todo!("mono_shake")
+pub fn mono_shake(file: crate::monomorphized::File) -> crate::monomorphized::File {
+    crate::monomorphized::mono_shake::shake(file)
 }
 
 pub fn mono_inline(
-    _file: crate::monomorphized::File,
-    _settings: &Settings,
+    file: crate::monomorphized::File,
+    settings: &Settings,
 ) -> crate::monomorphized::File {
-    todo!("mono_inline")
+    use std::sync::atomic::Ordering;
+    let mut errors = ErrorReporter::new();
+    // Mirror SML mono_inline.sml: set fullMode=true and mono_inline=max before reducing.
+    let old_full = crate::monomorphized::mono_reduce::FULL_MODE.swap(true, Ordering::Relaxed);
+    let mut full_settings = settings.clone();
+    full_settings.mono_inline = u32::MAX;
+    let file = mono_reduce(file, &full_settings);
+    crate::monomorphized::mono_reduce::FULL_MODE.store(old_full, Ordering::Relaxed);
+    let file = mono_opt(file, settings, &mut errors);
+    let file = mono_fuse(file);
+    let file = mono_opt(file, settings, &mut errors);
+    mono_shake(file)
 }
 
 pub fn mono_iflow(
@@ -409,7 +446,7 @@ pub fn compile(urp_path: &Path, settings: &mut Settings) -> CompileResult {
     let core_file = core_untangle(core_file);
     let core_file = core_reduce_local(core_file);
     let core_file = core_shake(core_file);
-    let core_file = core_reduce(core_file);
+    let core_file = core_reduce(core_file, settings);
     let core_file = core_especialize(core_file);
     let core_file = core_unpoly(core_file);
     let core_file = core_specialize(core_file);
@@ -417,10 +454,10 @@ pub fn compile(urp_path: &Path, settings: &mut Settings) -> CompileResult {
         .ok_or_else(|| anyhow::anyhow!("Rpcify failed"))?;
     let core_file =
         core_tag(core_file, settings, &mut errors).ok_or_else(|| anyhow::anyhow!("Tag failed"))?;
-    let core_file = core_effectize(core_file);
+    let core_file = core_effectize(core_file, settings);
 
     // Core checks
-    check_marshal(&core_file, &mut errors);
+    check_marshal(&core_file, settings, &mut errors);
     check_script(&core_file, &mut errors);
     check_path(&core_file, settings, &mut errors);
     check_side(&core_file, &mut errors);
@@ -439,8 +476,8 @@ pub fn compile(urp_path: &Path, settings: &mut Settings) -> CompileResult {
     // Mono passes
     let mono_file = mono_untangle(mono_file);
     let mono_file = mono_fuse(mono_file);
-    let mono_file = mono_reduce(mono_file);
-    let mono_file = mono_opt(mono_file);
+    let mono_file = mono_reduce(mono_file, settings);
+    let mono_file = mono_opt(mono_file, settings, &mut errors);
     let mono_file = mono_shake(mono_file);
     let mono_file = mono_inline(mono_file, settings);
 
@@ -577,9 +614,41 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "core_reduce_local")]
-    fn core_reduce_local_panics_until_implemented() {
-        let _ = core_reduce_local(Default::default());
+    fn core_untangle_preserves_non_empty_file() {
+        // Catches mutant: replace core_untangle return with Default::default().
+        // With non-empty input, untangle must return non-empty (pass-through for non-ValRec).
+        let file: crate::core::File = vec![crate::error_types::Located::dummy(
+            crate::core::Declaration::Database("d".into()),
+        )];
+        let result = core_untangle(file);
+        assert!(
+            !result.is_empty(),
+            "untangle must preserve non-empty file (catches replace with Default::default())"
+        );
+        assert_eq!(result.len(), 1);
+    }
+
+    #[test]
+    fn core_reduce_local_passes_through_empty_file() {
+        // Catches mutant: core_reduce_local returns garbage or panics on empty input.
+        let result = core_reduce_local(Default::default());
+        assert!(
+            result.is_empty(),
+            "reduce_local of empty file must be empty"
+        );
+    }
+
+    #[test]
+    fn core_reduce_local_preserves_database_decl() {
+        // Catches mutant: replace core_reduce_local return with Default::default().
+        let file: crate::core::File = vec![crate::error_types::Located::dummy(
+            crate::core::Declaration::Database("d".into()),
+        )];
+        let result = core_reduce_local(file);
+        assert!(
+            !result.is_empty(),
+            "reduce_local must preserve Database decl"
+        );
     }
 
     #[test]
@@ -590,56 +659,88 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "core_reduce")]
-    fn core_reduce_panics_until_implemented() {
-        let _ = core_reduce(Default::default());
+    fn core_shake_preserves_retained_declaration() {
+        // Catches mutant: replace core_shake return with Default::default().
+        // Database is always retained by shake; result must be non-empty.
+        let file: crate::core::File = vec![crate::error_types::Located::dummy(
+            crate::core::Declaration::Database("d".into()),
+        )];
+        let result = core_shake(file);
+        assert!(
+            !result.is_empty(),
+            "shake must retain Database decl (catches replace with Default::default())"
+        );
+        assert_eq!(result.len(), 1);
     }
 
     #[test]
-    #[should_panic(expected = "core_especialize")]
-    fn core_especialize_panics_until_implemented() {
-        let _ = core_especialize(Default::default());
+    fn core_reduce_passes_through_empty_file() {
+        let result = core_reduce(vec![], &Settings::default());
+        assert!(result.is_empty(), "reduce of empty file must be empty");
     }
 
     #[test]
-    #[should_panic(expected = "core_unpoly")]
-    fn core_unpoly_panics_until_implemented() {
-        let _ = core_unpoly(Default::default());
+    fn core_especialize_passes_through_empty_file() {
+        let result = core_especialize(Default::default());
+        assert!(result.is_empty(), "especialize of empty file must be empty");
     }
 
     #[test]
-    #[should_panic(expected = "core_specialize")]
-    fn core_specialize_panics_until_implemented() {
-        let _ = core_specialize(Default::default());
+    fn core_unpoly_passes_through_empty_file() {
+        let result = core_unpoly(Default::default());
+        assert!(result.is_empty(), "unpoly of empty file must be empty");
     }
 
     #[test]
-    #[should_panic(expected = "core_rpcify")]
-    fn core_rpcify_panics_until_implemented() {
+    fn core_specialize_passes_through_empty_file() {
+        let result = core_specialize(Default::default());
+        assert!(result.is_empty(), "specialize of empty file must be empty");
+    }
+
+    #[test]
+    fn core_rpcify_passes_through_empty_file() {
+        // Catches mutant: core_rpcify panics or returns None on empty input.
         let mut errors = ErrorReporter::new();
         let mut settings = Settings::default();
-        let _ = core_rpcify(Default::default(), &mut settings, &mut errors);
+        let result = core_rpcify(Default::default(), &mut settings, &mut errors);
+        assert!(result.is_some(), "rpcify of empty file must succeed");
+        assert!(
+            result.unwrap().is_empty(),
+            "rpcify of empty file must be empty"
+        );
     }
 
     #[test]
-    #[should_panic(expected = "core_tag")]
-    fn core_tag_panics_until_implemented() {
+    fn core_tag_passes_through_empty_file() {
+        // Catches mutant: core_tag panics or returns None on empty input.
         let mut errors = ErrorReporter::new();
         let mut settings = Settings::default();
-        let _ = core_tag(Default::default(), &mut settings, &mut errors);
+        let result = core_tag(Default::default(), &mut settings, &mut errors);
+        assert!(result.is_some(), "tag of empty file must succeed");
+        assert!(
+            result.unwrap().is_empty(),
+            "tag of empty file must be empty"
+        );
     }
 
     #[test]
-    #[should_panic(expected = "core_effectize")]
-    fn core_effectize_panics_until_implemented() {
-        let _ = core_effectize(Default::default());
+    fn core_effectize_passes_through_empty_file() {
+        // Catches mutant: core_effectize panics or returns garbage on empty input.
+        let settings = Settings::default();
+        let result = core_effectize(Default::default(), &settings);
+
+        assert!(result.is_empty(), "effectize of empty file must be empty");
     }
 
     #[test]
-    #[should_panic(expected = "check_marshal")]
-    fn check_marshal_panics_until_implemented() {
+    fn check_marshal_passes_through_empty_file() {
         let mut errors = ErrorReporter::new();
-        check_marshal(&Default::default(), &mut errors);
+        let settings = Settings::default();
+        check_marshal(&Default::default(), &settings, &mut errors);
+        assert!(
+            !errors.has_errors(),
+            "marshal check of empty file must produce no errors"
+        );
     }
 
     #[test]
@@ -701,40 +802,58 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "mono_untangle")]
-    fn mono_untangle_panics_until_implemented() {
-        let _ = mono_untangle(Default::default());
+    fn mono_untangle_passes_through_empty_file() {
+        let result = mono_untangle(Default::default());
+        assert!(result.0.is_empty(), "untangle of empty file must be empty");
     }
 
     #[test]
-    #[should_panic(expected = "mono_fuse")]
-    fn mono_fuse_panics_until_implemented() {
-        let _ = mono_fuse(Default::default());
+    fn mono_fuse_passes_through_empty_file() {
+        let result = mono_fuse(Default::default());
+        assert!(
+            result.0.is_empty(),
+            "fuse of empty file should produce no decls"
+        );
     }
 
     #[test]
-    #[should_panic(expected = "mono_reduce")]
-    fn mono_reduce_panics_until_implemented() {
-        let _ = mono_reduce(Default::default());
+    fn mono_reduce_passes_through_empty_file() {
+        let settings = Settings::default();
+        let result = mono_reduce(Default::default(), &settings);
+        assert!(
+            result.0.is_empty(),
+            "mono_reduce of empty file must produce no decls"
+        );
     }
 
     #[test]
-    #[should_panic(expected = "mono_opt")]
-    fn mono_opt_panics_until_implemented() {
-        let _ = mono_opt(Default::default());
+    fn mono_opt_passes_through_empty_file() {
+        let settings = Settings::default();
+        let mut errors = ErrorReporter::new();
+        let result = mono_opt(Default::default(), &settings, &mut errors);
+        assert!(
+            result.0.is_empty(),
+            "mono_opt of empty file must produce no decls"
+        );
     }
 
     #[test]
-    #[should_panic(expected = "mono_shake")]
-    fn mono_shake_panics_until_implemented() {
-        let _ = mono_shake(Default::default());
+    fn mono_shake_passes_through_empty_file() {
+        let result = mono_shake(Default::default());
+        assert!(
+            result.0.is_empty(),
+            "mono_shake of empty file must be empty"
+        );
     }
 
     #[test]
-    #[should_panic(expected = "mono_inline")]
-    fn mono_inline_panics_until_implemented() {
-        let mut settings = Settings::default();
-        let _ = mono_inline(Default::default(), &mut settings);
+    fn mono_inline_passes_through_empty_file() {
+        let settings = Settings::default();
+        let result = mono_inline(Default::default(), &settings);
+        assert!(
+            result.0.is_empty(),
+            "mono_inline of empty file must produce no decls"
+        );
     }
 
     #[test]

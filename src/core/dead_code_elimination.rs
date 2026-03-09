@@ -680,7 +680,7 @@ fn shake_with_options(file: crate::core::File, slice_for_db: bool) -> crate::cor
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::{DatatypeDecl, Declaration, LocatedDeclaration};
+    use crate::core::{CaseMeta, DatatypeDecl, Declaration, LocatedDeclaration, Pattern};
     use crate::error_types::{Located, Span};
     use crate::export::ExportKind;
     use crate::primitives::Prim;
@@ -773,7 +773,7 @@ mod tests {
 
     #[test]
     fn exported_value_is_kept() {
-        /// Catches mutant: shake drops the exported binding.
+        // Catches mutant: shake drops the exported binding.
         let file = vec![val_decl(1, prim_exp()), export_decl(1)];
         let result = shake(file);
         let ids: Vec<usize> = result
@@ -788,7 +788,7 @@ mod tests {
 
     #[test]
     fn unreachable_value_is_removed() {
-        /// Catches mutant: shake keeps all vals unconditionally.
+        // Catches mutant: shake keeps all vals unconditionally.
         let file = vec![
             val_decl(1, prim_exp()),
             val_decl(2, prim_exp()), // not exported, not reachable
@@ -807,7 +807,7 @@ mod tests {
 
     #[test]
     fn transitive_expression_dependency_is_kept() {
-        /// Catches mutant: transitive closure only goes one level deep.
+        // Catches mutant: transitive closure only goes one level deep.
         let file = vec![
             val_decl(1, prim_exp()),   // id=1: base val, not directly exported
             val_decl(2, named_exp(1)), // id=2: depends on id=1
@@ -827,7 +827,7 @@ mod tests {
 
     #[test]
     fn transitive_constructor_dependency_is_kept() {
-        /// Catches mutant: constructor deps are not traversed transitively.
+        // Catches mutant: constructor deps are not traversed transitively.
         let file = vec![
             con_decl(10, unit_con()),    // id=10: base type
             con_decl(11, named_con(10)), // id=11: depends on id=10
@@ -862,7 +862,7 @@ mod tests {
 
     #[test]
     fn tables_are_always_kept() {
-        /// Catches mutant: tables are filtered the same as vals.
+        // Catches mutant: tables are filtered the same as vals.
         let file = vec![table_decl(99)];
         let result = shake(file);
         assert!(
@@ -875,7 +875,7 @@ mod tests {
 
     #[test]
     fn sequences_are_always_kept() {
-        /// Catches mutant: sequences are filtered when not in used_expressions.
+        // Catches mutant: sequences are filtered when not in used_expressions.
         let file = vec![sequence_decl(42)];
         let result = shake(file);
         assert!(
@@ -888,7 +888,7 @@ mod tests {
 
     #[test]
     fn views_are_always_kept() {
-        /// Catches mutant: views are filtered when not in used_expressions.
+        // Catches mutant: views are filtered when not in used_expressions.
         let file = vec![Located::new(
             Declaration::View("v".into(), 7, "v_sql".into(), prim_exp(), unit_con()),
             dummy_span(),
@@ -904,7 +904,7 @@ mod tests {
 
     #[test]
     fn indexes_are_always_kept() {
-        /// Catches mutant: indexes are filtered.
+        // Catches mutant: indexes are filtered.
         let file = vec![Located::new(
             Declaration::Index(prim_exp(), prim_exp()),
             dummy_span(),
@@ -918,13 +918,151 @@ mod tests {
         );
     }
 
+    /// Catches mutant: delete match arm Declaration::View in seed_roots_from_file.
+    /// If we don't seed from the view, the constructor/expression ids it references
+    /// won't be in used sets and the corresponding Val/Con would be dropped.
+    #[test]
+    fn view_seeds_expression_and_constructor_deps() {
+        let file = vec![
+            con_decl(10, unit_con()),
+            val_decl(1, prim_exp()),
+            Located::new(
+                Declaration::View("v".into(), 7, "v_sql".into(), named_exp(1), named_con(10)),
+                dummy_span(),
+            ),
+        ];
+        let result = shake(file);
+        let con_ids: Vec<usize> = result
+            .iter()
+            .filter_map(|d| match &d.node {
+                Declaration::Constructor(_, id, _, _) => Some(*id),
+                _ => None,
+            })
+            .collect();
+        let exp_ids: Vec<usize> = result
+            .iter()
+            .filter_map(|d| match &d.node {
+                Declaration::Val(_, id, _, _, _) => Some(*id),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            con_ids.contains(&10),
+            "constructor referenced by view must be kept"
+        );
+        assert!(
+            exp_ids.contains(&1),
+            "expression referenced by view must be kept"
+        );
+    }
+
+    /// Catches mutant: delete match arm Declaration::Index in seed_roots_from_file.
+    #[test]
+    fn index_seeds_expression_deps() {
+        let file = vec![
+            val_decl(1, prim_exp()),
+            Located::new(Declaration::Index(named_exp(1), prim_exp()), dummy_span()),
+        ];
+        let result = shake(file);
+        let exp_ids: Vec<usize> = result
+            .iter()
+            .filter_map(|d| match &d.node {
+                Declaration::Val(_, id, _, _, _) => Some(*id),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            exp_ids.contains(&1),
+            "expression referenced by index must be kept"
+        );
+    }
+
+    /// Catches mutant: delete match arm Declaration::Task or delete !slice_for_db in Task arm.
+    #[test]
+    fn task_seeds_expression_deps_in_normal_mode() {
+        let file = vec![
+            val_decl(1, prim_exp()),
+            Located::new(Declaration::Task(named_exp(1), prim_exp()), dummy_span()),
+        ];
+        let result = shake(file);
+        let exp_ids: Vec<usize> = result
+            .iter()
+            .filter_map(|d| match &d.node {
+                Declaration::Val(_, id, _, _, _) => Some(*id),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            exp_ids.contains(&1),
+            "expression referenced by task must be kept in normal mode"
+        );
+    }
+
+    /// Catches mutant: delete match arm Declaration::Policy or delete !slice_for_db in Policy arm.
+    #[test]
+    fn policy_seeds_expression_deps_in_normal_mode() {
+        let file = vec![
+            val_decl(1, prim_exp()),
+            Located::new(Declaration::Policy(named_exp(1)), dummy_span()),
+        ];
+        let result = shake(file);
+        let exp_ids: Vec<usize> = result
+            .iter()
+            .filter_map(|d| match &d.node {
+                Declaration::Val(_, id, _, _, _) => Some(*id),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            exp_ids.contains(&1),
+            "expression referenced by policy must be kept in normal mode"
+        );
+    }
+
+    /// Catches mutant: replace Shaker::collect_named_from_pattern with () (skip pattern traversal).
+    /// A Case expression's arm pattern can have a type annotation that references a constructor;
+    /// that constructor id must be collected so the Con is kept.
+    #[test]
+    fn case_pattern_type_annotation_constructor_kept() {
+        let pat_with_ty = Located::new(Pattern::Var("x".into(), named_con(50)), dummy_span());
+        let case_meta = CaseMeta {
+            disc: unit_con(),
+            result: unit_con(),
+        };
+        let case_exp = Located::new(
+            Expression::Case(
+                Box::new(prim_exp()),
+                vec![(pat_with_ty, prim_exp())],
+                case_meta,
+            ),
+            dummy_span(),
+        );
+        let file = vec![
+            con_decl(50, unit_con()),
+            val_decl(5, case_exp),
+            export_decl(5),
+        ];
+        let result = shake(file);
+        let con_ids: Vec<usize> = result
+            .iter()
+            .filter_map(|d| match &d.node {
+                Declaration::Constructor(_, id, _, _) => Some(*id),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            con_ids.contains(&50),
+            "constructor referenced in case pattern type must be kept"
+        );
+    }
+
     // -----------------------------------------------------------------------
     // Mutual recursion
     // -----------------------------------------------------------------------
 
     #[test]
     fn val_rec_group_kept_as_unit_when_one_used() {
-        /// Catches mutant: ValRec members are filtered individually.
+        // Catches mutant: ValRec members are filtered individually.
         let file = vec![
             Located::new(
                 Declaration::ValRec(vec![
@@ -952,7 +1090,7 @@ mod tests {
 
     #[test]
     fn val_rec_group_entirely_removed_when_not_used() {
-        /// Catches mutant: ValRec is kept even when none of its ids are used.
+        // Catches mutant: ValRec is kept even when none of its ids are used.
         let file = vec![
             Located::new(
                 Declaration::ValRec(vec![
@@ -978,7 +1116,7 @@ mod tests {
 
     #[test]
     fn datatype_kept_when_used_by_exported_val_type() {
-        /// Catches mutant: datatypes are not tracked via constructor deps.
+        // Catches mutant: datatypes are not tracked via constructor deps.
         let file = vec![
             Located::new(
                 Declaration::Datatype(vec![DatatypeDecl {
@@ -1007,7 +1145,7 @@ mod tests {
 
     #[test]
     fn unreachable_datatype_removed() {
-        /// Catches mutant: all datatypes are kept unconditionally.
+        // Catches mutant: all datatypes are kept unconditionally.
         let file = vec![
             Located::new(
                 Declaration::Datatype(vec![DatatypeDecl {
@@ -1036,7 +1174,7 @@ mod tests {
 
     #[test]
     fn exports_removed_in_slice_for_db_mode() {
-        /// Catches mutant: slice_for_db doesn't suppress exports.
+        // Catches mutant: slice_for_db doesn't suppress exports.
         let file = vec![val_decl(1, prim_exp()), export_decl(1)];
         let result = shake_slicing_for_db(file);
         assert!(
@@ -1049,7 +1187,7 @@ mod tests {
 
     #[test]
     fn exports_kept_in_normal_mode() {
-        /// Catches mutant: normal shake drops exports.
+        // Catches mutant: normal shake drops exports.
         let file = vec![val_decl(1, prim_exp()), export_decl(1)];
         let result = shake(file);
         assert!(
@@ -1062,7 +1200,7 @@ mod tests {
 
     #[test]
     fn tasks_removed_in_slice_for_db_mode() {
-        /// Catches mutant: tasks survive slice_for_db.
+        // Catches mutant: tasks survive slice_for_db.
         let file = vec![Located::new(
             Declaration::Task(prim_exp(), prim_exp()),
             dummy_span(),
@@ -1078,7 +1216,7 @@ mod tests {
 
     #[test]
     fn tables_kept_in_slice_for_db_mode() {
-        /// Catches mutant: tables are suppressed by slice_for_db.
+        // Catches mutant: tables are suppressed by slice_for_db.
         let file = vec![table_decl(5)];
         let result = shake_slicing_for_db(file);
         assert!(
@@ -1091,7 +1229,7 @@ mod tests {
 
     #[test]
     fn table_constructor_dep_reachable_in_normal_mode() {
-        /// Catches mutant: table deps are not traversed.
+        // Catches mutant: table deps are not traversed.
         let file = vec![
             con_decl(99, unit_con()), // the table's column type
             Located::new(
@@ -1119,7 +1257,7 @@ mod tests {
 
     #[test]
     fn on_error_handler_kept_in_normal_mode() {
-        /// Catches mutant: OnError is always suppressed.
+        // Catches mutant: OnError is always suppressed.
         let file = vec![
             val_decl(3, prim_exp()),
             Located::new(Declaration::OnError(3), dummy_span()),
@@ -1142,7 +1280,7 @@ mod tests {
 
     #[test]
     fn on_error_handler_removed_in_slice_for_db_mode() {
-        /// Catches mutant: OnError survives slice_for_db.
+        // Catches mutant: OnError survives slice_for_db.
         let file = vec![Located::new(Declaration::OnError(3), dummy_span())];
         let result = shake_slicing_for_db(file);
         assert!(
@@ -1159,7 +1297,7 @@ mod tests {
 
     #[test]
     fn server_call_target_is_kept() {
-        /// Catches mutant: Expression::ServerCall id is not treated as a dep.
+        // Catches mutant: Expression::ServerCall id is not treated as a dep.
         let server_fn_exp = Located::new(
             Expression::ServerCall(77, vec![], unit_con(), crate::settings::FailureMode::Error),
             dummy_span(),
@@ -1186,7 +1324,7 @@ mod tests {
 
     #[test]
     fn empty_file_stays_empty() {
-        /// Catches mutant: shake panics or adds phantom decls on empty input.
+        // Catches mutant: shake panics or adds phantom decls on empty input.
         let result = shake(vec![]);
         assert!(
             result.is_empty(),
@@ -1200,7 +1338,7 @@ mod tests {
 
     #[test]
     fn cyclic_constructor_refs_do_not_loop_forever() {
-        /// Catches mutant: transitive closure loops forever on cycles.
+        // Catches mutant: transitive closure loops forever on cycles.
         // con A = Named(B), con B = Named(A)  — a type cycle.
         let file = vec![
             con_decl(1, named_con(2)),

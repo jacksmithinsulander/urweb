@@ -322,3 +322,462 @@ pub fn effectize(file: File, settings: &Settings) -> (File, Vec<(Span, String)>)
 
     (result, errors)
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use crate::core::{Constructor, Declaration, Expression};
+    use crate::error_types::{Located, Span};
+    use crate::export::{Effect, ExportKind};
+    use crate::primitives::Prim;
+    use crate::settings::{FailureMode, Settings};
+
+    use super::*;
+
+    fn dummy_span() -> Span {
+        Span::dummy()
+    }
+
+    #[test]
+    fn is_effectful_ffi_true_when_effectful_not_client_only() {
+        let s = Settings::new();
+        assert!(is_effectful_ffi("Basis", "dml", &s));
+    }
+
+    #[test]
+    fn is_effectful_ffi_false_when_client_only() {
+        let s = Settings::new();
+        assert!(!is_effectful_ffi("Basis", "recv", &s));
+    }
+
+    #[test]
+    fn is_effectful_ffi_false_when_neither() {
+        let s = Settings::new();
+        assert!(!is_effectful_ffi("Other", "foo", &s));
+    }
+
+    #[test]
+    fn could_write_onload_node_ffi() {
+        let s = Settings::new();
+        let evs: EffectMap = HashMap::new();
+        assert!(could_write_onload_node(
+            &evs,
+            &s,
+            &Expression::Ffi("Basis".into(), "dml".into())
+        ));
+    }
+
+    #[test]
+    fn could_write_onload_node_ffi_app() {
+        let s = Settings::new();
+        let evs: EffectMap = HashMap::new();
+        let args = vec![(
+            Located::dummy(Expression::Prim(Prim::Int(0))),
+            Located::dummy(Constructor::Unit),
+        )];
+        assert!(could_write_onload_node(
+            &evs,
+            &s,
+            &Expression::FfiApp("Basis".into(), "dml".into(), args)
+        ));
+    }
+
+    #[test]
+    fn could_write_onload_node_named_in_evs() {
+        let s = Settings::new();
+        let mut evs: EffectMap = HashMap::new();
+        evs.insert(42, (dummy_span(), "x".into()));
+        assert!(could_write_onload_node(&evs, &s, &Expression::Named(42)));
+        assert!(!could_write_onload_node(&evs, &s, &Expression::Named(99)));
+    }
+
+    #[test]
+    fn could_write_onload_node_server_call() {
+        let s = Settings::new();
+        let mut evs: EffectMap = HashMap::new();
+        evs.insert(1, (dummy_span(), "f".into()));
+        assert!(could_write_onload_node(
+            &evs,
+            &s,
+            &Expression::ServerCall(
+                1,
+                vec![],
+                Located::dummy(Constructor::Unit),
+                FailureMode::Error
+            )
+        ));
+    }
+
+    #[test]
+    fn could_write_onload_node_other_false() {
+        let s = Settings::new();
+        let evs: EffectMap = HashMap::new();
+        assert!(!could_write_onload_node(
+            &evs,
+            &s,
+            &Expression::Prim(Prim::Int(0))
+        ));
+    }
+
+    #[test]
+    fn could_write_node_ffi() {
+        // Catches mutant: delete match arm Expression::Ffi in could_write_node.
+        let s = Settings::new();
+        let writers: EffectMap = HashMap::new();
+        assert!(could_write_node(
+            &writers,
+            &s,
+            &Expression::Ffi("Basis".into(), "dml".into())
+        ));
+    }
+
+    #[test]
+    fn could_write_node_named() {
+        let s = Settings::new();
+        let mut writers: EffectMap = HashMap::new();
+        writers.insert(10, (dummy_span(), "w".into()));
+        assert!(could_write_node(&writers, &s, &Expression::Named(10)));
+    }
+
+    #[test]
+    fn could_write_node_record_onload_with_write() {
+        let s = Settings::new();
+        let mut writers: EffectMap = HashMap::new();
+        writers.insert(7, (dummy_span(), "onload".into()));
+        let onload_name = Located::dummy(Constructor::Name("Onload".into()));
+        let body_with_write = Located::dummy(Expression::Named(7));
+        let unit_ty = Located::dummy(Constructor::Unit);
+        let record = Expression::Record(vec![(onload_name, body_with_write, unit_ty.clone())]);
+        assert!(could_write_node(&writers, &s, &record));
+    }
+
+    #[test]
+    fn could_write_node_record_onload_no_write() {
+        let s = Settings::new();
+        let writers: EffectMap = HashMap::new();
+        let onload_name = Located::dummy(Constructor::Name("Onload".into()));
+        let body = Located::dummy(Expression::Prim(Prim::Int(0)));
+        let unit_ty = Located::dummy(Constructor::Unit);
+        let record = Expression::Record(vec![(onload_name, body, unit_ty)]);
+        assert!(!could_write_node(&writers, &s, &record));
+    }
+
+    #[test]
+    fn could_read_cookie_node_ffi_get_cookie() {
+        let readers: EffectMap = HashMap::new();
+        assert!(could_read_cookie_node(
+            &readers,
+            &Expression::Ffi("Basis".into(), "getCookie".into())
+        ));
+        assert!(!could_read_cookie_node(
+            &readers,
+            &Expression::Ffi("Basis".into(), "other".into())
+        ));
+    }
+
+    #[test]
+    fn could_read_cookie_node_ffi_app_get_header_getenv() {
+        let readers: EffectMap = HashMap::new();
+        let args = vec![(
+            Located::dummy(Expression::Prim(Prim::Int(0))),
+            Located::dummy(Constructor::Unit),
+        )];
+        assert!(could_read_cookie_node(
+            &readers,
+            &Expression::FfiApp("Basis".into(), "getHeader".into(), args.clone())
+        ));
+        assert!(could_read_cookie_node(
+            &readers,
+            &Expression::FfiApp("Basis".into(), "getenv".into(), args)
+        ));
+    }
+
+    #[test]
+    fn could_read_cookie_node_named_and_server_call() {
+        let mut readers: EffectMap = HashMap::new();
+        readers.insert(5, (dummy_span(), "r".into()));
+        assert!(could_read_cookie_node(&readers, &Expression::Named(5)));
+        assert!(could_read_cookie_node(
+            &readers,
+            &Expression::ServerCall(
+                5,
+                vec![],
+                Located::dummy(Constructor::Unit),
+                FailureMode::Error
+            )
+        ));
+    }
+
+    #[test]
+    fn could_write_with_rpc_node_named_pusher() {
+        let writers: EffectMap = HashMap::new();
+        let readers: EffectMap = HashMap::new();
+        let mut pushers: EffectMap = HashMap::new();
+        pushers.insert(3, (dummy_span(), "p".into()));
+        assert!(could_write_with_rpc_node(
+            &writers,
+            &readers,
+            &pushers,
+            &Expression::Named(3)
+        ));
+    }
+
+    #[test]
+    fn could_write_with_rpc_node_server_call_both() {
+        let mut writers: EffectMap = HashMap::new();
+        let mut readers: EffectMap = HashMap::new();
+        writers.insert(1, (dummy_span(), "w".into()));
+        readers.insert(1, (dummy_span(), "r".into()));
+        let pushers: EffectMap = HashMap::new();
+        assert!(could_write_with_rpc_node(
+            &writers,
+            &readers,
+            &pushers,
+            &Expression::ServerCall(
+                1,
+                vec![],
+                Located::dummy(Constructor::Unit),
+                FailureMode::Error
+            )
+        ));
+    }
+
+    #[test]
+    fn could_write_with_rpc_node_server_call_writer_only_false() {
+        let mut writers: EffectMap = HashMap::new();
+        writers.insert(1, (dummy_span(), "w".into()));
+        let readers: EffectMap = HashMap::new();
+        let pushers: EffectMap = HashMap::new();
+        assert!(!could_write_with_rpc_node(
+            &writers,
+            &readers,
+            &pushers,
+            &Expression::ServerCall(
+                1,
+                vec![],
+                Located::dummy(Constructor::Unit),
+                FailureMode::Error
+            )
+        ));
+    }
+
+    #[test]
+    fn exp_has_write_nested() {
+        let s = Settings::new();
+        let mut writers: EffectMap = HashMap::new();
+        writers.insert(2, (dummy_span(), "x".into()));
+        let e = Located::dummy(Expression::Let(
+            "a".into(),
+            Located::dummy(Constructor::Unit),
+            Box::new(Located::dummy(Expression::Named(2))),
+            Box::new(Located::dummy(Expression::Rel(0))),
+        ));
+        assert!(exp_has_write(&e, &writers, &s));
+    }
+
+    #[test]
+    fn exp_has_read_cookie_nested() {
+        let mut readers: EffectMap = HashMap::new();
+        readers.insert(3, (dummy_span(), "y".into()));
+        let e = Located::dummy(Expression::App(
+            Box::new(Located::dummy(Expression::Named(3))),
+            Box::new(Located::dummy(Expression::Rel(0))),
+        ));
+        assert!(exp_has_read_cookie(&e, &readers));
+    }
+
+    #[test]
+    fn exp_has_push_nested() {
+        let mut pushers: EffectMap = HashMap::new();
+        pushers.insert(4, (dummy_span(), "z".into()));
+        let writers: EffectMap = HashMap::new();
+        let readers: EffectMap = HashMap::new();
+        let e = Located::dummy(Expression::Named(4));
+        assert!(exp_has_push(&e, &writers, &readers, &pushers));
+    }
+
+    #[test]
+    fn dejs_keeps_onload_strips_on_click() {
+        let onload = Located::dummy(Constructor::Name("Onload".into()));
+        let onclick = Located::dummy(Constructor::Name("OnClick".into())); // capital O to match starts_with("On")
+        let other = Located::dummy(Constructor::Name("value".into()));
+        let unit_ty = Located::dummy(Constructor::Unit);
+        let prim = Located::dummy(Expression::Prim(Prim::Int(0)));
+        let record = Located::dummy(Expression::Record(vec![
+            (onload.clone(), prim.clone(), unit_ty.clone()),
+            (onclick, prim.clone(), unit_ty.clone()),
+            (other.clone(), prim, unit_ty),
+        ]));
+        let out = dejs(record);
+        let fields = match &out.node {
+            Expression::Record(fs) => fs,
+            _ => panic!("expected Record"),
+        };
+        let names: Vec<&str> = fields
+            .iter()
+            .map(|(c, _, _)| match &c.node {
+                Constructor::Name(s) => s.as_str(),
+                _ => "",
+            })
+            .collect();
+        assert_eq!(
+            names,
+            ["Onload", "value"],
+            "Onload and value kept, onClick stripped"
+        );
+    }
+
+    #[test]
+    fn dejs_non_record_unchanged() {
+        let prim = Located::dummy(Expression::Prim(Prim::Int(42)));
+        let out = dejs(prim.clone());
+        assert!(matches!(out.node, Expression::Prim(Prim::Int(42))));
+    }
+
+    #[test]
+    fn effectize_annotates_export_effect() {
+        let s = Settings::new();
+        let span = Span::dummy();
+        let file: File = vec![
+            Located::new(
+                Declaration::Val(
+                    "main".into(),
+                    100,
+                    Located::dummy(Constructor::Unit),
+                    Located::dummy(Expression::FfiApp("Basis".into(), "dml".into(), vec![])),
+                    "main".into(),
+                ),
+                span.clone(),
+            ),
+            Located::new(
+                Declaration::Export(ExportKind::Action(Effect::ReadOnly), 100, false),
+                span,
+            ),
+        ];
+        let (out, errs) = effectize(file, &s);
+        assert!(errs.is_empty());
+        let export = out
+            .iter()
+            .find(|d| matches!(d.node, Declaration::Export(_, _, _)))
+            .unwrap();
+        match &export.node {
+            Declaration::Export(ExportKind::Action(effect), n, has_state) => {
+                assert_eq!(*n, 100);
+                assert_eq!(*effect, Effect::ReadWrite);
+                assert!(!*has_state);
+            }
+            _ => panic!("expected Action export with effect"),
+        }
+    }
+
+    #[test]
+    fn effectize_annotates_readonly_when_no_write() {
+        // Catches mutant: replace exp_has_write -> bool with true.
+        let s = Settings::new();
+        let span = Span::dummy();
+        let file: File = vec![
+            Located::new(
+                Declaration::Val(
+                    "main".into(),
+                    100,
+                    Located::dummy(Constructor::Unit),
+                    Located::dummy(Expression::Prim(Prim::Int(0))),
+                    "main".into(),
+                ),
+                span.clone(),
+            ),
+            Located::new(
+                Declaration::Export(ExportKind::Action(Effect::ReadOnly), 100, false),
+                span,
+            ),
+        ];
+        let (out, errs) = effectize(file, &s);
+        assert!(errs.is_empty());
+        let export = out
+            .iter()
+            .find(|d| matches!(d.node, Declaration::Export(_, _, _)))
+            .unwrap();
+        match &export.node {
+            Declaration::Export(ExportKind::Action(effect), _, _) => {
+                assert_eq!(*effect, Effect::ReadOnly);
+            }
+            _ => panic!("expected Action export"),
+        }
+    }
+
+    #[test]
+    fn effectize_valrec_fixed_point_and_writer_conditions() {
+        // Catches mutants: && with ||, delete ! in ValRec analyze_decl.
+        // ValRec: a has write, b has no write. Export b -> ReadOnly.
+        // If we wrongly add b to writers (&& -> ||), export would be ReadWrite.
+        let s = Settings::new();
+        let span = Span::dummy();
+        let file: File = vec![
+            Located::new(
+                Declaration::ValRec(vec![
+                    (
+                        "a".into(),
+                        10,
+                        Located::dummy(Constructor::Unit),
+                        Located::dummy(Expression::FfiApp("Basis".into(), "dml".into(), vec![])),
+                        "a".into(),
+                    ),
+                    (
+                        "b".into(),
+                        11,
+                        Located::dummy(Constructor::Unit),
+                        Located::dummy(Expression::Prim(Prim::Int(0))),
+                        "b".into(),
+                    ),
+                ]),
+                span.clone(),
+            ),
+            Located::new(
+                Declaration::Export(ExportKind::Action(Effect::ReadOnly), 11, false),
+                span,
+            ),
+        ];
+        let (out, errs) = effectize(file, &s);
+        assert!(errs.is_empty());
+        let export = out
+            .iter()
+            .find(|d| matches!(d.node, Declaration::Export(_, _, _)))
+            .unwrap();
+        match &export.node {
+            Declaration::Export(ExportKind::Action(effect), n, _) => {
+                assert_eq!(*n, 11);
+                assert_eq!(*effect, Effect::ReadOnly);
+            }
+            _ => panic!("expected Action export"),
+        }
+    }
+
+    #[test]
+    fn effectize_link_export_with_writer_emits_error_when_not_safe_get() {
+        // Catches mutant: delete ! in if !settings.is_safe_get(&s).
+        let s = Settings::new();
+        let span = Span::dummy();
+        let file: File = vec![
+            Located::new(
+                Declaration::Val(
+                    "main".into(),
+                    100,
+                    Located::dummy(Constructor::Unit),
+                    Located::dummy(Expression::FfiApp("Basis".into(), "dml".into(), vec![])),
+                    "/page".into(),
+                ),
+                span.clone(),
+            ),
+            Located::new(
+                Declaration::Export(ExportKind::Link(Effect::ReadOnly), 100, false),
+                span,
+            ),
+        ];
+        let (_, errs) = effectize(file, &s);
+        assert!(
+            !errs.is_empty(),
+            "Link export with writer and default safe_get=false must emit error"
+        );
+    }
+}

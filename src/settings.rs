@@ -127,7 +127,7 @@ impl SqlType {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FailureMode {
     Error,
     None,

@@ -1,0 +1,44 @@
+# Rust test coverage (lcov) with 100% line coverage requirement.
+name: coverage
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+
+      - name: Cache cargo registry and target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: coverage-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            coverage-${{ runner.os }}-
+
+      - name: Install cargo-llvm-cov
+        run: cargo install cargo-llvm-cov
+
+      - name: Generate lcov and enforce 100% line coverage
+        run: ./scripts/coverage-rust.sh
+
+      - name: Upload lcov to artifact (optional)
+        uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: lcov
+          path: lcov.info
+          retention-days: 7

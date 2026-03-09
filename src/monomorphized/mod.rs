@@ -5,6 +5,14 @@
 //!
 //! Mirrors `mono.sml`.
 
+pub mod environment;
+pub mod fuse;
+pub mod mono_opt;
+pub mod mono_reduce;
+pub mod mono_shake;
+pub mod untangle;
+pub mod utilities;
+
 use crate::datatype_kind::DatatypeKind;
 use crate::error_types::Located;
 use crate::export::{Effect, ExportKind};

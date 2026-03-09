@@ -6,8 +6,8 @@
 
 use crate::datatype_kind::DatatypeKind;
 use crate::monomorphized::{
-    CaseMeta, DatatypeDef, DatatypeRef, Decl, Exp, JavaScriptMode, LocDecl, LocExp, LocPat,
-    LocTyp, Pat, PatCon, Policy, QueryMeta, Typ,
+    CaseMeta, DatatypeDef, DatatypeRef, Decl, Exp, JavaScriptMode, LocDecl, LocExp, LocPat, LocTyp,
+    Pat, PatCon, Policy, QueryMeta, Typ,
 };
 
 // ---------------------------------------------------------------------------
@@ -35,14 +35,14 @@ pub mod typ {
     /// definition in `mono/mod.rs`).
     fn tag(type_node: &Typ) -> u8 {
         match type_node {
-            Typ::Fun(..)      => 0,
-            Typ::Record(..)   => 1,
+            Typ::Fun(..) => 0,
+            Typ::Record(..) => 1,
             Typ::Datatype(..) => 2,
-            Typ::Ffi(..)      => 3,
-            Typ::Option(..)   => 4,
-            Typ::List(..)     => 5,
-            Typ::Source       => 6,
-            Typ::Signal(..)   => 7,
+            Typ::Ffi(..) => 3,
+            Typ::Option(..) => 4,
+            Typ::List(..) => 5,
+            Typ::Source => 6,
+            Typ::Signal(..) => 7,
         }
     }
 
@@ -54,9 +54,7 @@ pub mod typ {
 
     fn compare_typ(left: &Typ, right: &Typ) -> Ordering {
         match (left, right) {
-            (Typ::Fun(d1, r1), Typ::Fun(d2, r2)) => {
-                compare(d1, d2).then_with(|| compare(r1, r2))
-            }
+            (Typ::Fun(d1, r1), Typ::Fun(d2, r2)) => compare(d1, d2).then_with(|| compare(r1, r2)),
             (Typ::Record(xts1), Typ::Record(xts2)) => {
                 let mut s1 = xts1.clone();
                 let mut s2 = xts2.clone();
@@ -65,9 +63,7 @@ pub mod typ {
                 compare_field_lists(&s1, &s2)
             }
             (Typ::Datatype(n1, _), Typ::Datatype(n2, _)) => n1.cmp(n2),
-            (Typ::Ffi(m1, x1), Typ::Ffi(m2, x2)) => {
-                m1.cmp(m2).then_with(|| x1.cmp(x2))
-            }
+            (Typ::Ffi(m1, x1), Typ::Ffi(m2, x2)) => m1.cmp(m2).then_with(|| x1.cmp(x2)),
             (Typ::Option(t1), Typ::Option(t2)) => compare(t1, t2),
             (Typ::List(t1), Typ::List(t2)) => compare(t1, t2),
             (Typ::Source, Typ::Source) => Ordering::Equal,
@@ -82,7 +78,9 @@ pub mod typ {
             return len_ord;
         }
         for ((left_name, left_type), (right_name, right_type)) in left.iter().zip(right.iter()) {
-            let order = left_name.cmp(right_name).then_with(|| compare(left_type, right_type));
+            let order = left_name
+                .cmp(right_name)
+                .then_with(|| compare(left_type, right_type));
             if order != Ordering::Equal {
                 return order;
             }
@@ -94,9 +92,9 @@ pub mod typ {
     // map — transform every sub-type, bottom-up
     // -----------------------------------------------------------------------
 
-    pub fn map<F>(typ: LocTyp, visitor: &F) -> LocTyp
+    pub fn map<F>(typ: LocTyp, visitor: &mut F) -> LocTyp
     where
-        F: Fn(Typ) -> Typ,
+        F: FnMut(Typ) -> Typ,
     {
         let span = typ.span.clone();
         let inner = map_node(typ.node, visitor);
@@ -104,9 +102,9 @@ pub mod typ {
         crate::error_types::Located::new(transformed, span)
     }
 
-    fn map_node<F>(t: Typ, f: &F) -> Typ
+    fn map_node<F>(t: Typ, f: &mut F) -> Typ
     where
-        F: Fn(Typ) -> Typ,
+        F: FnMut(Typ) -> Typ,
     {
         match t {
             Typ::Fun(d, r) => Typ::Fun(Box::new(map(*d, f)), Box::new(map(*r, f))),
@@ -131,7 +129,8 @@ pub mod typ {
         F: Fn(Ctx, Typ) -> Typ,
         Ctx: Clone,
     {
-        map(t, &|node| f(ctx.clone(), node))
+        let mut visitor = |node| f(ctx.clone(), node);
+        map(t, &mut visitor)
     }
 
     // -----------------------------------------------------------------------
@@ -147,7 +146,9 @@ pub mod typ {
         }
         match &typ.node {
             Typ::Fun(domain, range) => exists(domain, predicate) || exists(range, predicate),
-            Typ::Record(field_list) => field_list.iter().any(|(_, field_type)| exists(field_type, predicate)),
+            Typ::Record(field_list) => field_list
+                .iter()
+                .any(|(_, field_type)| exists(field_type, predicate)),
             Typ::Option(inner) => exists(inner, predicate),
             Typ::List(inner) => exists(inner, predicate),
             Typ::Signal(inner) => exists(inner, predicate),
@@ -169,7 +170,11 @@ pub mod typ {
                 let accumulator = fold(domain, accumulator, folder);
                 fold(range, accumulator, folder)
             }
-            Typ::Record(field_list) => field_list.iter().fold(accumulator, |acc, (_, field_type)| fold(field_type, acc, folder)),
+            Typ::Record(field_list) => {
+                field_list.iter().fold(accumulator, |acc, (_, field_type)| {
+                    fold(field_type, acc, folder)
+                })
+            }
             Typ::Option(inner) => fold(inner, accumulator, folder),
             Typ::List(inner) => fold(inner, accumulator, folder),
             Typ::Signal(inner) => fold(inner, accumulator, folder),
@@ -212,13 +217,7 @@ pub mod exp {
     // map_b — transform with a mutable binder context
     // -----------------------------------------------------------------------
 
-    pub fn map_b<Ctx, FT, FE, FB>(
-        e: LocExp,
-        ctx: &mut Ctx,
-        ft: &FT,
-        fe: &FE,
-        bind: &FB,
-    ) -> LocExp
+    pub fn map_b<Ctx, FT, FE, FB>(e: LocExp, ctx: &mut Ctx, ft: &FT, fe: &FE, bind: &FB) -> LocExp
     where
         FT: Fn(&mut Ctx, Typ) -> Typ,
         FE: Fn(&mut Ctx, Exp) -> Exp,
@@ -235,16 +234,10 @@ pub mod exp {
     where
         FT: Fn(&mut Ctx, Typ) -> Typ,
     {
-        typ::map(t, &|node| ft(ctx, node))
+        typ::map(t, &mut |node| ft(ctx, node))
     }
 
-    fn map_b_node<Ctx, FT, FE, FB>(
-        e: Exp,
-        ctx: &mut Ctx,
-        ft: &FT,
-        fe: &FE,
-        bind: &FB,
-    ) -> Exp
+    fn map_b_node<Ctx, FT, FE, FB>(e: Exp, ctx: &mut Ctx, ft: &FT, fe: &FE, bind: &FB) -> Exp
     where
         FT: Fn(&mut Ctx, Typ) -> Typ,
         FE: Fn(&mut Ctx, Exp) -> Exp,
@@ -337,7 +330,10 @@ pub mod exp {
                 Exp::Case(
                     Box::new(disc2),
                     arms2,
-                    CaseMeta { disc: disc_t, result: result_t },
+                    CaseMeta {
+                        disc: disc_t,
+                        result: result_t,
+                    },
                 )
             }
 
@@ -357,7 +353,11 @@ pub mod exp {
                 let blob2 = blob.map(|b| Box::new(map_b(*b, ctx, ft, fe, bind)));
                 let mime2 = map_b(*mime_type, ctx, ft, fe, bind);
                 let t2 = map_typ_with_ctx(t, ctx, ft);
-                Exp::ReturnBlob { blob: blob2, mime_type: Box::new(mime2), t: t2 }
+                Exp::ReturnBlob {
+                    blob: blob2,
+                    mime_type: Box::new(mime2),
+                    t: t2,
+                }
             }
 
             Exp::Redirect(e1, t) => {
@@ -541,9 +541,7 @@ pub mod exp {
         match &e.node {
             Exp::Prim(_) | Exp::Rel(_) | Exp::Named(_) | Exp::Ffi(_, _) => false,
 
-            Exp::Con(_, _, arg) => {
-                arg.as_ref().map_or(false, |a| exists(a, ft, fe))
-            }
+            Exp::Con(_, _, arg) => arg.as_ref().map_or(false, |a| exists(a, ft, fe)),
 
             Exp::None(t) => typ::exists(t, ft),
             Exp::Some(t, inner) => typ::exists(t, ft) || exists(inner, ft, fe),
@@ -555,9 +553,7 @@ pub mod exp {
             Exp::App(e1, e2) => exists(e1, ft, fe) || exists(e2, ft, fe),
 
             Exp::Abs(_, dom, ran, body) => {
-                typ::exists(dom, ft)
-                    || typ::exists(ran, ft)
-                    || exists(body, ft, fe)
+                typ::exists(dom, ft) || typ::exists(ran, ft) || exists(body, ft, fe)
             }
 
             Exp::Unop(_, e1) => exists(e1, ft, fe),
@@ -648,7 +644,11 @@ pub mod exp {
             Exp::Prim(_) | Exp::Rel(_) | Exp::Named(_) | Exp::Ffi(_, _) => s,
 
             Exp::Con(_, _, arg) => {
-                arg.as_ref().map_or(s, |a| fold(a, s, ft, fe))
+                if let Some(a) = arg.as_ref() {
+                    fold(a, s, ft, fe)
+                } else {
+                    s
+                }
             }
 
             Exp::None(t) => typ::fold(t, s, ft),
@@ -705,7 +705,11 @@ pub mod exp {
             }
 
             Exp::ReturnBlob { blob, mime_type, t } => {
-                let s = blob.as_ref().map_or(s, |b| fold(b, s, ft, fe));
+                let s = if let Some(b) = blob.as_ref() {
+                    fold(b, s, ft, fe)
+                } else {
+                    s
+                };
                 let s = fold(mime_type, s, ft, fe);
                 typ::fold(t, s, ft)
             }
@@ -808,7 +812,8 @@ pub mod decl {
     where
         FT: Fn(Typ) -> Typ,
     {
-        typ::map(t, ft)
+        let mut ft_ref = ft;
+        typ::map(t, &mut ft_ref)
     }
 
     fn map_exp<FT, FE>(e: LocExp, ft: &FT, fe: &FE) -> LocExp
@@ -875,27 +880,19 @@ pub mod decl {
             }
 
             Decl::Table(s, xts, pe, ce) => {
-                let xts2 = xts
-                    .into_iter()
-                    .map(|(x, t)| (x, map_typ(t, ft)))
-                    .collect();
+                let xts2 = xts.into_iter().map(|(x, t)| (x, map_typ(t, ft))).collect();
                 let pe2 = map_exp(pe, ft, fe);
                 let ce2 = map_exp(ce, ft, fe);
                 Decl::Table(s, xts2, pe2, ce2)
             }
 
             Decl::View(s, xts, e) => {
-                let xts2 = xts
-                    .into_iter()
-                    .map(|(x, t)| (x, map_typ(t, ft)))
-                    .collect();
+                let xts2 = xts.into_iter().map(|(x, t)| (x, map_typ(t, ft))).collect();
                 let e2 = map_exp(e, ft, fe);
                 Decl::View(s, xts2, e2)
             }
 
-            Decl::Task(e1, e2) => {
-                Decl::Task(map_exp(e1, ft, fe), map_exp(e2, ft, fe))
-            }
+            Decl::Task(e1, e2) => Decl::Task(map_exp(e1, ft, fe), map_exp(e2, ft, fe)),
 
             Decl::Policy(pol) => Decl::Policy(map_policy(pol, ft, fe)),
 
@@ -955,7 +952,11 @@ pub mod decl {
         match d {
             Decl::Datatype(dts) => dts.iter().fold(init, |s, dt| {
                 dt.constrs.iter().fold(s, |s, (_, _, t)| {
-                    t.as_ref().map_or(s, |t| fold_typ(t, s, ft))
+                    if let Some(t) = t.as_ref() {
+                        fold_typ(t, s, ft)
+                    } else {
+                        s
+                    }
                 })
             }),
 
