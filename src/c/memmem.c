@@ -40,13 +40,9 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include <sys/cdefs.h>
-#if defined(LIBC_SCCS) && !defined(lint)
-__RCSID("$NetBSD$");
-#endif /* LIBC_SCCS and not lint */
-
 #if !defined(_KERNEL) && !defined(_STANDALONE)
 #include <assert.h>
+#include <stddef.h>
 #include <string.h>
 #else
 #include <lib/libkern/libkern.h>

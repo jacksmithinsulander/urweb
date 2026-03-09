@@ -137,7 +137,7 @@ int main(int argc, char *argv[]) {
     return 1;
 }
 
-void *uw_init_client_data() {
+void *uw_init_client_data(void) {
   return NULL;
 }
 

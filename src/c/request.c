@@ -151,7 +151,7 @@ static void *periodic_loop(void *data) {
 
 static unsigned long long stackSize;
 
-int pthread_create_big(pthread_t *outThread, void *foo, void *threadFunc, void *arg)
+int pthread_create_big(pthread_t *outThread, void *foo, void *(*threadFunc)(void *), void *arg)
 {
   (void)foo;
 

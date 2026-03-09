@@ -35,7 +35,7 @@ val () = addProtocol {name = "fastcgi",
                       linkStatic = "liburweb_fastcgi.a",
                       linkDynamic = "-lurweb_fastcgi",
                       persistent = true,
-                      code = fn () => box [string "void uw_global_custom() {",
+                      code = fn () => box [string "void uw_global_custom(void) {",
                                            newline,
                                            case getSigFile () of
                                                NONE => box []

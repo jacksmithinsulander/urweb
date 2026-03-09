@@ -117,7 +117,7 @@ BEARSSL_INC="$srcdir/vendor/BearSSL/inc"
 BEARSSL_LIB_FILE="$srcdir/vendor/BearSSL/build/libbearssl.a"
 if [ ! -f "$BEARSSL_LIB_FILE" ]; then
     printf 'Building vendored BearSSL...\n'
-    make -C "$srcdir/vendor/BearSSL"
+    make -C "$srcdir/vendor/BearSSL" CC="$CC" CFLAGS="-std=c11 -pedantic -W -Wall -Os -fPIC"
 fi
 printf 'BearSSL: %s\n' "$BEARSSL_LIB_FILE"
 
@@ -125,10 +125,13 @@ printf 'BearSSL: %s\n' "$BEARSSL_LIB_FILE"
 tmpdir=$(mktemp -d)
 trap 'rm -rf "$tmpdir"' EXIT
 
+# CFLAGS for probes (C11, match main build)
+PROBE_CFLAGS="-std=c11 -pedantic"
+
 probe() {
     _name=$1; _src=$2
     printf '%s' "$_src" > "$tmpdir/probe_$_name.c"
-    $CC $PTHREAD_CFLAGS -o "$tmpdir/probe_$_name" "$tmpdir/probe_$_name.c" \
+    $CC $PROBE_CFLAGS $PTHREAD_CFLAGS -o "$tmpdir/probe_$_name" "$tmpdir/probe_$_name.c" \
         $PTHREAD_LIBS >/dev/null 2>&1
 }
 
@@ -154,6 +157,12 @@ int main(void){int i=PTHREAD_PRIO_INHERIT;return i;}'; then
     HAVE_PTHREAD_PRIO_INHERIT=1
 else
     HAVE_PTHREAD_PRIO_INHERIT=0
+fi
+
+if probe gnu_asm 'int main(void){__asm__ __volatile__("");return 0;}'; then
+    HAVE_GNU_ASM=1; printf '  GNU inline asm: yes\n'
+else
+    HAVE_GNU_ASM=0; printf '  GNU inline asm: no (e.g. cproc; timing-safe cmp may be weaker)\n'
 fi
 
 # ── Platform ──────────────────────────────────────────────────────────────────
@@ -190,6 +199,7 @@ def1  STDC_HEADERS
 maybe HAVE_MEMMEM               "$HAVE_MEMMEM"
 maybe HAVE_STRCASESTR           "$HAVE_STRCASESTR"
 maybe HAVE_PTHREAD_PRIO_INHERIT "$HAVE_PTHREAD_PRIO_INHERIT"
+maybe HAVE_GNU_ASM              "$HAVE_GNU_ASM"
 printf '\n'
 printf '#define PACKAGE_NAME    "urweb"\n'
 printf '#define PACKAGE_VERSION "20200209"\n'

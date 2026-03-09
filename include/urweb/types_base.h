@@ -89,7 +89,7 @@ typedef struct {
   int inputs_len, timeout;
   char *url_prefix;
 
-  void (*client_init)();
+  void (*client_init)(void);
   void (*initializer)(struct uw_context *);
   void (*expunger)(struct uw_context *, uw_Basis_client);
 
