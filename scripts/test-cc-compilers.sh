@@ -43,7 +43,14 @@ fi
 CPROC="$builddir/vendor/cproc/cproc"
 [ -x "$CPROC" ] || CPROC="$srcdir/vendor/cproc/cproc"
 [ -x "$CPROC" ] || CPROC=""
-if [ -n "$CPROC" ]; then
+# cproc has a known va_list preprocessing conflict on macOS (clang vs darwin headers)
+_skip_cproc=
+case "$(uname -s)" in
+    Darwin*) _skip_cproc=1 ;;
+esac
+if [ -n "$_skip_cproc" ]; then
+    echo "  Skipping cproc (known macOS preprocessor conflict with SDK headers)"
+elif [ -n "$CPROC" ]; then
     if command -v qbe >/dev/null 2>&1; then
         run_with_cc "$CPROC" "cproc" || failed=1
     else

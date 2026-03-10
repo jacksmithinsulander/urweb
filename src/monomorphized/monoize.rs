@@ -18,8 +18,8 @@ use crate::datatype_kind::DatatypeKind;
 use crate::error_types::{Located, Span};
 use crate::monomorphized::utilities::classify_datatype as classify_datatype_mono;
 use crate::monomorphized::{
-    self as mono, CaseMeta, DatatypeDecl as MonoDatatypeDecl, DatatypeDef, DatatypeRef, Decl, Exp,
-    LocDecl, LocExp, LocPat, LocTyp, Pat, PatCon, Policy, Typ,
+    self as mono, BinopIntness, CaseMeta, DatatypeDecl as MonoDatatypeDecl, DatatypeDef,
+    DatatypeRef, Decl, Exp, LocDecl, LocExp, LocPat, LocTyp, Pat, PatCon, Policy, Typ,
 };
 use crate::primitives::Prim;
 use crate::settings::Settings;
@@ -662,6 +662,518 @@ fn listify(t: LocTyp, loc: &Span) -> LocTyp {
 }
 
 // ---------------------------------------------------------------------------
+// Type class instance builders
+// ---------------------------------------------------------------------------
+
+/// Build `EBinop(Int, op, ERel(1), ERel(0))` — binary int op on two args.
+fn int_binop(op: &str, loc: &Span) -> LocExp {
+    Located::new(
+        Exp::Binop(
+            BinopIntness::Int,
+            op.into(),
+            Box::new(Located::new(Exp::Rel(1), loc.clone())),
+            Box::new(Located::new(Exp::Rel(0), loc.clone())),
+        ),
+        loc.clone(),
+    )
+}
+
+/// Build `EBinop(NotInt, op, ERel(1), ERel(0))` — binary float op on two args.
+fn float_binop(op: &str, loc: &Span) -> LocExp {
+    Located::new(
+        Exp::Binop(
+            BinopIntness::NotInt,
+            op.into(),
+            Box::new(Located::new(Exp::Rel(1), loc.clone())),
+            Box::new(Located::new(Exp::Rel(0), loc.clone())),
+        ),
+        loc.clone(),
+    )
+}
+
+/// Build `\x t. \y t. body` — a two-argument lambda with type `t`.
+fn binary_abs(t: LocTyp, result_t: LocTyp, body: LocExp, loc: &Span) -> LocExp {
+    let inner = Located::new(
+        Exp::Abs("y".into(), t.clone(), result_t.clone(), Box::new(body)),
+        loc.clone(),
+    );
+    Located::new(
+        Exp::Abs(
+            "x".into(),
+            t.clone(),
+            Located::new(Typ::Fun(Box::new(t), Box::new(result_t)), loc.clone()),
+            Box::new(inner),
+        ),
+        loc.clone(),
+    )
+}
+
+/// Build a num-typeclass record for type `t` with the given operations.
+fn num_ex(
+    t: LocTyp,
+    zero: LocExp,
+    neg: LocExp,
+    plus: LocExp,
+    minus: LocExp,
+    times: LocExp,
+    div: LocExp,
+    modf: LocExp,
+    pow: LocExp,
+    loc: &Span,
+) -> LocExp {
+    let ft = Located::new(Typ::Fun(Box::new(t.clone()), Box::new(t.clone())), loc.clone());
+    let ft2 = Located::new(
+        Typ::Fun(Box::new(t.clone()), Box::new(ft.clone())),
+        loc.clone(),
+    );
+    Located::new(
+        Exp::Record(vec![
+            ("Zero".into(), zero, t.clone()),
+            ("Neg".into(), neg, ft.clone()),
+            ("Plus".into(), plus, ft2.clone()),
+            ("Minus".into(), minus, ft2.clone()),
+            ("Times".into(), times, ft2.clone()),
+            ("Div".into(), div, ft2.clone()),
+            ("Mod".into(), modf, ft2.clone()),
+            ("Pow".into(), pow, ft2),
+        ]),
+        loc.clone(),
+    )
+}
+
+/// Build an ord-typeclass record `{Lt, Le}` for type `t`.
+fn ord_ex(lt: LocExp, le: LocExp, loc: &Span) -> LocExp {
+    // Placeholder type — ord records have function types but we don't track them here.
+    let unit_t = Located::new(Typ::Record(vec![]), loc.clone());
+    Located::new(
+        Exp::Record(vec![
+            ("Lt".into(), lt, unit_t.clone()),
+            ("Le".into(), le, unit_t),
+        ]),
+        loc.clone(),
+    )
+}
+
+/// Build `\x t. body_of_x` — a single-argument lambda.
+fn unary_abs(x_name: &str, t: LocTyp, result_t: LocTyp, body: LocExp, loc: &Span) -> LocExp {
+    Located::new(
+        Exp::Abs(x_name.into(), t, result_t, Box::new(body)),
+        loc.clone(),
+    )
+}
+
+/// Generate the concrete `eq_X` function for a type: `\x y. x == y`.
+fn make_eq_fun(t: LocTyp, op: &str, loc: &Span) -> LocExp {
+    let bool_t = Located::new(Typ::Ffi("Basis".into(), "bool".into()), loc.clone());
+    let body = int_binop(op, loc);
+    binary_abs(t, bool_t, body, loc)
+}
+
+/// Generate the concrete `eq_string` function: `\x y. !strcmp(x, y) == 0`.
+fn make_eq_string_fun(loc: &Span) -> LocExp {
+    let s = Located::new(Typ::Ffi("Basis".into(), "string".into()), loc.clone());
+    let bool_t = Located::new(Typ::Ffi("Basis".into(), "bool".into()), loc.clone());
+    // !strcmp(x, y) — use "!strcmp" as a binop (as SML does with EBinop(NotInt, "!strcmp", ...))
+    let body = Located::new(
+        Exp::Binop(
+            BinopIntness::NotInt,
+            "!strcmp".into(),
+            Box::new(Located::new(Exp::Rel(1), loc.clone())),
+            Box::new(Located::new(Exp::Rel(0), loc.clone())),
+        ),
+        loc.clone(),
+    );
+    binary_abs(s, bool_t, body, loc)
+}
+
+/// Generate a concrete binary-predicate function: `\x y. ffi_func(x, y)`.
+fn make_ffi_cmp_fun(m: &str, f: &str, t: LocTyp, loc: &Span) -> LocExp {
+    let bool_t = Located::new(Typ::Ffi("Basis".into(), "bool".into()), loc.clone());
+    let body = Located::new(
+        Exp::FfiApp(
+            m.into(),
+            f.into(),
+            vec![
+                (
+                    Located::new(Exp::Rel(1), loc.clone()),
+                    t.clone(),
+                ),
+                (Located::new(Exp::Rel(0), loc.clone()), t.clone()),
+            ],
+        ),
+        loc.clone(),
+    );
+    binary_abs(t, bool_t, body, loc)
+}
+
+/// Generate `num_int`: the num record for Basis.int.
+fn make_num_int(loc: &Span) -> LocExp {
+    let t = Located::new(Typ::Ffi("Basis".into(), "int".into()), loc.clone());
+    let zero = Located::new(Exp::Prim(Prim::Int(0)), loc.clone());
+    let neg = unary_abs(
+        "x",
+        t.clone(),
+        t.clone(),
+        Located::new(
+            Exp::Unop("-".into(), Box::new(Located::new(Exp::Rel(0), loc.clone()))),
+            loc.clone(),
+        ),
+        loc,
+    );
+    let b_plus = binary_abs(t.clone(), t.clone(), int_binop("+", loc), loc);
+    let b_minus = binary_abs(t.clone(), t.clone(), int_binop("-", loc), loc);
+    let b_times = binary_abs(t.clone(), t.clone(), int_binop("*", loc), loc);
+    let b_div = binary_abs(t.clone(), t.clone(), int_binop("/", loc), loc);
+    let b_mod = binary_abs(t.clone(), t.clone(), int_binop("%", loc), loc);
+    let b_pow = binary_abs(t.clone(), t.clone(), int_binop("powl", loc), loc);
+    num_ex(t, zero, neg, b_plus, b_minus, b_times, b_div, b_mod, b_pow, loc)
+}
+
+/// Generate `num_float`: the num record for Basis.float.
+fn make_num_float(loc: &Span) -> LocExp {
+    let t = Located::new(Typ::Ffi("Basis".into(), "float".into()), loc.clone());
+    let zero = Located::new(Exp::Prim(Prim::Float(0.0)), loc.clone());
+    let neg = unary_abs(
+        "x",
+        t.clone(),
+        t.clone(),
+        Located::new(
+            Exp::Unop("-".into(), Box::new(Located::new(Exp::Rel(0), loc.clone()))),
+            loc.clone(),
+        ),
+        loc,
+    );
+    let b_plus = binary_abs(t.clone(), t.clone(), float_binop("+", loc), loc);
+    let b_minus = binary_abs(t.clone(), t.clone(), float_binop("-", loc), loc);
+    let b_times = binary_abs(t.clone(), t.clone(), float_binop("*", loc), loc);
+    let b_div = binary_abs(t.clone(), t.clone(), float_binop("fdiv", loc), loc);
+    let b_mod = binary_abs(t.clone(), t.clone(), float_binop("fmod", loc), loc);
+    let b_pow = binary_abs(t.clone(), t.clone(), float_binop("powf", loc), loc);
+    num_ex(t, zero, neg, b_plus, b_minus, b_times, b_div, b_mod, b_pow, loc)
+}
+
+/// Generate `ord_int`: the ord record for Basis.int.
+fn make_ord_int(loc: &Span) -> LocExp {
+    let t = Located::new(Typ::Ffi("Basis".into(), "int".into()), loc.clone());
+    let bool_t = Located::new(Typ::Ffi("Basis".into(), "bool".into()), loc.clone());
+    let cmp = |op: &str| binary_abs(t.clone(), bool_t.clone(), int_binop(op, loc), loc);
+    ord_ex(cmp("<"), cmp("<="), loc)
+}
+
+/// Generate `ord_float`: the ord record for Basis.float.
+fn make_ord_float(loc: &Span) -> LocExp {
+    let t = Located::new(Typ::Ffi("Basis".into(), "float".into()), loc.clone());
+    let bool_t = Located::new(Typ::Ffi("Basis".into(), "bool".into()), loc.clone());
+    let cmp = |op: &str| binary_abs(t.clone(), bool_t.clone(), float_binop(op, loc), loc);
+    ord_ex(cmp("<"), cmp("<="), loc)
+}
+
+/// Generate `ord_bool`.
+fn make_ord_bool(loc: &Span) -> LocExp {
+    let t = Located::new(Typ::Ffi("Basis".into(), "bool".into()), loc.clone());
+    let bool_t = t.clone();
+    let cmp = |op: &str| binary_abs(t.clone(), bool_t.clone(), int_binop(op, loc), loc);
+    ord_ex(cmp("<"), cmp("<="), loc)
+}
+
+/// Generate `ord_char`.
+fn make_ord_char(loc: &Span) -> LocExp {
+    let t = Located::new(Typ::Ffi("Basis".into(), "char".into()), loc.clone());
+    let bool_t = Located::new(Typ::Ffi("Basis".into(), "bool".into()), loc.clone());
+    let cmp = |op: &str| binary_abs(t.clone(), bool_t.clone(), int_binop(op, loc), loc);
+    ord_ex(cmp("<"), cmp("<="), loc)
+}
+
+/// Generate `ord_string`: {Lt=\x y. strcmp(x,y)<0, Le=\x y. strcmp(x,y)<=0}.
+fn make_ord_string(loc: &Span) -> LocExp {
+    let s = Located::new(Typ::Ffi("Basis".into(), "string".into()), loc.clone());
+    let bool_t = Located::new(Typ::Ffi("Basis".into(), "bool".into()), loc.clone());
+    let zero = Located::new(Exp::Prim(Prim::Int(0)), loc.clone());
+    let cmp = |op: &str| {
+        // strcmp(x, y) < 0
+        let strcmp_body = Located::new(
+            Exp::Binop(
+                BinopIntness::Int,
+                op.into(),
+                Box::new(Located::new(
+                    Exp::Binop(
+                        BinopIntness::NotInt,
+                        "strcmp".into(),
+                        Box::new(Located::new(Exp::Rel(1), loc.clone())),
+                        Box::new(Located::new(Exp::Rel(0), loc.clone())),
+                    ),
+                    loc.clone(),
+                )),
+                Box::new(zero.clone()),
+            ),
+            loc.clone(),
+        );
+        binary_abs(s.clone(), bool_t.clone(), strcmp_body, loc)
+    };
+    ord_ex(cmp("<"), cmp("<="), loc)
+}
+
+/// Generate `ord_time`: {Lt=lt_time, Le=le_time}.
+fn make_ord_ffi_cmp(m: &str, lt_f: &str, le_f: &str, t: LocTyp, loc: &Span) -> LocExp {
+    let lt = make_ffi_cmp_fun(m, lt_f, t.clone(), loc);
+    let le = make_ffi_cmp_fun(m, le_f, t, loc);
+    ord_ex(lt, le, loc)
+}
+
+/// Handle `EFfi("Basis", x)` as a concrete type class instance.
+/// Returns `Some(mono_exp)` for known patterns, `None` to fall through.
+fn mono_basis_ffi(x: &str, loc: &Span) -> Option<LocExp> {
+    match x {
+        // ---- eq instances ----
+        "eq_int" => {
+            let t = Located::new(Typ::Ffi("Basis".into(), "int".into()), loc.clone());
+            Some(make_eq_fun(t, "==", loc))
+        }
+        "eq_float" | "eq_bool" | "eq_char" => {
+            let ffi_name = match x {
+                "eq_float" => "float",
+                "eq_bool" => "bool",
+                "eq_char" => "char",
+                _ => unreachable!(),
+            };
+            let t = Located::new(Typ::Ffi("Basis".into(), ffi_name.into()), loc.clone());
+            Some(make_eq_fun(t, "==", loc))
+        }
+        "eq_string" => Some(make_eq_string_fun(loc)),
+        "eq_time" => {
+            let t = Located::new(Typ::Ffi("Basis".into(), "time".into()), loc.clone());
+            Some(make_ffi_cmp_fun("Basis", "eq_time", t, loc))
+        }
+        "eq_calendardate" => {
+            let t = Located::new(Typ::Ffi("Basis".into(), "calendardate".into()), loc.clone());
+            Some(make_ffi_cmp_fun("Basis", "eq_calendardate", t, loc))
+        }
+        "eq_clocktime" => {
+            let t = Located::new(Typ::Ffi("Basis".into(), "clocktime".into()), loc.clone());
+            Some(make_ffi_cmp_fun("Basis", "eq_clocktime", t, loc))
+        }
+
+        // ---- num instances ----
+        "num_int" => Some(make_num_int(loc)),
+        "num_float" => Some(make_num_float(loc)),
+
+        // ---- ord instances ----
+        "ord_int" => Some(make_ord_int(loc)),
+        "ord_float" => Some(make_ord_float(loc)),
+        "ord_bool" => Some(make_ord_bool(loc)),
+        "ord_char" => Some(make_ord_char(loc)),
+        "ord_string" => Some(make_ord_string(loc)),
+        "ord_time" => {
+            let t = Located::new(Typ::Ffi("Basis".into(), "time".into()), loc.clone());
+            Some(make_ord_ffi_cmp("Basis", "lt_time", "le_time", t, loc))
+        }
+        "ord_clocktime" => {
+            let t = Located::new(Typ::Ffi("Basis".into(), "clocktime".into()), loc.clone());
+            Some(make_ord_ffi_cmp("Basis", "lt_clocktime", "le_clocktime", t, loc))
+        }
+        "ord_calendardate" => {
+            let t = Located::new(Typ::Ffi("Basis".into(), "calendardate".into()), loc.clone());
+            Some(make_ord_ffi_cmp("Basis", "lt_calendardate", "le_calendardate", t, loc))
+        }
+
+        _ => None,
+    }
+}
+
+/// Peel `CApp` layers: returns `(innermost_expr, type_args_innermost_first)`.
+fn peel_capp(e: &LocatedExpression) -> (&LocatedExpression, Vec<&LocatedConstructor>) {
+    let mut inner = e;
+    let mut args = Vec::new();
+    loop {
+        match &inner.node {
+            CE::CApp(inner_e, c) => {
+                args.push(c as &LocatedConstructor);
+                inner = inner_e;
+            }
+            _ => break,
+        }
+    }
+    // args is [outermost_type_arg, ..., innermost_type_arg] — reverse so [0] = first applied
+    args.reverse();
+    (inner, args)
+}
+
+/// Handle ECApp chains over `EFfi("Basis", x)`.
+/// Returns `Some(mono_exp)` for known patterns, `None` to fall through.
+fn mono_basis_capp(
+    env: &Env,
+    x: &str,
+    targs: &[&LocatedConstructor],
+    loc: &Span,
+) -> Option<LocExp> {
+    let last_t = targs.last();
+    let bool_t = || Located::new(Typ::Ffi("Basis".into(), "bool".into()), loc.clone());
+
+    match x {
+        // ECApp(EFfi("Basis", "eq"), t) → \f: t->t->bool. f
+        "eq" | "mkEq" => {
+            let t = last_t.map(|c| {
+                let mut dtmap = HashMap::new();
+                mono_type(env, &mut dtmap, c)
+            })?;
+            let eq_t = Located::new(
+                Typ::Fun(
+                    Box::new(t.clone()),
+                    Box::new(Located::new(
+                        Typ::Fun(Box::new(t), Box::new(bool_t())),
+                        loc.clone(),
+                    )),
+                ),
+                loc.clone(),
+            );
+            Some(Located::new(
+                Exp::Abs("f".into(), eq_t.clone(), eq_t, Box::new(Located::new(Exp::Rel(0), loc.clone()))),
+                loc.clone(),
+            ))
+        }
+
+        // ECApp(EFfi("Basis", "ne"), t) → \f x y. !(f x y)
+        "ne" => {
+            let t = last_t.map(|c| {
+                let mut dtmap = HashMap::new();
+                mono_type(env, &mut dtmap, c)
+            })?;
+            let b = bool_t();
+            let b2 = Located::new(Typ::Fun(Box::new(t.clone()), Box::new(b.clone())), loc.clone());
+            let eq_t = Located::new(Typ::Fun(Box::new(t.clone()), Box::new(b2.clone())), loc.clone());
+            // \f. \x. \y. !(f x y)
+            let _app_fy = Located::new(
+                Exp::App(
+                    Box::new(Located::new(Exp::Rel(1), loc.clone())),
+                    Box::new(Located::new(Exp::Rel(0), loc.clone())),
+                ),
+                loc.clone(),
+            );
+            let app_fx = Located::new(
+                Exp::App(
+                    Box::new(Located::new(Exp::Rel(2), loc.clone())),
+                    Box::new(Located::new(Exp::Rel(1), loc.clone())),
+                ),
+                loc.clone(),
+            );
+            let body = Located::new(
+                Exp::App(Box::new(app_fx), Box::new(Located::new(Exp::Rel(0), loc.clone()))),
+                loc.clone(),
+            );
+            let not_body = Located::new(Exp::Unop("!".into(), Box::new(body)), loc.clone());
+            let inner_y = Located::new(Exp::Abs("y".into(), t.clone(), b.clone(), Box::new(not_body)), loc.clone());
+            let inner_x = Located::new(Exp::Abs("x".into(), t.clone(), b2, Box::new(inner_y)), loc.clone());
+            Some(Located::new(Exp::Abs("f".into(), eq_t.clone(), eq_t, Box::new(inner_x)), loc.clone()))
+        }
+
+        // ECApp(EFfi("Basis", "zero"), t) → \r: num t. r.Zero
+        "zero" => {
+            let t = last_t.map(|c| { let mut dtmap = HashMap::new(); mono_type(env, &mut dtmap, c) })?;
+            let num_t = num_ty(t.clone(), loc);
+            let body = Located::new(Exp::Field(Box::new(Located::new(Exp::Rel(0), loc.clone())), "Zero".into()), loc.clone());
+            Some(Located::new(Exp::Abs("r".into(), num_t, t, Box::new(body)), loc.clone()))
+        }
+        "neg" => {
+            let t = last_t.map(|c| { let mut dtmap = HashMap::new(); mono_type(env, &mut dtmap, c) })?;
+            let num_t = num_ty(t.clone(), loc);
+            let ft = Located::new(Typ::Fun(Box::new(t.clone()), Box::new(t)), loc.clone());
+            let body = Located::new(Exp::Field(Box::new(Located::new(Exp::Rel(0), loc.clone())), "Neg".into()), loc.clone());
+            Some(Located::new(Exp::Abs("r".into(), num_t, ft, Box::new(body)), loc.clone()))
+        }
+        "plus" | "minus" | "times" | "divide" | "mod" | "pow" => {
+            let t = last_t.map(|c| { let mut dtmap = HashMap::new(); mono_type(env, &mut dtmap, c) })?;
+            let num_t = num_ty(t.clone(), loc);
+            let ft2 = Located::new(
+                Typ::Fun(Box::new(t.clone()), Box::new(Located::new(Typ::Fun(Box::new(t.clone()), Box::new(t)), loc.clone()))),
+                loc.clone(),
+            );
+            let field_name = match x {
+                "plus" => "Plus", "minus" => "Minus", "times" => "Times",
+                "divide" => "Div", "mod" => "Mod", "pow" => "Pow", _ => unreachable!(),
+            };
+            let body = Located::new(Exp::Field(Box::new(Located::new(Exp::Rel(0), loc.clone())), field_name.into()), loc.clone());
+            Some(Located::new(Exp::Abs("r".into(), num_t, ft2, Box::new(body)), loc.clone()))
+        }
+
+        // ECApp(EFfi("Basis", "lt"), t) → \r: ord t. r.Lt
+        "lt" | "le" => {
+            let t = last_t.map(|c| { let mut dtmap = HashMap::new(); mono_type(env, &mut dtmap, c) })?;
+            let ord_t = ord_ty(t.clone(), loc);
+            let b = bool_t();
+            let cmp_t = Located::new(
+                Typ::Fun(Box::new(t.clone()), Box::new(Located::new(Typ::Fun(Box::new(t), Box::new(b)), loc.clone()))),
+                loc.clone(),
+            );
+            let field = if x == "lt" { "Lt" } else { "Le" };
+            let body = Located::new(Exp::Field(Box::new(Located::new(Exp::Rel(0), loc.clone())), field.into()), loc.clone());
+            Some(Located::new(Exp::Abs("r".into(), ord_t, cmp_t, Box::new(body)), loc.clone()))
+        }
+
+        // ECApp(EFfi("Basis", "gt"), t) → \f x y. !(f.Le x y)
+        "gt" => {
+            let t = last_t.map(|c| { let mut dtmap = HashMap::new(); mono_type(env, &mut dtmap, c) })?;
+            let ord_t = ord_ty(t.clone(), loc);
+            let b = bool_t();
+            let cmp_t = Located::new(
+                Typ::Fun(Box::new(t.clone()), Box::new(Located::new(Typ::Fun(Box::new(t.clone()), Box::new(b.clone())), loc.clone()))),
+                loc.clone(),
+            );
+            let ret_t = Located::new(Typ::Fun(Box::new(t.clone()), Box::new(b.clone())), loc.clone());
+            // \f: ord t. \x. \y. !(f.Le x y)
+            let le = Located::new(Exp::Field(Box::new(Located::new(Exp::Rel(2), loc.clone())), "Le".into()), loc.clone());
+            let app_le_x = Located::new(Exp::App(Box::new(le), Box::new(Located::new(Exp::Rel(1), loc.clone()))), loc.clone());
+            let app_le_x_y = Located::new(Exp::App(Box::new(app_le_x), Box::new(Located::new(Exp::Rel(0), loc.clone()))), loc.clone());
+            let not_body = Located::new(Exp::Unop("!".into(), Box::new(app_le_x_y)), loc.clone());
+            let inner_y = Located::new(Exp::Abs("y".into(), t.clone(), b, Box::new(not_body)), loc.clone());
+            let inner_x = Located::new(Exp::Abs("x".into(), t, ret_t, Box::new(inner_y)), loc.clone());
+            Some(Located::new(Exp::Abs("f".into(), ord_t, cmp_t, Box::new(inner_x)), loc.clone()))
+        }
+
+        // ECApp(EFfi("Basis", "ge"), t) → \f x y. !(f.Lt x y)
+        "ge" => {
+            let t = last_t.map(|c| { let mut dtmap = HashMap::new(); mono_type(env, &mut dtmap, c) })?;
+            let ord_t = ord_ty(t.clone(), loc);
+            let b = bool_t();
+            let cmp_t = Located::new(
+                Typ::Fun(Box::new(t.clone()), Box::new(Located::new(Typ::Fun(Box::new(t.clone()), Box::new(b.clone())), loc.clone()))),
+                loc.clone(),
+            );
+            let ret_t = Located::new(Typ::Fun(Box::new(t.clone()), Box::new(b.clone())), loc.clone());
+            let lt = Located::new(Exp::Field(Box::new(Located::new(Exp::Rel(2), loc.clone())), "Lt".into()), loc.clone());
+            let app_lt_x = Located::new(Exp::App(Box::new(lt), Box::new(Located::new(Exp::Rel(1), loc.clone()))), loc.clone());
+            let app_lt_x_y = Located::new(Exp::App(Box::new(app_lt_x), Box::new(Located::new(Exp::Rel(0), loc.clone()))), loc.clone());
+            let not_body = Located::new(Exp::Unop("!".into(), Box::new(app_lt_x_y)), loc.clone());
+            let inner_y = Located::new(Exp::Abs("y".into(), t.clone(), b, Box::new(not_body)), loc.clone());
+            let inner_x = Located::new(Exp::Abs("x".into(), t, ret_t, Box::new(inner_y)), loc.clone());
+            Some(Located::new(Exp::Abs("f".into(), ord_t, cmp_t, Box::new(inner_x)), loc.clone()))
+        }
+
+        // ECApp(EFfi("Basis", "show"), t) → \f: t->string. f
+        "show" => {
+            let t = last_t.map(|c| { let mut dtmap = HashMap::new(); mono_type(env, &mut dtmap, c) })?;
+            let s = Located::new(Typ::Ffi("Basis".into(), "string".into()), loc.clone());
+            let show_t = Located::new(Typ::Fun(Box::new(t), Box::new(s)), loc.clone());
+            Some(Located::new(
+                Exp::Abs("f".into(), show_t.clone(), show_t, Box::new(Located::new(Exp::Rel(0), loc.clone()))),
+                loc.clone(),
+            ))
+        }
+
+        // ECApp(EFfi("Basis", "read"), t) → \f: read_t. f
+        "read" => {
+            let t = last_t.map(|c| { let mut dtmap = HashMap::new(); mono_type(env, &mut dtmap, c) })?;
+            let read_t = read_ty(t, loc);
+            Some(Located::new(
+                Exp::Abs("f".into(), read_t.clone(), read_t, Box::new(Located::new(Exp::Rel(0), loc.clone()))),
+                loc.clone(),
+            ))
+        }
+
+        _ => None,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Expression translation: mono_exp
 // ---------------------------------------------------------------------------
 
@@ -747,7 +1259,15 @@ fn mono_exp(env: &Env, fm: &mut Fm, exp: &LocatedExpression) -> LocExp {
         }
 
         // --------------- FFI ---------------
-        CE::Ffi(m, x) => Located::new(Exp::Ffi(m.clone(), x.clone()), loc),
+        CE::Ffi(m, x) => {
+            // For Basis type class concrete instances, generate implementations.
+            if m == "Basis" {
+                if let Some(e) = mono_basis_ffi(x, &loc) {
+                    return e;
+                }
+            }
+            Located::new(Exp::Ffi(m.clone(), x.clone()), loc)
+        }
         CE::FfiApp(m, x, args) => {
             let margs: Vec<_> = args
                 .iter()
