@@ -89,7 +89,10 @@ fn fmt_typ(t: &LocTyp) -> String {
     match &t.node {
         Typ::Fun(a, b) => format!("Fun({},{})", fmt_typ(a), fmt_typ(b)),
         Typ::Record(fields) => {
-            let fs: Vec<String> = fields.iter().map(|(n, t)| format!("{}:{}", n, fmt_typ(t))).collect();
+            let fs: Vec<String> = fields
+                .iter()
+                .map(|(n, t)| format!("{}:{}", n, fmt_typ(t)))
+                .collect();
             format!("Rec({})", fs.join(","))
         }
         Typ::Datatype(id, _) => format!("Dt({})", id),
@@ -128,10 +131,7 @@ fn strcat_exp(span: &Span, es: Vec<LocExp>) -> LocExp {
             let mut iter = es.into_iter().rev();
             let mut acc = iter.next().unwrap();
             for e in iter {
-                acc = Located::new(
-                    Exp::Strcat(Box::new(e), Box::new(acc)),
-                    span.clone(),
-                );
+                acc = Located::new(Exp::Strcat(Box::new(e), Box::new(acc)), span.clone());
             }
             acc
         }
@@ -155,11 +155,17 @@ fn field(span: &Span, e: LocExp, x: &str) -> LocExp {
 }
 
 fn ffi_app(span: &Span, m: &str, f: &str, args: Vec<(LocExp, LocTyp)>) -> LocExp {
-    Located::new(Exp::FfiApp(m.to_string(), f.to_string(), args), span.clone())
+    Located::new(
+        Exp::FfiApp(m.to_string(), f.to_string(), args),
+        span.clone(),
+    )
 }
 
 fn make_abs(span: &Span, x: &str, dom: LocTyp, ran: LocTyp, body: LocExp) -> LocExp {
-    Located::new(Exp::Abs(x.to_string(), dom, ran, Box::new(body)), span.clone())
+    Located::new(
+        Exp::Abs(x.to_string(), dom, ran, Box::new(body)),
+        span.clone(),
+    )
 }
 
 fn make_case(span: &Span, disc: LocExp, arms: Vec<(LocPat, LocExp)>, meta: CaseMeta) -> LocExp {
@@ -167,7 +173,10 @@ fn make_case(span: &Span, disc: LocExp, arms: Vec<(LocPat, LocExp)>, meta: CaseM
 }
 
 fn make_let(span: &Span, x: &str, t: LocTyp, e1: LocExp, e2: LocExp) -> LocExp {
-    Located::new(Exp::Let(x.to_string(), t, Box::new(e1), Box::new(e2)), span.clone())
+    Located::new(
+        Exp::Let(x.to_string(), t, Box::new(e1), Box::new(e2)),
+        span.clone(),
+    )
 }
 
 fn pat_none(span: &Span, t: LocTyp) -> LocPat {
@@ -234,25 +243,49 @@ fn max_name_decl(d: &Decl, mx: &mut usize) {
 fn max_name_exp(e: &Exp, mx: &mut usize) {
     match e {
         Exp::Named(n) => *mx = (*mx).max(*n),
-        Exp::App(f, x) => { max_name_exp(&f.node, mx); max_name_exp(&x.node, mx); }
+        Exp::App(f, x) => {
+            max_name_exp(&f.node, mx);
+            max_name_exp(&x.node, mx);
+        }
         Exp::Abs(_, _, _, body) => max_name_exp(&body.node, mx),
-        Exp::Let(_, _, e1, e2) => { max_name_exp(&e1.node, mx); max_name_exp(&e2.node, mx); }
-        Exp::Strcat(a, b) => { max_name_exp(&a.node, mx); max_name_exp(&b.node, mx); }
-        Exp::FfiApp(_, _, args) => { for (e, _) in args { max_name_exp(&e.node, mx); } }
-        Exp::Record(xets) => { for (_, e, _) in xets { max_name_exp(&e.node, mx); } }
+        Exp::Let(_, _, e1, e2) => {
+            max_name_exp(&e1.node, mx);
+            max_name_exp(&e2.node, mx);
+        }
+        Exp::Strcat(a, b) => {
+            max_name_exp(&a.node, mx);
+            max_name_exp(&b.node, mx);
+        }
+        Exp::FfiApp(_, _, args) => {
+            for (e, _) in args {
+                max_name_exp(&e.node, mx);
+            }
+        }
+        Exp::Record(xets) => {
+            for (_, e, _) in xets {
+                max_name_exp(&e.node, mx);
+            }
+        }
         Exp::Field(e, _) => max_name_exp(&e.node, mx),
         Exp::Case(disc, arms, _) => {
             max_name_exp(&disc.node, mx);
-            for (_, arm) in arms { max_name_exp(&arm.node, mx); }
+            for (_, arm) in arms {
+                max_name_exp(&arm.node, mx);
+            }
         }
         Exp::Con(_, _, Some(e)) => max_name_exp(&e.node, mx),
         Exp::Some(_, e) => max_name_exp(&e.node, mx),
-        Exp::Seq(a, b) => { max_name_exp(&a.node, mx); max_name_exp(&b.node, mx); }
+        Exp::Seq(a, b) => {
+            max_name_exp(&a.node, mx);
+            max_name_exp(&b.node, mx);
+        }
         Exp::Write(e) => max_name_exp(&e.node, mx),
         Exp::Error(e, _) => max_name_exp(&e.node, mx),
         Exp::Closure(n, envs) => {
             *mx = (*mx).max(*n);
-            for e in envs { max_name_exp(&e.node, mx); }
+            for e in envs {
+                max_name_exp(&e.node, mx);
+            }
         }
         _ => {}
     }
@@ -284,11 +317,7 @@ fn quote_exp(
             let (x, ft) = &fields[0].clone();
             let inner_e = field(s, e.clone(), x);
             let quoted = quote_exp(s, ft, inner_e, st, settings)?;
-            let parts = vec![
-                str_lit(s, &format!("{{_{x}:")),
-                quoted,
-                str_lit(s, "}"),
-            ];
+            let parts = vec![str_lit(s, &format!("{{_{x}:")), quoted, str_lit(s, "}")];
             Ok(strcat_exp(s, parts))
         }
 
@@ -298,10 +327,7 @@ fn quote_exp(
             let first_e = field(s, e.clone(), first_x);
             let first_q = quote_exp(s, first_t, first_e, st, settings)?;
 
-            let mut parts = vec![
-                str_lit(s, &format!("{{_{first_x}:")),
-                first_q,
-            ];
+            let mut parts = vec![str_lit(s, &format!("{{_{first_x}:")), first_q];
             for (x, ft) in &fields[1..] {
                 let fe = field(s, e.clone(), x);
                 let fq = quote_exp(s, ft, fe, st, settings)?;
@@ -350,18 +376,37 @@ fn quote_exp(
             let disc_t = t.clone();
             let str_t = str_typ(s);
             let true_arm = (
-                pat_con(s, DatatypeKind::Enum,
-                    PatCon::Ffi { module: "Basis".into(), datatyp: "bool".into(), con: "True".into(), arg: None },
-                    None),
+                pat_con(
+                    s,
+                    DatatypeKind::Enum,
+                    PatCon::Ffi {
+                        module: "Basis".into(),
+                        datatyp: "bool".into(),
+                        con: "True".into(),
+                        arg: None,
+                    },
+                    None,
+                ),
                 str_lit(s, "true"),
             );
             let false_arm = (
-                pat_con(s, DatatypeKind::Enum,
-                    PatCon::Ffi { module: "Basis".into(), datatyp: "bool".into(), con: "False".into(), arg: None },
-                    None),
+                pat_con(
+                    s,
+                    DatatypeKind::Enum,
+                    PatCon::Ffi {
+                        module: "Basis".into(),
+                        datatyp: "bool".into(),
+                        con: "False".into(),
+                        arg: None,
+                    },
+                    None,
+                ),
                 str_lit(s, "false"),
             );
-            let meta = CaseMeta { disc: disc_t, result: str_t };
+            let meta = CaseMeta {
+                disc: disc_t,
+                result: str_t,
+            };
             Ok(make_case(s, e, vec![true_arm, false_arm], meta))
         }
 
@@ -379,7 +424,10 @@ fn quote_exp(
 
             let t_opt = t.clone();
             let str_t = str_typ(s);
-            let meta = CaseMeta { disc: t_opt.clone(), result: str_t };
+            let meta = CaseMeta {
+                disc: t_opt.clone(),
+                result: str_t,
+            };
             let arms = vec![
                 (pat_none(s, inner.clone()), str_lit(s, "null")),
                 (
@@ -418,24 +466,31 @@ fn quote_exp(
             // | PSome(rt, PVar("x", rt)) =>
             //     "{_1:" ^ e' ^ ",_2:" ^ (ENamed n')(EField(ERel 0, "2")) ^ "}"
             let none_arm = (pat_none(s, rt.clone()), str_lit(s, "null"));
-            let some_body = strcat_exp(s, vec![
-                str_lit(s, "{_1:"),
-                e_prime,
-                str_lit(s, ",_2:"),
-                app(s, named(s, n_prime), field(s, rel(s, 0), "2")),
-                str_lit(s, "}"),
-            ]);
+            let some_body = strcat_exp(
+                s,
+                vec![
+                    str_lit(s, "{_1:"),
+                    e_prime,
+                    str_lit(s, ",_2:"),
+                    app(s, named(s, n_prime), field(s, rel(s, 0), "2")),
+                    str_lit(s, "}"),
+                ],
+            );
             let some_arm = (
                 pat_some(s, rt.clone(), pat_var(s, "x", rt.clone())),
                 some_body,
             );
 
-            let meta = CaseMeta { disc: t.clone(), result: str_t.clone() };
+            let meta = CaseMeta {
+                disc: t.clone(),
+                result: str_t.clone(),
+            };
             let body_case = make_case(s, rel(s, 0), vec![none_arm, some_arm], meta);
             let body_abs = make_abs(s, "x", t.clone(), str_t.clone(), body_case);
 
             let fn_typ = Located::new(Typ::Fun(Box::new(t.clone()), Box::new(str_t)), s.clone());
-            st.decls.push(("jsify".into(), n_prime, fn_typ, body_abs, "jsify".into()));
+            st.decls
+                .push(("jsify".into(), n_prime, fn_typ, body_abs, "jsify".into()));
 
             Ok(app(s, named(s, n_prime), e))
         }
@@ -478,11 +533,14 @@ fn quote_exp(
                                     inner_q
                                 }
                             }
-                            _ => strcat_exp(s, vec![
-                                str_lit(s, &format!("{{n:{cn},v:")),
-                                inner_q,
-                                str_lit(s, "}"),
-                            ]),
+                            _ => strcat_exp(
+                                s,
+                                vec![
+                                    str_lit(s, &format!("{{n:{cn},v:")),
+                                    inner_q,
+                                    str_lit(s, "}"),
+                                ],
+                            ),
                         };
 
                         let inner_pat = pat_var(s, "x", ct_inner.clone());
@@ -493,12 +551,16 @@ fn quote_exp(
             }
 
             let dt_t = t.clone();
-            let meta = CaseMeta { disc: dt_t.clone(), result: str_t.clone() };
+            let meta = CaseMeta {
+                disc: dt_t.clone(),
+                result: str_t.clone(),
+            };
             let body_case = make_case(s, rel(s, 0), arms, meta);
             let body_abs = make_abs(s, "x", dt_t.clone(), str_t.clone(), body_case);
 
             let fn_typ = Located::new(Typ::Fun(Box::new(dt_t), Box::new(str_t)), s.clone());
-            st.decls.push(("jsify".into(), n_prime, fn_typ, body_abs, "jsify".into()));
+            st.decls
+                .push(("jsify".into(), n_prime, fn_typ, body_abs, "jsify".into()));
 
             Ok(app(s, named(s, n_prime), e))
         }
@@ -511,12 +573,7 @@ fn quote_exp(
 // unurlifyExp — produce a JavaScript *string* snippet that unurlifies a type
 // ---------------------------------------------------------------------------
 
-fn unurlify_exp(
-    span: &Span,
-    t: &LocTyp,
-    st: &mut State,
-    settings: &Settings,
-) -> String {
+fn unurlify_exp(span: &Span, t: &LocTyp, st: &mut State, settings: &Settings) -> String {
     match &t.node.clone() {
         Typ::Record(fields) if fields.is_empty() => "(i++,null)".to_string(),
         Typ::Ffi(m, f) if m == "Basis" && f == "unit" => "(i++,null)".to_string(),
@@ -544,11 +601,16 @@ fn unurlify_exp(
         Typ::Ffi(m, f) if m == "Basis" && f == "char" => "uu(t[i++])".to_string(),
         Typ::Ffi(m, f) if m == "Basis" && f == "int" => "parseInt(t[i++])".to_string(),
         Typ::Ffi(m, f) if m == "Basis" && f == "time" => "parseInt(t[i++])".to_string(),
-        Typ::Ffi(m, f) if m == "Basis" && f == "clocktime" => "unurlifyClocktime(t[i++])".to_string(),
-        Typ::Ffi(m, f) if m == "Basis" && f == "calendardate" => "unurlifyCalendardate(t[i++])".to_string(),
+        Typ::Ffi(m, f) if m == "Basis" && f == "clocktime" => {
+            "unurlifyClocktime(t[i++])".to_string()
+        }
+        Typ::Ffi(m, f) if m == "Basis" && f == "calendardate" => {
+            "unurlifyCalendardate(t[i++])".to_string()
+        }
         Typ::Ffi(m, f) if m == "Basis" && f == "float" => "parseFloat(t[i++])".to_string(),
-        Typ::Ffi(m, f) if m == "Basis" && f == "channel" =>
-            "(t[i++].length > 0 ? parseInt(t[i-1]) : null)".to_string(),
+        Typ::Ffi(m, f) if m == "Basis" && f == "channel" => {
+            "(t[i++].length > 0 ? parseInt(t[i-1]) : null)".to_string()
+        }
         Typ::Ffi(m, f) if m == "Basis" && f == "bool" => "t[i++] == \"1\"".to_string(),
 
         Typ::Source => "parseSource(t[i++], t[i++])".to_string(),
@@ -613,7 +675,9 @@ fn unurlify_exp(
                 };
             }
 
-            let body = format!("function _n{n_prime}(t,i){{var x=t[i++];var r={expr};return {{_1:i,_2:r}}}}\n\n");
+            let body = format!(
+                "function _n{n_prime}(t,i){{var x=t[i++];var r={expr};return {{_1:i,_2:r}}}}\n\n"
+            );
             st.script.push(body);
 
             format!("(tmp=_n{n_prime}(t,i),i=tmp._1,tmp._2)")
@@ -766,7 +830,10 @@ fn de_strcat(level: usize, e: &LocExp, errors: &mut Vec<String>) -> String {
             format!("\"{inner}\"")
         }
         _ => {
-            errors.push(format!("jscomp: Unexpected non-constant JavaScript code at {}", e.span));
+            errors.push(format!(
+                "jscomp: Unexpected non-constant JavaScript code at {}",
+                e.span
+            ));
             String::new()
         }
     }
@@ -793,16 +860,15 @@ fn pat_con_js(pc: &PatCon, span: &Span) -> LocExp {
 // jsPat — serialise a pattern to a JS pattern object
 // ---------------------------------------------------------------------------
 
-fn js_pat(
-    p: &LocPat,
-    some_ts: &HashMap<usize, LocTyp>,
-    span: &Span,
-) -> LocExp {
+fn js_pat(p: &LocPat, some_ts: &HashMap<usize, LocTyp>, span: &Span) -> LocExp {
     match &p.node {
         Pat::Var(_, _) => str_lit(span, "{/*hoho*/c:\"v\"}"),
         Pat::Prim(prim) => {
             let js_p = js_prim(prim, span, &JsMode::Script);
-            strcat_exp(span, vec![str_lit(span, "{c:\"c\",v:"), js_p, str_lit(span, "}")])
+            strcat_exp(
+                span,
+                vec![str_lit(span, "{c:\"c\",v:"), js_p, str_lit(span, "}")],
+            )
         }
         Pat::Con(_, PatCon::Ffi { module, con, .. }, None)
             if module == "Basis" && con == "True" =>
@@ -821,52 +887,73 @@ fn js_pat(
                 Some(t) => {
                     let nullable_str = if is_nullable(t) { "true" } else { "false" };
                     let inner_js = js_pat(inner_p, some_ts, span);
-                    strcat_exp(span, vec![
-                        str_lit(span, &format!("{{c:\"s\",n:{nullable_str},p:")),
-                        inner_js,
-                        str_lit(span, "}"),
-                    ])
+                    strcat_exp(
+                        span,
+                        vec![
+                            str_lit(span, &format!("{{c:\"s\",n:{nullable_str},p:")),
+                            inner_js,
+                            str_lit(span, "}"),
+                        ],
+                    )
                 }
             }
         }
         Pat::Con(_, pc, None) => {
             let pc_e = pat_con_js(pc, span);
-            strcat_exp(span, vec![str_lit(span, "{c:\"c\",v:"), pc_e, str_lit(span, "}")])
+            strcat_exp(
+                span,
+                vec![str_lit(span, "{c:\"c\",v:"), pc_e, str_lit(span, "}")],
+            )
         }
         Pat::Con(_, pc, Some(inner_p)) => {
             let pc_e = pat_con_js(pc, span);
             let inner_js = js_pat(inner_p, some_ts, span);
-            strcat_exp(span, vec![
-                str_lit(span, "{c:\"1\",n:"),
-                pc_e,
-                str_lit(span, ",p:"),
-                inner_js,
-                str_lit(span, "}"),
-            ])
+            strcat_exp(
+                span,
+                vec![
+                    str_lit(span, "{c:\"1\",n:"),
+                    pc_e,
+                    str_lit(span, ",p:"),
+                    inner_js,
+                    str_lit(span, "}"),
+                ],
+            )
         }
         Pat::Record(xps) => {
             // Build cons list of {n:"field",p:jsPat}
-            let list_e = xps.iter().rev().fold(str_lit(span, "null"), |acc, (x, p, _)| {
-                let pj = js_pat(p, some_ts, span);
-                strcat_exp(span, vec![
-                    str_lit(span, &format!("cons({{n:\"{x}\",p:")),
-                    pj,
-                    str_lit(span, "},"),
-                    acc,
-                    str_lit(span, ")"),
-                ])
-            });
-            strcat_exp(span, vec![str_lit(span, "{c:\"r\",l:"), list_e, str_lit(span, "}")])
+            let list_e = xps
+                .iter()
+                .rev()
+                .fold(str_lit(span, "null"), |acc, (x, p, _)| {
+                    let pj = js_pat(p, some_ts, span);
+                    strcat_exp(
+                        span,
+                        vec![
+                            str_lit(span, &format!("cons({{n:\"{x}\",p:")),
+                            pj,
+                            str_lit(span, "},"),
+                            acc,
+                            str_lit(span, ")"),
+                        ],
+                    )
+                });
+            strcat_exp(
+                span,
+                vec![str_lit(span, "{c:\"r\",l:"), list_e, str_lit(span, "}")],
+            )
         }
         Pat::None(_) => str_lit(span, "{c:\"c\",v:null}"),
         Pat::Some(t, inner_p) => {
             let nullable_str = if is_nullable(t) { "true" } else { "false" };
             let inner_js = js_pat(inner_p, some_ts, span);
-            strcat_exp(span, vec![
-                str_lit(span, &format!("{{c:\"s\",n:{nullable_str},p:")),
-                inner_js,
-                str_lit(span, "}"),
-            ])
+            strcat_exp(
+                span,
+                vec![
+                    str_lit(span, &format!("{{c:\"s\",n:{nullable_str},p:")),
+                    inner_js,
+                    str_lit(span, "}"),
+                ],
+            )
         }
     }
 }
@@ -907,7 +994,17 @@ fn js_exp(
     some_ts: &HashMap<usize, LocTyp>,
     found_javascript: &mut bool,
 ) -> Result<LocExp, CantEmbed> {
-    js_e(mode, outer, 0, e, st, settings, nameds, some_ts, found_javascript)
+    js_e(
+        mode,
+        outer,
+        0,
+        e,
+        st,
+        settings,
+        nameds,
+        some_ts,
+        found_javascript,
+    )
 }
 
 fn js_e(
@@ -924,14 +1021,42 @@ fn js_e(
     let span = &e.span.clone();
     let s = span;
 
-    macro_rules! str { ($lit:expr) => { str_lit(s, $lit) } }
+    macro_rules! str {
+        ($lit:expr) => {
+            str_lit(s, $lit)
+        };
+    }
     macro_rules! cat { ($($e:expr),+) => { strcat_exp(s, vec![$($e),+]) } }
-    macro_rules! recurse { ($ex:expr) => {
-        js_e(mode, outer, inner, $ex, st, settings, nameds, some_ts, found_javascript)?
-    } }
-    macro_rules! recurse_inner { ($ex:expr, $n:expr) => {
-        js_e(mode, outer, inner + $n, $ex, st, settings, nameds, some_ts, found_javascript)?
-    } }
+    macro_rules! recurse {
+        ($ex:expr) => {
+            js_e(
+                mode,
+                outer,
+                inner,
+                $ex,
+                st,
+                settings,
+                nameds,
+                some_ts,
+                found_javascript,
+            )?
+        };
+    }
+    macro_rules! recurse_inner {
+        ($ex:expr, $n:expr) => {
+            js_e(
+                mode,
+                outer,
+                inner + $n,
+                $ex,
+                st,
+                settings,
+                nameds,
+                some_ts,
+                found_javascript,
+            )?
+        };
+    }
 
     match &e.node.clone() {
         Exp::Prim(p) => {
@@ -945,10 +1070,7 @@ fn js_e(
                 Ok(str!(&format!("{{c:\"v\",n:{n}}}")))
             } else {
                 let idx = n - inner;
-                let t = outer
-                    .get(idx)
-                    .ok_or_else(|| CantEmbed(str_typ(s)))?
-                    .clone();
+                let t = outer.get(idx).ok_or_else(|| CantEmbed(str_typ(s)))?.clone();
                 let rel_e = rel(s, idx);
                 let quoted = quote_exp(s, &t, rel_e, st, settings)?;
                 Ok(cat![str!("{c:\"c\",v:"), quoted, str!("}")])
@@ -961,14 +1083,24 @@ fn js_e(
                 // Mark as included first (before recursing, to break cycles)
                 st.included.insert(n);
                 if let Some(named_e) = nameds.get(&n).cloned() {
-                    let js_result = js_e(mode, &[], 0, &named_e, st, settings, nameds, some_ts, found_javascript)?;
+                    let js_result = js_e(
+                        mode,
+                        &[],
+                        0,
+                        &named_e,
+                        st,
+                        settings,
+                        nameds,
+                        some_ts,
+                        found_javascript,
+                    )?;
                     let mut de_errors = Vec::new();
                     let js_str = de_strcat(0, &js_result, &mut de_errors);
                     let js_str = js_str
                         .replace('\'', "\\'")
                         .replace('\\', "\\\\")
                         .replace('\'', "\\'"); // do it properly
-                    // Actually mirror SML: translate ' -> \' and \ -> \\
+                                               // Actually mirror SML: translate ' -> \' and \ -> \\
                     let js_str = {
                         let mut out = String::new();
                         for ch in js_str.chars() {
@@ -1013,7 +1145,13 @@ fn js_e(
         Exp::Con(_, pc, Some(inner_e)) => {
             let pc_e = pat_con_js(pc, s);
             let compiled = recurse!(inner_e);
-            Ok(cat![str!("{c:\"1\",n:"), pc_e, str!(",v:"), compiled, str!("}")])
+            Ok(cat![
+                str!("{c:\"1\",n:"),
+                pc_e,
+                str!(",v:"),
+                compiled,
+                str!("}")
+            ])
         }
 
         Exp::None(_) => Ok(str!("{c:\"c\",v:null}")),
@@ -1031,7 +1169,10 @@ fn js_e(
             match settings.js_func(&key) {
                 Some(name) => Ok(str!(&format!("{{c:\"c\",v:{name}}}"))),
                 None => {
-                    eprintln!("jscomp: Unsupported FFI identifier {f} in JavaScript at {}", s);
+                    eprintln!(
+                        "jscomp: Unsupported FFI identifier {f} in JavaScript at {}",
+                        s
+                    );
                     Ok(str!("{c:\"c\",v:ERROR}"))
                 }
             }
@@ -1052,16 +1193,29 @@ fn js_e(
                 }
             };
             // Build right-fold cons list of args
-            let list_e = args.iter().rev().try_fold(str!("null"), |acc, (arg_e, _)| {
-                let compiled = js_e(mode, outer, inner, arg_e, st, settings, nameds, some_ts, found_javascript)?;
-                Ok::<LocExp, CantEmbed>(cat![
-                    str!("cons("),
-                    compiled,
-                    str!(","),
-                    acc,
-                    str!(")")
-                ])
-            })?;
+            let list_e = args
+                .iter()
+                .rev()
+                .try_fold(str!("null"), |acc, (arg_e, _)| {
+                    let compiled = js_e(
+                        mode,
+                        outer,
+                        inner,
+                        arg_e,
+                        st,
+                        settings,
+                        nameds,
+                        some_ts,
+                        found_javascript,
+                    )?;
+                    Ok::<LocExp, CantEmbed>(cat![
+                        str!("cons("),
+                        compiled,
+                        str!(","),
+                        acc,
+                        str!(")")
+                    ])
+                })?;
             Ok(cat![
                 str!(&format!("{{c:\"f\",f:{name},a:")),
                 list_e,
@@ -1138,53 +1292,108 @@ fn js_e(
         Exp::Record(xets) if xets.is_empty() => Ok(str!("{c:\"c\",v:null}")),
 
         Exp::Record(xets) => {
-            let list_e = xets.iter().rev().try_fold(str!("null"), |acc, (x, field_e, _)| {
-                let compiled = js_e(mode, outer, inner, field_e, st, settings, nameds, some_ts, found_javascript)?;
-                Ok::<LocExp, CantEmbed>(cat![
-                    str!(&format!("cons({{n:\"{x}\",v:")),
-                    compiled,
-                    str!("},"),
-                    acc,
-                    str!(")")
-                ])
-            })?;
+            let list_e = xets
+                .iter()
+                .rev()
+                .try_fold(str!("null"), |acc, (x, field_e, _)| {
+                    let compiled = js_e(
+                        mode,
+                        outer,
+                        inner,
+                        field_e,
+                        st,
+                        settings,
+                        nameds,
+                        some_ts,
+                        found_javascript,
+                    )?;
+                    Ok::<LocExp, CantEmbed>(cat![
+                        str!(&format!("cons({{n:\"{x}\",v:")),
+                        compiled,
+                        str!("},"),
+                        acc,
+                        str!(")")
+                    ])
+                })?;
             Ok(cat![str!("{c:\"r\",l:"), list_e, str!("}")])
         }
 
         Exp::Field(base_e, x) => {
             // Check if this is a field-chain from an outer variable (captured server value)
-            let result = seek_field(mode, outer, inner, base_e, &[x.as_str()], e, s, st, settings, nameds, some_ts, found_javascript);
+            let result = seek_field(
+                mode,
+                outer,
+                inner,
+                base_e,
+                &[x.as_str()],
+                e,
+                s,
+                st,
+                settings,
+                nameds,
+                some_ts,
+                found_javascript,
+            );
             result
         }
 
         Exp::Case(disc_e, arms, _) => {
             let disc_c = recurse!(disc_e);
-            let ps_e = arms.iter().rev().try_fold(str!("null"), |acc, (pat, arm_e)| {
-                let n_binds = pat_binds_n_local(pat);
-                let arm_c = js_e(mode, outer, inner + n_binds, arm_e, st, settings, nameds, some_ts, found_javascript)?;
-                let pat_js = js_pat(pat, some_ts, s);
-                Ok::<LocExp, CantEmbed>(cat![
-                    str!("cons({p:"),
-                    pat_js,
-                    str!(",b:"),
-                    arm_c,
-                    str!("},"),
-                    acc,
-                    str!(")")
-                ])
-            })?;
-            Ok(cat![str!("{c:\"m\",e:"), disc_c, str!(",p:"), ps_e, str!("}")])
+            let ps_e = arms
+                .iter()
+                .rev()
+                .try_fold(str!("null"), |acc, (pat, arm_e)| {
+                    let n_binds = pat_binds_n_local(pat);
+                    let arm_c = js_e(
+                        mode,
+                        outer,
+                        inner + n_binds,
+                        arm_e,
+                        st,
+                        settings,
+                        nameds,
+                        some_ts,
+                        found_javascript,
+                    )?;
+                    let pat_js = js_pat(pat, some_ts, s);
+                    Ok::<LocExp, CantEmbed>(cat![
+                        str!("cons({p:"),
+                        pat_js,
+                        str!(",b:"),
+                        arm_c,
+                        str!("},"),
+                        acc,
+                        str!(")")
+                    ])
+                })?;
+            Ok(cat![
+                str!("{c:\"m\",e:"),
+                disc_c,
+                str!(",p:"),
+                ps_e,
+                str!("}")
+            ])
         }
 
         Exp::Strcat(e1, e2) => {
             let c1 = recurse!(e1);
             let c2 = recurse!(e2);
-            Ok(cat![str!("{c:\"f\",f:cat,a:cons("), c1, str!(",cons("), c2, str!(",null)}")])
+            Ok(cat![
+                str!("{c:\"f\",f:cat,a:cons("),
+                c1,
+                str!(",cons("),
+                c2,
+                str!(",null)}")
+            ])
         }
 
         Exp::Error(inner_e, _) => {
             let compiled = recurse!(inner_e);
-            Ok(cat![str!("{c:\"f\",f:er,a:cons("), compiled, str!(",null)}")])
+            Ok(cat![
+                str!("{c:\"f\",f:er,a:cons("),
+                compiled,
+                str!(",null)}")
+            ])
         }
 
         Exp::Seq(e1, e2) => {
@@ -1201,7 +1410,17 @@ fn js_e(
 
         Exp::JavaScript(JavaScriptMode::Source(_), inner_e) => {
             *found_javascript = true;
-            js_e(mode, outer, inner, inner_e, st, settings, nameds, some_ts, found_javascript)
+            js_e(
+                mode,
+                outer,
+                inner,
+                inner_e,
+                st,
+                settings,
+                nameds,
+                some_ts,
+                found_javascript,
+            )
         }
 
         Exp::JavaScript(_, inner_e) => {
@@ -1241,7 +1460,11 @@ fn js_e(
 
         Exp::Redirect(inner_e, _) => {
             let compiled = recurse!(inner_e);
-            Ok(cat![str!("{c:\"f\",f:redirect,a:cons("), compiled, str!(",null)}")])
+            Ok(cat![
+                str!("{c:\"f\",f:redirect,a:cons("),
+                compiled,
+                str!(",null)}")
+            ])
         }
 
         Exp::Uurlify(_, _, true) => {
@@ -1263,16 +1486,30 @@ fn js_e(
 
         Exp::SignalReturn(inner_e) => {
             let compiled = recurse!(inner_e);
-            Ok(cat![str!("{c:\"f\",f:sr,a:cons("), compiled, str!(",null)}")])
+            Ok(cat![
+                str!("{c:\"f\",f:sr,a:cons("),
+                compiled,
+                str!(",null)}")
+            ])
         }
         Exp::SignalBind(e1, e2) => {
             let c1 = recurse!(e1);
             let c2 = recurse!(e2);
-            Ok(cat![str!("{c:\"f\",f:sb,a:cons("), c1, str!(",cons("), c2, str!(",null)}")])
+            Ok(cat![
+                str!("{c:\"f\",f:sb,a:cons("),
+                c1,
+                str!(",cons("),
+                c2,
+                str!(",null)}")
+            ])
         }
         Exp::SignalSource(inner_e) => {
             let compiled = recurse!(inner_e);
-            Ok(cat![str!("{c:\"f\",f:ss,a:cons("), compiled, str!(",null)}")])
+            Ok(cat![
+                str!("{c:\"f\",f:ss,a:cons("),
+                compiled,
+                str!(",null)}")
+            ])
         }
 
         Exp::ServerCall(inner_e, t, eff, fm) => {
@@ -1307,24 +1544,32 @@ fn js_e(
             Ok(cat![
                 str!("{c:\"f\",f:rv,a:cons("),
                 compiled,
-                str!(&(
-                    ",cons({c:\"c\",v:function(s){var t=s.split(\"/\");var i=0;return ".to_string()
-                    + &unurl
-                    + "}},cons({c:\"K\"},null)))}"
-                ))
+                str!(
+                    &(",cons({c:\"c\",v:function(s){var t=s.split(\"/\");var i=0;return "
+                        .to_string()
+                        + &unurl
+                        + "}},cons({c:\"K\"},null)))}")
+                )
             ])
         }
 
         Exp::Sleep(inner_e) => {
             let compiled = recurse!(inner_e);
-            Ok(cat![str!("{c:\"f\",f:sl,a:cons("), compiled, str!(",cons({c:\"K\"},null))}")])
+            Ok(cat![
+                str!("{c:\"f\",f:sl,a:cons("),
+                compiled,
+                str!(",cons({c:\"K\"},null))}")
+            ])
         }
 
         Exp::Spawn(inner_e) => {
             let compiled = recurse!(inner_e);
-            Ok(cat![str!("{c:\"f\",f:sp,a:cons("), compiled, str!(",null)}")])
+            Ok(cat![
+                str!("{c:\"f\",f:sp,a:cons("),
+                compiled,
+                str!(",null)}")
+            ])
         }
-
     }
 }
 
@@ -1350,7 +1595,17 @@ fn seek_field(
             let n = *n;
             if n < inner {
                 // It is a JS-runtime variable — emit generic field access
-                let _base_c = js_e(mode, outer, inner, base, st, settings, nameds, some_ts, found_javascript)?;
+                let _base_c = js_e(
+                    mode,
+                    outer,
+                    inner,
+                    base,
+                    st,
+                    settings,
+                    nameds,
+                    some_ts,
+                    found_javascript,
+                )?;
                 let last_x = xs.last().unwrap();
                 let inner_c = {
                     // Build the base.fields_except_last expression
@@ -1358,20 +1613,30 @@ fn seek_field(
                     for x in &xs[..xs.len() - 1] {
                         e = field(s, e, x);
                     }
-                    js_e(mode, outer, inner, &e, st, settings, nameds, some_ts, found_javascript)?
+                    js_e(
+                        mode,
+                        outer,
+                        inner,
+                        &e,
+                        st,
+                        settings,
+                        nameds,
+                        some_ts,
+                        found_javascript,
+                    )?
                 };
-                Ok(strcat_exp(s, vec![
-                    str_lit(s, "{c:\".\",r:"),
-                    inner_c,
-                    str_lit(s, &format!(",f:\"{last_x}\"}}")),
-                ]))
+                Ok(strcat_exp(
+                    s,
+                    vec![
+                        str_lit(s, "{c:\".\",r:"),
+                        inner_c,
+                        str_lit(s, &format!(",f:\"{last_x}\"}}")),
+                    ],
+                ))
             } else {
                 // Captured from server — resolve type through field chain
                 let idx = n - inner;
-                let mut t = outer
-                    .get(idx)
-                    .ok_or_else(|| CantEmbed(str_typ(s)))?
-                    .clone();
+                let mut t = outer.get(idx).ok_or_else(|| CantEmbed(str_typ(s)))?.clone();
                 // Walk field chain to get the leaf type
                 for x in xs {
                     if let Typ::Record(fields) = &t.node.clone() {
@@ -1390,32 +1655,71 @@ fn seek_field(
                     acc = field(s, acc, x);
                 }
                 let quoted = quote_exp(s, &t, acc, st, settings)?;
-                Ok(strcat_exp(s, vec![str_lit(s, "{c:\"c\",v:"), quoted, str_lit(s, "}")]))
+                Ok(strcat_exp(
+                    s,
+                    vec![str_lit(s, "{c:\"c\",v:"), quoted, str_lit(s, "}")],
+                ))
             }
         }
         Exp::Field(inner_base, x) => {
             let mut new_xs = vec![x.as_str()];
             new_xs.extend_from_slice(xs);
-            seek_field(mode, outer, inner, inner_base, &new_xs, original, s, st, settings, nameds, some_ts, found_javascript)
+            seek_field(
+                mode,
+                outer,
+                inner,
+                inner_base,
+                &new_xs,
+                original,
+                s,
+                st,
+                settings,
+                nameds,
+                some_ts,
+                found_javascript,
+            )
         }
         _ => {
             // Default: generic field access
             let last_x = xs.last().unwrap();
             // Build the base expression (everything except the outermost field)
             let inner_c = if xs.len() == 1 {
-                js_e(mode, outer, inner, base, st, settings, nameds, some_ts, found_javascript)?
+                js_e(
+                    mode,
+                    outer,
+                    inner,
+                    base,
+                    st,
+                    settings,
+                    nameds,
+                    some_ts,
+                    found_javascript,
+                )?
             } else {
                 let mut e = base.clone();
                 for x in &xs[..xs.len() - 1] {
                     e = field(s, e, x);
                 }
-                js_e(mode, outer, inner, &e, st, settings, nameds, some_ts, found_javascript)?
+                js_e(
+                    mode,
+                    outer,
+                    inner,
+                    &e,
+                    st,
+                    settings,
+                    nameds,
+                    some_ts,
+                    found_javascript,
+                )?
             };
-            Ok(strcat_exp(s, vec![
-                str_lit(s, "{c:\".\",r:"),
-                inner_c,
-                str_lit(s, &format!(",f:\"{last_x}\"}}")),
-            ]))
+            Ok(strcat_exp(
+                s,
+                vec![
+                    str_lit(s, "{c:\".\",r:"),
+                    inner_c,
+                    str_lit(s, &format!(",f:\"{last_x}\"}}")),
+                ],
+            ))
         }
     }
 }
@@ -1463,8 +1767,10 @@ fn exp_walk(
 ) -> LocExp {
     let s = &e.span.clone();
 
-    macro_rules! walk { ($ex:expr) =>
-        { exp_walk(outer, $ex, st, settings, nameds, some_ts, found_javascript) }
+    macro_rules! walk {
+        ($ex:expr) => {
+            exp_walk(outer, $ex, st, settings, nameds, some_ts, found_javascript)
+        };
     }
 
     match &e.node.clone() {
@@ -1481,7 +1787,10 @@ fn exp_walk(
         Exp::Con(_, _, None) => e.clone(),
         Exp::Con(dk, pc, Some(inner_e)) => {
             let new_inner = walk!(inner_e);
-            Located::new(Exp::Con(*dk, pc.clone(), Some(Box::new(new_inner))), s.clone())
+            Located::new(
+                Exp::Con(*dk, pc.clone(), Some(Box::new(new_inner))),
+                s.clone(),
+            )
         }
 
         Exp::Some(t, inner_e) => {
@@ -1506,8 +1815,19 @@ fn exp_walk(
         Exp::Abs(x, dom, ran, body) => {
             let mut new_outer = vec![dom.clone()];
             new_outer.extend_from_slice(outer);
-            let new_body = exp_walk(&new_outer, body, st, settings, nameds, some_ts, found_javascript);
-            Located::new(Exp::Abs(x.clone(), dom.clone(), ran.clone(), Box::new(new_body)), s.clone())
+            let new_body = exp_walk(
+                &new_outer,
+                body,
+                st,
+                settings,
+                nameds,
+                some_ts,
+                found_javascript,
+            );
+            Located::new(
+                Exp::Abs(x.clone(), dom.clone(), ran.clone(), Box::new(new_body)),
+                s.clone(),
+            )
         }
 
         Exp::Unop(op, inner_e) => {
@@ -1517,11 +1837,17 @@ fn exp_walk(
         Exp::Binop(bi, op, e1, e2) => {
             let n1 = walk!(e1);
             let n2 = walk!(e2);
-            Located::new(Exp::Binop(*bi, op.clone(), Box::new(n1), Box::new(n2)), s.clone())
+            Located::new(
+                Exp::Binop(*bi, op.clone(), Box::new(n1), Box::new(n2)),
+                s.clone(),
+            )
         }
 
         Exp::Record(xets) => {
-            let new_xets: Vec<_> = xets.iter().map(|(x, e, t)| (x.clone(), walk!(e), t.clone())).collect();
+            let new_xets: Vec<_> = xets
+                .iter()
+                .map(|(x, e, t)| (x.clone(), walk!(e), t.clone()))
+                .collect();
             Located::new(Exp::Record(new_xets), s.clone())
         }
         Exp::Field(base, x) => {
@@ -1535,7 +1861,15 @@ fn exp_walk(
                 .iter()
                 .map(|(p, arm_e)| {
                     let new_outer = pat_binds_outer(p, outer);
-                    let ne = exp_walk(&new_outer, arm_e, st, settings, nameds, some_ts, found_javascript);
+                    let ne = exp_walk(
+                        &new_outer,
+                        arm_e,
+                        st,
+                        settings,
+                        nameds,
+                        some_ts,
+                        found_javascript,
+                    );
                     (p.clone(), ne)
                 })
                 .collect();
@@ -1553,14 +1887,36 @@ fn exp_walk(
             Located::new(Exp::Error(Box::new(ne), t.clone()), s.clone())
         }
 
-        Exp::ReturnBlob { blob: None, mime_type, t } => {
+        Exp::ReturnBlob {
+            blob: None,
+            mime_type,
+            t,
+        } => {
             let nm = walk!(mime_type);
-            Located::new(Exp::ReturnBlob { blob: None, mime_type: Box::new(nm), t: t.clone() }, s.clone())
+            Located::new(
+                Exp::ReturnBlob {
+                    blob: None,
+                    mime_type: Box::new(nm),
+                    t: t.clone(),
+                },
+                s.clone(),
+            )
         }
-        Exp::ReturnBlob { blob: Some(blob), mime_type, t } => {
+        Exp::ReturnBlob {
+            blob: Some(blob),
+            mime_type,
+            t,
+        } => {
             let nb = walk!(blob);
             let nm = walk!(mime_type);
-            Located::new(Exp::ReturnBlob { blob: Some(Box::new(nb)), mime_type: Box::new(nm), t: t.clone() }, s.clone())
+            Located::new(
+                Exp::ReturnBlob {
+                    blob: Some(Box::new(nb)),
+                    mime_type: Box::new(nm),
+                    t: t.clone(),
+                },
+                s.clone(),
+            )
         }
 
         Exp::Redirect(inner_e, t) => {
@@ -1581,8 +1937,19 @@ fn exp_walk(
             let n1 = walk!(e1);
             let mut new_outer = vec![t.clone()];
             new_outer.extend_from_slice(outer);
-            let n2 = exp_walk(&new_outer, e2, st, settings, nameds, some_ts, found_javascript);
-            Located::new(Exp::Let(x.clone(), t.clone(), Box::new(n1), Box::new(n2)), s.clone())
+            let n2 = exp_walk(
+                &new_outer,
+                e2,
+                st,
+                settings,
+                nameds,
+                some_ts,
+                found_javascript,
+            );
+            Located::new(
+                Exp::Let(x.clone(), t.clone(), Box::new(n1), Box::new(n2)),
+                s.clone(),
+            )
         }
 
         Exp::Closure(n, envs) => {
@@ -1603,16 +1970,27 @@ fn exp_walk(
             let nq = walk!(&qm.query);
             let mut body_outer = vec![qm.state.clone(), row_t];
             body_outer.extend_from_slice(outer);
-            let nb = exp_walk(&body_outer, &qm.body, st, settings, nameds, some_ts, found_javascript);
+            let nb = exp_walk(
+                &body_outer,
+                &qm.body,
+                st,
+                settings,
+                nameds,
+                some_ts,
+                found_javascript,
+            );
             let ni = walk!(&qm.initial);
-            Located::new(Exp::Query(crate::monomorphized::QueryMeta {
-                exps: qm.exps.clone(),
-                tables: qm.tables.clone(),
-                state: qm.state.clone(),
-                query: Box::new(nq),
-                body: Box::new(nb),
-                initial: Box::new(ni),
-            }), s.clone())
+            Located::new(
+                Exp::Query(crate::monomorphized::QueryMeta {
+                    exps: qm.exps.clone(),
+                    tables: qm.tables.clone(),
+                    state: qm.state.clone(),
+                    query: Box::new(nq),
+                    body: Box::new(nb),
+                    initial: Box::new(ni),
+                }),
+                s.clone(),
+            )
         }
 
         Exp::Dml(inner_e, fm) => {
@@ -1641,13 +2019,37 @@ fn exp_walk(
             let mode = JsMode::Source;
             let mut t_outer = vec![t.clone()];
             t_outer.extend_from_slice(outer);
-            match js_exp(&mode, &t_outer, &rel(s, 0), st, settings, nameds, some_ts, found_javascript) {
-                Ok(x_prime) => {
-                    Located::new(Exp::Let("x".to_string(), t.clone(), inner_e.clone(), Box::new(x_prime)), s.clone())
-                }
+            match js_exp(
+                &mode,
+                &t_outer,
+                &rel(s, 0),
+                st,
+                settings,
+                nameds,
+                some_ts,
+                found_javascript,
+            ) {
+                Ok(x_prime) => Located::new(
+                    Exp::Let(
+                        "x".to_string(),
+                        t.clone(),
+                        inner_e.clone(),
+                        Box::new(x_prime),
+                    ),
+                    s.clone(),
+                ),
                 Err(_) => {
                     // CantEmbed: try jsExp mode outer e'
-                    match js_exp(&mode, outer, inner_e, st, settings, nameds, some_ts, found_javascript) {
+                    match js_exp(
+                        &mode,
+                        outer,
+                        inner_e,
+                        st,
+                        settings,
+                        nameds,
+                        some_ts,
+                        found_javascript,
+                    ) {
                         Ok(result) => result,
                         Err(_) => {
                             // Both failed: return original expression unchanged
@@ -1661,7 +2063,16 @@ fn exp_walk(
         Exp::JavaScript(m, inner_e) => {
             *found_javascript = true;
             let mode = java_script_mode_to_js_mode(m);
-            match js_exp(&mode, outer, inner_e, st, settings, nameds, some_ts, found_javascript) {
+            match js_exp(
+                &mode,
+                outer,
+                inner_e,
+                st,
+                settings,
+                nameds,
+                some_ts,
+                found_javascript,
+            ) {
                 Ok(result) => result,
                 Err(_) => e.clone(),
             }
@@ -1683,7 +2094,10 @@ fn exp_walk(
 
         Exp::ServerCall(inner_e, t, eff, fm) => {
             let ne = walk!(inner_e);
-            Located::new(Exp::ServerCall(Box::new(ne), t.clone(), *eff, *fm), s.clone())
+            Located::new(
+                Exp::ServerCall(Box::new(ne), t.clone(), *eff, *fm),
+                s.clone(),
+            )
         }
         Exp::Recv(inner_e, t) => {
             let ne = walk!(inner_e);
@@ -1716,7 +2130,10 @@ fn decl_walk(
     match &d.node.clone() {
         Decl::Val(x, n, t, e, settings_s) => {
             let ne = exp_walk(&[], e, st, settings, nameds, some_ts, found_javascript);
-            Located::new(Decl::Val(x.clone(), *n, t.clone(), ne, settings_s.clone()), s.clone())
+            Located::new(
+                Decl::Val(x.clone(), *n, t.clone(), ne, settings_s.clone()),
+                s.clone(),
+            )
         }
         Decl::ValRec(vis) => {
             let new_vis: Vec<_> = vis
@@ -1780,7 +2197,14 @@ fn process(
     let mut out_decls: Vec<crate::monomorphized::LocDecl> = Vec::new();
 
     for d in &file.0 {
-        let new_d = decl_walk(d, &mut st, settings, &nameds, &some_ts, &mut found_javascript);
+        let new_d = decl_walk(
+            d,
+            &mut st,
+            settings,
+            &nameds,
+            &some_ts,
+            &mut found_javascript,
+        );
 
         // If any helpers were generated, emit them as a DValRec before this decl
         if !st.decls.is_empty() {
@@ -1809,12 +2233,24 @@ fn process(
         };
 
         // Build URL rules JS
-        let url_rules = settings.url_rules.iter().rev().fold("null".to_string(), |acc, r| {
-            let allow = if r.action == crate::settings::Action::Allow { "true" } else { "false" };
-            let prefix = if r.kind == crate::settings::PatternKind::Prefix { "true" } else { "false" };
-            let pattern = &r.pattern;
-            format!("cons({{allow:{allow},prefix:{prefix},pattern:\"{pattern}\"}},{acc})")
-        });
+        let url_rules = settings
+            .url_rules
+            .iter()
+            .rev()
+            .fold("null".to_string(), |acc, r| {
+                let allow = if r.action == crate::settings::Action::Allow {
+                    "true"
+                } else {
+                    "false"
+                };
+                let prefix = if r.kind == crate::settings::PatternKind::Prefix {
+                    "true"
+                } else {
+                    "false"
+                };
+                let pattern = &r.pattern;
+                format!("cons({{allow:{allow},prefix:{prefix},pattern:\"{pattern}\"}},{acc})")
+            });
         let url_rules_js = format!("urlRules = {url_rules};\n\n");
 
         // Join accumulated script fragments (they were pushed in order, so reverse)
@@ -1822,13 +2258,10 @@ fn process(
 
         let time_format = &settings.time_format;
         // Escape for JS string: replace \ with \\ and " with \"
-        let tf_escaped = time_format
-            .replace('\\', "\\\\")
-            .replace('"', "\\\"");
+        let tf_escaped = time_format.replace('\\', "\\\\").replace('"', "\\\"");
 
-        let main_script = format!(
-            "{lib_js}{url_rules_js}{accumulated}\ntime_format = \"{tf_escaped}\";\n"
-        );
+        let main_script =
+            format!("{lib_js}{url_rules_js}{accumulated}\ntime_format = \"{tf_escaped}\";\n");
 
         // Include any extra JS files referenced in settings
         // (mirrors `Settings.listJsFiles()` in SML — we don't have that in Rust yet)

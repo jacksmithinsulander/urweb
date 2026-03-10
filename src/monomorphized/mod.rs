@@ -7,8 +7,8 @@
 
 pub mod db_mode_check;
 pub mod environment;
-pub mod jscomp;
 pub mod fuse;
+pub mod jscomp;
 pub mod mono_opt;
 pub mod mono_reduce;
 pub mod mono_shake;

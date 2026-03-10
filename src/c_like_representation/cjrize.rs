@@ -1098,4 +1098,275 @@ mod tests {
         let id2 = sm.find(&mono_fields, cjr_fields);
         assert_eq!(id2, 1);
     }
+
+    #[test]
+    fn typ_eq_fun_same() {
+        let span = Span::dummy();
+        let a = mono::Typ::Fun(
+            Box::new(Located::new(mono::Typ::Source, span.clone())),
+            Box::new(Located::new(mono::Typ::Source, span.clone())),
+        );
+        let b = mono::Typ::Fun(
+            Box::new(Located::new(mono::Typ::Source, span.clone())),
+            Box::new(Located::new(mono::Typ::Source, span)),
+        );
+        assert!(typ_eq(&a, &b), "same Fun types must be equal");
+    }
+
+    #[test]
+    fn typ_eq_fun_differ_domain() {
+        let span = Span::dummy();
+        let a = mono::Typ::Fun(
+            Box::new(Located::new(mono::Typ::Source, span.clone())),
+            Box::new(Located::new(mono::Typ::Source, span.clone())),
+        );
+        let b = mono::Typ::Fun(
+            Box::new(Located::new(
+                mono::Typ::Ffi("Basis".into(), "int".into()),
+                span.clone(),
+            )),
+            Box::new(Located::new(mono::Typ::Source, span)),
+        );
+        assert!(
+            !typ_eq(&a, &b),
+            "Fun with different domain must not be equal"
+        );
+    }
+
+    #[test]
+    fn typ_eq_datatype_same_id() {
+        let def = mono::DatatypeDef {
+            kind: DatatypeKind::Default,
+            constrs: vec![],
+        };
+        let r = Arc::new(Mutex::new(def));
+        let a = mono::Typ::Datatype(5, r.clone());
+        let b = mono::Typ::Datatype(5, r);
+        assert!(typ_eq(&a, &b));
+    }
+
+    #[test]
+    fn typ_eq_datatype_different_id() {
+        let def = mono::DatatypeDef {
+            kind: DatatypeKind::Default,
+            constrs: vec![],
+        };
+        let r = Arc::new(Mutex::new(def));
+        let a = mono::Typ::Datatype(5, r.clone());
+        let b = mono::Typ::Datatype(6, r);
+        assert!(!typ_eq(&a, &b));
+    }
+
+    #[test]
+    fn typ_eq_ffi_same() {
+        let a = mono::Typ::Ffi("Basis".into(), "int".into());
+        let b = mono::Typ::Ffi("Basis".into(), "int".into());
+        assert!(typ_eq(&a, &b));
+    }
+
+    #[test]
+    fn typ_eq_ffi_different_module() {
+        let a = mono::Typ::Ffi("Basis".into(), "int".into());
+        let b = mono::Typ::Ffi("Other".into(), "int".into());
+        assert!(!typ_eq(&a, &b));
+    }
+
+    #[test]
+    fn typ_eq_source() {
+        let a = mono::Typ::Source;
+        let b = mono::Typ::Source;
+        assert!(typ_eq(&a, &b));
+    }
+
+    #[test]
+    fn typ_eq_different_variants() {
+        let a = mono::Typ::Source;
+        let b = mono::Typ::Ffi("Basis".into(), "int".into());
+        assert!(!typ_eq(&a, &b), "different variants must not be equal");
+    }
+
+    #[test]
+    fn record_fields_eq_same() {
+        let span = Span::dummy();
+        let t = Located::new(mono::Typ::Ffi("Basis".into(), "int".into()), span);
+        let a = vec![("x".to_string(), t.clone())];
+        let b = vec![("x".to_string(), t)];
+        assert!(record_fields_eq(&a, &b));
+    }
+
+    #[test]
+    fn record_fields_eq_different_field_name() {
+        let span = Span::dummy();
+        let t = Located::new(mono::Typ::Ffi("Basis".into(), "int".into()), span);
+        let a = vec![("x".to_string(), t.clone())];
+        let b = vec![("y".to_string(), t)];
+        assert!(!record_fields_eq(&a, &b));
+    }
+
+    #[test]
+    fn typ_eq_record_same() {
+        let span = Span::dummy();
+        let t = Located::new(mono::Typ::Ffi("Basis".into(), "int".into()), span);
+        let a = mono::Typ::Record(vec![("x".into(), t.clone())]);
+        let b = mono::Typ::Record(vec![("x".into(), t)]);
+        assert!(typ_eq(&a, &b), "same Record types must be equal");
+    }
+
+    #[test]
+    fn typ_eq_record_different_field_type() {
+        let span = Span::dummy();
+        let t1 = Located::new(mono::Typ::Ffi("Basis".into(), "int".into()), span.clone());
+        let t2 = Located::new(mono::Typ::Ffi("Basis".into(), "string".into()), span);
+        let a = mono::Typ::Record(vec![("x".into(), t1)]);
+        let b = mono::Typ::Record(vec![("x".into(), t2)]);
+        assert!(
+            !typ_eq(&a, &b),
+            "Record with different field types must not be equal (catches && in record_fields_eq)"
+        );
+    }
+
+    #[test]
+    fn typ_eq_record_vs_option() {
+        let span = Span::dummy();
+        let t = Located::new(mono::Typ::Source, span);
+        let rec = mono::Typ::Record(vec![]);
+        let opt = mono::Typ::Option(Box::new(t));
+        assert!(
+            !typ_eq(&rec, &opt),
+            "Record vs Option must not be equal (catches delete Record arm)"
+        );
+    }
+
+    #[test]
+    fn typ_eq_option_same() {
+        let span = Span::dummy();
+        let t = Located::new(mono::Typ::Source, span);
+        let a = mono::Typ::Option(Box::new(t.clone()));
+        let b = mono::Typ::Option(Box::new(t));
+        assert!(typ_eq(&a, &b));
+    }
+
+    #[test]
+    fn typ_eq_list_same() {
+        let span = Span::dummy();
+        let t = Located::new(mono::Typ::Source, span);
+        let a = mono::Typ::List(Box::new(t.clone()));
+        let b = mono::Typ::List(Box::new(t));
+        assert!(typ_eq(&a, &b));
+    }
+
+    #[test]
+    fn typ_eq_signal_same() {
+        let span = Span::dummy();
+        let t = Located::new(mono::Typ::Source, span);
+        let a = mono::Typ::Signal(Box::new(t.clone()));
+        let b = mono::Typ::Signal(Box::new(t));
+        assert!(typ_eq(&a, &b));
+    }
+
+    #[test]
+    fn sm_find_list_increments_count() {
+        let mut sm = Sm::new();
+        let span = Span::dummy();
+        let elem_mono = Located::new(mono::Typ::Ffi("Basis".into(), "int".into()), span.clone());
+        let elem_cjr = Located::new(Typ::Ffi("Basis".into(), "int".into()), span);
+        let id = sm.find_list(&elem_mono, &elem_cjr);
+        assert_eq!(id, 1, "find_list must use count (catches += mutant)");
+        let id2 = sm.find_list(&elem_mono, &elem_cjr);
+        assert_eq!(id2, 1, "same type must return same id");
+    }
+
+    #[test]
+    fn classify_constrs_enum() {
+        let c: Vec<(String, usize, Option<LocTyp>)> =
+            vec![("A".into(), 0, None), ("B".into(), 1, None)];
+        assert_eq!(
+            classify_constrs(&c),
+            DatatypeKind::Enum,
+            "all nullary => Enum (catches unary==0 check)"
+        );
+    }
+
+    #[test]
+    fn classify_constrs_option() {
+        let unit = Located::dummy(Typ::Ffi("Basis".into(), "unit".into()));
+        let c: Vec<(String, usize, Option<LocTyp>)> =
+            vec![("None".into(), 0, None), ("Some".into(), 1, Some(unit))];
+        assert_eq!(
+            classify_constrs(&c),
+            DatatypeKind::Option,
+            "1 nullary && 1 unary => Option"
+        );
+    }
+
+    #[test]
+    fn classify_constrs_default() {
+        let unit = Located::dummy(Typ::Ffi("Basis".into(), "unit".into()));
+        let c: Vec<(String, usize, Option<LocTyp>)> = vec![
+            ("A".into(), 0, None),
+            ("B".into(), 0, None),
+            ("C".into(), 1, Some(unit)),
+        ];
+        assert_eq!(
+            classify_constrs(&c),
+            DatatypeKind::Default,
+            "2 nullary 1 unary => Default (catches nullary==1 && unary==1)"
+        );
+    }
+
+    #[test]
+    fn type_has_signal_direct() {
+        let t = mono::Typ::Signal(Box::new(Located::dummy(mono::Typ::Source)));
+        assert!(type_has_signal(&t), "Signal must have signal");
+    }
+
+    #[test]
+    fn type_has_signal_fun() {
+        let inner = mono::Typ::Signal(Box::new(Located::dummy(mono::Typ::Source)));
+        let t = mono::Typ::Fun(
+            Box::new(Located::dummy(mono::Typ::Source)),
+            Box::new(Located::new(inner, Span::dummy())),
+        );
+        assert!(
+            type_has_signal(&t),
+            "Fun with Signal in range must have signal (catches || mutant)"
+        );
+    }
+
+    #[test]
+    fn type_has_signal_record() {
+        let inner = mono::Typ::Signal(Box::new(Located::dummy(mono::Typ::Source)));
+        let t = mono::Typ::Record(vec![("x".into(), Located::new(inner, Span::dummy()))]);
+        assert!(
+            type_has_signal(&t),
+            "Record with Signal field must have signal"
+        );
+    }
+
+    #[test]
+    fn type_has_signal_option_no_signal() {
+        let t = mono::Typ::Option(Box::new(Located::dummy(mono::Typ::Source)));
+        assert!(
+            !type_has_signal(&t),
+            "Option of Source must not have signal"
+        );
+    }
+
+    #[test]
+    fn cjrize_datatype_produces_decl() {
+        let decl = mono::Decl::Datatype(vec![mono::DatatypeDecl {
+            name: "Color".into(),
+            id: 10,
+            constrs: vec![("Red".into(), 11, None), ("Blue".into(), 12, None)],
+        }]);
+        let file: mono::File = (vec![Located::dummy(decl)], vec![]);
+        let mut errors = ErrorReporter::new();
+        let result = cjrize(file, &mut errors);
+        assert!(
+            result.is_some(),
+            "cjrize must process Datatype (catches delete Decl::Datatype arm)"
+        );
+        let (decls, _) = result.unwrap();
+        assert!(!decls.is_empty(), "cjrize must produce decl for Datatype");
+    }
 }

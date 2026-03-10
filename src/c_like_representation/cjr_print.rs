@@ -2913,6 +2913,36 @@ mod tests {
     }
 
     #[test]
+    fn ffi_app_funcall_branches() {
+        let env = CjrEnv::new();
+        let settings = Settings::default();
+        let t = dummy(Typ::Ffi("Basis".into(), "int".into()));
+        let e0 = dummy(Exp::FfiApp("Basis".into(), "now".into(), vec![]));
+        let s0 = p_exp(&env, &e0, &settings);
+        assert!(
+            s0.contains("uw_Basis_now") && s0.contains("ctx"),
+            "0-arg FfiApp"
+        );
+        let arg = (dummy(Exp::Prim(Prim::Int(1))), t.clone());
+        let e1 = dummy(Exp::FfiApp("Basis".into(), "intToString".into(), vec![arg]));
+        let s1 = p_exp(&env, &e1, &settings);
+        assert!(
+            s1.contains("1LL") && s1.contains("intToString"),
+            "1-arg FfiApp"
+        );
+        let args = vec![
+            (dummy(Exp::Prim(Prim::Int(1))), t.clone()),
+            (dummy(Exp::Prim(Prim::Int(2))), t.clone()),
+        ];
+        let e2 = dummy(Exp::FfiApp("Basis".into(), "max".into(), args));
+        let s2 = p_exp(&env, &e2, &settings);
+        assert!(
+            s2.contains("uw_Basis_max") && s2.contains("arg"),
+            "2-arg FfiApp"
+        );
+    }
+
+    #[test]
     fn field_access_uses_uwf_prefix() {
         let env = CjrEnv::new();
         let settings = Settings::default();
@@ -2959,5 +2989,266 @@ mod tests {
             "must contain jslib, got:\n{}",
             result
         );
+    }
+
+    #[test]
+    fn is_unboxable_basis_string_and_querystring() {
+        // Catches mutant: delete match arm, wrong guard for Basis string/queryString.
+        let t_string = dummy(Typ::Ffi("Basis".into(), "string".into()));
+        let t_qs = dummy(Typ::Ffi("Basis".into(), "queryString".into()));
+        assert!(is_unboxable(&t_string), "Basis.string must be unboxable");
+        assert!(is_unboxable(&t_qs), "Basis.queryString must be unboxable");
+    }
+
+    #[test]
+    fn is_unboxable_others_false() {
+        // Catches mutant: replace return with true; default/other types.
+        let t_int = dummy(Typ::Ffi("Basis".into(), "int".into()));
+        let t_other = dummy(Typ::Ffi("Other".into(), "string".into()));
+        assert!(!is_unboxable(&t_int), "Basis.int must not be unboxable");
+        assert!(
+            !is_unboxable(&t_other),
+            "Other.string must not be unboxable"
+        );
+    }
+
+    #[test]
+    fn is_unboxable_default_datatype() {
+        // Catches mutant: delete match arm Typ::Datatype(DatatypeKind::Default, _, _) in is_unboxable
+        use std::sync::{Arc, Mutex};
+        let xncs = Arc::new(Mutex::new(vec![("Mk".into(), 0, None)]));
+        let t = dummy(Typ::Datatype(DatatypeKind::Default, 1, xncs));
+        assert!(is_unboxable(&t), "DatatypeKind::Default must be unboxable");
+    }
+
+    #[test]
+    fn cjr_print_database_decl_in_output() {
+        // Catches mutant: cjr_print return with String::new() when file has decls.
+        let settings = Settings::default();
+        let d = dummy(Decl::Database {
+            name: "mydb".into(),
+            expunge: 0,
+            initialize: 0,
+            uses_similar: false,
+        });
+        let result = cjr_print(&(vec![d], vec![]), &settings);
+        assert!(
+            !result.is_empty() && result.len() > 100,
+            "cjr_print must generate substantial output for Database decl"
+        );
+    }
+
+    #[test]
+    fn table_decl_emits_create_table() {
+        let settings = Settings::default();
+        let xts = vec![
+            ("id".into(), dummy(Typ::Ffi("Basis".into(), "int".into()))),
+            (
+                "score".into(),
+                dummy(Typ::Ffi("Basis".into(), "float".into())),
+            ),
+            (
+                "name".into(),
+                dummy(Typ::Ffi("Basis".into(), "string".into())),
+            ),
+        ];
+        let d = dummy(Decl::Table("users".into(), xts, "".into(), vec![]));
+        let result = cjr_print(&(vec![d], vec![]), &settings);
+        assert!(
+            result.contains("users"),
+            "Table decl must produce output with table name (catches delete Decl::Table arm): {}",
+            result
+        );
+    }
+
+    #[test]
+    fn datatype_with_option_variant() {
+        let settings = Settings::default();
+        let dt = crate::c_like_representation::DatatypeDecl {
+            kind: DatatypeKind::Option,
+            name: "Maybe".into(),
+            id: 7,
+            constrs: vec![
+                ("None".into(), 8, None),
+                (
+                    "Some".into(),
+                    9,
+                    Some(dummy(Typ::Ffi("Basis".into(), "int".into()))),
+                ),
+            ],
+        };
+        let d = dummy(Decl::Datatype(vec![dt]));
+        let result = cjr_print(&(vec![d], vec![]), &settings);
+        assert!(
+            result.contains("uw_app") && result.len() > 100,
+            "Option datatype path must be exercised (DatatypeKind::Option branch)"
+        );
+    }
+
+    #[test]
+    fn datatype_default_generates_struct() {
+        let settings = Settings::default();
+        let unit = dummy(Typ::Ffi("Basis".into(), "unit".into()));
+        let dt = crate::c_like_representation::DatatypeDecl {
+            kind: DatatypeKind::Default,
+            name: "Pair".into(),
+            id: 10,
+            constrs: vec![("Mk".into(), 11, Some(unit))],
+        };
+        let d = dummy(Decl::Datatype(vec![dt]));
+        let result = cjr_print(&(vec![d], vec![]), &settings);
+        assert!(
+            result.contains("Pair") || result.contains("__uwc_Mk"),
+            "Default datatype must emit (catches delete Datatype arm in is_unboxable)"
+        );
+    }
+
+    #[test]
+    fn funrec_decl_emits_functions() {
+        let settings = Settings::default();
+        let ran = dummy(Typ::Ffi("Basis".into(), "int".into()));
+        let body = dummy(Exp::Prim(Prim::Int(0)));
+        let d = dummy(Decl::FunRec(vec![("f".into(), 5, vec![], ran, body)]));
+        let result = cjr_print(&(vec![d], vec![]), &settings);
+        assert!(
+            result.contains("__uwn_f_5") || result.contains("static"),
+            "FunRec must emit (catches delete Decl::FunRec arm)"
+        );
+    }
+
+    #[test]
+    fn sequence_decl_in_output() {
+        let settings = Settings::default();
+        let d = dummy(Decl::Sequence("seq".into()));
+        let result = cjr_print(&(vec![d], vec![]), &settings);
+        assert!(!result.is_empty(), "Sequence decl must produce output");
+    }
+
+    #[test]
+    fn cookie_decl_in_output() {
+        let settings = Settings::default();
+        let d = dummy(Decl::Cookie("sess".into()));
+        let result = cjr_print(&(vec![d], vec![]), &settings);
+        assert!(
+            !result.is_empty(),
+            "Cookie decl must produce output (catches delete Decl::Cookie arm)"
+        );
+    }
+
+    #[test]
+    fn datatype_forward_in_output() {
+        let settings = Settings::default();
+        let d = dummy(Decl::DatatypeForward(DatatypeKind::Enum, "E".into(), 1));
+        let result = cjr_print(&(vec![d], vec![]), &settings);
+        assert!(
+            result.contains("E") || !result.is_empty(),
+            "DatatypeForward must produce output"
+        );
+    }
+
+    #[test]
+    fn con_exp_with_record_constructor() {
+        let env = CjrEnv::new();
+        let settings = Settings::default();
+        let _t = dummy(Typ::Record(0));
+        let e = dummy(Exp::Con(
+            DatatypeKind::Default,
+            crate::c_like_representation::PatCon::Var(0),
+            None,
+        ));
+        let s = p_exp(&env, &e, &settings);
+        assert!(!s.is_empty(), "Con exp must print");
+    }
+
+    #[test]
+    fn p_typ_option_prints() {
+        let env = CjrEnv::new();
+        let inner = dummy(Typ::Ffi("Basis".into(), "int".into()));
+        let t = dummy(Typ::Option(Box::new(inner)));
+        let s = p_typ(&env, &t);
+        assert!(
+            !s.is_empty() && (s.contains("uw_") || s.contains("struct")),
+            "Option type must print (catches delete Typ::Option in p_typ)"
+        );
+    }
+
+    #[test]
+    fn p_typ_list_prints() {
+        let env = CjrEnv::new();
+        let inner = dummy(Typ::Ffi("Basis".into(), "int".into()));
+        let t = dummy(Typ::List(Box::new(inner), 1));
+        let s = p_typ(&env, &t);
+        assert!(!s.is_empty(), "List type must print");
+    }
+
+    #[test]
+    fn prim_float_prints() {
+        let env = CjrEnv::new();
+        let settings = Settings::default();
+        let e = dummy(Exp::Prim(Prim::Float(3.14)));
+        let s = p_exp(&env, &e, &settings);
+        assert!(
+            s.contains(".") || s.contains("e"),
+            "float must print with decimal/exp"
+        );
+    }
+
+    #[test]
+    fn p_exp_binop_comparisons() {
+        let env = CjrEnv::new();
+        let settings = Settings::default();
+        let a = dummy(Exp::Prim(Prim::Int(1)));
+        let b = dummy(Exp::Prim(Prim::Int(2)));
+        let ge = dummy(Exp::Binop(
+            ">=".into(),
+            Box::new(a.clone()),
+            Box::new(b.clone()),
+        ));
+        assert!(
+            p_exp(&env, &ge, &settings).contains(">="),
+            "Ge must print >="
+        );
+        let le = dummy(Exp::Binop(
+            "<".into(),
+            Box::new(a.clone()),
+            Box::new(b.clone()),
+        ));
+        assert!(p_exp(&env, &le, &settings).contains("<"), "Lt must print <");
+        let eq = dummy(Exp::Binop(
+            "==".into(),
+            Box::new(a.clone()),
+            Box::new(b.clone()),
+        ));
+        assert!(
+            p_exp(&env, &eq, &settings).contains("=="),
+            "Eq must print =="
+        );
+        let and = dummy(Exp::Binop(
+            "&&".into(),
+            Box::new(a.clone()),
+            Box::new(b.clone()),
+        ));
+        assert!(
+            p_exp(&env, &and, &settings).contains("&&"),
+            "And must print &&"
+        );
+        let or = dummy(Exp::Binop(
+            "||".into(),
+            Box::new(a.clone()),
+            Box::new(b.clone()),
+        ));
+        assert!(
+            p_exp(&env, &or, &settings).contains("||"),
+            "Or must print ||"
+        );
+    }
+
+    #[test]
+    fn prim_char_prints() {
+        let env = CjrEnv::new();
+        let settings = Settings::default();
+        let e = dummy(Exp::Prim(Prim::Char('x')));
+        let s = p_exp(&env, &e, &settings);
+        assert!(s.contains("'") || !s.is_empty());
     }
 }

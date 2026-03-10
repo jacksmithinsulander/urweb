@@ -545,6 +545,26 @@ mod tests {
     }
 
     #[test]
+    fn parse_comment_line_not_treated_as_directive_content() {
+        // Catches mutant: replace match guard raw[..pos].chars().all(|c| c.is_whitespace()) with false.
+        // When guard is false, "# c" would produce line="" instead of continue, and we'd set in_sources.
+        // Then "database x" would be pushed as a source, not parsed as directive.
+        let dir = tempdir().unwrap();
+        let urp = write_urp(dir.path(), "app.urp", "# comment\ndatabase mydb\n\nmod1\n");
+        let job = parse_urp(&urp).unwrap();
+        assert_eq!(
+            job.database.as_deref(),
+            Some("mydb"),
+            "directive after comment must be parsed (catches comment guard mutant)"
+        );
+        assert_eq!(job.sources.len(), 1, "sources must be [mod1] only");
+        assert!(
+            !job.sources[0].contains("database"),
+            "database must not be pushed as source"
+        );
+    }
+
+    #[test]
     fn parse_prefix_directive() {
         let dir = tempdir().unwrap();
         let urp = write_urp(dir.path(), "app.urp", "prefix /myapp\n\nmod1\n");
@@ -599,6 +619,75 @@ mod tests {
         let job = parse_urp(&urp).unwrap();
         assert_eq!(job.effectful, vec![("Mod".into(), "func".into())]);
         assert_eq!(job.client_only, vec![("Mod".into(), "render".into())]);
+    }
+
+    #[test]
+    fn parse_ffi_directive_rejects_empty_module() {
+        // Catches mutant: replace || with && in parse_ffi (parts[0].is_empty check).
+        let dir = tempdir().unwrap();
+        let urp = write_urp(dir.path(), "app.urp", "effectful .func\n\nmod1\n");
+        let result = parse_urp(&urp);
+        assert!(
+            result.is_err(),
+            "effectful .func must fail (empty module) - catches parse_ffi || mutant"
+        );
+    }
+
+    #[test]
+    fn parse_ffi_resolve_path_absolute() {
+        // Catches mutant: replace || with && in resolve_path - /alone should pass through.
+        let dir = tempdir().unwrap();
+        let urp = write_urp(dir.path(), "app.urp", "ffi /absolute/path\n\nmod1\n");
+        let job = parse_urp(&urp).unwrap();
+        assert_eq!(
+            job.ffi.len(),
+            1,
+            "ffi directive must be parsed (catches delete arm ffi)"
+        );
+        assert_eq!(
+            job.ffi[0], "/absolute/path",
+            "resolve_path must pass through absolute path (catches || -> && mutant)"
+        );
+    }
+
+    #[test]
+    fn parse_ffi_resolve_path_hyphen() {
+        // Catches mutant: replace || with && in resolve_path - path starting with - must pass through.
+        // With &&, both / and - would be required, so "-L/usr/lib" would be joined with dir.
+        let dir = tempdir().unwrap();
+        let urp = write_urp(dir.path(), "app.urp", "ffi -L/usr/lib\n\nmod1\n");
+        let job = parse_urp(&urp).unwrap();
+        assert_eq!(job.ffi.len(), 1);
+        assert_eq!(
+            job.ffi[0], "-L/usr/lib",
+            "resolve_path must pass through hyphen-prefixed path (catches || -> && mutant)"
+        );
+    }
+
+    #[test]
+    fn parse_path_directive() {
+        // Catches mutant: delete match arm "path".
+        let dir = tempdir().unwrap();
+        let urp = write_urp(dir.path(), "app.urp", "path FOO=/some/path\n\nmod1\n");
+        let result = parse_urp(&urp);
+        assert!(
+            result.is_ok(),
+            "path directive must parse without error (catches delete arm path)"
+        );
+    }
+
+    #[test]
+    fn parse_rewrite_two_tokens_with_hyphen() {
+        // Catches mutant: delete match arm [pkind, from, "[-]"].
+        let dir = tempdir().unwrap();
+        let urp = write_urp(dir.path(), "app.urp", "rewrite url /prefix [-]\n\nmod1\n");
+        let job = parse_urp(&urp).unwrap();
+        assert_eq!(job.rewrites.len(), 1);
+        assert!(
+            job.rewrites[0].hyphenate,
+            "[-] must set hyphenate (catches delete arm)"
+        );
+        assert_eq!(job.rewrites[0].to, "");
     }
 
     #[test]
@@ -913,6 +1002,20 @@ mod tests {
     }
 
     #[test]
+    fn parse_comment_non_whitespace_before_hash_adds_prefix_as_source() {
+        // Catches mutant: replace guard raw[..pos].chars().all(whitespace) with true.
+        // With correct code, "x # inline" keeps "x" as content; with mutant we'd skip the line.
+        let dir = tempdir().unwrap();
+        let urp = write_urp(dir.path(), "app.urp", "x # inline\n\nmod1\n");
+        let job = parse_urp(&urp).unwrap();
+        assert_eq!(
+            job.sources.len(),
+            2,
+            "must keep prefix before # (catches guard-with-true mutant)"
+        );
+    }
+
+    #[test]
     fn parse_comment_non_whitespace_before_hash_keeps_prefix() {
         let dir = tempdir().unwrap();
         let urp = write_urp(dir.path(), "app.urp", "x # inline\n\nmod1\n");
@@ -962,5 +1065,89 @@ mod tests {
             job.profile,
             "library directive must be processed and profile merged from lib.urp"
         );
+    }
+
+    #[test]
+    fn parse_library_merge_debug_or() {
+        // Catches mutant: replace || with && in merge_library (job.debug || lib.debug).
+        // App has no debug, lib has debug -> merged job must have debug.
+        let dir = tempdir().unwrap();
+        let lib_urp = dir.path().join("lib.urp");
+        std::fs::write(&lib_urp, "debug\n\nlibmod\n").unwrap();
+        let app_urp = write_urp(dir.path(), "app.urp", "library lib.urp\n\nappmod\n");
+        let job = parse_urp(&app_urp).unwrap();
+        assert!(
+            job.debug,
+            "merge_library must OR debug (catches || -> && mutant)"
+        );
+    }
+
+    #[test]
+    fn parse_on_error_three_parts() {
+        // Catches mutant: replace < with == in onError (parts.len() < 2).
+        // "Mod.Sub.handler" has 3 parts; with == 2 we'd wrongly bail.
+        let dir = tempdir().unwrap();
+        let urp = write_urp(dir.path(), "app.urp", "onError Mod.Sub.handler\n\nmod1\n");
+        let job = parse_urp(&urp).unwrap();
+        assert!(
+            job.on_error.is_some(),
+            "onError Mod.Sub.handler must parse (catches < -> == mutant)"
+        );
+        let (m1, mid, last) = job.on_error.as_ref().unwrap();
+        assert_eq!(m1, "Mod");
+        assert_eq!(mid, &["Sub".to_string()]);
+        assert_eq!(last, "handler");
+    }
+
+    #[test]
+    fn parse_on_error_two_parts() {
+        // Catches mutant: replace < with <= in onError (parts.len() < 2).
+        // "Mod.handler" has 2 parts; with <= 2 we'd wrongly bail.
+        let dir = tempdir().unwrap();
+        let urp = write_urp(dir.path(), "app.urp", "onError Mod.handler\n\nmod1\n");
+        let job = parse_urp(&urp).unwrap();
+        assert!(
+            job.on_error.is_some(),
+            "onError Mod.handler must parse (catches < -> <= mutant)"
+        );
+        let (m1, mid, last) = job.on_error.as_ref().unwrap();
+        assert_eq!(m1, "Mod");
+        assert!(mid.is_empty());
+        assert_eq!(last, "handler");
+    }
+
+    #[test]
+    fn parse_path_then_database() {
+        // Catches mutant: delete match arm "path". Path arm must consume directive.
+        let dir = tempdir().unwrap();
+        let urp = write_urp(
+            dir.path(),
+            "app.urp",
+            "path FOO=/some/path\ndatabase mydb\n\nmod1\n",
+        );
+        let job = parse_urp(&urp).unwrap();
+        assert_eq!(
+            job.database.as_deref(),
+            Some("mydb"),
+            "path then database must both parse (catches delete path arm)"
+        );
+        assert_eq!(job.sources.len(), 1);
+    }
+
+    #[test]
+    fn parse_limit_directive_no_error() {
+        // Catches mutant: delete match arm for html5|limit|etc.
+        let dir = tempdir().unwrap();
+        let urp = write_urp(dir.path(), "app.urp", "limit Class 5\n\nmod1\n");
+        let result = parse_urp(&urp);
+        assert!(result.is_ok(), "limit directive must parse without error");
+    }
+
+    #[test]
+    fn parse_html5_directive_no_error() {
+        let dir = tempdir().unwrap();
+        let urp = write_urp(dir.path(), "app.urp", "html5\n\nmod1\n");
+        let result = parse_urp(&urp);
+        assert!(result.is_ok(), "html5 directive must parse without error");
     }
 }

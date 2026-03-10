@@ -760,6 +760,34 @@ pub fn module_of(filename: &str) -> String {
 mod tests {
     use super::*;
 
+    fn minimal_mono_file() -> crate::monomorphized::File {
+        (
+            vec![crate::error_types::Located::dummy(
+                crate::monomorphized::Decl::Database {
+                    name: "db".into(),
+                    expunge: 0,
+                    initialize: 0,
+                    uses_similar: false,
+                },
+            )],
+            vec![],
+        )
+    }
+
+    fn minimal_cjr_file() -> crate::c_like_representation::File {
+        (
+            vec![crate::error_types::Located::dummy(
+                crate::c_like_representation::Decl::Database {
+                    name: "db".into(),
+                    expunge: 0,
+                    initialize: 0,
+                    uses_similar: false,
+                },
+            )],
+            vec![],
+        )
+    }
+
     #[test]
     fn module_of_simple() {
         assert_eq!(module_of("foo.ur"), "Foo");
@@ -916,9 +944,33 @@ mod tests {
     }
 
     #[test]
+    fn core_reduce_preserves_non_empty_file() {
+        let file: crate::core::File = vec![crate::error_types::Located::dummy(
+            crate::core::Declaration::Database("d".into()),
+        )];
+        let result = core_reduce(file, &Settings::default());
+        assert!(
+            !result.is_empty(),
+            "core_reduce must preserve decls (catches replace with Default::default())"
+        );
+    }
+
+    #[test]
     fn core_especialize_passes_through_empty_file() {
         let result = core_especialize(Default::default());
         assert!(result.is_empty(), "especialize of empty file must be empty");
+    }
+
+    #[test]
+    fn core_especialize_preserves_non_empty_file() {
+        let file: crate::core::File = vec![crate::error_types::Located::dummy(
+            crate::core::Declaration::Database("d".into()),
+        )];
+        let result = core_especialize(file);
+        assert!(
+            !result.is_empty(),
+            "core_especialize must preserve decls (catches replace with Default::default())"
+        );
     }
 
     #[test]
@@ -928,9 +980,33 @@ mod tests {
     }
 
     #[test]
+    fn core_unpoly_preserves_non_empty_file() {
+        let file: crate::core::File = vec![crate::error_types::Located::dummy(
+            crate::core::Declaration::Database("d".into()),
+        )];
+        let result = core_unpoly(file);
+        assert!(
+            !result.is_empty(),
+            "core_unpoly must preserve decls (catches replace with Default::default())"
+        );
+    }
+
+    #[test]
     fn core_specialize_passes_through_empty_file() {
         let result = core_specialize(Default::default());
         assert!(result.is_empty(), "specialize of empty file must be empty");
+    }
+
+    #[test]
+    fn core_specialize_preserves_non_empty_file() {
+        let file: crate::core::File = vec![crate::error_types::Located::dummy(
+            crate::core::Declaration::Database("d".into()),
+        )];
+        let result = core_specialize(file);
+        assert!(
+            !result.is_empty(),
+            "core_specialize must preserve decls (catches replace with Default::default())"
+        );
     }
 
     #[test]
@@ -969,6 +1045,19 @@ mod tests {
     }
 
     #[test]
+    fn core_effectize_preserves_non_empty_file() {
+        let file: crate::core::File = vec![crate::error_types::Located::dummy(
+            crate::core::Declaration::Database("d".into()),
+        )];
+        let settings = Settings::default();
+        let result = core_effectize(file, &settings);
+        assert!(
+            !result.is_empty(),
+            "core_effectize must preserve decls (catches replace with Default::default())"
+        );
+    }
+
+    #[test]
     fn check_marshal_passes_through_empty_file() {
         let mut errors = ErrorReporter::new();
         let settings = Settings::default();
@@ -989,6 +1078,18 @@ mod tests {
     }
 
     #[test]
+    fn mono_script_check_preserves_non_empty_file() {
+        let file = minimal_mono_file();
+        let settings = Settings::default();
+        let mut errors = ErrorReporter::new();
+        let result = mono_script_check(file, &settings, &mut errors);
+        assert!(
+            !result.0.is_empty(),
+            "mono_script_check must preserve decls (catches replace with Default::default())"
+        );
+    }
+
+    #[test]
     fn mono_path_check_no_errors_on_empty_file() {
         let mut errors = ErrorReporter::new();
         mono_path_check(&Default::default(), &mut errors);
@@ -1006,15 +1107,47 @@ mod tests {
     }
 
     #[test]
+    fn mono_side_check_preserves_non_empty_file() {
+        let file = minimal_mono_file();
+        let settings = Settings::default();
+        let mut errors = ErrorReporter::new();
+        let (result, _) = mono_side_check(file, &settings, &mut errors);
+        assert!(
+            !result.0.is_empty(),
+            "mono_side_check must preserve decls (catches replace with Default::default())"
+        );
+    }
+
+    #[test]
     fn mono_sig_check_passes_through_empty_file() {
         let result = mono_sig_check(Default::default());
         assert!(result.0.is_empty());
     }
 
     #[test]
+    fn mono_sig_check_preserves_non_empty_file() {
+        let file = minimal_mono_file();
+        let result = mono_sig_check(file);
+        assert!(
+            !result.0.is_empty(),
+            "mono_sig_check must preserve decls (catches replace with Default::default())"
+        );
+    }
+
+    #[test]
     fn mono_dbmode_check_passes_through_empty_file() {
         let result = mono_dbmode_check(Default::default());
         assert!(result.0.is_empty());
+    }
+
+    #[test]
+    fn mono_dbmode_check_preserves_non_empty_file() {
+        let file = minimal_mono_file();
+        let result = mono_dbmode_check(file);
+        assert!(
+            !result.0.is_empty(),
+            "mono_dbmode_check must preserve decls (catches replace with Default::default())"
+        );
     }
 
     #[test]
@@ -1030,6 +1163,16 @@ mod tests {
         let result = cjr_check_nest(Default::default());
         assert!(result.0.is_empty());
         assert!(result.1.is_empty());
+    }
+
+    #[test]
+    fn cjr_check_nest_preserves_non_empty_file() {
+        let cjr_file = minimal_cjr_file();
+        let result = cjr_check_nest(cjr_file);
+        assert!(
+            !result.0.is_empty(),
+            "cjr_check_nest must preserve decls (catches replace with Default::default())"
+        );
     }
 
     #[test]
@@ -1054,9 +1197,38 @@ mod tests {
     }
 
     #[test]
+    fn monoize_preserves_non_empty_file() {
+        let mut errors = ErrorReporter::new();
+        let settings = Settings::default();
+        let core_file: crate::core::File = vec![crate::error_types::Located::dummy(
+            crate::core::Declaration::Database("db".into()),
+        )];
+        let result = monoize(core_file, &settings, &mut errors);
+        assert!(
+            result.is_some(),
+            "monoize must return Some (catches replace with None)"
+        );
+        let mono = result.unwrap();
+        assert!(
+            !mono.0.is_empty(),
+            "monoize must produce non-empty mono (catches Some(Default::default()))"
+        );
+    }
+
+    #[test]
     fn mono_untangle_passes_through_empty_file() {
         let result = mono_untangle(Default::default());
         assert!(result.0.is_empty(), "untangle of empty file must be empty");
+    }
+
+    #[test]
+    fn mono_untangle_preserves_non_empty_file() {
+        let file = minimal_mono_file();
+        let result = mono_untangle(file);
+        assert!(
+            !result.0.is_empty(),
+            "mono_untangle must preserve decls (catches replace with Default::default())"
+        );
     }
 
     #[test]
@@ -1069,12 +1241,33 @@ mod tests {
     }
 
     #[test]
+    fn mono_fuse_preserves_non_empty_file() {
+        let file = minimal_mono_file();
+        let result = mono_fuse(file);
+        assert!(
+            !result.0.is_empty(),
+            "mono_fuse must preserve decls (catches replace with Default::default())"
+        );
+    }
+
+    #[test]
     fn mono_reduce_passes_through_empty_file() {
         let settings = Settings::default();
         let result = mono_reduce(Default::default(), &settings);
         assert!(
             result.0.is_empty(),
             "mono_reduce of empty file must produce no decls"
+        );
+    }
+
+    #[test]
+    fn mono_reduce_preserves_non_empty_file() {
+        let file = minimal_mono_file();
+        let settings = Settings::default();
+        let result = mono_reduce(file, &settings);
+        assert!(
+            !result.0.is_empty(),
+            "mono_reduce must preserve decls (catches replace with Default::default())"
         );
     }
 
@@ -1090,11 +1283,33 @@ mod tests {
     }
 
     #[test]
+    fn mono_opt_preserves_non_empty_file() {
+        let file = minimal_mono_file();
+        let settings = Settings::default();
+        let mut errors = ErrorReporter::new();
+        let result = mono_opt(file, &settings, &mut errors);
+        assert!(
+            !result.0.is_empty(),
+            "mono_opt must preserve decls (catches replace with Default::default())"
+        );
+    }
+
+    #[test]
     fn mono_shake_passes_through_empty_file() {
         let result = mono_shake(Default::default());
         assert!(
             result.0.is_empty(),
             "mono_shake of empty file must be empty"
+        );
+    }
+
+    #[test]
+    fn mono_shake_preserves_non_empty_file() {
+        let file = minimal_mono_file();
+        let result = mono_shake(file);
+        assert!(
+            !result.0.is_empty(),
+            "mono_shake must retain Database (catches replace with Default::default())"
         );
     }
 
@@ -1109,11 +1324,38 @@ mod tests {
     }
 
     #[test]
+    fn mono_inline_preserves_non_empty_file() {
+        let file = minimal_mono_file();
+        let settings = Settings::default();
+        let result = mono_inline(file, &settings);
+        assert!(
+            !result.0.is_empty(),
+            "mono_inline must preserve decls (catches replace with Default::default())"
+        );
+    }
+
+    #[test]
     fn mono_iflow_passthrough() {
         let mut errors = ErrorReporter::new();
         let settings = Settings::default();
         let result = mono_iflow(Default::default(), &settings, &mut errors);
         assert!(result.is_some());
+    }
+
+    #[test]
+    fn mono_iflow_preserves_non_empty_file() {
+        let file = minimal_mono_file();
+        let mut errors = ErrorReporter::new();
+        let settings = Settings::default();
+        let result = mono_iflow(file, &settings, &mut errors);
+        assert!(
+            result.is_some(),
+            "mono_iflow must return Some (catches replace with None)"
+        );
+        assert!(
+            !result.unwrap().0.is_empty(),
+            "mono_iflow must preserve decls (catches Some(Default::default()))"
+        );
     }
 
     #[test]
@@ -1125,6 +1367,22 @@ mod tests {
     }
 
     #[test]
+    fn mono_sqlcache_preserves_non_empty_file() {
+        let file = minimal_mono_file();
+        let mut errors = ErrorReporter::new();
+        let settings = Settings::default();
+        let result = mono_sqlcache(file, &settings, &mut errors);
+        assert!(
+            result.is_some(),
+            "mono_sqlcache must return Some (catches replace with None)"
+        );
+        assert!(
+            !result.unwrap().0.is_empty(),
+            "mono_sqlcache must preserve decls (catches Some(Default::default()))"
+        );
+    }
+
+    #[test]
     fn cjrize_empty_file() {
         let mut errors = ErrorReporter::new();
         let result = cjrize(Default::default(), &mut errors);
@@ -1132,6 +1390,22 @@ mod tests {
         let (decls, ps) = result.unwrap();
         assert!(decls.is_empty());
         assert!(ps.is_empty());
+    }
+
+    #[test]
+    fn cjrize_preserves_non_empty_file() {
+        let file = minimal_mono_file();
+        let mut errors = ErrorReporter::new();
+        let result = cjrize(file, &mut errors);
+        assert!(
+            result.is_some(),
+            "cjrize must return Some (catches replace with None)"
+        );
+        let (decls, _) = result.unwrap();
+        assert!(
+            !decls.is_empty(),
+            "cjrize must produce decls (catches Some(Default::default()))"
+        );
     }
 
     #[test]
@@ -1184,6 +1458,31 @@ mod tests {
     }
 
     #[test]
+    fn sql_generate_produces_sql_for_table() {
+        let mut settings = Settings::default();
+        settings.dbms = "postgres".to_string();
+        let xts = vec![(
+            "Id".to_string(),
+            crate::error_types::Located::dummy(crate::c_like_representation::Typ::Ffi(
+                "Basis".into(),
+                "int".into(),
+            )),
+        )];
+        let cjr_file: crate::c_like_representation::File = (
+            vec![crate::error_types::Located::dummy(
+                crate::c_like_representation::Decl::Table("t".into(), xts, "".into(), vec![]),
+            )],
+            vec![],
+        );
+        let result = sql_generate(&cjr_file, &settings);
+        assert!(
+            !result.is_empty() && result.contains("CREATE TABLE"),
+            "sql_generate must produce SQL for Table (catches replace with String::new()): {}",
+            result
+        );
+    }
+
+    #[test]
     fn cc_and_link_returns_result() {
         let dir = tempfile::tempdir().unwrap();
         let out = dir.path().join("a.out");
@@ -1205,7 +1504,13 @@ mod tests {
         let result = cc_and_link("not valid C {", &out, &Job::default(), &Settings::default());
         assert!(
             result.is_err(),
-            "cc_and_link must actually invoke compiler (catches replace with Ok(()))"
+            "cc_and_link must actually invoke compiler (catches delete ! mutant)"
+        );
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("compilation") || err_msg.contains("compil"),
+            "invalid C must fail at compile step, not link (catches delete ! in compile_status check): {}",
+            err_msg
         );
     }
 }

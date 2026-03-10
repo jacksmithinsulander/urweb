@@ -359,6 +359,178 @@ mod tests {
     }
 
     #[test]
+    fn annotate_val_fun_funrec_contribute_to_globals() {
+        // Catches mutant: delete match arms Decl::Val, Decl::Fun, Decl::FunRec in annotate.
+        // Val 2 uses prepared 7. Val 1's Query body references Named(2). So body uses {7} -> nested.
+        let id = 7;
+        let inner_prepared = Some(PreparedQuery {
+            id,
+            query: "SELECT 1".into(),
+            nested: false,
+        });
+        let inner_qm = QueryMeta {
+            exps: vec![],
+            tables: vec![],
+            rnum: 0,
+            state: dummy_typ(),
+            query: Box::new(dummy_exp()),
+            body: Box::new(dummy_exp()),
+            initial: Box::new(dummy_exp()),
+            prepared: inner_prepared,
+        };
+        let val2_body = Located::dummy(Exp::Query(inner_qm));
+        let val2 = Located::dummy(Decl::Val("v2".into(), 2, dummy_typ(), val2_body));
+
+        let outer_prepared = Some(PreparedQuery {
+            id,
+            query: "SELECT 1".into(),
+            nested: false,
+        });
+        let body_refers_val2 = Located::dummy(Exp::Named(2));
+        let outer_qm = QueryMeta {
+            exps: vec![],
+            tables: vec![],
+            rnum: 0,
+            state: dummy_typ(),
+            query: Box::new(dummy_exp()),
+            body: Box::new(body_refers_val2),
+            initial: Box::new(dummy_exp()),
+            prepared: outer_prepared,
+        };
+        let val1_body = Located::dummy(Exp::Query(outer_qm));
+        let val1 = Located::dummy(Decl::Val("v1".into(), 1, dummy_typ(), val1_body));
+
+        let (decls, _) = annotate((vec![val1, val2], vec![]));
+        let val1_out = &decls[0];
+        if let Decl::Val(_, _, _, e) = &val1_out.node {
+            if let Exp::Query(qm) = &e.node {
+                assert!(
+                    qm.prepared.as_ref().unwrap().nested,
+                    "body uses Named(2) which uses prepared 7 -> nested (catches delete Val/Fun/FunRec arm)"
+                );
+                return;
+            }
+        }
+        panic!("expected Val with Query");
+    }
+
+    #[test]
+    fn annotate_fun_contributes_to_globals() {
+        // Catches mutant: delete match arm Decl::Fun in annotate.
+        let id = 10;
+        let inner_prepared = Some(PreparedQuery {
+            id,
+            query: "SELECT 2".into(),
+            nested: false,
+        });
+        let inner_qm = QueryMeta {
+            exps: vec![],
+            tables: vec![],
+            rnum: 0,
+            state: dummy_typ(),
+            query: Box::new(dummy_exp()),
+            body: Box::new(dummy_exp()),
+            initial: Box::new(dummy_exp()),
+            prepared: inner_prepared,
+        };
+        let fun_body = Located::dummy(Exp::Query(inner_qm));
+        let fun_decl = Located::dummy(Decl::Fun("f".into(), 3, vec![], dummy_typ(), fun_body));
+
+        let outer_prepared = Some(PreparedQuery {
+            id,
+            query: "SELECT 2".into(),
+            nested: false,
+        });
+        let body_refers_fun = Located::dummy(Exp::Named(3));
+        let outer_qm = QueryMeta {
+            exps: vec![],
+            tables: vec![],
+            rnum: 0,
+            state: dummy_typ(),
+            query: Box::new(dummy_exp()),
+            body: Box::new(body_refers_fun),
+            initial: Box::new(dummy_exp()),
+            prepared: outer_prepared,
+        };
+        let val_body = Located::dummy(Exp::Query(outer_qm));
+        let val_decl = Located::dummy(Decl::Val("v".into(), 1, dummy_typ(), val_body));
+
+        let (decls, _) = annotate((vec![val_decl, fun_decl], vec![]));
+        let val_out = &decls[0];
+        if let Decl::Val(_, _, _, e) = &val_out.node {
+            if let Exp::Query(qm) = &e.node {
+                assert!(
+                    qm.prepared.as_ref().unwrap().nested,
+                    "body uses Named(3) which uses prepared 10 -> nested (catches delete Fun arm)"
+                );
+                return;
+            }
+        }
+        panic!("expected Val with Query");
+    }
+
+    #[test]
+    fn annotate_funrec_contributes_to_globals() {
+        // Catches mutant: delete match arm Decl::FunRec in annotate.
+        let id = 11;
+        let inner_prepared = Some(PreparedQuery {
+            id,
+            query: "SELECT 3".into(),
+            nested: false,
+        });
+        let inner_qm = QueryMeta {
+            exps: vec![],
+            tables: vec![],
+            rnum: 0,
+            state: dummy_typ(),
+            query: Box::new(dummy_exp()),
+            body: Box::new(dummy_exp()),
+            initial: Box::new(dummy_exp()),
+            prepared: inner_prepared,
+        };
+        let funrec_body = Located::dummy(Exp::Query(inner_qm));
+        let funrec_decl = Located::dummy(Decl::FunRec(vec![(
+            "f".into(),
+            4,
+            vec![],
+            dummy_typ(),
+            funrec_body,
+        )]));
+
+        let outer_prepared = Some(PreparedQuery {
+            id,
+            query: "SELECT 3".into(),
+            nested: false,
+        });
+        let body_refers_funrec = Located::dummy(Exp::Named(4));
+        let outer_qm = QueryMeta {
+            exps: vec![],
+            tables: vec![],
+            rnum: 0,
+            state: dummy_typ(),
+            query: Box::new(dummy_exp()),
+            body: Box::new(body_refers_funrec),
+            initial: Box::new(dummy_exp()),
+            prepared: outer_prepared,
+        };
+        let val_body = Located::dummy(Exp::Query(outer_qm));
+        let val_decl = Located::dummy(Decl::Val("v".into(), 1, dummy_typ(), val_body));
+
+        let (decls, _) = annotate((vec![val_decl, funrec_decl], vec![]));
+        let val_out = &decls[0];
+        if let Decl::Val(_, _, _, e) = &val_out.node {
+            if let Exp::Query(qm) = &e.node {
+                assert!(
+                    qm.prepared.as_ref().unwrap().nested,
+                    "body uses Named(4) which uses prepared 11 -> nested (catches delete FunRec arm)"
+                );
+                return;
+            }
+        }
+        panic!("expected Val with Query");
+    }
+
+    #[test]
     fn nested_query_gets_true() {
         // Build an EQuery whose body uses a nested EQuery with the same id.
         let id = 7;

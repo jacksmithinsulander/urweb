@@ -742,6 +742,81 @@ mod tests {
             ),
             Located::new(
                 Declaration::Export(ExportKind::Action(Effect::ReadOnly), 11, false),
+                span.clone(),
+            ),
+            Located::new(
+                Declaration::Export(ExportKind::Action(Effect::ReadOnly), 10, false),
+                span,
+            ),
+        ];
+        let (out, errs) = effectize(file, &s);
+        assert!(errs.is_empty());
+        let exports: Vec<_> = out
+            .iter()
+            .filter(|d| matches!(d.node, Declaration::Export(_, _, _)))
+            .collect();
+        let exp_b = exports
+            .iter()
+            .find(|d| matches!(&d.node, Declaration::Export(_, n, _) if *n == 11));
+        match exp_b.unwrap().node {
+            Declaration::Export(ExportKind::Action(effect), 11, _) => {
+                assert_eq!(
+                    effect,
+                    Effect::ReadOnly,
+                    "b has no write (catches && -> || mutant)"
+                );
+            }
+            _ => panic!("expected Action export for b"),
+        }
+        let exp_a = exports
+            .iter()
+            .find(|d| matches!(&d.node, Declaration::Export(_, n, _) if *n == 10));
+        match exp_a.unwrap().node {
+            Declaration::Export(ExportKind::Action(effect), 10, _) => {
+                assert_eq!(
+                    effect,
+                    Effect::ReadWrite,
+                    "a has write, must be in writers (catches delete ! in writers.contains_key)"
+                );
+            }
+            _ => panic!("expected Action export for a"),
+        }
+    }
+
+    #[test]
+    fn effectize_valrec_both_write_and_read_cookie() {
+        // Catches mutant: exp_has_read_cookie && !readers (line 219).
+        // Member with both dml and getCookie -> must be in writers AND readers -> ReadCookieWrite.
+        // If we fail to add to readers, effect would be ReadWrite.
+        let s = Settings::new();
+        let span = Span::dummy();
+        let unit_ty = Located::dummy(Constructor::Unit);
+        let body = Expression::Let(
+            "_".into(),
+            unit_ty.clone(),
+            Box::new(Located::dummy(Expression::FfiApp(
+                "Basis".into(),
+                "dml".into(),
+                vec![],
+            ))),
+            Box::new(Located::dummy(Expression::Ffi(
+                "Basis".into(),
+                "getCookie".into(),
+            ))),
+        );
+        let file: File = vec![
+            Located::new(
+                Declaration::ValRec(vec![(
+                    "both".into(),
+                    14,
+                    Located::dummy(Constructor::Unit),
+                    Located::dummy(body),
+                    "both".into(),
+                )]),
+                span.clone(),
+            ),
+            Located::new(
+                Declaration::Export(ExportKind::Action(Effect::ReadOnly), 14, false),
                 span,
             ),
         ];
@@ -749,14 +824,17 @@ mod tests {
         assert!(errs.is_empty());
         let export = out
             .iter()
-            .find(|d| matches!(d.node, Declaration::Export(_, _, _)))
+            .find(|d| matches!(&d.node, Declaration::Export(_, 14, _)))
             .unwrap();
         match &export.node {
-            Declaration::Export(ExportKind::Action(effect), n, _) => {
-                assert_eq!(*n, 11);
-                assert_eq!(*effect, Effect::ReadOnly);
+            Declaration::Export(ExportKind::Action(effect), 14, _) => {
+                assert_eq!(
+                    *effect,
+                    Effect::ReadCookieWrite,
+                    "member with dml+getCookie must be in writers and readers (catches line 219 && mutant)"
+                );
             }
-            _ => panic!("expected Action export"),
+            _ => panic!(),
         }
     }
 

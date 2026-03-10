@@ -526,6 +526,28 @@ mod tests {
     }
 
     #[test]
+    fn database_uses_similar_produces_pg_trgm() {
+        // Catches mutant: delete match arm Decl::Database in sql_generate.
+        let mut settings = Settings::default();
+        settings.dbms = "postgres".to_string();
+        let decls = vec![Located::new(
+            Decl::Database {
+                name: "db".into(),
+                expunge: 0,
+                initialize: 0,
+                uses_similar: true,
+            },
+            Span::dummy(),
+        )];
+        let result = sql_generate(&(decls, vec![]), &settings);
+        assert!(
+            result.contains("pg_trgm"),
+            "uses_similar must produce pg_trgm extension (catches delete Database arm): {}",
+            result
+        );
+    }
+
+    #[test]
     fn table_mysql_uses_mysql_sql_types() {
         let mut settings = Settings::default();
         settings.dbms = "mysql".to_string();

@@ -521,6 +521,35 @@ mod tests {
     }
 
     #[test]
+    fn prep_string_sqlify_char() {
+        // Catches mutant: delete match arm "sqlifyChar" in sqlify_type.
+        let mut st = PrepareState::new();
+        let mut settings = Settings::default();
+        settings.dbms = "postgres".into();
+        let arg = Located::dummy(Exp::Rel(0));
+        let t = Located::dummy(crate::c_like_representation::Typ::Ffi(
+            "Basis".into(),
+            "char".into(),
+        ));
+        let e = Located::dummy(Exp::FfiApp(
+            "Basis".into(),
+            "sqlifyChar".into(),
+            vec![(arg, t)],
+        ));
+        let result = try_prepare(&e, &mut st, &settings);
+        assert!(
+            result.is_some(),
+            "sqlifyChar must be recognized (catches delete sqlifyChar arm)"
+        );
+        let (_, tmpl) = result.unwrap();
+        assert!(
+            tmpl.contains("char"),
+            "sqlifyChar must produce char type: {}",
+            tmpl
+        );
+    }
+
+    #[test]
     fn prep_string_sqlify_int_mysql() {
         let mut st = PrepareState::new();
         let mut settings = Settings::default();
@@ -657,5 +686,154 @@ mod tests {
         let (id1, _) = try_prepare(&e1, &mut st, &settings).unwrap();
         let (id2, _) = try_prepare(&e2, &mut st, &settings).unwrap();
         assert_ne!(id1, id2);
+    }
+
+    #[test]
+    fn prep_string_ffi_app_non_basis_rejects() {
+        // Catches mutant: match guard m == "Basis" with true. Non-Basis strcat must not match.
+        use crate::c_like_representation::Typ;
+        let mut st = PrepareState::new();
+        let mut settings = Settings::default();
+        settings.dbms = "postgres".into();
+        let str_t = Located::dummy(Typ::Ffi("Basis".into(), "string".into()));
+        let lit1 = Located::dummy(Exp::Prim(Prim::String(StringMode::Normal, "a".into())));
+        let lit2 = Located::dummy(Exp::Prim(Prim::String(StringMode::Normal, "b".into())));
+        let e = Located::dummy(Exp::FfiApp(
+            "Other".into(),
+            "strcat".into(),
+            vec![(lit1, str_t.clone()), (lit2, str_t)],
+        ));
+        let result = try_prepare(&e, &mut st, &settings);
+        assert!(
+            result.is_none(),
+            "FfiApp Other.strcat must not be templatized (catches m==Basis guard mutant)"
+        );
+    }
+
+    #[test]
+    fn prep_string_case_nullable_pattern() {
+        // Catches mutant: delete Case arm. (PNone=>"NULL") | (PSome=>sqlifyInt) must template.
+        use crate::c_like_representation::{Pat, Typ};
+        let mut st = PrepareState::new();
+        let mut settings = Settings::default();
+        settings.dbms = "postgres".into();
+        let opt_int = Located::dummy(Typ::Datatype(
+            crate::datatype_kind::DatatypeKind::Option,
+            0,
+            std::sync::Arc::new(std::sync::Mutex::new(vec![])),
+        ));
+        let int_t = Located::dummy(Typ::Ffi("Basis".into(), "int".into()));
+        let scrut = Located::dummy(Exp::Rel(0));
+        let arm0_pat = Located::dummy(Pat::None(opt_int.clone()));
+        let arm0_exp = Located::dummy(Exp::Prim(Prim::String(StringMode::Normal, "NULL".into())));
+        let pvar = Located::dummy(Pat::Var("x".into(), int_t.clone()));
+        let arm1_pat = Located::dummy(Pat::Some(opt_int, Box::new(pvar)));
+        let arg = Located::dummy(Exp::Rel(0));
+        let arm1_exp = Located::dummy(Exp::FfiApp(
+            "Basis".into(),
+            "sqlifyInt".into(),
+            vec![(arg, int_t)],
+        ));
+        let case_meta = crate::c_like_representation::CaseMeta {
+            disc: Located::dummy(Typ::Ffi("Basis".into(), "unit".into())),
+            result: Located::dummy(Typ::Ffi("Basis".into(), "string".into())),
+        };
+        let e = Located::dummy(Exp::Case(
+            Box::new(scrut),
+            vec![(arm0_pat, arm0_exp), (arm1_pat, arm1_exp)],
+            case_meta,
+        ));
+        let result = try_prepare(&e, &mut st, &settings);
+        assert!(
+            result.is_some(),
+            "nullable case pattern must template (catches delete Case arm mutant)"
+        );
+        let (_, tmpl) = result.unwrap();
+        assert!(tmpl.contains("$1"), "must have param placeholder");
+        assert!(tmpl.contains("int8"), "must be sqlifyInt type");
+    }
+
+    #[test]
+    fn prep_string_case_bool_pattern() {
+        // Catches mutant: delete Case arm for (True=>"TRUE")|(False=>"FALSE").
+        use crate::c_like_representation::{Pat, Typ};
+        let mut st = PrepareState::new();
+        let mut settings = Settings::default();
+        settings.dbms = "postgres".into();
+        let bool_t = Located::dummy(Typ::Ffi("Basis".into(), "bool".into()));
+        let scrut = Located::dummy(Exp::Rel(0));
+        let arm0_pat = Located::dummy(Pat::Var("_".into(), bool_t.clone()));
+        let arm0_exp = Located::dummy(Exp::Prim(Prim::String(StringMode::Normal, "TRUE".into())));
+        let arm1_pat = Located::dummy(Pat::Var("_".into(), bool_t.clone()));
+        let arm1_exp = Located::dummy(Exp::Prim(Prim::String(StringMode::Normal, "FALSE".into())));
+        let case_meta = crate::c_like_representation::CaseMeta {
+            disc: bool_t,
+            result: Located::dummy(Typ::Ffi("Basis".into(), "string".into())),
+        };
+        let e = Located::dummy(Exp::Case(
+            Box::new(scrut),
+            vec![(arm0_pat, arm0_exp), (arm1_pat, arm1_exp)],
+            case_meta,
+        ));
+        let result = try_prepare(&e, &mut st, &settings);
+        assert!(
+            result.is_some(),
+            "bool case pattern must template (catches delete Case arm mutant)"
+        );
+        let (_, tmpl) = result.unwrap();
+        assert!(tmpl.contains("$1"), "must have param placeholder");
+        assert!(tmpl.contains("bool"), "must be bool type");
+    }
+
+    #[test]
+    fn prep_string_strcat_multi_param_increments_n() {
+        // Catches mutant: += with -= or *=. Param indices must increment.
+        // strcat("a=", strcat(sqlifyInt, strcat(" b=", sqlifyString))) => a=$1::int8 b=$2::text
+        let mut st = PrepareState::new();
+        let mut settings = Settings::default();
+        settings.dbms = "postgres".into();
+        let str_t = Located::dummy(crate::c_like_representation::Typ::Ffi(
+            "Basis".into(),
+            "string".into(),
+        ));
+        let int_t = Located::dummy(crate::c_like_representation::Typ::Ffi(
+            "Basis".into(),
+            "int".into(),
+        ));
+        let lit2 = Located::dummy(Exp::Prim(Prim::String(StringMode::Normal, " b=".into())));
+        let sqlify_str = Located::dummy(Exp::FfiApp(
+            "Basis".into(),
+            "sqlifyString".into(),
+            vec![(Located::dummy(Exp::Rel(1)), str_t.clone())],
+        ));
+        let inner = Located::dummy(Exp::FfiApp(
+            "Basis".into(),
+            "strcat".into(),
+            vec![(lit2, str_t.clone()), (sqlify_str, str_t.clone())],
+        ));
+        let sqlify_int = Located::dummy(Exp::FfiApp(
+            "Basis".into(),
+            "sqlifyInt".into(),
+            vec![(Located::dummy(Exp::Rel(0)), int_t)],
+        ));
+        let mid = Located::dummy(Exp::FfiApp(
+            "Basis".into(),
+            "strcat".into(),
+            vec![(sqlify_int, str_t.clone()), (inner, str_t.clone())],
+        ));
+        let lit1 = Located::dummy(Exp::Prim(Prim::String(StringMode::Normal, "a=".into())));
+        let e = Located::dummy(Exp::FfiApp(
+            "Basis".into(),
+            "strcat".into(),
+            vec![(lit1, str_t.clone()), (mid, str_t)],
+        ));
+        let result = try_prepare(&e, &mut st, &settings);
+        assert!(result.is_some(), "strcat of strcat must template");
+        let (_, tmpl) = result.unwrap();
+        assert!(
+            tmpl.contains("$1") && tmpl.contains("$2"),
+            "must have $1 and $2 (catches += mutant): {}",
+            tmpl
+        );
     }
 }
