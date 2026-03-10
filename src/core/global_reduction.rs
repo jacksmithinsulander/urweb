@@ -2028,4 +2028,140 @@ mod tests {
             "Field of known Record must project"
         );
     }
+
+    // --- Plan: Catch Missed Mutants - global_reduction ---
+
+    #[test]
+    fn reduce_exp_case_var_matches() {
+        // Kills: delete Var arm in match_pat. Case(_, [(Var, body)]) -> body.
+        use crate::core::Pattern;
+        let var_pat = Located::new(
+            Pattern::Var("x".into(), unit_con()),
+            dummy(),
+        );
+        let disc = Located::new(Expression::Prim(Prim::Int(0)), dummy());
+        let body = Located::new(Expression::Prim(Prim::Int(77)), dummy());
+        let case_meta = crate::core::CaseMeta {
+            disc: unit_con(),
+            result: unit_con(),
+        };
+        let case = Located::new(
+            Expression::Case(Box::new(disc), vec![(var_pat, body)], case_meta),
+            dummy(),
+        );
+        let reducer = Reducer::new();
+        let result = reducer.reduce_exp(&[], case);
+        assert!(
+            matches!(result.node, Expression::Prim(Prim::Int(77))),
+            "Var pattern must match and return body"
+        );
+    }
+
+    #[test]
+    fn reduce_exp_case_prim_equal_matches() {
+        // Kills: delete Prim arm, == -> != in match_pat.
+        use crate::core::Pattern;
+        let prim_pat = Located::new(Pattern::Prim(Prim::Int(1)), dummy());
+        let disc = Located::new(Expression::Prim(Prim::Int(1)), dummy());
+        let body = Located::new(Expression::Prim(Prim::Int(88)), dummy());
+        let case_meta = crate::core::CaseMeta {
+            disc: unit_con(),
+            result: unit_con(),
+        };
+        let case = Located::new(
+            Expression::Case(Box::new(disc), vec![(prim_pat, body)], case_meta),
+            dummy(),
+        );
+        let reducer = Reducer::new();
+        let result = reducer.reduce_exp(&[], case);
+        assert!(
+            matches!(result.node, Expression::Prim(Prim::Int(88))),
+            "Prim(1) pattern must match Prim(1) disc"
+        );
+    }
+
+    #[test]
+    fn reduce_exp_case_prim_not_equal_no_match() {
+        // Kills: == -> !=. Prim(1) vs Prim(2) -> Case remains.
+        use crate::core::Pattern;
+        let prim_pat = Located::new(Pattern::Prim(Prim::Int(2)), dummy());
+        let disc = Located::new(Expression::Prim(Prim::Int(1)), dummy());
+        let body = Located::new(Expression::Prim(Prim::Int(88)), dummy());
+        let case_meta = crate::core::CaseMeta {
+            disc: unit_con(),
+            result: unit_con(),
+        };
+        let case = Located::new(
+            Expression::Case(Box::new(disc), vec![(prim_pat, body)], case_meta),
+            dummy(),
+        );
+        let reducer = Reducer::new();
+        let result = reducer.reduce_exp(&[], case);
+        assert!(
+            matches!(result.node, Expression::Case(_, _, _)),
+            "Prim(2) must not match Prim(1)"
+        );
+    }
+
+    #[test]
+    fn reduce_exp_record_concat() {
+        // Kills: delete Record arm in Concat. Record + Record -> merged Record.
+        let span = dummy();
+        let field_name = Located::new(Constructor::Name("x".into()), span);
+        let unit_ty = unit_con();
+        let rec1 = Located::new(
+            Expression::Record(vec![(
+                field_name.clone(),
+                Located::new(Expression::Prim(Prim::Int(1)), dummy()),
+                unit_ty.clone(),
+            )]),
+            dummy(),
+        );
+        let rec2 = Located::new(
+            Expression::Record(vec![(
+                Located::new(Constructor::Name("y".into()), dummy()),
+                Located::new(Expression::Prim(Prim::Int(2)), dummy()),
+                unit_ty.clone(),
+            )]),
+            dummy(),
+        );
+        let concat_t = Located::new(Constructor::Concat(Box::new(unit_ty.clone()), Box::new(unit_ty)), dummy());
+        let concat = Located::new(
+            Expression::Concat(
+                Box::new(rec1),
+                concat_t.clone(),
+                Box::new(rec2),
+                concat_t,
+            ),
+            dummy(),
+        );
+        let reducer = Reducer::new();
+        let result = reducer.reduce_exp(&[], concat);
+        assert!(
+            matches!(result.node, Expression::Record(_)),
+            "Record + Record must reduce to merged Record"
+        );
+    }
+
+    #[test]
+    fn named_inlined_when_use_count_one() {
+        // Kills: may_inline, count_uses. val f=prim, val g=Named(f), export g -> g inlined.
+        let file = vec![
+            val_decl(1, prim_exp()),
+            val_decl(2, Located::new(Expression::Named(1), dummy())),
+            export_decl(2),
+        ];
+        let result = reduce(file, &Settings::default());
+        let g = result
+            .iter()
+            .find_map(|d| match &d.node {
+                Declaration::Val(_, 2, _, e, _) => Some(e),
+                _ => None,
+            })
+            .expect("val 2 must exist");
+        assert!(
+            matches!(g.node, Expression::Prim(_)),
+            "Named(1) must be inlined when use_count=1"
+        );
+    }
 }

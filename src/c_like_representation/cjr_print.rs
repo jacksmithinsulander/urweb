@@ -3251,4 +3251,119 @@ mod tests {
         let s = p_exp(&env, &e, &settings);
         assert!(s.contains("'") || !s.is_empty());
     }
+
+    #[test]
+    fn sql_type_in_basis_string_in_struct() {
+        // Catches mutant: delete "string" arm in sql_type_in.
+        let settings = Settings::default();
+        let t = dummy(Typ::Ffi("Basis".into(), "string".into()));
+        let d = dummy(Decl::Struct(1, vec![("s".into(), t)]));
+        let result = cjr_print(&(vec![d], vec![]), &settings);
+        assert!(
+            result.contains("uw_Basis_string"),
+            "Basis.string must produce uw_Basis_string, got: {}",
+            result
+        );
+    }
+
+    #[test]
+    fn sql_type_in_basis_bool_in_struct() {
+        // Catches mutant: delete "bool" arm in sql_type_in.
+        let settings = Settings::default();
+        let t = dummy(Typ::Ffi("Basis".into(), "bool".into()));
+        let d = dummy(Decl::Struct(1, vec![("b".into(), t)]));
+        let result = cjr_print(&(vec![d], vec![]), &settings);
+        assert!(
+            result.contains("uw_Basis_bool"),
+            "Basis.bool must produce uw_Basis_bool, got: {}",
+            result
+        );
+    }
+
+    #[test]
+    fn sql_type_in_basis_clocktime_in_struct() {
+        // Catches mutant: delete "clocktime" arm in sql_type_in / p_typ for Basis types.
+        let settings = Settings::default();
+        let t = dummy(Typ::Ffi("Basis".into(), "clocktime".into()));
+        let d = dummy(Decl::Struct(1, vec![("t".into(), t)]));
+        let result = cjr_print(&(vec![d], vec![]), &settings);
+        assert!(
+            result.contains("uw_Basis_clocktime"),
+            "Basis.clocktime must produce uw_Basis_clocktime, got: {}",
+            result
+        );
+    }
+
+    #[test]
+    fn p_exp_funcall_empty_and_single_arg() {
+        // Catches mutant: wrong arm for [] or [(e,_)] in p_funcall.
+        let env = CjrEnv::new();
+        let settings = Settings::default();
+        let e0 = dummy(Exp::FfiApp("Basis".into(), "now".into(), vec![]));
+        assert!(
+            p_exp(&env, &e0, &settings).contains("uw_Basis_now(ctx)"),
+            "0-arg FfiApp => fn(ctx)"
+        );
+        let t = dummy(Typ::Ffi("Basis".into(), "int".into()));
+        let arg = (dummy(Exp::Prim(Prim::Int(42))), t);
+        let e1 = dummy(Exp::FfiApp("Basis".into(), "intToString".into(), vec![arg]));
+        let s = p_exp(&env, &e1, &settings);
+        assert!(
+            s.contains("42LL") && s.contains("intToString"),
+            "1-arg FfiApp => fn(ctx, arg), got: {}",
+            s
+        );
+    }
+
+    #[test]
+    fn url_handler_registration_in_output() {
+        // Catches mutant: reset_url_handlers/add_url_handler/collect replaced with no-op.
+        use crate::export::ExportKind;
+        use crate::export::Effect;
+        use crate::monomorphized::{DbMode, Sidedness};
+        use std::sync::{Arc, Mutex};
+
+        let settings = Settings::default();
+        let dt = crate::c_like_representation::DatatypeDecl {
+            kind: DatatypeKind::Default,
+            name: "Color".into(),
+            id: 20,
+            constrs: vec![("Red".into(), 21, None), ("Blue".into(), 22, None)],
+        };
+        let d = dummy(Decl::Datatype(vec![dt]));
+        let dt_ref: crate::c_like_representation::DatatypeRef =
+            Arc::new(Mutex::new(vec![("Red".into(), 21, None), ("Blue".into(), 22, None)]));
+        let url_arg = dummy(Typ::Datatype(DatatypeKind::Default, 20, dt_ref));
+        let ran = dummy(Typ::Record(0));
+        // ts: param types; for Link, url_ts = ts[..ts.len()-1], so we need 2+ to get url args
+        let export: crate::c_like_representation::ExportEntry = (
+            ExportKind::Link(Effect::ReadOnly),
+            "/main".into(),
+            1,
+            vec![url_arg, ran.clone()],
+            ran,
+            Sidedness::ServerOnly,
+            DbMode::NoDb,
+            false,
+        );
+        let result = cjr_print(&(vec![d], vec![export]), &settings);
+        assert!(
+            result.contains("unurlify_") || result.contains("urlify_") || result.contains("URL handler"),
+            "Export with Datatype URL arg must emit URL handler code, got excerpt: ...",
+        );
+    }
+
+    #[test]
+    fn p_exp_binop_ne_prints() {
+        // Catches mutant: replace != with == in p_exp.
+        let env = CjrEnv::new();
+        let settings = Settings::default();
+        let a = dummy(Exp::Prim(Prim::Int(1)));
+        let b = dummy(Exp::Prim(Prim::Int(2)));
+        let ne = dummy(Exp::Binop("!=".into(), Box::new(a), Box::new(b)));
+        assert!(
+            p_exp(&env, &ne, &settings).contains("!="),
+            "Ne must print !="
+        );
+    }
 }

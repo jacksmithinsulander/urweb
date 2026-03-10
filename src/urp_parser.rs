@@ -1068,6 +1068,21 @@ mod tests {
     }
 
     #[test]
+    fn parse_library_merge_safe_get_default_or() {
+        // Catches mutant: replace || with && in merge_library (job.safe_get_default || lib.safe_get_default).
+        // App has no safeGetDefault, lib has safeGetDefault -> merged job must have safe_get_default.
+        let dir = tempdir().unwrap();
+        let lib_urp = dir.path().join("lib.urp");
+        std::fs::write(&lib_urp, "safeGetDefault\n\nlibmod\n").unwrap();
+        let app_urp = write_urp(dir.path(), "app.urp", "library lib.urp\n\nappmod\n");
+        let job = parse_urp(&app_urp).unwrap();
+        assert!(
+            job.safe_get_default,
+            "merge_library must OR safe_get_default (catches line 477 || -> && mutant)"
+        );
+    }
+
+    #[test]
     fn parse_library_merge_debug_or() {
         // Catches mutant: replace || with && in merge_library (job.debug || lib.debug).
         // App has no debug, lib has debug -> merged job must have debug.
@@ -1149,5 +1164,62 @@ mod tests {
         let urp = write_urp(dir.path(), "app.urp", "html5\n\nmod1\n");
         let result = parse_urp(&urp);
         assert!(result.is_ok(), "html5 directive must parse without error");
+    }
+
+    #[test]
+    fn parse_xhtml_directive_no_error() {
+        // Catches mutant: delete match arm html5|xhtml|...
+        let dir = tempdir().unwrap();
+        let urp = write_urp(dir.path(), "app.urp", "xhtml\n\nmod1\n");
+        let result = parse_urp(&urp);
+        assert!(
+            result.is_ok(),
+            "xhtml directive must parse (catches delete match arm)"
+        );
+    }
+
+    #[test]
+    fn parse_no_mangle_sql_directive_no_error() {
+        // Catches mutant: delete match arm noMangleSql in settings-only arm.
+        let dir = tempdir().unwrap();
+        let urp = write_urp(dir.path(), "app.urp", "noMangleSql\n\nmod1\n");
+        let result = parse_urp(&urp);
+        assert!(
+            result.is_ok(),
+            "noMangleSql directive must parse (catches delete match arm)"
+        );
+    }
+
+    #[test]
+    fn parse_file_directive_no_error() {
+        // Catches mutant: delete match arm file in settings-only arm.
+        let dir = tempdir().unwrap();
+        let urp = write_urp(dir.path(), "app.urp", "file index.html\n\nmod1\n");
+        let result = parse_urp(&urp);
+        assert!(
+            result.is_ok(),
+            "file directive must parse (catches delete match arm)"
+        );
+    }
+
+    #[test]
+    fn parse_library_merge_dedup_sources() {
+        // Catches mutant: replace seen.insert with wrong logic in merge_library.
+        // When app and lib share a source, it must appear once.
+        let dir = tempdir().unwrap();
+        let lib_urp = dir.path().join("lib.urp");
+        std::fs::write(&lib_urp, "\nshared\nlibonly\n").unwrap();
+        let app_urp = write_urp(
+            dir.path(),
+            "app.urp",
+            "library lib.urp\n\nshared\napponly\n",
+        );
+        let job = parse_urp(&app_urp).unwrap();
+        let shared_count = job.sources.iter().filter(|s| s.ends_with("shared")).count();
+        assert!(
+            shared_count == 1,
+            "shared must appear exactly once (catches merge_library dedup mutant), got {}",
+            shared_count
+        );
     }
 }

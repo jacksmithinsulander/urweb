@@ -839,6 +839,249 @@ mod tests {
     }
 
     #[test]
+    fn effectize_valrec_push_populates_pushers() {
+        // Catches mutant: exp_has_push && !pushers.contains_key -> || would wrongly add.
+        // ValRec: 10 calls 11 via ServerCall; 11 has dml+getCookie (writers+readers).
+        // So 10's body has ServerCall(11) -> could_write_with_rpc true -> 10 gets into pushers.
+        let s = Settings::new();
+        let span = Span::dummy();
+        let unit_ty = Located::dummy(Constructor::Unit);
+        let body_11 = Expression::Let(
+            "_".into(),
+            unit_ty.clone(),
+            Box::new(Located::dummy(Expression::FfiApp(
+                "Basis".into(),
+                "dml".into(),
+                vec![],
+            ))),
+            Box::new(Located::dummy(Expression::Ffi(
+                "Basis".into(),
+                "getCookie".into(),
+            ))),
+        );
+        let body_10 = Expression::ServerCall(
+            11,
+            vec![],
+            unit_ty.clone(),
+            FailureMode::Error,
+        );
+        let file: File = vec![
+            Located::new(
+                Declaration::ValRec(vec![
+                    (
+                        "caller".into(),
+                        10,
+                        unit_ty.clone(),
+                        Located::dummy(body_10),
+                        "caller".into(),
+                    ),
+                    (
+                        "callee".into(),
+                        11,
+                        unit_ty,
+                        Located::dummy(body_11),
+                        "callee".into(),
+                    ),
+                ]),
+                span.clone(),
+            ),
+            Located::new(
+                Declaration::Export(ExportKind::Action(Effect::ReadOnly), 10, false),
+                span,
+            ),
+        ];
+        let (out, errs) = effectize(file, &s);
+        assert!(errs.is_empty());
+        let export = out
+            .iter()
+            .find(|d| matches!(&d.node, Declaration::Export(_, n, _) if *n == 10))
+            .unwrap();
+        match &export.node {
+            Declaration::Export(ExportKind::Action(_effect), 10, has_state) => {
+                assert!(
+                    *has_state,
+                    "caller must have has_state (in pushers) (catches exp_has_push && !pushers mutant)"
+                );
+            }
+            _ => panic!("expected Action export for 10"),
+        }
+    }
+
+    #[test]
+    fn effectize_valrec_iteration_converges() {
+        // Catches mutant: iterations >= MAX -> < would never break; !changed || iterations >= MAX.
+        // ValRec that converges in 2-3 iterations; must complete without panic.
+        let s = Settings::new();
+        let span = Span::dummy();
+        let file: File = vec![
+            Located::new(
+                Declaration::ValRec(vec![(
+                    "x".into(),
+                    1,
+                    Located::dummy(Constructor::Unit),
+                    Located::dummy(Expression::Prim(Prim::Int(0))),
+                    "x".into(),
+                )]),
+                span.clone(),
+            ),
+            Located::new(
+                Declaration::Export(ExportKind::Action(Effect::ReadOnly), 1, false),
+                span,
+            ),
+        ];
+        let (out, errs) = effectize(file, &s);
+        assert!(errs.is_empty());
+        assert_eq!(out.len(), 2, "valrec + export");
+        match &out[0].node {
+            Declaration::ValRec(vis) => assert_eq!(vis.len(), 1),
+            _ => panic!("expected ValRec"),
+        }
+    }
+
+    // --- Plan: Catch Missed Mutants - effect_analysis ---
+
+    #[test]
+    fn effectize_valrec_writer_propagates_second_iteration() {
+        // Kills: iterations += 1, !changed || iterations >= MAX, &&, !writers.contains_key.
+        // ValRec [B, A] with B=Named(A), A=dml. Iter 1: add A. Iter 2: add B. Export B -> ReadWrite.
+        let s = Settings::new();
+        let span = Span::dummy();
+        let unit_ty = Located::dummy(Constructor::Unit);
+        let file: File = vec![
+            Located::new(
+                Declaration::ValRec(vec![
+                    (
+                        "b".into(),
+                        2,
+                        unit_ty.clone(),
+                        Located::dummy(Expression::Named(1)),
+                        "b".into(),
+                    ),
+                    (
+                        "a".into(),
+                        1,
+                        unit_ty,
+                        Located::dummy(Expression::FfiApp("Basis".into(), "dml".into(), vec![])),
+                        "a".into(),
+                    ),
+                ]),
+                span.clone(),
+            ),
+            Located::new(
+                Declaration::Export(ExportKind::Action(Effect::ReadOnly), 2, false),
+                span,
+            ),
+        ];
+        let (out, errs) = effectize(file, &s);
+        assert!(errs.is_empty());
+        let export = out
+            .iter()
+            .find(|d| matches!(&d.node, Declaration::Export(_, n, _) if *n == 2))
+            .unwrap();
+        match &export.node {
+            Declaration::Export(ExportKind::Action(effect), 2, _) => {
+                assert_eq!(
+                    *effect,
+                    Effect::ReadWrite,
+                    "b calls a (writer); must propagate to writers in 2nd iteration"
+                );
+            }
+            _ => panic!("expected Action export for 2"),
+        }
+    }
+
+    #[test]
+    fn effectize_valrec_writer_and_reader_both_propagated() {
+        // Kills: &&/|| in conditions. A writes, B reads, C calls both -> C gets ReadCookieWrite.
+        let s = Settings::new();
+        let span = Span::dummy();
+        let unit_ty = Located::dummy(Constructor::Unit);
+        let body_c = Expression::Let(
+            "x".into(),
+            unit_ty.clone(),
+            Box::new(Located::dummy(Expression::Named(1))), // write
+            Box::new(Located::dummy(Expression::Named(2))), // read
+        );
+        let file: File = vec![
+            Located::new(
+                Declaration::ValRec(vec![
+                    (
+                        "a".into(),
+                        1,
+                        unit_ty.clone(),
+                        Located::dummy(Expression::FfiApp("Basis".into(), "dml".into(), vec![])),
+                        "a".into(),
+                    ),
+                    (
+                        "b".into(),
+                        2,
+                        unit_ty.clone(),
+                        Located::dummy(Expression::Ffi("Basis".into(), "getCookie".into())),
+                        "b".into(),
+                    ),
+                    ("c".into(), 3, unit_ty, Located::dummy(body_c), "c".into()),
+                ]),
+                span.clone(),
+            ),
+            Located::new(
+                Declaration::Export(ExportKind::Action(Effect::ReadOnly), 3, false),
+                span,
+            ),
+        ];
+        let (out, errs) = effectize(file, &s);
+        assert!(errs.is_empty());
+        let export = out
+            .iter()
+            .find(|d| matches!(&d.node, Declaration::Export(_, n, _) if *n == 3))
+            .unwrap();
+        match &export.node {
+            Declaration::Export(ExportKind::Action(effect), 3, _) => {
+                assert_eq!(
+                    *effect,
+                    Effect::ReadCookieWrite,
+                    "c calls both writer and reader -> ReadCookieWrite"
+                );
+            }
+            _ => panic!("expected Action export for 3"),
+        }
+    }
+
+    #[test]
+    fn effectize_valrec_iterations_eventually_stop() {
+        // Kills: iterations >= MAX break condition. ValRec with no side effects converges immediately.
+        let s = Settings::new();
+        let span = Span::dummy();
+        let file: File = vec![
+            Located::new(
+                Declaration::ValRec(vec![
+                    (
+                        "a".into(),
+                        1,
+                        Located::dummy(Constructor::Unit),
+                        Located::dummy(Expression::Prim(Prim::Int(0))),
+                        "a".into(),
+                    ),
+                    (
+                        "b".into(),
+                        2,
+                        Located::dummy(Constructor::Unit),
+                        Located::dummy(Expression::Prim(Prim::Int(1))),
+                        "b".into(),
+                    ),
+                ]),
+                span.clone(),
+            ),
+            Located::new(
+                Declaration::Export(ExportKind::Action(Effect::ReadOnly), 1, false),
+                span,
+            ),
+        ];
+        let (out, errs) = effectize(file, &s);
+        assert!(errs.is_empty());
+        assert_eq!(out.len(), 2);
+    }
+
+    #[test]
     fn effectize_link_export_with_writer_emits_error_when_not_safe_get() {
         // Catches mutant: delete ! in if !settings.is_safe_get(&s).
         let s = Settings::new();

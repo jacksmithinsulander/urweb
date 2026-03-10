@@ -739,6 +739,102 @@ pub fn compile(urp_path: &Path, settings: &mut Settings) -> CompileResult {
     Ok(exe_path)
 }
 
+/// Run the compilation pipeline and return the generated C code and SQL DDL
+/// without invoking the C compiler or linker.
+///
+/// Used by tests to assert on generated output (catches return-value mutants
+/// that replace phases with Default::default()).
+pub fn compile_to_outputs(urp_path: &Path, settings: &mut Settings) -> Result<(String, String)> {
+    let mut errors = ErrorReporter::new();
+
+    let job = parse_urp(urp_path)?;
+    settings.set_url_prefix(&job.prefix);
+    settings.timeout = job.timeout;
+    settings.headers = job.headers.clone();
+    settings.scripts = job.scripts.clone();
+    settings.debug = job.debug;
+
+    let source_file =
+        parse_sources(&job, &mut errors).ok_or_else(|| anyhow::anyhow!("Parse failed"))?;
+    if errors.has_errors() {
+        bail!("parse errors");
+    }
+
+    let elab_file = elaborate(source_file, settings, &mut errors)
+        .ok_or_else(|| anyhow::anyhow!("Elaboration failed"))?;
+    if errors.has_errors() {
+        bail!("elaboration errors");
+    }
+
+    let expl_file =
+        explify(elab_file, &mut errors).ok_or_else(|| anyhow::anyhow!("Explify failed"))?;
+    let core_file =
+        corify(expl_file, settings, &mut errors).ok_or_else(|| anyhow::anyhow!("Corify failed"))?;
+
+    let core_file = core_untangle(core_file);
+    let core_file = core_reduce_local(core_file);
+    let core_file = core_shake(core_file);
+    let core_file = core_reduce(core_file, settings);
+    let core_file = core_especialize(core_file);
+    let core_file = core_unpoly(core_file);
+    let core_file = core_specialize(core_file);
+    let core_file = core_rpcify(core_file, settings, &mut errors)
+        .ok_or_else(|| anyhow::anyhow!("Rpcify failed"))?;
+    let core_file =
+        core_tag(core_file, settings, &mut errors).ok_or_else(|| anyhow::anyhow!("Tag failed"))?;
+    let core_file = core_effectize(core_file, settings);
+
+    check_marshal(&core_file, settings, &mut errors);
+    check_termination(&core_file, &mut errors);
+    if errors.has_errors() {
+        bail!("check errors");
+    }
+
+    let mono_file = monoize(core_file, settings, &mut errors)
+        .ok_or_else(|| anyhow::anyhow!("Monoize failed"))?;
+    let mono_file = mono_untangle(mono_file);
+    let mono_file = mono_fuse(mono_file);
+    let mono_file = mono_reduce(mono_file, settings);
+    let mono_file = mono_opt(mono_file, settings, &mut errors);
+    let mono_file = mono_shake(mono_file);
+    let mono_file = mono_inline(mono_file, settings);
+    let mono_file = mono_script_check(mono_file, settings, &mut errors);
+    mono_path_check(&mono_file, &mut errors);
+    let (mono_file, _env_vars) = mono_side_check(mono_file, settings, &mut errors);
+    let mono_file = mono_sig_check(mono_file);
+    let mono_file = mono_dbmode_check(mono_file);
+    if errors.has_errors() {
+        bail!("mono check errors");
+    }
+
+    let mono_file = if settings.debug {
+        mono_iflow(mono_file, settings, &mut errors)
+            .ok_or_else(|| anyhow::anyhow!("Iflow failed"))?
+    } else {
+        mono_file
+    };
+    let mono_file = if settings.sqlcache {
+        mono_sqlcache(mono_file, settings, &mut errors)
+            .ok_or_else(|| anyhow::anyhow!("Sqlcache failed"))?
+    } else {
+        mono_file
+    };
+
+    let _js = js_compile(&mono_file, settings, &mut errors);
+    let cjr_file =
+        cjrize(mono_file, &mut errors).ok_or_else(|| anyhow::anyhow!("CJRize failed"))?;
+    if errors.has_errors() {
+        bail!("CJR errors");
+    }
+
+    let cjr_file = cjr_prepare(cjr_file, settings);
+    let cjr_file = cjr_check_nest(cjr_file);
+
+    let c_code = cjr_print(&cjr_file, settings);
+    let sql_ddl = sql_generate(&cjr_file, settings);
+    Ok((c_code, sql_ddl))
+}
+
 // ---------------------------------------------------------------------------
 // Module name helper (used by main.rs)
 // ---------------------------------------------------------------------------
@@ -843,6 +939,123 @@ mod tests {
         assert!(result.is_some());
         assert!(result.unwrap().is_empty());
         assert!(!errors.has_errors());
+    }
+
+    #[test]
+    #[ignore = "requires parse_ur (LALRPOP grammar)"]
+    fn parse_sources_returns_meaningful_content() {
+        // Catches mutants: replace parse_sources result with Some(Default::default()).
+        let dir = tempfile::tempdir().unwrap();
+        let urp_path = dir.path().join("app.urp");
+        std::fs::write(&urp_path, "database dbname=test\nsql out.sql\n\nx\n").unwrap();
+        std::fs::write(dir.path().join("x.ur"), "val x = 1").unwrap();
+        let job = parse_urp(&urp_path).unwrap();
+        let mut errors = ErrorReporter::new();
+        let cwd = std::env::current_dir().unwrap();
+        std::env::set_current_dir(dir.path()).unwrap();
+        let result = parse_sources(&job, &mut errors);
+        std::env::set_current_dir(&cwd).unwrap();
+        assert!(
+            result.is_some(),
+            "parse_sources must return Some (catches replace with None)"
+        );
+        let source_file = result.unwrap();
+        assert!(
+            !source_file.is_empty(),
+            "parse_sources must return non-empty for valid project (catches Some(Default::default()))"
+        );
+        let first = &source_file[0];
+        assert!(
+            first.span.file.ends_with("x.ur"),
+            "span.file must be set to source path (catches delete field file mutant): {}",
+            first.span.file
+        );
+    }
+
+    #[test]
+    #[ignore = "requires parse_ur (LALRPOP grammar)"]
+    fn compile_to_outputs_produces_c_and_sql() {
+        // Catches mutants that replace pipeline phases with Default::default().
+        let dir = tempfile::tempdir().unwrap();
+        let urp_path = dir.path().join("app.urp");
+        std::fs::write(&urp_path, "database dbname=test\nsql out.sql\n\nx\n").unwrap();
+        std::fs::write(dir.path().join("x.ur"), "val x = 1").unwrap();
+        let mut settings = Settings::default();
+        settings.dbms = "sqlite".to_string();
+        let cwd = std::env::current_dir().unwrap();
+        std::env::set_current_dir(dir.path()).unwrap();
+        let result = compile_to_outputs(&urp_path, &mut settings);
+        std::env::set_current_dir(&cwd).unwrap();
+        let (c_code, _sql_ddl) = result.expect("compile_to_outputs must succeed");
+        assert!(
+            c_code.contains("#include"),
+            "C output must contain includes (catches cjr_print -> String::new()): {}",
+            &c_code[..c_code.len().min(200)]
+        );
+        assert!(
+            c_code.contains("uw_app"),
+            "C output must contain uw_app struct (catches cjr_print mutant)"
+        );
+        assert!(
+            !c_code.contains("xyzzy"),
+            "C output must not be placeholder (catches replace with xyzzy mutant)"
+        );
+    }
+
+    #[test]
+    fn check_marshal_reports_disallowed_cookie() {
+        // Catches mutant: replace check_marshal with ().
+        use crate::core::{Constructor, Declaration};
+        use crate::error_types::Located;
+        let disallowed = Located::dummy(Constructor::Ffi("BadMod".into(), "BadType".into()));
+        let file: crate::core::File = vec![Located::dummy(Declaration::Cookie(
+            "c".into(),
+            1,
+            disallowed,
+            "tag".into(),
+        ))];
+        let mut errors = ErrorReporter::new();
+        check_marshal(&file, &Settings::default(), &mut errors);
+        assert!(
+            errors.has_errors(),
+            "check_marshal must report errors for disallowed cookie (catches replace with () mutant)"
+        );
+    }
+
+    #[test]
+    fn mono_path_check_reports_duplicate_export() {
+        // Catches mutant: replace mono_path_check with ().
+        use crate::error_types::Located;
+        use crate::export::{Effect, ExportKind};
+        use crate::monomorphized::{Decl, Typ};
+        let unit_typ = Located::dummy(Typ::Ffi("Basis".into(), "unit".into()));
+        let file: crate::monomorphized::File = (
+            vec![
+                Located::dummy(Decl::Export(
+                    ExportKind::Link(Effect::ReadOnly),
+                    "samepath".into(),
+                    1,
+                    vec![],
+                    unit_typ.clone(),
+                    false,
+                )),
+                Located::dummy(Decl::Export(
+                    ExportKind::Link(Effect::ReadOnly),
+                    "samepath".into(),
+                    2,
+                    vec![],
+                    unit_typ,
+                    false,
+                )),
+            ],
+            vec![],
+        );
+        let mut errors = ErrorReporter::new();
+        mono_path_check(&file, &mut errors);
+        assert!(
+            errors.has_errors(),
+            "mono_path_check must report duplicate path (catches replace with () mutant)"
+        );
     }
 
     #[test]

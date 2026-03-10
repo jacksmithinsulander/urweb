@@ -1353,6 +1353,217 @@ mod tests {
     }
 
     #[test]
+    fn type_has_signal_option_with_signal() {
+        // Catches mutant: delete Typ::Option|List arm in type_has_signal.
+        let inner = mono::Typ::Signal(Box::new(Located::dummy(mono::Typ::Source)));
+        let t = mono::Typ::Option(Box::new(Located::new(inner, Span::dummy())));
+        assert!(
+            type_has_signal(&t),
+            "Option containing Signal must have signal"
+        );
+    }
+
+    #[test]
+    fn cjrize_task_initialize_produces_task_decl() {
+        let span = Span::dummy();
+        let unit = Located::new(mono::Typ::Ffi("Basis".into(), "unit".into()), span.clone());
+        let body = mono::Exp::Record(vec![]);
+        let inner = mono::Exp::Abs(
+            "_".into(),
+            unit.clone(),
+            unit.clone(),
+            Box::new(Located::new(body, span.clone())),
+        );
+        let e2 = mono::Exp::Abs(
+            "_".into(),
+            unit.clone(),
+            unit.clone(),
+            Box::new(Located::new(inner, span.clone())),
+        );
+        let e1 = mono::Exp::Ffi("Basis".into(), "initialize".into());
+        let decl = mono::Decl::Task(
+            Located::new(e1, span.clone()),
+            Located::new(e2, span.clone()),
+        );
+        let file: mono::File = (vec![Located::new(decl, span)], vec![]);
+        let mut errors = ErrorReporter::new();
+        let result = cjrize(file, &mut errors);
+        assert!(result.is_some(), "cjrize must process Task (initialize)");
+        assert!(!errors.has_errors());
+        let (decls, _) = result.unwrap();
+        assert_eq!(decls.len(), 1);
+        match &decls[0].node {
+            Decl::Task(tk, ..) => {
+                assert!(
+                    matches!(tk, Task::Initialize),
+                    "initialize => Task::Initialize (catches m==Basis, x==initialize)"
+                );
+            }
+            _ => panic!("expected Decl::Task, got {:?}", decls[0].node),
+        }
+    }
+
+    #[test]
+    fn cjrize_task_client_leaves_produces_task_decl() {
+        let span = Span::dummy();
+        let unit = Located::new(mono::Typ::Ffi("Basis".into(), "unit".into()), span.clone());
+        let body = mono::Exp::Record(vec![]);
+        let inner = mono::Exp::Abs(
+            "_".into(),
+            unit.clone(),
+            unit.clone(),
+            Box::new(Located::new(body, span.clone())),
+        );
+        let e2 = mono::Exp::Abs(
+            "_".into(),
+            unit.clone(),
+            unit.clone(),
+            Box::new(Located::new(inner, span.clone())),
+        );
+        let e1 = mono::Exp::Ffi("Basis".into(), "clientLeaves".into());
+        let decl = mono::Decl::Task(
+            Located::new(e1, span.clone()),
+            Located::new(e2, span.clone()),
+        );
+        let file: mono::File = (vec![Located::new(decl, span)], vec![]);
+        let mut errors = ErrorReporter::new();
+        let result = cjrize(file, &mut errors);
+        assert!(result.is_some(), "cjrize must process Task (clientLeaves)");
+        assert!(!errors.has_errors());
+        let (decls, _) = result.unwrap();
+        assert_eq!(decls.len(), 1);
+        match &decls[0].node {
+            Decl::Task(tk, ..) => {
+                assert!(
+                    matches!(tk, Task::ClientLeaves),
+                    "clientLeaves => Task::ClientLeaves (catches m==Basis, x==clientLeaves)"
+                );
+            }
+            _ => panic!("expected Decl::Task, got {:?}", decls[0].node),
+        }
+    }
+
+    #[test]
+    fn cjrize_task_periodic_produces_periodic() {
+        let span = Span::dummy();
+        let unit = Located::new(mono::Typ::Ffi("Basis".into(), "unit".into()), span.clone());
+        let body = mono::Exp::Record(vec![]);
+        let inner = mono::Exp::Abs(
+            "_".into(),
+            unit.clone(),
+            unit.clone(),
+            Box::new(Located::new(body, span.clone())),
+        );
+        let e2 = mono::Exp::Abs(
+            "_".into(),
+            unit.clone(),
+            unit.clone(),
+            Box::new(Located::new(inner, span.clone())),
+        );
+        let int_ty = Located::new(mono::Typ::Ffi("Basis".into(), "int".into()), span.clone());
+        let e1 = mono::Exp::FfiApp(
+            "Basis".into(),
+            "periodic".into(),
+            vec![(Located::new(mono::Exp::Prim(Prim::Int(100)), span.clone()), int_ty)],
+        );
+        let decl = mono::Decl::Task(
+            Located::new(e1, span.clone()),
+            Located::new(e2, span.clone()),
+        );
+        let file: mono::File = (vec![Located::new(decl, span)], vec![]);
+        let mut errors = ErrorReporter::new();
+        let result = cjrize(file, &mut errors);
+        assert!(result.is_some(), "cjrize must process Task (periodic)");
+        assert!(!errors.has_errors());
+        let (decls, _) = result.unwrap();
+        assert_eq!(decls.len(), 1);
+        match &decls[0].node {
+            Decl::Task(tk, ..) => {
+                assert!(
+                    matches!(tk, Task::Periodic(100)),
+                    "periodic(100) => Task::Periodic(100) (catches FfiApp arm, Prim::Int)"
+                );
+            }
+            _ => panic!("expected Decl::Task, got {:?}", decls[0].node),
+        }
+    }
+
+    #[test]
+    fn cjrize_table_with_strcat_constraint() {
+        let span = Span::dummy();
+        let string_ty =
+            Located::new(mono::Typ::Ffi("Basis".into(), "string".into()), span.clone());
+        let r1 = mono::Exp::Record(vec![(
+            "a".into(),
+            Located::new(
+                mono::Exp::Prim(Prim::String(StringMode::Normal, "val1".into())),
+                span.clone(),
+            ),
+            string_ty.clone(),
+        )]);
+        let r2 = mono::Exp::Record(vec![(
+            "b".into(),
+            Located::new(
+                mono::Exp::Prim(Prim::String(StringMode::Normal, "val2".into())),
+                span.clone(),
+            ),
+            string_ty.clone(),
+        )]);
+        let ce = mono::Exp::Strcat(
+            Box::new(Located::new(r1, span.clone())),
+            Box::new(Located::new(r2, span.clone())),
+        );
+        let pe = mono::Exp::Prim(Prim::String(StringMode::Normal, "id".into()));
+        let decl = mono::Decl::Table(
+            "t".into(),
+            vec![
+                ("id".into(), string_ty.clone()),
+                ("a".into(), string_ty.clone()),
+                ("b".into(), string_ty),
+            ],
+            Located::new(pe, span.clone()),
+            Located::new(ce, span.clone()),
+        );
+        let file: mono::File = (vec![Located::new(decl, span)], vec![]);
+        let mut errors = ErrorReporter::new();
+        let result = cjrize(file, &mut errors);
+        assert!(result.is_some(), "cjrize must process Table with Strcat constraint");
+        assert!(!errors.has_errors());
+        let (decls, _) = result.unwrap();
+        assert_eq!(decls.len(), 1);
+        match &decls[0].node {
+            Decl::Table(_, _, _, constraints) => {
+                assert_eq!(
+                    constraints.as_slice(),
+                    &[("a".into(), "val1".into()), ("b".into(), "val2".into())],
+                    "Strcat(Record(a=val1), Record(b=val2)) => both constraints (catches Strcat arm)"
+                );
+            }
+            _ => panic!("expected Decl::Table, got {:?}", decls[0].node),
+        }
+    }
+
+    #[test]
+    fn sm_find_idempotent_two_same_structs() {
+        let mut sm = Sm::new();
+        let span = Span::dummy();
+        let t = Located::new(
+            Typ::Ffi("Basis".to_string(), "int".to_string()),
+            span.clone(),
+        );
+        let mt = Located::new(mono::Typ::Ffi("Basis".to_string(), "int".to_string()), span);
+        let mono_fields = vec![("x".to_string(), mt.clone()), ("y".to_string(), mt)];
+        let cjr_fields = vec![
+            ("x".to_string(), t.clone()),
+            ("y".to_string(), t),
+        ];
+        let id1 = sm.find(&mono_fields, cjr_fields.clone());
+        let id2 = sm.find(&mono_fields, cjr_fields);
+        assert_eq!(id1, id2, "Sm::find same struct twice => same id (catches += 1)");
+        assert_eq!(id1, 1, "first non-unit struct gets id 1");
+    }
+
+    #[test]
     fn cjrize_datatype_produces_decl() {
         let decl = mono::Decl::Datatype(vec![mono::DatatypeDecl {
             name: "Color".into(),

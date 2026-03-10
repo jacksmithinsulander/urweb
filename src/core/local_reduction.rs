@@ -1569,4 +1569,118 @@ mod tests {
             panic!("expected Val");
         }
     }
+
+    // --- Plan: Catch Missed Mutants - local_reduction ---
+
+    #[test]
+    fn shift_con_rel_delta_two() {
+        // Kills: + -> - and + -> * in Rel branch. Rel(1), cutoff 1, delta 2 -> Rel(3).
+        let c = Located::dummy(Constructor::Rel(1));
+        let out = shift_con(c, 1, 2);
+        assert!(matches!(out.node, Constructor::Rel(3)));
+    }
+
+    #[test]
+    fn shift_exp_rel_delta_two() {
+        // Kills: + -> - and + -> * in Rel. Rel(1), cutoff 1, delta 2 -> Rel(3).
+        let e = Located::dummy(Expression::Rel(1));
+        let out = shift_exp(e, 1, 2, 0, 0);
+        assert!(matches!(out.node, Expression::Rel(3)));
+    }
+
+    #[test]
+    fn shift_con_rel_negative_delta_decrements() {
+        // Kills: - -> + and - -> / in Rel. Rel(3), cutoff 1, delta -1 -> Rel(2).
+        let c = Located::dummy(Constructor::Rel(3));
+        let out = shift_con(c, 1, -1);
+        assert!(matches!(out.node, Constructor::Rel(2)));
+    }
+
+    #[test]
+    fn reduce_exp_field_of_record_projects() {
+        // Kills: Field+Record arm in simplify_exp, find logic.
+        let field_name = Located::dummy(Constructor::Name("x".into()));
+        let unit_ty = Located::dummy(Constructor::Unit);
+        let value = Located::dummy(Expression::Prim(Prim::Int(42)));
+        let rec = Located::dummy(Expression::Record(vec![(
+            field_name.clone(),
+            value,
+            unit_ty.clone(),
+        )]));
+        let meta = crate::core::FieldMeta {
+            field: unit_ty.clone(),
+            rest: Located::dummy(Constructor::Record(
+                Box::new(Located::dummy(crate::core::Kind::Type)),
+                vec![],
+            )),
+        };
+        let field_exp = Located::dummy(Expression::Field(
+            Box::new(rec),
+            field_name,
+            meta,
+        ));
+        let out = reduce_exp(field_exp);
+        assert!(matches!(out.node, Expression::Prim(Prim::Int(42))));
+    }
+
+    #[test]
+    fn reduce_exp_case_var_always_matches() {
+        // Kills: delete Var arm in try_match. Case(disc, [(Var, body)]) -> body with subst.
+        let disc = Located::dummy(Expression::Prim(Prim::Int(0)));
+        let body = Located::dummy(Expression::Prim(Prim::Int(99)));
+        let var_pat = Located::dummy(crate::core::Pattern::Var(
+            "x".into(),
+            Located::dummy(Constructor::Unit),
+        ));
+        let case_meta = crate::core::CaseMeta {
+            disc: Located::dummy(Constructor::Unit),
+            result: Located::dummy(Constructor::Unit),
+        };
+        let case = Located::dummy(Expression::Case(
+            Box::new(disc),
+            vec![(var_pat, body)],
+            case_meta,
+        ));
+        let out = reduce_exp(case);
+        assert!(matches!(out.node, Expression::Prim(Prim::Int(99))));
+    }
+
+    #[test]
+    fn reduce_exp_case_prim_equal_matches() {
+        // Kills: delete Prim arm, == -> !=. Case(Prim(1), [(Prim(1), body)]) -> body.
+        let disc = Located::dummy(Expression::Prim(Prim::Int(1)));
+        let body = Located::dummy(Expression::Prim(Prim::Int(100)));
+        let prim_pat = Located::dummy(crate::core::Pattern::Prim(Prim::Int(1)));
+        let case_meta = crate::core::CaseMeta {
+            disc: Located::dummy(Constructor::Unit),
+            result: Located::dummy(Constructor::Unit),
+        };
+        let case = Located::dummy(Expression::Case(
+            Box::new(disc),
+            vec![(prim_pat, body)],
+            case_meta,
+        ));
+        let out = reduce_exp(case);
+        assert!(matches!(out.node, Expression::Prim(Prim::Int(100))));
+    }
+
+    #[test]
+    fn reduce_exp_case_prim_not_equal_continues() {
+        // Kills: == -> !=. Case(Prim(1), [(Prim(2), body)]) -> Case (no match).
+        let disc = Located::dummy(Expression::Prim(Prim::Int(1)));
+        let body = Located::dummy(Expression::Prim(Prim::Int(100)));
+        let prim_pat = Located::dummy(crate::core::Pattern::Prim(Prim::Int(2)));
+        let case_meta = crate::core::CaseMeta {
+            disc: Located::dummy(Constructor::Unit),
+            result: Located::dummy(Constructor::Unit),
+        };
+        let case = Located::dummy(Expression::Case(
+            Box::new(disc),
+            vec![(prim_pat, body)],
+            case_meta,
+        ));
+        let out = reduce_exp(case);
+        // Should remain Case (no static match) since 1 != 2
+        assert!(matches!(out.node, Expression::Case(_, _, _)));
+    }
 }

@@ -3,10 +3,14 @@
 //! These tests exercise the Core AST utilities and environment
 //! as a cohesive unit, including classify_datatype, traversal (map/fold/exists),
 //! file::max_name, Env building and lookup, and decl_binds.
+//!
+//! Also includes tests for the core pipeline (reduce, especialize, effectize)
+//! with exact assertions to catch missed mutants.
 
+use urweb::compiler;
 use urweb::core::environment::Env;
 use urweb::core::utilities::{classify_datatype, constructor, declaration, expression, file, kind};
-use urweb::core::{Constructor, Declaration, FieldMeta, Kind, LocatedConstructor, Pattern};
+use urweb::core::{Constructor, Declaration, Expression, FieldMeta, Kind, LocatedConstructor, Pattern};
 use urweb::datatype_kind::DatatypeKind;
 use urweb::error_types::{Located, Span};
 
@@ -1263,6 +1267,22 @@ fn integration_env_decl_binds_con_and_val() {
 }
 
 #[test]
+fn integration_env_lookup_datatype_unbound_returns_err() {
+    // Catches mutant: replace lookup_datatype result with Some/Default - unbound must return Err.
+    let env = Env::empty();
+    let result = env.lookup_datatype(999);
+    assert!(
+        result.is_err(),
+        "lookup_datatype for unbound id must return Err (catches replace with Ok/Some mutant)"
+    );
+    let err = result.unwrap_err();
+    assert!(
+        format!("{}", err).contains("999"),
+        "error message must mention unbound id"
+    );
+}
+
+#[test]
 fn integration_pat_binds_with_env() {
     let ty = Located::dummy(Constructor::Unit);
     let p = Located::dummy(Pattern::Record(vec![
@@ -1285,4 +1305,108 @@ fn integration_pat_binds_with_env() {
     assert_eq!(binds.len(), 2);
     assert!(binds.iter().any(|(s, _)| s == "x"));
     assert!(binds.iter().any(|(s, _)| s == "y"));
+}
+
+// ---------------------------------------------------------------------------
+// Core pipeline tests (plan: catch missed mutants)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn integration_core_reduce_preserves_exact_decl_count() {
+    // Kills: mutant that drops decls. Exact count assertion.
+    let span = span();
+    let file: urweb::core::File = vec![
+        Located::new(Declaration::Database("d".into()), span.clone()),
+        Located::new(
+            Declaration::Val(
+                "x".into(),
+                1,
+                Located::dummy(Constructor::Unit),
+                Located::dummy(Expression::Prim(urweb::primitives::Prim::Int(42))),
+                "".into(),
+            ),
+            span,
+        ),
+    ];
+    let result = compiler::core_reduce(file, &urweb::settings::Settings::default());
+    assert_eq!(
+        result.len(),
+        2,
+        "core_reduce must preserve exact decl count (catches drop-decl mutant)"
+    );
+}
+
+#[test]
+fn integration_core_especialize_preserves_exact_decl_count() {
+    // Kills: mutant that drops or duplicates decls.
+    let span = span();
+    let file: urweb::core::File = vec![
+        Located::new(Declaration::Database("d".into()), span.clone()),
+        Located::new(
+            Declaration::Val(
+                "x".into(),
+                1,
+                Located::dummy(Constructor::Unit),
+                Located::dummy(Expression::Prim(urweb::primitives::Prim::Int(0))),
+                "".into(),
+            ),
+            span,
+        ),
+    ];
+    let result = compiler::core_especialize(file);
+    assert_eq!(
+        result.len(),
+        2,
+        "core_especialize must preserve exact decl count"
+    );
+}
+
+#[test]
+fn integration_core_effectize_preserves_exact_decl_count() {
+    // Kills: mutant that drops decls in effectize.
+    let span = span();
+    let file: urweb::core::File = vec![
+        Located::new(Declaration::Database("d".into()), span.clone()),
+        Located::new(
+            Declaration::Val(
+                "x".into(),
+                1,
+                Located::dummy(Constructor::Unit),
+                Located::dummy(Expression::Prim(urweb::primitives::Prim::Int(0))),
+                "".into(),
+            ),
+            span,
+        ),
+    ];
+    let result = compiler::core_effectize(file, &urweb::settings::Settings::default());
+    assert_eq!(
+        result.len(),
+        2,
+        "core_effectize must preserve exact decl count"
+    );
+}
+
+#[test]
+fn integration_core_reduce_preserves_expression_shape() {
+    // Kills: mutant that corrupts Val body. Assert expression stays Prim.
+    let span = span();
+    let file: urweb::core::File = vec![Located::new(
+        Declaration::Val(
+            "x".into(),
+            1,
+            Located::dummy(Constructor::Unit),
+            Located::dummy(Expression::Prim(urweb::primitives::Prim::Int(17))),
+            "".into(),
+        ),
+        span,
+    )];
+    let result = compiler::core_reduce(file, &urweb::settings::Settings::default());
+    assert_eq!(result.len(), 1);
+    let Declaration::Val(_, _, _, body, _) = &result[0].node else {
+        panic!("expected Val decl");
+    };
+    assert!(
+        matches!(body.node, Expression::Prim(urweb::primitives::Prim::Int(17))),
+        "core_reduce must preserve Prim expression shape"
+    );
 }

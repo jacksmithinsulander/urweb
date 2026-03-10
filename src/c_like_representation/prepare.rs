@@ -550,6 +550,212 @@ mod tests {
     }
 
     #[test]
+    fn prep_string_sqlify_bool() {
+        // Catches mutant: delete match arm "sqlifyBool" in sqlify_type.
+        let mut st = PrepareState::new();
+        let mut settings = Settings::default();
+        settings.dbms = "postgres".into();
+        let arg = Located::dummy(Exp::Rel(0));
+        let t = Located::dummy(crate::c_like_representation::Typ::Ffi(
+            "Basis".into(),
+            "bool".into(),
+        ));
+        let e = Located::dummy(Exp::FfiApp(
+            "Basis".into(),
+            "sqlifyBool".into(),
+            vec![(arg, t)],
+        ));
+        let result = try_prepare(&e, &mut st, &settings);
+        assert!(
+            result.is_some(),
+            "sqlifyBool must be recognized (catches delete sqlifyBool arm)"
+        );
+        let (_, tmpl) = result.unwrap();
+        assert!(
+            tmpl.contains("bool"),
+            "sqlifyBool must produce bool: {}",
+            tmpl
+        );
+    }
+
+    #[test]
+    fn prep_string_sqlify_time() {
+        // Catches mutant: delete match arm "sqlifyTime" in sqlify_type.
+        let mut st = PrepareState::new();
+        let mut settings = Settings::default();
+        settings.dbms = "postgres".into();
+        let arg = Located::dummy(Exp::Rel(0));
+        let t = Located::dummy(crate::c_like_representation::Typ::Ffi(
+            "Basis".into(),
+            "time".into(),
+        ));
+        let e = Located::dummy(Exp::FfiApp(
+            "Basis".into(),
+            "sqlifyTime".into(),
+            vec![(arg, t)],
+        ));
+        let result = try_prepare(&e, &mut st, &settings);
+        assert!(
+            result.is_some(),
+            "sqlifyTime must be recognized (catches delete sqlifyTime arm)"
+        );
+        let (_, tmpl) = result.unwrap();
+        assert!(
+            tmpl.contains("timestamp"),
+            "sqlifyTime must produce timestamp: {}",
+            tmpl
+        );
+    }
+
+    #[test]
+    fn prep_string_sqlify_clocktime() {
+        // Catches mutant: delete match arm "sqlifyClocktime" in sqlify_type.
+        let mut st = PrepareState::new();
+        let mut settings = Settings::default();
+        settings.dbms = "postgres".into();
+        let arg = Located::dummy(Exp::Rel(0));
+        let t = Located::dummy(crate::c_like_representation::Typ::Ffi(
+            "Basis".into(),
+            "clocktime".into(),
+        ));
+        let e = Located::dummy(Exp::FfiApp(
+            "Basis".into(),
+            "sqlifyClocktime".into(),
+            vec![(arg, t)],
+        ));
+        let result = try_prepare(&e, &mut st, &settings);
+        assert!(
+            result.is_some(),
+            "sqlifyClocktime must be recognized (catches delete sqlifyClocktime arm)"
+        );
+        let (_, tmpl) = result.unwrap();
+        assert!(tmpl.contains("time"), "sqlifyClocktime must produce time type: {}", tmpl);
+    }
+
+    #[test]
+    fn prep_string_sqlify_calendardate() {
+        // Catches mutant: delete match arm "sqlifyCalendardate" in sqlify_type.
+        let mut st = PrepareState::new();
+        let mut settings = Settings::default();
+        settings.dbms = "postgres".into();
+        let arg = Located::dummy(Exp::Rel(0));
+        let t = Located::dummy(crate::c_like_representation::Typ::Ffi(
+            "Basis".into(),
+            "calendardate".into(),
+        ));
+        let e = Located::dummy(Exp::FfiApp(
+            "Basis".into(),
+            "sqlifyCalendardate".into(),
+            vec![(arg, t)],
+        ));
+        let result = try_prepare(&e, &mut st, &settings);
+        assert!(
+            result.is_some(),
+            "sqlifyCalendardate must be recognized (catches delete sqlifyCalendardate arm)"
+        );
+        let (_, tmpl) = result.unwrap();
+        assert!(tmpl.contains("date"), "sqlifyCalendardate must produce date: {}", tmpl);
+    }
+
+    #[test]
+    fn prep_string_sqlify_blob() {
+        // Catches mutant: delete match arm "sqlifyBlob" in sqlify_type.
+        let mut st = PrepareState::new();
+        let mut settings = Settings::default();
+        settings.dbms = "postgres".into();
+        let arg = Located::dummy(Exp::Rel(0));
+        let t = Located::dummy(crate::c_like_representation::Typ::Ffi(
+            "Basis".into(),
+            "blob".into(),
+        ));
+        let e = Located::dummy(Exp::FfiApp(
+            "Basis".into(),
+            "sqlifyBlob".into(),
+            vec![(arg, t)],
+        ));
+        let result = try_prepare(&e, &mut st, &settings);
+        assert!(
+            result.is_some(),
+            "sqlifyBlob must be recognized (catches delete sqlifyBlob arm)"
+        );
+        let (_, tmpl) = result.unwrap();
+        assert!(tmpl.contains("bytea") || tmpl.contains("?"), "sqlifyBlob must produce blob type: {}", tmpl);
+    }
+
+    #[test]
+    fn prep_string_sqlify_channel() {
+        // Catches mutant: delete match arm "sqlifyChannel" in sqlify_type.
+        let mut st = PrepareState::new();
+        let mut settings = Settings::default();
+        settings.dbms = "postgres".into();
+        let arg = Located::dummy(Exp::Rel(0));
+        let t = Located::dummy(crate::c_like_representation::Typ::Ffi(
+            "Basis".into(),
+            "channel".into(),
+        ));
+        let e = Located::dummy(Exp::FfiApp(
+            "Basis".into(),
+            "sqlifyChannel".into(),
+            vec![(arg, t)],
+        ));
+        let result = try_prepare(&e, &mut st, &settings);
+        assert!(
+            result.is_some(),
+            "sqlifyChannel must be recognized (catches delete sqlifyChannel arm)"
+        );
+    }
+
+    #[test]
+    fn prep_string_sqlify_client() {
+        // Catches mutant: delete match arm "sqlifyClient" in sqlify_type.
+        let mut st = PrepareState::new();
+        let mut settings = Settings::default();
+        settings.dbms = "postgres".into();
+        let arg = Located::dummy(Exp::Rel(0));
+        let t = Located::dummy(crate::c_like_representation::Typ::Ffi(
+            "Basis".into(),
+            "client".into(),
+        ));
+        let e = Located::dummy(Exp::FfiApp(
+            "Basis".into(),
+            "sqlifyClient".into(),
+            vec![(arg, t)],
+        ));
+        let result = try_prepare(&e, &mut st, &settings);
+        assert!(
+            result.is_some(),
+            "sqlifyClient must be recognized (catches delete sqlifyClient arm)"
+        );
+    }
+
+    #[test]
+    fn prep_string_strcat_requires_both_parts() {
+        // Catches mutant: && with || in strcat branch. Both parts must succeed.
+        let mut st = PrepareState::new();
+        let mut settings = Settings::default();
+        settings.dbms = "postgres".into();
+        let str_t = Located::dummy(crate::c_like_representation::Typ::Ffi(
+            "Basis".into(),
+            "string".into(),
+        ));
+        let lit = Located::dummy(Exp::Prim(Prim::String(
+            StringMode::Normal,
+            "a".into(),
+        )));
+        let dynamic = Located::dummy(Exp::Rel(0));
+        let e = Located::dummy(Exp::FfiApp(
+            "Basis".into(),
+            "strcat".into(),
+            vec![(lit, str_t.clone()), (dynamic, str_t)],
+        ));
+        let result = try_prepare(&e, &mut st, &settings);
+        assert!(
+            result.is_none(),
+            "strcat with dynamic arg must fail (catches && -> || in strcat branch)"
+        );
+    }
+
+    #[test]
     fn prep_string_sqlify_int_mysql() {
         let mut st = PrepareState::new();
         let mut settings = Settings::default();

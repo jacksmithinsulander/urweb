@@ -1529,6 +1529,18 @@ mod tests {
         assert!(matches!(lifted.node, Expression::Rel(0)));
     }
 
+    /// lift_exp_by uses + not - or * for free vars. Rel(2) at depth 1, by=1 => Rel(3).
+    /// Catches mutants: replace n+by with n-by (would give Rel(1)) or n*by (would give Rel(2)).
+    #[test]
+    fn test_lift_exp_by_uses_plus() {
+        let e = dummy(Expression::Rel(2));
+        let lifted = lift_exp_by(1, 1, e);
+        assert!(
+            matches!(lifted.node, Expression::Rel(3)),
+            "Rel(2) at depth 1 with by=1 must become Rel(3) (n+by), not Rel(1) (n-by) or Rel(2) (n*by)"
+        );
+    }
+
     /// sub_exp_in_exp replaces the target variable.
     #[test]
     fn test_sub_exp_basic() {
@@ -1628,5 +1640,95 @@ mod tests {
     fn test_get_app_no_args() {
         let e = dummy(Expression::Named(1));
         assert!(get_app(&e).is_none());
+    }
+
+    // --- Plan: Catch Missed Mutants - especialize ---
+
+    #[test]
+    fn test_lift_exp_by_abs_increments_depth() {
+        // Kills: depth+1 -> depth-1 in Abs. Abs body Rel(1) at depth 0 -> Rel(2).
+        let body = dummy(Expression::Rel(1));
+        let abs = dummy(Expression::Abs(
+            "x".into(),
+            dummy_con(),
+            dummy_con(),
+            Box::new(body),
+        ));
+        let lifted = lift_exp_by(0, 1, abs);
+        let Expression::Abs(_, _, _, inner) = lifted.node else { panic!("expected Abs") };
+        assert!(matches!(inner.node, Expression::Rel(2)));
+    }
+
+    #[test]
+    fn test_lift_exp_by_let_increments_rhs() {
+        // Kills: depth+1 in Let. Rel(1) in e2 (free) at depth 0 -> Rel(2).
+        let e2 = dummy(Expression::Rel(1));
+        let let_exp = dummy(Expression::Let(
+            "x".into(),
+            dummy_con(),
+            Box::new(dummy(Expression::Prim(Prim::Int(0)))),
+            Box::new(e2),
+        ));
+        let lifted = lift_exp_by(0, 1, let_exp);
+        let Expression::Let(_, _, _, e2_out) = lifted.node else { panic!("expected Let") };
+        assert!(matches!(e2_out.node, Expression::Rel(2)));
+    }
+
+    #[test]
+    fn test_sub_exp_decrements_not_increment() {
+        // Kills: n-1 -> n+1. Rel(2) with xn=0 -> Rel(1).
+        let rep = dummy(Expression::Named(0));
+        let body = dummy(Expression::Rel(2));
+        let result = sub_exp_in_exp(0, &rep, body);
+        assert!(matches!(result.node, Expression::Rel(1)));
+    }
+
+    #[test]
+    fn test_free_vars_union() {
+        // Kills: insert (union) in collect_free_vars. App(Rel(0), Rel(1)) -> {0, 1}.
+        let e = dummy(Expression::App(
+            Box::new(dummy(Expression::Rel(0))),
+            Box::new(dummy(Expression::Rel(1))),
+        ));
+        let fvs = free_vars(&e);
+        assert_eq!(fvs.len(), 2);
+        assert!(fvs.contains(&0));
+        assert!(fvs.contains(&1));
+    }
+
+    #[test]
+    fn test_is_poly_t_tfun() {
+        // Kills: delete TFun arm. TFun(_, TCFun) recurses and returns true.
+        let tfun = dummy(Constructor::TFun(
+            Box::new(dummy(Constructor::Unit)),
+            Box::new(dummy(Constructor::TCFun(
+                "a".into(),
+                Box::new(dummy(Kind::Type)),
+                Box::new(dummy(Constructor::Unit)),
+            ))),
+        ));
+        assert!(is_poly_t(&tfun));
+    }
+
+    #[test]
+    fn test_function_inside_basis_transaction() {
+        // Kills: guard m=="Basis" && matches transaction.
+        let c = dummy(Constructor::Ffi("Basis".into(), "transaction".into()));
+        assert!(function_inside(&HashSet::new(), &c));
+    }
+
+    #[test]
+    fn test_function_inside_other_false() {
+        // Kills: guard. Other.foo is not "function inside".
+        let c = dummy(Constructor::Ffi("Other".into(), "foo".into()));
+        assert!(!function_inside(&HashSet::new(), &c));
+    }
+
+    #[test]
+    fn test_squish_at_decrements() {
+        // Kills: bound+pos in squish_at. fvs=[1,0], bound=2, Rel(3): free_idx=1, pos=0, -> Rel(2).
+        let e = dummy(Expression::Rel(3));
+        let result = squish_at(&[1, 0], 2, e);
+        assert!(matches!(result.node, Expression::Rel(2)));
     }
 }

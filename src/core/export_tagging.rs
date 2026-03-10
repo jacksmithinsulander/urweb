@@ -19,25 +19,25 @@ use crate::export::{Effect, ExportKind};
 // Union-find for equating aliased function names
 // ---------------------------------------------------------------------------
 
-struct UnionFind {
+pub(crate) struct UnionFind {
     parent: HashMap<usize, usize>,
 }
 
 impl UnionFind {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         UnionFind {
             parent: HashMap::new(),
         }
     }
 
-    fn representative(&self, mut node: usize) -> usize {
+    pub(crate) fn representative(&self, mut node: usize) -> usize {
         while let Some(&parent) = self.parent.get(&node) {
             node = parent;
         }
         node
     }
 
-    fn equate(&mut self, node_one: usize, node_two: usize) {
+    pub(crate) fn equate(&mut self, node_one: usize, node_two: usize) {
         let representative_one = self.representative(node_one);
         let representative_two = self.representative(node_two);
         if representative_one != representative_two {
@@ -65,7 +65,7 @@ struct State {
 // ---------------------------------------------------------------------------
 
 /// Unravels nested `EApp` applications, collecting the head name and arguments.
-fn unravel_app(expression: &LocatedExpression) -> Option<(usize, Vec<LocatedExpression>)> {
+pub(crate) fn unravel_app(expression: &LocatedExpression) -> Option<(usize, Vec<LocatedExpression>)> {
     fn inner(expression: &LocatedExpression, args: &mut Vec<LocatedExpression>) -> Option<usize> {
         match &expression.node {
             Expression::Named(name_id) => Some(*name_id),
@@ -748,4 +748,117 @@ pub fn tag(file: File, error_reporter: &mut impl FnMut(&Span, &str)) -> File {
     }
 
     result
+}
+
+// ---------------------------------------------------------------------------
+// Tests — Plan: Catch Missed Mutants
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::{Constructor, Declaration, Expression};
+    use crate::error_types::Located;
+    use crate::export::{Effect, ExportKind};
+    use crate::primitives::Prim;
+
+    #[test]
+    fn union_find_equate_merge() {
+        // Kills: equate no-op, representative. equate(a,b), equate(b,c) -> rep(a)==rep(c).
+        let mut uf = UnionFind::new();
+        uf.equate(1, 2);
+        uf.equate(2, 3);
+        assert_eq!(uf.representative(1), uf.representative(3));
+    }
+
+    #[test]
+    fn union_find_representative_self() {
+        // Kills: representative. Unrelated node -> self.
+        let uf = UnionFind::new();
+        assert_eq!(uf.representative(42), 42);
+    }
+
+    #[test]
+    fn unravel_app_named_returns_id() {
+        // Kills: delete Named arm. Named(n) -> Some((n, [])).
+        let e = Located::dummy(Expression::Named(7));
+        let r = unravel_app(&e);
+        let (id, args) = r.expect("Named must return Some");
+        assert_eq!(id, 7);
+        assert!(args.is_empty());
+    }
+
+    #[test]
+    fn unravel_app_app_unwraps() {
+        // Kills: delete App arm. App(Named(3), arg) -> Some((3, [arg])).
+        let arg = Located::dummy(Expression::Prim(Prim::Int(0)));
+        let f = Located::dummy(Expression::Named(3));
+        let app = Located::dummy(Expression::App(Box::new(f), Box::new(arg.clone())));
+        let r = unravel_app(&app);
+        let (id, args) = r.expect("App(Named,_) must return Some");
+        assert_eq!(id, 3);
+        assert_eq!(args.len(), 1);
+    }
+
+    #[test]
+    fn tag_val_preserved() {
+        // Kills: delete Val arm in tag. Val decl must be in output.
+        let span = Span::dummy();
+        let file: crate::core::File = vec![Located::new(
+            Declaration::Val(
+                "x".into(),
+                1,
+                Located::dummy(Constructor::Unit),
+                Located::dummy(Expression::Prim(Prim::Int(0))),
+                "x".into(),
+            ),
+            span,
+        )];
+        let out = tag(file, &mut |_, _| {});
+        assert_eq!(out.len(), 1);
+        assert!(matches!(&out[0].node, Declaration::Val(_, 1, _, _, _)));
+    }
+
+    #[test]
+    fn tag_valrec_preserved() {
+        // Kills: delete ValRec arm. ValRec decl must be in output.
+        let span = Span::dummy();
+        let file: crate::core::File = vec![Located::new(
+            Declaration::ValRec(vec![(
+                "a".into(),
+                1,
+                Located::dummy(Constructor::Unit),
+                Located::dummy(Expression::Prim(Prim::Int(0))),
+                "a".into(),
+            )]),
+            span,
+        )];
+        let out = tag(file, &mut |_, _| {});
+        assert_eq!(out.len(), 1);
+        assert!(matches!(&out[0].node, Declaration::ValRec(_)));
+    }
+
+    #[test]
+    fn tag_export_preserved() {
+        // Kills: delete Export arm. Export decl must be in output.
+        let span = Span::dummy();
+        let file: crate::core::File = vec![
+            Located::new(
+                Declaration::Val(
+                    "main".into(),
+                    1,
+                    Located::dummy(Constructor::Unit),
+                    Located::dummy(Expression::Prim(Prim::Int(0))),
+                    "main".into(),
+                ),
+                span.clone(),
+            ),
+            Located::new(
+                Declaration::Export(ExportKind::Link(Effect::ReadOnly), 1, false),
+                span,
+            ),
+        ];
+        let out = tag(file, &mut |_, _| {});
+        assert!(out.iter().any(|d| matches!(d.node, Declaration::Export(_, _, _))));
+    }
 }

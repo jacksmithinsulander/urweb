@@ -625,4 +625,456 @@ mod tests {
             result
         );
     }
+
+    #[test]
+    fn sql_type_in_basis_types() {
+        // Catches mutants: delete match arms in sql_type_in for int, char, bool, time, etc.
+        let mut settings = Settings::default();
+        settings.dbms = "postgres".to_string();
+        for (name, typ, expected) in [
+            ("int", "int", "int8"),
+            ("char", "char", "char"),
+            ("bool", "bool", "bool"),
+            ("time", "time", "timestamp"),
+            ("clocktime", "clocktime", "time"),
+            ("calendardate", "calendardate", "date"),
+            ("blob", "blob", "bytea"),
+            ("channel", "channel", "int8"),
+            ("client", "client", "int4"),
+        ] {
+            let xts = vec![("c".to_string(), ffi_typ("Basis", typ))];
+            let decls = vec![Located::new(
+                Decl::Table(name.to_string(), xts, "".to_string(), vec![]),
+                Span::dummy(),
+            )];
+            let result = sql_generate(&(decls, vec![]), &settings);
+            assert!(
+                result.contains(expected),
+                "Basis.{} must produce {}, got: {}",
+                typ,
+                expected,
+                result
+            );
+        }
+    }
+
+    #[test]
+    fn sql_type_option_produces_nullable() {
+        // Catches mutant: delete Typ::Option arm in sql_type_in.
+        // Option int -> Nullable(Int) -> no NOT NULL; without Option arm we'd get Int -> NOT NULL.
+        let mut settings = Settings::default();
+        settings.dbms = "postgres".to_string();
+        let opt_int = crate::c_like_representation::Located::new(
+            crate::c_like_representation::Typ::Option(Box::new(ffi_typ("Basis", "int"))),
+            crate::error_types::Span::dummy(),
+        );
+        let xts = vec![("c".to_string(), opt_int)];
+        let decls = vec![Located::new(
+            Decl::Table("t".to_string(), xts, "".to_string(), vec![]),
+            Span::dummy(),
+        )];
+        let result = sql_generate(&(decls, vec![]), &settings);
+        assert!(
+            !result.contains("NOT NULL"),
+            "Option int must not add NOT NULL (nullable), got: {}",
+            result
+        );
+    }
+
+    #[test]
+    fn supports_sha512_postgres() {
+        // Catches mutant: delete match arm in supports_sha512 for postgres.
+        let mut settings = Settings::default();
+        settings.dbms = "postgres".to_string();
+        settings.file_cache = Some("cache".to_string());
+        let decls = vec![Located::new(
+            Decl::Database {
+                name: "db".into(),
+                expunge: 0,
+                initialize: 0,
+                uses_similar: false,
+            },
+            Span::dummy(),
+        )];
+        let result = sql_generate(&(decls, vec![]), &settings);
+        assert!(
+            result.contains("pgcrypto"),
+            "postgres supports_sha512 must yield pgcrypto when file_cache set, got: {}",
+            result
+        );
+    }
+
+    #[test]
+    fn index_generates_create_index() {
+        // Catches mutant: delete match arm Decl::Index in sql_generate.
+        use crate::monomorphized::IndexMode;
+        let mut settings = Settings::default();
+        settings.dbms = "postgres".to_string();
+        let xts = vec![
+            ("id".to_string(), ffi_typ("Basis", "int")),
+            ("name".to_string(), ffi_typ("Basis", "string")),
+        ];
+        let decls = vec![
+            Located::new(
+                Decl::Table("uw_t".to_string(), xts, "id".to_string(), vec![]),
+                Span::dummy(),
+            ),
+            Located::new(
+                Decl::Index(
+                    "uw_t".to_string(),
+                    vec![("name".to_string(), IndexMode::Equality)],
+                ),
+                Span::dummy(),
+            ),
+        ];
+        let result = sql_generate(&(decls, vec![]), &settings);
+        assert!(
+            result.contains("CREATE INDEX"),
+            "Index decl must produce CREATE INDEX (catches delete arm mutant), got: {}",
+            result
+        );
+    }
+
+    #[test]
+    fn text_keys_need_lengths_mysql_string_fk_gets_varchar() {
+        // Catches mutant: text_keys_need_lengths, is_text, declares_as_foreign_key.
+        // MySQL + string column in FOREIGN KEY -> varchar(255).
+        let mut settings = Settings::default();
+        settings.dbms = "mysql".into();
+        settings.mangle = true;
+        let xts = vec![
+            ("Id".to_string(), ffi_typ("Basis", "int")),
+            ("Ref".to_string(), ffi_typ("Basis", "string")),
+        ];
+        let csts = vec![("fk_ref".to_string(), "FOREIGN KEY (uw_ref) REFERENCES t(id)".to_string())];
+        let decls = vec![Located::new(
+            Decl::Table("uw_mytable".to_string(), xts, "Id".to_string(), csts),
+            Span::dummy(),
+        )];
+        let result = sql_generate(&(decls, vec![]), &settings);
+        assert!(
+            result.contains("varchar(255)"),
+            "MySQL string FK column must get varchar(255) (catches text_keys_need_lengths, declares_as_foreign_key): {}",
+            result
+        );
+    }
+
+    #[test]
+    fn requires_timestamp_defaults_mysql() {
+        // Catches mutant: requires_timestamp_defaults.
+        let mut settings = Settings::default();
+        settings.dbms = "mysql".into();
+        let xts = vec![
+            ("id".to_string(), ffi_typ("Basis", "int")),
+            ("ts".to_string(), ffi_typ("Basis", "time")),
+        ];
+        let decls = vec![Located::new(
+            Decl::Table("uw_t".to_string(), xts, "id".to_string(), vec![]),
+            Span::dummy(),
+        )];
+        let result = sql_generate(&(decls, vec![]), &settings);
+        assert!(
+            result.contains("DEFAULT CURRENT_TIMESTAMP"),
+            "MySQL time column must get DEFAULT (catches requires_timestamp_defaults): {}",
+            result
+        );
+    }
+
+    #[test]
+    fn supports_sha512_mysql_with_file_cache() {
+        // Catches mutant: delete "mysql" arm in supports_sha512.
+        let mut settings = Settings::default();
+        settings.dbms = "mysql".into();
+        settings.file_cache = Some("/tmp".into());
+        let decls = vec![Located::new(
+            Decl::Database {
+                name: "db".into(),
+                expunge: 0,
+                initialize: 0,
+                uses_similar: false,
+            },
+            Span::dummy(),
+        )];
+        let result = sql_generate(&(decls, vec![]), &settings);
+        // MySQL returns Some("") for supports_sha512, so no extra init; shouldn't panic.
+        assert!(!result.contains("pgcrypto"), "MySQL uses built-in SHA2, not pgcrypto");
+    }
+
+    #[test]
+    fn sql_type_in_clocktime_and_calendardate() {
+        // Catches mutant: delete "clocktime"/"calendardate" arms in sql_type_in.
+        let mut settings = Settings::default();
+        settings.dbms = "postgres".into();
+        let xts = vec![
+            ("id".to_string(), ffi_typ("Basis", "int")),
+            ("ct".to_string(), ffi_typ("Basis", "clocktime")),
+            ("cd".to_string(), ffi_typ("Basis", "calendardate")),
+        ];
+        let decls = vec![Located::new(
+            Decl::Table("uw_t".to_string(), xts, "id".to_string(), vec![]),
+            Span::dummy(),
+        )];
+        let result = sql_generate(&(decls, vec![]), &settings);
+        assert!(
+            result.contains("time") && result.contains("date"),
+            "clocktime->time, calendardate->date (catches delete arm): {}",
+            result
+        );
+    }
+
+    #[test]
+    fn dbms_empty_uses_postgres_types() {
+        // Catches mutant: dbms "" not matching postgres branch.
+        let mut settings = Settings::default();
+        settings.dbms = "".to_string();
+        let xts = vec![("x".to_string(), ffi_typ("Basis", "int"))];
+        let decls = vec![Located::new(
+            Decl::Table("t".to_string(), xts, "".to_string(), vec![]),
+            Span::dummy(),
+        )];
+        let result = sql_generate(&(decls, vec![]), &settings);
+        assert!(
+            result.contains("int8"),
+            "dbms empty must use postgres types (int8), got: {}",
+            result
+        );
+    }
+
+    // --- Plan: Catch Missed Mutants - sql_generate ---
+
+    #[test]
+    fn index_dedup_does_not_drop() {
+        // Kills: delete Decl::Index arm, dedup logic. Table with PK "a,b" plus explicit Index on same columns: no extra CREATE INDEX (dedup).
+        use crate::monomorphized::IndexMode;
+        let mut settings = Settings::default();
+        settings.dbms = "postgres".to_string();
+        settings.mangle = false; // PK cols stored unmangled; index_key mangles - use mangle=false so keys match
+        let xts = vec![
+            ("a".to_string(), ffi_typ("Basis", "int")),
+            ("b".to_string(), ffi_typ("Basis", "int")),
+        ];
+        let decls = vec![
+            Located::new(
+                Decl::Table("uw_t".to_string(), xts, "a,b".to_string(), vec![]),
+                Span::dummy(),
+            ),
+            Located::new(
+                Decl::Index(
+                    "uw_t".to_string(),
+                    vec![
+                        ("a".to_string(), IndexMode::Equality),
+                        ("b".to_string(), IndexMode::Equality),
+                    ],
+                ),
+                Span::dummy(),
+            ),
+        ];
+        let result = sql_generate(&(decls, vec![]), &settings);
+        let create_index_count = result.matches("CREATE INDEX").count();
+        assert_eq!(
+            create_index_count, 0,
+            "PK a,b implies index; explicit Index on same cols must be deduplicated (0 extra), got {} CREATE INDEX",
+            create_index_count
+        );
+    }
+
+    #[test]
+    fn index_with_skipped_column_keeps_non_skipped() {
+        // Kills: !matches!(m, IndexMode::Skipped) filter. Index with Skipped + Equality: CREATE INDEX with one col.
+        use crate::monomorphized::IndexMode;
+        let mut settings = Settings::default();
+        settings.dbms = "postgres".to_string();
+        let xts = vec![
+            ("id".to_string(), ffi_typ("Basis", "int")),
+            ("name".to_string(), ffi_typ("Basis", "string")),
+        ];
+        let decls = vec![
+            Located::new(
+                Decl::Table("uw_t".to_string(), xts, "id".to_string(), vec![]),
+                Span::dummy(),
+            ),
+            Located::new(
+                Decl::Index(
+                    "uw_t".to_string(),
+                    vec![
+                        ("id".to_string(), IndexMode::Skipped),
+                        ("name".to_string(), IndexMode::Equality),
+                    ],
+                ),
+                Span::dummy(),
+            ),
+        ];
+        let result = sql_generate(&(decls, vec![]), &settings);
+        assert!(result.contains("CREATE INDEX"));
+        assert!(result.contains("name"));
+        assert!(!result.contains("id") || result.contains("_pkey"), "index should not include Skipped id col");
+    }
+
+    #[test]
+    fn index_all_skipped_produces_no_create_index() {
+        // Kills: active.is_empty() / filter. Index with all Skipped -> no CREATE INDEX.
+        use crate::monomorphized::IndexMode;
+        let mut settings = Settings::default();
+        settings.dbms = "postgres".to_string();
+        let xts = vec![
+            ("id".to_string(), ffi_typ("Basis", "int")),
+            ("x".to_string(), ffi_typ("Basis", "int")),
+        ];
+        let decls = vec![
+            Located::new(
+                Decl::Table("uw_t".to_string(), xts, "id".to_string(), vec![]),
+                Span::dummy(),
+            ),
+            Located::new(
+                Decl::Index(
+                    "uw_t".to_string(),
+                    vec![("x".to_string(), IndexMode::Skipped)],
+                ),
+                Span::dummy(),
+            ),
+        ];
+        let result = sql_generate(&(decls, vec![]), &settings);
+        assert!(
+            !result.contains("CREATE INDEX"),
+            "all-Skipped index must produce no CREATE INDEX, got: {}",
+            result
+        );
+    }
+
+    #[test]
+    fn index_trigram_produces_gist() {
+        // Kills: Trigram branch. Index with Trigram on Postgres: USING gist and gist_trgm_ops.
+        use crate::monomorphized::IndexMode;
+        let mut settings = Settings::default();
+        settings.dbms = "postgres".to_string();
+        let xts = vec![
+            ("id".to_string(), ffi_typ("Basis", "int")),
+            ("name".to_string(), ffi_typ("Basis", "string")),
+        ];
+        let decls = vec![
+            Located::new(
+                Decl::Table("uw_t".to_string(), xts, "id".to_string(), vec![]),
+                Span::dummy(),
+            ),
+            Located::new(
+                Decl::Database {
+                    name: "db".into(),
+                    expunge: 0,
+                    initialize: 0,
+                    uses_similar: true,
+                },
+                Span::dummy(),
+            ),
+            Located::new(
+                Decl::Index(
+                    "uw_t".to_string(),
+                    vec![("name".to_string(), IndexMode::Trigram)],
+                ),
+                Span::dummy(),
+            ),
+        ];
+        let result = sql_generate(&(decls, vec![]), &settings);
+        assert!(
+            result.contains("USING gist"),
+            "Trigram index must use gist: {}",
+            result
+        );
+        assert!(
+            result.contains("gist_trgm_ops"),
+            "Trigram index must use gist_trgm_ops: {}",
+            result
+        );
+    }
+
+    #[test]
+    fn pk_with_multiple_columns_parsed() {
+        // Kills: split/filter !s.is_empty(). Table with PK "id,name": both cols in PRIMARY KEY.
+        let mut settings = Settings::default();
+        settings.dbms = "postgres".to_string();
+        let xts = vec![
+            ("id".to_string(), ffi_typ("Basis", "int")),
+            ("name".to_string(), ffi_typ("Basis", "string")),
+        ];
+        let decls = vec![Located::new(
+            Decl::Table("uw_t".to_string(), xts, "id,name".to_string(), vec![]),
+            Span::dummy(),
+        )];
+        let result = sql_generate(&(decls, vec![]), &settings);
+        assert!(result.contains("id"));
+        assert!(result.contains("name"));
+        assert!(result.contains("PRIMARY KEY"));
+    }
+
+    #[test]
+    fn file_cache_sha512_init_non_empty() {
+        // Kills: !init.is_empty() guard. Postgres + file_cache -> pgcrypto init.
+        let mut settings = Settings::default();
+        settings.dbms = "postgres".to_string();
+        settings.file_cache = Some("cache".to_string());
+        let decls = vec![Located::new(
+            Decl::Database {
+                name: "db".into(),
+                expunge: 0,
+                initialize: 0,
+                uses_similar: false,
+            },
+            Span::dummy(),
+        )];
+        let result = sql_generate(&(decls, vec![]), &settings);
+        assert!(
+            result.contains("pgcrypto"),
+            "file_cache + postgres must include pgcrypto init: {}",
+            result
+        );
+    }
+
+    #[test]
+    fn similar_init_non_empty() {
+        // Kills: supports_similar !init.is_empty() guard.
+        let mut settings = Settings::default();
+        settings.dbms = "postgres".to_string();
+        let decls = vec![Located::new(
+            Decl::Database {
+                name: "db".into(),
+                expunge: 0,
+                initialize: 0,
+                uses_similar: true,
+            },
+            Span::dummy(),
+        )];
+        let result = sql_generate(&(decls, vec![]), &settings);
+        assert!(
+            result.contains("pg_trgm"),
+            "uses_similar must produce pg_trgm init: {}",
+            result
+        );
+    }
+
+    #[test]
+    fn exact_index_name_format() {
+        // Kills: name-building, column list. Index on "uw_tab" with "col" -> CREATE INDEX uw_tab_col ON ...
+        use crate::monomorphized::IndexMode;
+        let mut settings = Settings::default();
+        settings.dbms = "postgres".to_string();
+        let xts = vec![
+            ("id".to_string(), ffi_typ("Basis", "int")),
+            ("col".to_string(), ffi_typ("Basis", "string")),
+        ];
+        let decls = vec![
+            Located::new(
+                Decl::Table("uw_tab".to_string(), xts, "id".to_string(), vec![]),
+                Span::dummy(),
+            ),
+            Located::new(
+                Decl::Index("uw_tab".to_string(), vec![("col".to_string(), IndexMode::Equality)]),
+                Span::dummy(),
+            ),
+        ];
+        let result = sql_generate(&(decls, vec![]), &settings);
+        assert!(
+            result.contains("CREATE INDEX") && result.contains("uw_tab") && result.contains("col"),
+            "index name must include table and column: {}",
+            result
+        );
+    }
 }
