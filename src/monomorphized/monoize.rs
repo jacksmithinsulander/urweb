@@ -1294,15 +1294,19 @@ fn mono_exp(env: &Env, fm: &mut Fm, exp: &LocatedExpression) -> LocExp {
             Located::new(Exp::Abs(x.clone(), mdom, mran, Box::new(mbody)), loc)
         }
 
-        // Type application: ECApp (e, _) — strip the type arg.
-        // The inner expression must reduce to an EFfi reference.
-        CE::CApp(e, _) => {
-            let me = mono_exp(env, fm, e);
-            match &me.node {
-                Exp::Ffi(_, _) => me,
-                // Not EFfi → this is a "poly" error in the SML; pass through
-                _ => me,
+        // Type application: ECApp (e, _) — strip the type arg, or desugar type class instances.
+        CE::CApp(_, _) => {
+            let (head, targs) = peel_capp(exp);
+            // Check for EFfi("Basis", x) head — desugar type class instances.
+            if let CE::Ffi(m, x) = &head.node {
+                if m == "Basis" {
+                    if let Some(result) = mono_basis_capp(env, x, &targs, &loc) {
+                        return result;
+                    }
+                }
             }
+            // Fall through: translate head and strip all type args.
+            mono_exp(env, fm, head)
         }
 
         // Type abstraction: strip completely (unsupported after specialize)

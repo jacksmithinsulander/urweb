@@ -60,6 +60,7 @@ val app_js = ref ""
 val dummyTyp = (TDatatype (Enum, 0, ref []), ErrorMsg.dummySpan)
 
 val ident = String.translate (fn #"'" => "PRIME"
+                               | #"$" => "_"
                                | ch => str ch)
 
 val p_ident = string o ident
@@ -3573,11 +3574,11 @@ fun p_file env (ds, ps) =
                                          string (Int.toString i),
                                          string "(uw_context ctx) {",
                                          newline,
-                                         box [string "uw_unit __uwr_",
-                                              string x1,
-                                              string "_0 = 0, __uwr_",
-                                              string x2,
-                                              string "_1 = 0;",
+                                        box [string "uw_unit __uwr_",
+                                             string (ident x1),
+                                             string "_0 = 0, __uwr_",
+                                             string (ident x2),
+                                             string "_1 = 0;",
                                               newline,
                                               pe,
                                               string ";",
@@ -3721,11 +3722,11 @@ fun p_file env (ds, ps) =
                   p_list_sep (box []) (fn (x1, x2, pe) => box [string "({",
                                                                newline,
                                                                string "uw_Basis_client __uwr_",
-                                                               string x1,
+                                                               string (ident x1),
                                                                string "_0 = cli;",
                                                                newline,
                                                                string "uw_unit __uwr_",
-                                                               string x2,
+                                                               string (ident x2),
                                                                string "_1 = 0;",
                                                                newline,
                                                                pe,
@@ -3767,9 +3768,9 @@ fun p_file env (ds, ps) =
                   p_list_sep (box []) (fn (x1, x2, pe) => box [string "({",
                                                                newline,
                                                                string "uw_unit __uwr_",
-                                                               string x1,
+                                                               string (ident x1),
                                                                string "_0 = 0, __uwr_",
-                                                               string x2,
+                                                               string (ident x2),
                                                                string "_1 = 0;",
                                                                newline,
                                                                pe,

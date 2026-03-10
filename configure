@@ -233,7 +233,7 @@ val includ = "$INCLUDE"
 val sitelisp = "$SITELISP"
 
 val ccompiler = "$CC"
-val ccArgs = "-std=c11 -pedantic -Wno-gnu-zero-variadic-macro-arguments"
+val ccArgs = "-std=c11 -pedantic -Wno-gnu-zero-variadic-macro-arguments -Wno-overlength-strings -Wno-gnu-statement-expression -Wno-pedantic"
 
 val pgheader = "libpq-fe.h"
 val msheader = "mysql.h"

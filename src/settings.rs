@@ -763,6 +763,12 @@ impl Settings {
         Self::is_valid_meta(s) && Self::check_rules(&self.meta_rules, s)
     }
 
+    /// Return true if the current protocol uses persistent connections (fastcgi, http).
+    /// Persistent protocols use `PQexecPrepared`; non-persistent use `PQexecParams`.
+    pub fn persistent(&self) -> bool {
+        matches!(self.protocol.as_str(), "fastcgi" | "http")
+    }
+
     pub(crate) fn is_valid_mime(s: &str) -> bool {
         s.chars()
             .all(|c| c.is_alphanumeric() || matches!(c, '/' | '-' | '.' | '+'))
