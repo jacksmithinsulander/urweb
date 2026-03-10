@@ -10,6 +10,7 @@ builddir="${2:-.}"
 URWEB="$(cd "$builddir" && pwd)/bin/urweb"
 URWEB_ARGS="${URWEB_ARGS:-}"
 export URWEB URWEB_ARGS
+. "$srcdir/tests/lib.sh"
 
 _ts() { date +%H:%M:%S 2>/dev/null || true; }
 
@@ -42,8 +43,7 @@ wait $_demo_heartbeat 2>/dev/null || true
 [ $_exit -eq 0 ] || { echo "FAIL: demo - build failed"; exit 1; }
 echo "[$(_ts)] Demo build done. Starting demo server..."
 # Free port 8080 in case a previous run left a server
-_pid=$(lsof -ti:8080 2>/dev/null) || true
-[ -n "$_pid" ] && kill $_pid 2>/dev/null || true
+free_port 8080
 sleep 1
 sqlite3 "$TESTDB" < "$srcdir/demo/demo.sql"
 "$srcdir/demo/demo.exe" -q -a 127.0.0.1 & echo $! > "$TESTPID"
@@ -58,10 +58,12 @@ done
 # Normalize: trim trailing newlines so diff doesn't fail on that alone
 _hello=$(curl -s 'http://localhost:8080/Demo/Hello/main' | sed -e '$s/[[:space:]]*$//')
 _exp=$(cat "$srcdir/tests/hello.html" | sed -e '$s/[[:space:]]*$//')
-_expf=$(mktemp)
+_expf=$(mktemp "${TMPDIR:-/tmp}/urweb.XXXXXXXXXX")
+_hellof=$(mktemp "${TMPDIR:-/tmp}/urweb.XXXXXXXXXX")
 printf '%s\n' "$_exp" > "$_expf"
-printf '%s\n' "$_hello" | diff - "$_expf" || { rm -f "$_expf"; kill $(cat "$TESTPID") 2>/dev/null; echo "FAIL: demo - Hello response mismatch"; exit 1; }
-rm -f "$_expf"
+printf '%s\n' "$_hello" > "$_hellof"
+diff "$_expf" "$_hellof" || { rm -f "$_expf" "$_hellof"; kill $(cat "$TESTPID") 2>/dev/null; echo "FAIL: demo - Hello response mismatch"; exit 1; }
+rm -f "$_expf" "$_hellof"
 curl -s 'http://localhost:8080/Demo/Crud1/create?A=1&B=2&C=3&D=4' | diff "$srcdir/tests/crud1.html" - || { kill $(cat "$TESTPID") 2>/dev/null; echo "FAIL: demo - Crud1 response mismatch"; exit 1; }
 kill $(cat "$TESTPID") 2>/dev/null || true
 echo "PASS: demo"
@@ -85,8 +87,7 @@ echo ""
 echo "=== Driver tests ($total_driver tests, ~15-30s each to compile) ==="
 # Free driver test ports (8081-8107) before starting
 for _p in 8081 8082 8083 8084 8085 8086 8087 8088 8089 8090 8091 8092 8093 8094 8095 8096 8097 8098 8099 8100 8101 8102 8103 8104 8105 8106 8107; do
-  _pid=$(lsof -ti:$_p 2>/dev/null) || true
-  [ -n "$_pid" ] && kill $_pid 2>/dev/null || true
+  free_port $_p
 done
 sleep 2
 for base in $DRIVER_TESTS; do

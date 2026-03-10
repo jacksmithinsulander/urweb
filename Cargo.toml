@@ -3,6 +3,10 @@ name = "urweb"
 version = "0.1.0"
 edition = "2021"
 
+[profile.mutants]
+inherits = "test"
+debug = false  # Faster builds for cargo-mutants
+
 [[bin]]
 name = "urweb"
 path = "src/main.rs"

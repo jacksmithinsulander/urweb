@@ -1,0 +1,73 @@
+# Ur/Web Portability Notes
+
+This document describes portability requirements and environment overrides for
+building Ur/Web on POSIX-compliant systems.
+
+## POSIX Baseline
+
+The build system targets POSIX.1-2008. Shell scripts use `#!/bin/sh` and avoid
+bash-specific features.
+
+## Required Tools
+
+- **sh** — POSIX shell
+- **cc** — C compiler (C11)
+- **make** — GNU Make (for BearSSL; build uses ninja/samurai)
+- **MLton** — Standard ML compiler
+- **mllex** — ML lexer generator (MLton bundle or SML/NJ ml-lex)
+- **mlyacc** — ML parser generator (MLton bundle or SML/NJ ml-yacc)
+- **sed**, **awk** — POSIX utilities
+- **pkg-config** — Optional; used to discover ICU when available
+
+## Optional Tools
+
+- **pkg-config** — If absent, set `ICU_CFLAGS` and `ICU_LIBS` (or `ICU_INCLUDES`
+  and `ICU_LIBS`) manually, or configure will probe common paths
+- **samu** / **ninja** — Build driver (ninja-compatible)
+- **lsof** — Used by tests to free ports; when absent, tests may fail if ports
+  are in use from a previous run
+
+## Environment Overrides
+
+| Variable        | Purpose                                      |
+|-----------------|----------------------------------------------|
+| CC              | C compiler (default: cc)                     |
+| MLTON           | MLton executable (default: mlton)            |
+| MLLEX           | Lexer generator (default: mllex)             |
+| MLYACC          | Parser generator (default: mlyacc)           |
+| ICU_CFLAGS      | ICU include flags (when pkg-config absent)   |
+| ICU_INCLUDES    | Same as ICU_CFLAGS                           |
+| ICU_LIBS        | ICU link flags                               |
+| PKG_CONFIG_PATH | Help pkg-config find ICU                     |
+| DESTDIR         | Staging prefix for install                   |
+| TMPDIR          | Temp directory (default: /tmp)               |
+
+Example without pkg-config:
+
+```sh
+ICU_CFLAGS="-I/usr/include" ICU_LIBS="-licui18n -licuuc" ./configure
+```
+
+Example with SML/NJ tools:
+
+```sh
+MLLEX=ml-lex MLYACC=ml-yacc ./configure
+```
+
+## Supported Platforms
+
+- **Linux** — _GNU_SOURCE defined when needed
+- **macOS** — _DARWIN_C_SOURCE defined when needed
+- **BSD** — No extra macros; standard C11
+- **Solaris / Illumos** — __EXTENSIONS__ when needed
+
+## Test Dependencies
+
+Running `samu test` requires:
+
+- **sqlite3** — Database for demo and driver tests
+- **curl** — HTTP requests
+- **node**, **npm** — Playwright tests
+- **jq** — Optional; improves endpoints test output
+- **lsof** — Optional; frees ports before tests
+- **nc** — Optional; fallback for port readiness (curl used when nc absent)

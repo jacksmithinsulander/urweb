@@ -952,14 +952,12 @@ fn p_getcol(
         SqlType::Nullable(inner) => {
             let getter = match inner.as_ref() {
                 SqlType::String => {
-                    let inner_expr =
-                        p_unsql(inner, &getvalue, &getlength, wont_leak_strings);
+                    let inner_expr = p_unsql(inner, &getvalue, &getlength, wont_leak_strings);
                     format!("(PQgetisnull(res, i, {col}) ? NULL : {inner_expr})")
                 }
                 _ => {
                     let ctype = inner.c_type();
-                    let inner_expr =
-                        p_unsql(inner, &getvalue, &getlength, wont_leak_strings);
+                    let inner_expr = p_unsql(inner, &getvalue, &getlength, wont_leak_strings);
                     format!(
                         "(PQgetisnull(res, i, {col}) ? NULL : ({{\n{ctype} *tmp = uw_malloc(ctx, sizeof({ctype}));\n*tmp = {inner_expr};\ntmp;\n}}))"
                     )
@@ -1107,74 +1105,96 @@ fn make_do_cols(
 
 /// Extract `(expr_string, SqlType)` pairs from a prepared SQL query expression
 /// (the `$N::type` placeholders come from the sqlify functions).
-fn get_pargs(e: &LocExp, env: &CjrEnv, settings: &Settings) -> Vec<(String, crate::settings::SqlType)> {
+fn get_pargs(
+    e: &LocExp,
+    env: &CjrEnv,
+    settings: &Settings,
+) -> Vec<(String, crate::settings::SqlType)> {
     use crate::settings::SqlType;
     match &e.node {
         Exp::Prim(crate::primitives::Prim::String(_, _)) => vec![],
-        Exp::FfiApp(m, x, args) if m == "Basis" => {
-            match x.as_str() {
-                "strcat" => {
-                    if let [(e1, _), (e2, _)] = args.as_slice() {
-                        let mut v = get_pargs(e1, env, settings);
-                        v.extend(get_pargs(e2, env, settings));
-                        v
-                    } else {
-                        vec![]
-                    }
+        Exp::FfiApp(m, x, args) if m == "Basis" => match x.as_str() {
+            "strcat" => {
+                if let [(e1, _), (e2, _)] = args.as_slice() {
+                    let mut v = get_pargs(e1, env, settings);
+                    v.extend(get_pargs(e2, env, settings));
+                    v
+                } else {
+                    vec![]
                 }
-                "sqlifyInt" => {
-                    if let [(ae, _)] = args.as_slice() {
-                        vec![(p_exp(env, ae, settings), SqlType::Int)]
-                    } else { vec![] }
-                }
-                "sqlifyFloat" => {
-                    if let [(ae, _)] = args.as_slice() {
-                        vec![(p_exp(env, ae, settings), SqlType::Float)]
-                    } else { vec![] }
-                }
-                "sqlifyString" => {
-                    if let [(ae, _)] = args.as_slice() {
-                        vec![(p_exp(env, ae, settings), SqlType::String)]
-                    } else { vec![] }
-                }
-                "sqlifyBool" => {
-                    if let [(ae, _)] = args.as_slice() {
-                        vec![(p_exp(env, ae, settings), SqlType::Bool)]
-                    } else { vec![] }
-                }
-                "sqlifyTime" => {
-                    if let [(ae, _)] = args.as_slice() {
-                        vec![(p_exp(env, ae, settings), SqlType::Time)]
-                    } else { vec![] }
-                }
-                "sqlifyClocktime" => {
-                    if let [(ae, _)] = args.as_slice() {
-                        vec![(p_exp(env, ae, settings), SqlType::Clocktime)]
-                    } else { vec![] }
-                }
-                "sqlifyCalendardate" => {
-                    if let [(ae, _)] = args.as_slice() {
-                        vec![(p_exp(env, ae, settings), SqlType::Calendardate)]
-                    } else { vec![] }
-                }
-                "sqlifyBlob" => {
-                    if let [(ae, _)] = args.as_slice() {
-                        vec![(p_exp(env, ae, settings), SqlType::Blob)]
-                    } else { vec![] }
-                }
-                "sqlifyChannel" => {
-                    if let [(ae, _)] = args.as_slice() {
-                        vec![(p_exp(env, ae, settings), SqlType::Channel)]
-                    } else { vec![] }
-                }
-                "sqlifyClient" => {
-                    if let [(ae, _)] = args.as_slice() {
-                        vec![(p_exp(env, ae, settings), SqlType::Client)]
-                    } else { vec![] }
-                }
-                _ => vec![],
             }
-        }
+            "sqlifyInt" => {
+                if let [(ae, _)] = args.as_slice() {
+                    vec![(p_exp(env, ae, settings), SqlType::Int)]
+                } else {
+                    vec![]
+                }
+            }
+            "sqlifyFloat" => {
+                if let [(ae, _)] = args.as_slice() {
+                    vec![(p_exp(env, ae, settings), SqlType::Float)]
+                } else {
+                    vec![]
+                }
+            }
+            "sqlifyString" => {
+                if let [(ae, _)] = args.as_slice() {
+                    vec![(p_exp(env, ae, settings), SqlType::String)]
+                } else {
+                    vec![]
+                }
+            }
+            "sqlifyBool" => {
+                if let [(ae, _)] = args.as_slice() {
+                    vec![(p_exp(env, ae, settings), SqlType::Bool)]
+                } else {
+                    vec![]
+                }
+            }
+            "sqlifyTime" => {
+                if let [(ae, _)] = args.as_slice() {
+                    vec![(p_exp(env, ae, settings), SqlType::Time)]
+                } else {
+                    vec![]
+                }
+            }
+            "sqlifyClocktime" => {
+                if let [(ae, _)] = args.as_slice() {
+                    vec![(p_exp(env, ae, settings), SqlType::Clocktime)]
+                } else {
+                    vec![]
+                }
+            }
+            "sqlifyCalendardate" => {
+                if let [(ae, _)] = args.as_slice() {
+                    vec![(p_exp(env, ae, settings), SqlType::Calendardate)]
+                } else {
+                    vec![]
+                }
+            }
+            "sqlifyBlob" => {
+                if let [(ae, _)] = args.as_slice() {
+                    vec![(p_exp(env, ae, settings), SqlType::Blob)]
+                } else {
+                    vec![]
+                }
+            }
+            "sqlifyChannel" => {
+                if let [(ae, _)] = args.as_slice() {
+                    vec![(p_exp(env, ae, settings), SqlType::Channel)]
+                } else {
+                    vec![]
+                }
+            }
+            "sqlifyClient" => {
+                if let [(ae, _)] = args.as_slice() {
+                    vec![(p_exp(env, ae, settings), SqlType::Client)]
+                } else {
+                    vec![]
+                }
+            }
+            _ => vec![],
+        },
         _ => vec![],
     }
 }
@@ -1224,8 +1244,7 @@ fn p_exp_query(env: &CjrEnv, qm: &QueryMeta, settings: &Settings) -> String {
 
     match &qm.prepared {
         None => {
-            let query_common_s =
-                query_common(loc_str, "query", &outputs, &do_cols);
+            let query_common_s = query_common(loc_str, "query", &outputs, &do_cols);
             format!(
                 "(({{\n\
                  {state_t} acc = {initial_s};\n\
@@ -1260,9 +1279,7 @@ fn p_exp_query(env: &CjrEnv, qm: &QueryMeta, settings: &Settings) -> String {
             let arg_decls: String = inputs
                 .iter()
                 .enumerate()
-                .map(|(i, (e, t))| {
-                    format!("{} arg{} = {};\n", t.c_type(), i + 1, e)
-                })
+                .map(|(i, (e, t))| format!("{} arg{} = {};\n", t.c_type(), i + 1, e))
                 .collect();
             let exec_call = if settings.persistent() {
                 format!(
@@ -1396,9 +1413,7 @@ fn p_exp_dml(env: &CjrEnv, dm: &DmlMeta, settings: &Settings) -> String {
             let arg_decls: String = inputs
                 .iter()
                 .enumerate()
-                .map(|(i, (e, t))| {
-                    format!("{} arg{} = {};\n", t.c_type(), i + 1, e)
-                })
+                .map(|(i, (e, t))| format!("{} arg{} = {};\n", t.c_type(), i + 1, e))
                 .collect();
             let exec_call = if settings.persistent() {
                 format!(
@@ -1468,6 +1483,8 @@ fn collect_strcat_parts(e: &LocExp, parts: &mut Vec<LocExp>) {
 // ---------------------------------------------------------------------------
 
 fn collect_arg_types(t: &LocTyp, n: usize) -> Vec<LocTyp> {
+    const MAX_ARGS: usize = 256; // sanity limit; real functions have far fewer
+    let n = n.min(MAX_ARGS);
     let mut result = Vec::new();
     let mut cur = t.clone();
     while result.len() < n {
@@ -1730,7 +1747,12 @@ fn capitalize(s: &str) -> String {
 }
 
 /// Generate the chain of strncmp checks for an enum datatype's unurlification.
-fn do_em_enum(request: &str, xncs: &[(String, usize, Option<LocTyp>)], x: &str, i: usize) -> String {
+fn do_em_enum(
+    request: &str,
+    xncs: &[(String, usize, Option<LocTyp>)],
+    x: &str,
+    i: usize,
+) -> String {
     match xncs {
         [] => format!(
             "(uw_error(ctx, FATAL, \"Error unurlifying datatype {x}\"), \
@@ -1801,13 +1823,22 @@ fn unurlify_req(request: &str, t: &LocTyp, env: &CjrEnv, from_client: bool) -> S
         }
         Typ::Ffi(m, name) if m == "Basis" && name == "string" => {
             if from_client {
-                format!("uw_Basis_unurlifyString_fromClient(ctx, {})", de_star(request))
+                format!(
+                    "uw_Basis_unurlifyString_fromClient(ctx, {})",
+                    de_star(request)
+                )
             } else {
                 format!("uw_Basis_unurlifyString(ctx, {})", de_star(request))
             }
         }
         Typ::Ffi(m, name) => {
-            format!("uw_{}_{unurlify}{}(ctx, {})", ident(m), capitalize(name), de_star(request), unurlify = "unurlify")
+            format!(
+                "uw_{}_{unurlify}{}(ctx, {})",
+                ident(m),
+                capitalize(name),
+                de_star(request),
+                unurlify = "unurlify"
+            )
         }
         Typ::Record(0) => format!("uw_Basis_unurlifyUnit(ctx, {})", de_star(request)),
         Typ::Record(i) => {
@@ -1823,8 +1854,10 @@ fn unurlify_req(request: &str, t: &LocTyp, env: &CjrEnv, from_client: bool) -> S
                 ));
             }
             out.push_str(&format!("struct __uws_{i} tmp = {{ "));
-            let field_names: Vec<String> =
-                fields.iter().map(|(x, _)| format!("uwr_{}", ident(x))).collect();
+            let field_names: Vec<String> = fields
+                .iter()
+                .map(|(x, _)| format!("uwr_{}", ident(x)))
+                .collect();
             out.push_str(&field_names.join(", "));
             out.push_str(" };\ntmp;\n})");
             out
@@ -1833,13 +1866,9 @@ fn unurlify_req(request: &str, t: &LocTyp, env: &CjrEnv, from_client: bool) -> S
             let (x, xncs) = env
                 .lookup_datatype(*i)
                 .map(|(x, v)| (x.clone(), v.clone()))
-                .unwrap_or_else(|| {
-                    ("?".into(), xncs_ref.lock().unwrap().clone())
-                });
+                .unwrap_or_else(|| ("?".into(), xncs_ref.lock().unwrap().clone()));
             let inner = do_em_enum(request, &xncs, &x, *i);
-            format!(
-                "({request}[0] == '/' ? ++{request} : {request},\n{inner})"
-            )
+            format!("({request}[0] == '/' ? ++{request} : {request},\n{inner})")
         }
         Typ::Datatype(DatatypeKind::Option, i, xncs_ref) => {
             let already = UNURLIFY_SEEN.with(|s| s.borrow().contains(i));
@@ -1864,13 +1893,13 @@ fn unurlify_req(request: &str, t: &LocTyp, env: &CjrEnv, from_client: bool) -> S
                     unurlify_req("(*request)", &t_inner, env, from_client)
                 } else {
                     let inner = unurlify_req("(*request)", &t_inner, env, from_client);
-                    format!("({{\n{t_s} *tmp = uw_malloc(ctx, sizeof({t_s}));\n\
-                             *tmp = {inner};\ntmp;\n}})")
+                    format!(
+                        "({{\n{t_s} *tmp = uw_malloc(ctx, sizeof({t_s}));\n\
+                             *tmp = {inner};\ntmp;\n}})"
+                    )
                 };
                 let star = if unboxable { "" } else { "*" };
-                let proto = format!(
-                    "static {t_s} {star}unurlify_{i}(uw_context, char **);\n"
-                );
+                let proto = format!("static {t_s} {star}unurlify_{i}(uw_context, char **);\n");
                 let def = format!(
                     "static {t_s} {star}unurlify_{i}(uw_context ctx, char **request) {{\n\
                      return ((*request)[0] == '/' ? ++*request : *request,\n\
@@ -1920,7 +1949,7 @@ fn unurlify_req(request: &str, t: &LocTyp, env: &CjrEnv, from_client: bool) -> S
             } else {
                 UNURLIFY_SEEN.with(|s| s.borrow_mut().insert(list_key));
                 let t_s = p_typ(env, t_inner); // element type
-                // The list struct type
+                                               // The list struct type
                 let list_t = format!("struct __uws_{i} *");
                 // unurlify a Cons node (Record of the list struct)
                 let record_t = crate::error_types::Located::dummy(Typ::Record(*i));
@@ -1979,7 +2008,11 @@ fn urlify_stmts(level: usize, t: &LocTyp, env: &CjrEnv) -> String {
             "uw_Basis_urlifyString_w(ctx, \"\");\n".to_string()
         }
         Typ::Ffi(m, name) => {
-            format!("uw_{}_urlify{}_w(ctx, it{level});\n", ident(m), capitalize(name))
+            format!(
+                "uw_{}_urlify{}_w(ctx, it{level});\n",
+                ident(m),
+                capitalize(name)
+            )
         }
         Typ::Record(0) => "uw_Basis_urlifyString_w(ctx, \"\");\n".to_string(),
         Typ::Record(i) => {
@@ -2141,9 +2174,7 @@ fn urlify_default_stmts(
     env: &CjrEnv,
 ) -> String {
     match xncs {
-        [] => format!(
-            "uw_error(ctx, FATAL, \"Error urlifying datatype {x} (%d)\", it0->data);\n"
-        ),
+        [] => format!("uw_error(ctx, FATAL, \"Error urlifying datatype {x} (%d)\", it0->data);\n"),
         [(x_, n, to), rest @ ..] => {
             let x_ident = ident(x_);
             let rest_s = urlify_default_stmts(rest, x, i, env);
@@ -2152,12 +2183,12 @@ fn urlify_default_stmts(
                 Some(t_arg) => {
                     let t_s = p_typ(env, t_arg);
                     let inner = urlify_stmts(1, t_arg, env);
-                    format!("uw_write(ctx, \"{x_}/\");\n{t_s} it1 = it0->data.uw_{x_ident};\n{inner}")
+                    format!(
+                        "uw_write(ctx, \"{x_}/\");\n{t_s} it1 = it0->data.uw_{x_ident};\n{inner}"
+                    )
                 }
             };
-            format!(
-                "if (it0->tag == __uwc_{x_ident}_{n}) {{\n{arm}}} else {{\n{rest_s}}}\n"
-            )
+            format!("if (it0->tag == __uwc_{x_ident}_{n}) {{\n{arm}}} else {{\n{rest_s}}}\n")
         }
     }
 }
@@ -2187,9 +2218,7 @@ fn p_page(
     // For Action exports, the last argument is a record of form inputs.
     // For Link/Extern/Rpc, all args are URL-parsed.
     let (url_ts, has_form_inputs) = match ek {
-        ExportKind::Action(_) if ts.len() >= 2 => {
-            (&ts[..ts.len() - 2], true)
-        }
+        ExportKind::Action(_) if ts.len() >= 2 => (&ts[..ts.len() - 2], true),
         _ if !ts.is_empty() => (&ts[..ts.len() - 1], false),
         _ => (&ts[..0], false),
     };
@@ -2227,13 +2256,9 @@ fn p_page(
 
     // Write Content-Type header
     if is_rpc {
-        body.push_str(
-            "uw_write_header(ctx, \"Content-type: text/plain\\r\\n\");\n",
-        );
+        body.push_str("uw_write_header(ctx, \"Content-type: text/plain\\r\\n\");\n");
     } else {
-        body.push_str(
-            "uw_write_header(ctx, \"Content-type: text/html; charset=utf-8\\r\\n\");\n",
-        );
+        body.push_str("uw_write_header(ctx, \"Content-type: text/html; charset=utf-8\\r\\n\");\n");
         if !matches!(side, Sidedness::ServerOnly) {
             body.push_str(
                 "uw_write_header(ctx, \"Content-script-type: text/javascript\\r\\n\");\n",
@@ -2250,7 +2275,11 @@ fn p_page(
     ));
     body.push_str(&format!(
         "uw_set_at_most_one_query(ctx, {});\n",
-        if matches!(dbmode, DbMode::OneQuery) { 1 } else { 0 }
+        if matches!(dbmode, DbMode::OneQuery) {
+            1
+        } else {
+            0
+        }
     ));
     body.push_str(&format!(
         "uw_set_needs_push(ctx, {});\n",
@@ -2295,7 +2324,10 @@ fn p_page(
                         .collect();
                     body.push_str(&field_inits.join(", "));
                     body.push_str(" };\n");
-                    body.push_str(&format!("struct __uws_{} arg{} = uw_inputs;\n", struct_id, arg_idx));
+                    body.push_str(&format!(
+                        "struct __uws_{} arg{} = uw_inputs;\n",
+                        struct_id, arg_idx
+                    ));
                 }
             }
         }
@@ -2473,8 +2505,9 @@ pub fn cjr_print(file: &crate::c_like_representation::File, settings: &Settings)
     // Generate URL dispatch blocks for each export
     let mut page_handlers = String::new();
     for (ek, path, n, ts, ran, side, dbmode, tell_sig) in ps {
-        let handler_block =
-            p_page(ek, path, *n, ts, ran, side, dbmode, *tell_sig, &full_env, settings);
+        let handler_block = p_page(
+            ek, path, *n, ts, ran, side, dbmode, *tell_sig, &full_env, settings,
+        );
         page_handlers.push_str(&handler_block);
     }
 
@@ -2581,10 +2614,7 @@ pub fn cjr_print(file: &crate::c_like_representation::File, settings: &Settings)
         ));
     }
     if !db_name.is_empty() {
-        out.push_str(&format!(
-            "__uwn__{}(ctx, 0);\n",
-            initialize_id
-        ));
+        out.push_str(&format!("__uwn__{}(ctx, 0);\n", initialize_id));
     }
     out.push_str("uw_end_initializing(ctx);\n");
     out.push_str("}\n\n");
@@ -2597,10 +2627,7 @@ pub fn cjr_print(file: &crate::c_like_representation::File, settings: &Settings)
         ));
     }
     if !db_name.is_empty() {
-        out.push_str(&format!(
-            "__uwn__{}(ctx, cli);\n",
-            expunge_id
-        ));
+        out.push_str(&format!("__uwn__{}(ctx, cli);\n", expunge_id));
     }
     out.push_str("}\n\n");
 
@@ -2609,9 +2636,7 @@ pub fn cjr_print(file: &crate::c_like_representation::File, settings: &Settings)
     for (interval, x1, x2, body) in &periodic_tasks {
         // Each periodic task becomes a function + entry
         let fn_name = format!("__uwperiodic_{}_{}", ident(x1), ident(x2));
-        out.push_str(&format!(
-            "  {{ {interval}, {fn_name} }},\n"
-        ));
+        out.push_str(&format!("  {{ {interval}, {fn_name} }},\n"));
         let _ = body;
     }
     out.push_str("  { 0, NULL }\n};\n\n");
@@ -2663,9 +2688,7 @@ pub fn cjr_print(file: &crate::c_like_representation::File, settings: &Settings)
     // Input count (number of form inputs = number of exports with forms)
     let input_count = ps
         .iter()
-        .filter(|(ek, _, _, ts, _, _, _, _)| {
-            matches!(ek, ExportKind::Action(_)) && ts.len() >= 2
-        })
+        .filter(|(ek, _, _, ts, _, _, _, _)| matches!(ek, ExportKind::Action(_)) && ts.len() >= 2)
         .count();
 
     // uw_app struct (positional fields matching urweb runtime's uw_app struct)
@@ -2691,7 +2714,11 @@ pub fn cjr_print(file: &crate::c_like_representation::File, settings: &Settings)
         timeout = settings.timeout,
         url_prefix = url_prefix.replace('"', "\\\""),
         prep_count = prep_count,
-        on_error = if on_error_id.is_some() { "uw_onError" } else { "NULL" },
+        on_error = if on_error_id.is_some() {
+            "uw_onError"
+        } else {
+            "NULL"
+        },
         time_format = settings.time_format.replace('"', "\\\""),
     ));
 

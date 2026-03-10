@@ -3,3 +3,7 @@
 #
 # No exclusions: every mutant must be caught or kill the tests.
 # Run: cargo mutants
+#
+# Faster builds (no debug symbols); faster tests with -j
+profile = "mutants"
+minimum_test_timeout = 45

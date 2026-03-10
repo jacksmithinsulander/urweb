@@ -74,7 +74,9 @@ fn exp_uses_into(globals: &HashMap<usize, HashSet<usize>>, e: &LocExp, out: &mut
         }
 
         Exp::Error(inner, _) => exp_uses_into(globals, inner, out),
-        Exp::ReturnBlob { blob, mime_type, .. } => {
+        Exp::ReturnBlob {
+            blob, mime_type, ..
+        } => {
             if let Some(b) = blob {
                 exp_uses_into(globals, b, out);
             }
@@ -124,9 +126,11 @@ fn annotate_exp(globals: &HashMap<usize, HashSet<usize>>, e: LocExp) -> LocExp {
     let new_node = match e.node {
         Exp::Prim(_) | Exp::Rel(_) | Exp::Named(_) | Exp::Ffi(_, _) => return e,
 
-        Exp::Con(dk, pc, opt_e) => {
-            Exp::Con(dk, pc, opt_e.map(|inner| Box::new(annotate_exp(globals, *inner))))
-        }
+        Exp::Con(dk, pc, opt_e) => Exp::Con(
+            dk,
+            pc,
+            opt_e.map(|inner| Box::new(annotate_exp(globals, *inner))),
+        ),
         Exp::None(_) => return e,
         Exp::Some(t, inner) => Exp::Some(t, Box::new(annotate_exp(globals, *inner))),
 
@@ -139,7 +143,10 @@ fn annotate_exp(globals: &HashMap<usize, HashSet<usize>>, e: LocExp) -> LocExp {
         }
         Exp::App(f, args) => {
             let f = Box::new(annotate_exp(globals, *f));
-            let args = args.into_iter().map(|ae| annotate_exp(globals, ae)).collect();
+            let args = args
+                .into_iter()
+                .map(|ae| annotate_exp(globals, ae))
+                .collect();
             Exp::App(f, args)
         }
 
@@ -205,9 +212,10 @@ fn annotate_exp(globals: &HashMap<usize, HashSet<usize>>, e: LocExp) -> LocExp {
             let dml = Box::new(annotate_exp(globals, *dm.dml));
             Exp::Dml(crate::c_like_representation::DmlMeta { dml, ..dm })
         }
-        Exp::Nextval { seq, prepared } => {
-            Exp::Nextval { seq: Box::new(annotate_exp(globals, *seq)), prepared }
-        }
+        Exp::Nextval { seq, prepared } => Exp::Nextval {
+            seq: Box::new(annotate_exp(globals, *seq)),
+            prepared,
+        },
         Exp::Setval { seq, count } => Exp::Setval {
             seq: Box::new(annotate_exp(globals, *seq)),
             count: Box::new(annotate_exp(globals, *count)),

@@ -566,20 +566,29 @@ fn fmt_command(args: &[String]) -> i32 {
     let mut files: Vec<String> = vec![];
     let mut args_iter = args.iter();
     while let Some(arg) = args_iter.next() {
-        match arg.as_str() {
+        let (flag, opt_val) = if let Some(eq) = arg.find('=') {
+            let (f, v) = arg.split_at(eq);
+            (f, Some(v[1..].to_string()))
+        } else {
+            (arg.as_str(), None)
+        };
+        match flag {
             "-help" | "--help" | "-h" => {
                 println!("urweb fmt [options] [files...]");
                 println!("  If no files: format all .ur/.urs in project (from urweb.toml)");
                 println!("  Otherwise: format the given files.");
-                println!("  -check: check only; exit 1 if would reformat (CI mode)");
-                println!("  -w N, --width N: line width (default 80)");
+                println!("  -check, --check: check only; exit 1 if would reformat (CI mode)");
+                println!("  -w N, --width N, --width=N: line width (default 80)");
                 return 0;
             }
             "-check" | "--check" => {
                 check_mode = true;
             }
             "-w" | "--width" => {
-                if let Some(n) = args_iter.next().and_then(|s| s.parse::<u32>().ok()) {
+                if let Some(n) = opt_val
+                    .or_else(|| args_iter.next().cloned())
+                    .and_then(|s| s.parse::<u32>().ok())
+                {
                     _width = n;
                 }
             }
@@ -731,13 +740,19 @@ fn run_compiler_args(args: &[String]) -> i32 {
 
     let mut args_iter = args.iter();
     while let Some(arg) = args_iter.next() {
-        let flag = arg.trim_start_matches('-');
+        let raw = arg.trim_start_matches('-');
+        let (flag, opt_val) = if let Some(eq) = raw.find('=') {
+            let (f, v) = raw.split_at(eq);
+            (f, Some(v[1..].to_string()))
+        } else {
+            (raw, None)
+        };
         match flag {
             "help" | "h" => {
                 print_usage(&settings);
                 return 0;
             }
-            "version" => {
+            "version" | "V" => {
                 println!("{}", VERSION_STRING);
                 return 0;
             }
@@ -754,28 +769,28 @@ fn run_compiler_args(args: &[String]) -> i32 {
                 return 0;
             }
             "ccompiler" => {
-                if let Some(cc) = args_iter.next() {
-                    settings.config_c_compiler = cc.clone();
+                if let Some(cc) = opt_val.or_else(|| args_iter.next().cloned()) {
+                    settings.config_c_compiler = cc;
                 }
             }
             "protocol" => {
-                if let Some(p) = args_iter.next() {
-                    settings.protocol = p.clone();
+                if let Some(p) = opt_val.or_else(|| args_iter.next().cloned()) {
+                    settings.protocol = p;
                 }
             }
             "prefix" => {
-                if let Some(p) = args_iter.next() {
-                    settings.set_url_prefix(p);
+                if let Some(p) = opt_val.or_else(|| args_iter.next().cloned()) {
+                    settings.set_url_prefix(&p);
                 }
             }
             "db" => {
-                if let Some(db) = args_iter.next() {
-                    settings.dbstring = Some(db.clone());
+                if let Some(db) = opt_val.or_else(|| args_iter.next().cloned()) {
+                    settings.dbstring = Some(db);
                 }
             }
             "dbms" => {
-                if let Some(db) = args_iter.next() {
-                    settings.dbms = db.clone();
+                if let Some(db) = opt_val.or_else(|| args_iter.next().cloned()) {
+                    settings.dbms = db;
                 }
             }
             "debug" => {
@@ -793,19 +808,19 @@ fn run_compiler_args(args: &[String]) -> i32 {
             "dumpSource" => {
                 _dump_source = true;
             }
-            "output" => {
-                if let Some(f) = args_iter.next() {
-                    settings.exe = Some(f.clone());
+            "output" | "o" => {
+                if let Some(f) = opt_val.or_else(|| args_iter.next().cloned()) {
+                    settings.exe = Some(f);
                 }
             }
             "sql" => {
-                if let Some(f) = args_iter.next() {
-                    settings.sql = Some(f.clone());
+                if let Some(f) = opt_val.or_else(|| args_iter.next().cloned()) {
+                    settings.sql = Some(f);
                 }
             }
             "endpoints" => {
-                if let Some(f) = args_iter.next() {
-                    settings.endpoints = Some(f.clone());
+                if let Some(f) = opt_val.or_else(|| args_iter.next().cloned()) {
+                    settings.endpoints = Some(f);
                 }
             }
             "static" => {
@@ -815,8 +830,8 @@ fn run_compiler_args(args: &[String]) -> i32 {
                 settings.boot_linking = true;
             }
             "sigfile" => {
-                if let Some(f) = args_iter.next() {
-                    settings.sig_file = Some(f.clone());
+                if let Some(f) = opt_val.or_else(|| args_iter.next().cloned()) {
+                    settings.sig_file = Some(f);
                 }
             }
             "iflow" => {
@@ -829,8 +844,8 @@ fn run_compiler_args(args: &[String]) -> i32 {
                 settings.disable_sql_structure_check = true;
             }
             "moduleOf" => {
-                if let Some(f) = args_iter.next() {
-                    println!("{}", urweb::compiler::module_of(f));
+                if let Some(f) = opt_val.or_else(|| args_iter.next().cloned()) {
+                    println!("{}", urweb::compiler::module_of(&f));
                 }
                 return 0;
             }
@@ -851,8 +866,8 @@ fn run_compiler_args(args: &[String]) -> i32 {
                 }
             }
             "partialBuild" => {
-                if let Some(m) = args_iter.next() {
-                    _partial_build = Some(m.clone());
+                if let Some(m) = opt_val.or_else(|| args_iter.next().cloned()) {
+                    _partial_build = Some(m);
                 }
             }
             "startLspServer" => {
@@ -904,15 +919,16 @@ fn print_usage(_settings: &Settings) {
     println!("  {} install author/repo", name);
     println!("  {} daemon [stop|start]", name);
     println!("  {} [flag ...] project-name", name);
+    println!("Standard options: -h, --help; -V, --version; -o, --output=FILE");
     println!("Supported flags include:");
-    println!("  -help                print this overview");
-    println!("  -version             print version and exit");
+    println!("  -h, -help, --help    print this overview");
+    println!("  -V, -version         print version and exit");
     println!("  -ccompiler <prog>    set C compiler");
     println!("  -dbms <engine>       select database engine [sqlite|mysql|postgres]");
     println!("  -db <connstr>        database connection string");
     println!("  -prefix <prefix>     URL prefix");
     println!("  -sql <file>          output SQL DDL to <file>");
-    println!("  -output <file>       output executable to <file>");
+    println!("  -o, -output <file>    output executable to <file> (or --output=FILE)");
     println!("  -tc                  stop after type checking");
     println!("  -debug               save intermediate C files");
     println!("  -verbose             verbose output");

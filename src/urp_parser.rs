@@ -429,10 +429,11 @@ fn resolve_library_path(dir: &Path, arg: &str) -> Result<PathBuf> {
 
 fn merge_library(job: &mut Job, lib: Job) {
     // Prepend library sources (library sources come first)
+    // Use HashSet for O(n) dedup instead of O(n²) with Vec::contains
     let mut combined = lib.sources;
-    // Add main sources that aren't already included
+    let mut seen: std::collections::HashSet<String> = combined.iter().cloned().collect();
     for s in &job.sources {
-        if !combined.contains(s) {
+        if seen.insert(s.clone()) {
             combined.push(s.clone());
         }
     }
@@ -494,6 +495,7 @@ fn merge_library(job: &mut Job, lib: Job) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::settings::PathKind;
     use std::fs;
     use tempfile::tempdir;
 
@@ -608,5 +610,96 @@ mod tests {
         assert_eq!(m1, "Mod");
         assert_eq!(ms, vec!["Sub".to_string()]);
         assert_eq!(x, "handler");
+    }
+
+    #[test]
+    fn parse_exe_resolves_path() {
+        let dir = tempdir().unwrap();
+        let urp = write_urp(dir.path(), "app.urp", "exe myapp\n\nmod1\n");
+        let job = parse_urp(&urp).unwrap();
+        assert!(
+            job.exe.ends_with("myapp"),
+            "exe must be resolved via resolve_path, got: {}",
+            job.exe
+        );
+    }
+
+    #[test]
+    fn parse_jsfunc_uses_parse_ffi_map() {
+        let dir = tempdir().unwrap();
+        let urp = write_urp(
+            dir.path(),
+            "app.urp",
+            "jsFunc Mod.render=renderJs\n\nmod1\n",
+        );
+        let job = parse_urp(&urp).unwrap();
+        assert_eq!(job.js_funcs.len(), 1);
+        assert_eq!(job.js_funcs[0].0 .0, "Mod");
+        assert_eq!(job.js_funcs[0].0 .1, "render");
+        assert_eq!(job.js_funcs[0].1, "renderJs");
+    }
+
+    #[test]
+    fn parse_rewrite_path_kinds() {
+        let dir = tempdir().unwrap();
+        for (pkind_str, expected) in [
+            ("url", PathKind::Url),
+            ("table", PathKind::Table),
+            ("sequence", PathKind::Sequence),
+            ("view", PathKind::View),
+            ("relation", PathKind::Relation),
+            ("cookie", PathKind::Cookie),
+            ("style", PathKind::Style),
+        ] {
+            let content = format!("rewrite {} * /\n\nmod1\n", pkind_str);
+            let urp = write_urp(dir.path(), "app.urp", &content);
+            let job = parse_urp(&urp).unwrap();
+            assert_eq!(
+                job.rewrites[0].pkind, expected,
+                "path kind {} must parse to {:?}",
+                pkind_str, expected
+            );
+        }
+    }
+
+    #[test]
+    fn parse_dbms_directive() {
+        let dir = tempdir().unwrap();
+        let urp = write_urp(dir.path(), "app.urp", "dbms postgres\n\nmod1\n");
+        let job = parse_urp(&urp).unwrap();
+        assert_eq!(job.dbms.as_deref(), Some("postgres"));
+    }
+
+    #[test]
+    fn parse_sql_directive() {
+        let dir = tempdir().unwrap();
+        let urp = write_urp(dir.path(), "app.urp", "sql schema.sql\n\nmod1\n");
+        let job = parse_urp(&urp).unwrap();
+        assert!(job.sql.as_ref().unwrap().ends_with("schema.sql"));
+    }
+
+    #[test]
+    fn parse_endpoints_directive() {
+        let dir = tempdir().unwrap();
+        let urp = write_urp(dir.path(), "app.urp", "endpoints eps.txt\n\nmod1\n");
+        let job = parse_urp(&urp).unwrap();
+        assert!(job.endpoints.as_ref().unwrap().ends_with("eps.txt"));
+    }
+
+    #[test]
+    fn parse_ffi_rejects_bad_format() {
+        let dir = tempdir().unwrap();
+        let urp = write_urp(dir.path(), "app.urp", "effectful BadFormat\n\nmod1\n");
+        let res = parse_urp(&urp);
+        assert!(res.is_err(), "effectful BadFormat must fail parse_ffi");
+    }
+
+    #[test]
+    fn parse_comment_line_requires_whitespace_before_hash() {
+        let dir = tempdir().unwrap();
+        let urp = write_urp(dir.path(), "app.urp", "prefix /x\n# comment\n\nmod1\n");
+        let job = parse_urp(&urp).unwrap();
+        assert_eq!(job.prefix, "/x");
+        assert_eq!(job.sources.len(), 1);
     }
 }

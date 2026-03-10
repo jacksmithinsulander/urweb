@@ -98,7 +98,13 @@ fn postgres_sql_type(t: &SqlType) -> &'static str {
 /// On success, returns `(id, template_string)` and updates `st`.
 /// Returns `None` if `e` cannot be fully templatized (e.g. contains dynamic
 /// SQL that isn't a simple parameter).
-fn prep_string(e: &LocExp, st: &mut PrepareState, n: &mut usize, parts: &mut Vec<String>, settings: &Settings) -> bool {
+fn prep_string(
+    e: &LocExp,
+    st: &mut PrepareState,
+    n: &mut usize,
+    parts: &mut Vec<String>,
+    settings: &Settings,
+) -> bool {
     match &e.node {
         Exp::Prim(Prim::String(_, s)) => {
             parts.push(s.clone());
@@ -160,8 +166,10 @@ fn prep_string(e: &LocExp, st: &mut PrepareState, n: &mut usize, parts: &mut Vec
                 }
 
                 // Alternative pattern: case e of (True => "TRUE") | (False => "FALSE")
-                let arm0_true = matches!(&arms[0].1.node, Exp::Prim(Prim::String(_, s)) if s == "TRUE");
-                let arm1_false = matches!(&arms[1].1.node, Exp::Prim(Prim::String(_, s)) if s == "FALSE");
+                let arm0_true =
+                    matches!(&arms[0].1.node, Exp::Prim(Prim::String(_, s)) if s == "TRUE");
+                let arm1_false =
+                    matches!(&arms[1].1.node, Exp::Prim(Prim::String(_, s)) if s == "FALSE");
                 if arm0_true && arm1_false {
                     *n += 1;
                     parts.push(p_blank(*n, &SqlType::Bool, settings));
@@ -288,14 +296,16 @@ fn prep_exp(e: LocExp, st: &mut PrepareState, settings: &Settings) -> LocExp {
         ),
 
         // ---------------- The interesting cases ----------------
-
         Exp::Query(qm) => {
             // Recursively prepare the body.
             let body = Box::new(prep_exp(*qm.body, st, settings));
 
             // Try to templatize the query string.
-            let prepared = try_prepare(&qm.query, st, settings)
-                .map(|(id, query)| PreparedQuery { id, query, nested: true });
+            let prepared = try_prepare(&qm.query, st, settings).map(|(id, query)| PreparedQuery {
+                id,
+                query,
+                nested: true,
+            });
 
             Exp::Query(QueryMeta {
                 body,
@@ -306,12 +316,9 @@ fn prep_exp(e: LocExp, st: &mut PrepareState, settings: &Settings) -> LocExp {
 
         Exp::Dml(dm) => {
             // Try to templatize the DML string.
-            let prepared = try_prepare(&dm.dml, st, settings)
-                .map(|(id, dml)| PreparedDml { id, dml });
-            Exp::Dml(DmlMeta {
-                prepared,
-                ..dm
-            })
+            let prepared =
+                try_prepare(&dm.dml, st, settings).map(|(id, dml)| PreparedDml { id, dml });
+            Exp::Dml(DmlMeta { prepared, ..dm })
         }
 
         Exp::Nextval { seq, prepared: _ } => {
@@ -323,7 +330,10 @@ fn prep_exp(e: LocExp, st: &mut PrepareState, settings: &Settings) -> LocExp {
                     .map(|(id, query)| PreparedNextval { id, query });
                 Exp::Nextval { seq, prepared }
             } else {
-                Exp::Nextval { seq, prepared: None }
+                Exp::Nextval {
+                    seq,
+                    prepared: None,
+                }
             }
         }
 
@@ -332,9 +342,7 @@ fn prep_exp(e: LocExp, st: &mut PrepareState, settings: &Settings) -> LocExp {
             count: Box::new(prep_exp(*count, st, settings)),
         },
 
-        Exp::Uurlify(inner, t, b) => {
-            Exp::Uurlify(Box::new(prep_exp(*inner, st, settings)), t, b)
-        }
+        Exp::Uurlify(inner, t, b) => Exp::Uurlify(Box::new(prep_exp(*inner, st, settings)), t, b),
     };
     Located::new(new_node, loc)
 }
@@ -375,10 +383,19 @@ fn build_nextval_query(seq: &LocExp, loc: &crate::error_types::Span) -> LocExp {
                 Exp::FfiApp(
                     "Basis".into(),
                     "strcat".into(),
-                    vec![(prefix, str_t), (inner, Located::new(
-                        crate::c_like_representation::Typ::Ffi("Basis".into(), "string".into()),
-                        loc.clone(),
-                    ))],
+                    vec![
+                        (prefix, str_t),
+                        (
+                            inner,
+                            Located::new(
+                                crate::c_like_representation::Typ::Ffi(
+                                    "Basis".into(),
+                                    "string".into(),
+                                ),
+                                loc.clone(),
+                            ),
+                        ),
+                    ],
                 ),
                 loc.clone(),
             )
@@ -469,7 +486,10 @@ mod tests {
     fn prep_string_literal_becomes_template() {
         let mut st = PrepareState::new();
         let settings = Settings::default();
-        let e = Located::dummy(Exp::Prim(Prim::String(StringMode::Normal, "SELECT 1".into())));
+        let e = Located::dummy(Exp::Prim(Prim::String(
+            StringMode::Normal,
+            "SELECT 1".into(),
+        )));
         let result = try_prepare(&e, &mut st, &settings);
         assert!(result.is_some());
         let (id, tmpl) = result.unwrap();
@@ -532,7 +552,10 @@ mod tests {
             "Basis".into(),
             "string".into(),
         ));
-        let lit = Located::dummy(Exp::Prim(Prim::String(StringMode::Normal, "SELECT * FROM t WHERE id = ".into())));
+        let lit = Located::dummy(Exp::Prim(Prim::String(
+            StringMode::Normal,
+            "SELECT * FROM t WHERE id = ".into(),
+        )));
         let arg = Located::dummy(Exp::Rel(0));
         let int_t = Located::dummy(crate::c_like_representation::Typ::Ffi(
             "Basis".into(),
@@ -568,7 +591,10 @@ mod tests {
     fn deduplication_same_query_gets_same_id() {
         let mut st = PrepareState::new();
         let settings = Settings::default();
-        let e = Located::dummy(Exp::Prim(Prim::String(StringMode::Normal, "SELECT 1".into())));
+        let e = Located::dummy(Exp::Prim(Prim::String(
+            StringMode::Normal,
+            "SELECT 1".into(),
+        )));
         let (id1, _) = try_prepare(&e, &mut st, &settings).unwrap();
         let (id2, _) = try_prepare(&e, &mut st, &settings).unwrap();
         assert_eq!(id1, id2);
@@ -578,8 +604,14 @@ mod tests {
     fn different_queries_get_different_ids() {
         let mut st = PrepareState::new();
         let settings = Settings::default();
-        let e1 = Located::dummy(Exp::Prim(Prim::String(StringMode::Normal, "SELECT 1".into())));
-        let e2 = Located::dummy(Exp::Prim(Prim::String(StringMode::Normal, "SELECT 2".into())));
+        let e1 = Located::dummy(Exp::Prim(Prim::String(
+            StringMode::Normal,
+            "SELECT 1".into(),
+        )));
+        let e2 = Located::dummy(Exp::Prim(Prim::String(
+            StringMode::Normal,
+            "SELECT 2".into(),
+        )));
         let (id1, _) = try_prepare(&e1, &mut st, &settings).unwrap();
         let (id2, _) = try_prepare(&e2, &mut st, &settings).unwrap();
         assert_ne!(id1, id2);

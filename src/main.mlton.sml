@@ -36,31 +36,64 @@ datatype flag_arity =
 
 fun parse_flags flag_info args =
     let
-        fun search_pred flag0 =
-            (* Remove preceding "-". *)
-            let val flag0 = String.extract (flag0, 1, NONE)
-            in
-                fn (flag1, _, _) => flag0 = flag1
-            end
+        fun stripDash s = String.extract (s, 1, NONE)
 
+        fun search_pred flag0 =
+            (* flag0 is like "-help" or "help"; match against canonical name *)
+            fn (flag1, _, _) =>
+               let val f = if String.isPrefix "-" flag0 then stripDash flag0 else flag0
+               in f = flag1 end
+
+        (* POSIX short + GNU long: -h/--help, -V/--version, -v/--verbose, -o/--output *)
         fun normalizeArg arg =
           case arg of
               "-h" => "-help"
             | "--h" => "-help"
             | "--help" => "-help"
-            | _ => arg
+            | "-V" => "-version"
+            | "--V" => "-version"
+            | "--version" => "-version"
+            | "-v" => "-verbose"
+            | "--v" => "-verbose"
+            | "--verbose" => "-verbose"
+            | "-o" => "-output"
+            | "--o" => "-output"
+            | "--output" => "-output"
+            | s => if String.isPrefix "--" s then "-" ^ String.extract (s, 2, NONE) else s
+
+        (* Handle GNU style --flag=value *)
+        fun splitEquals s =
+            case String.fields (fn c => c = #"=") s of
+                f :: vs => if null vs then NONE else SOME (f, String.concatWith "=" vs)
+              | _ => NONE
 
         fun loop [] : string list = []
           | loop (arg :: args) =
             let
-                val arg = normalizeArg arg
+                (* GNU long option with =value *)
+                val handled = if String.isPrefix "-" arg then
+                    case splitEquals arg of
+                        SOME (flagPart, value) =>
+                            let val arg' = normalizeArg flagPart
+                            in case List.find (search_pred arg') flag_info of
+                                   SOME (_, ONE (_, f), _) => (f value; SOME (loop args))
+                                 | SOME _ => raise Fail ("Flag " ^ flagPart ^ " does not take =value, see -help")
+                                 | NONE => raise Fail ("Unknown flag "^arg^", see -help")
+                            end
+                      | NONE => NONE
+                else NONE
             in
-                if String.isPrefix "-" arg then
-                    case List.find (search_pred arg) flag_info of
-                        NONE => raise Fail ("Unknown flag "^arg^", see -help")
-                      | SOME x => exec x args
-                else
-                    arg :: loop args
+                case handled of
+                    SOME rest => rest
+                  | NONE =>
+                        let val arg = normalizeArg arg
+                        in if String.isPrefix "-" arg then
+                               case List.find (search_pred arg) flag_info of
+                                   NONE => raise Fail ("Unknown flag "^arg^", see -help")
+                                 | SOME x => exec x args
+                           else
+                               arg :: loop args
+                        end
             end
 
         and exec (_, ZERO f, _) args =
@@ -103,6 +136,7 @@ fun usage flag_info =
         print ("  " ^ name ^ " install author/repo\n");
         print ("  " ^ name ^ " daemon [stop|start]\n");
         print ("  " ^ name ^ " [flag ...] project-name\n");
+        print "Standard options: -h, --help; -V, --version; -o, --output=FILE\n";
         print "Supported flags are:\n";
         app print_flag flag_info;
         raise Code OS.Process.success

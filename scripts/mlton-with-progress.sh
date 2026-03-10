@@ -4,7 +4,7 @@
 # MLton produces no output until done; this script prints status every 30s.
 set -e
 
-flagfile=$(mktemp)
+flagfile=$(mktemp "${TMPDIR:-/tmp}/urweb.XXXXXXXXXX")
 rm -f "$flagfile"
 touch "$flagfile"
 cleanup() { rm -f "$flagfile"; }

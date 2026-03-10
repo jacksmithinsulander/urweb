@@ -8,10 +8,13 @@
 : "${prefix:=/usr/local}"
 : "${BIN:=$prefix/bin}"
 : "${LIB:=$prefix/lib}"
+: "${MANDIR:=$prefix/share/man}"
 : "${SRCLIB:=$prefix/lib/urweb}"
 : "${INCLUDE:=$prefix/include/urweb}"
 : "${CC:=gcc}"
 : "${MLTON:=mlton}"
+: "${MLLEX:=mllex}"
+: "${MLYACC:=mlyacc}"
 : "${BEARSSL_INCLUDES:=}"
 : "${BEARSSL_LDFLAGS:=}"
 : "${BEARSSL_LIBS:=-lbearssl}"
@@ -41,10 +44,13 @@ echo "builddir = $builddir"
 echo "prefix = $prefix"
 echo "BIN = $BIN"
 echo "LIB = $LIB"
+echo "MANDIR = $MANDIR"
 echo "SRCLIB = $SRCLIB"
 echo "INCLUDE = $INCLUDE"
 echo "CC = $CC"
 echo "MLTON = $MLTON"
+echo "MLLEX = $MLLEX"
+echo "MLYACC = $MLYACC"
 echo "BEARSSL_INCLUDES = $BEARSSL_INCLUDES"
 echo "BEARSSL_LDFLAGS = $BEARSSL_LDFLAGS"
 echo "BEARSSL_LIBS = $BEARSSL_LIBS"
@@ -62,11 +68,11 @@ cat <<'NINJAEOF'
 
 # Rules
 rule mllex
-  command = cd $builddir/src && cp $srcdir/src/urweb.lex urweb.mlton.lex && mllex urweb.mlton.lex
+  command = cd $builddir/src && cp $srcdir/src/urweb.lex urweb.mlton.lex && $MLLEX urweb.mlton.lex
   description = mllex urweb.lex -> urweb.mlton.lex.sml
 
 rule mlyacc
-  command = cd $builddir/src && cp $srcdir/src/urweb.grm urweb.mlton.grm && mlyacc urweb.mlton.grm
+  command = cd $builddir/src && cp $srcdir/src/urweb.grm urweb.mlton.grm && $MLYACC urweb.mlton.grm
   description = mlyacc urweb.grm
 
 rule mlton
@@ -177,17 +183,17 @@ for p in $PROTOCOLS; do
 done
 echo ""
 
-# Install (DESTDIR supported)
+# Install (DESTDIR supported). Use cp+chmod instead of install (POSIX portable)
 echo "rule install_cmd"
-echo "  command = DESTDIR=\"\$\${DESTDIR:-}\" ; mkdir -p \"\$\$DESTDIR$BIN\" \"\$\$DESTDIR$LIB\" \"\$\$DESTDIR$SRCLIB/ur\" \"\$\$DESTDIR$SRCLIB/js\" \"\$\$DESTDIR$INCLUDE\" && install $builddir/bin/urweb \"\$\$DESTDIR$BIN/\" && cp $builddir/src/c/liburweb.a \"\$\$DESTDIR$LIB/\" && cp $builddir/src/c/liburweb_http.a $builddir/src/c/liburweb_cgi.a $builddir/src/c/liburweb_fastcgi.a $builddir/src/c/liburweb_static.a \"\$\$DESTDIR$LIB/\" && cp $srcdir/lib/ur/*.urs \"\$\$DESTDIR$SRCLIB/ur/\" && cp $srcdir/lib/ur/*.ur \"\$\$DESTDIR$SRCLIB/ur/\" && cp $srcdir/lib/js/*.js \"\$\$DESTDIR$SRCLIB/js/\" && cp $srcdir/include/urweb/*.h \"\$\$DESTDIR$INCLUDE/\" && (cp $builddir/include/urweb/config.h \"\$\$DESTDIR$INCLUDE/\" 2>/dev/null || true)"
+echo "  command = DESTDIR=\"\$\${DESTDIR:-}\" ; mkdir -p \"\$\$DESTDIR$BIN\" \"\$\$DESTDIR$LIB\" \"\$\$DESTDIR$MANDIR/man1\" \"\$\$DESTDIR$SRCLIB/ur\" \"\$\$DESTDIR$SRCLIB/js\" \"\$\$DESTDIR$INCLUDE\" && cp $builddir/bin/urweb \"\$\$DESTDIR$BIN/urweb\" && chmod 755 \"\$\$DESTDIR$BIN/urweb\" && cp $builddir/src/c/liburweb.a \"\$\$DESTDIR$LIB/\" && cp $builddir/src/c/liburweb_http.a $builddir/src/c/liburweb_cgi.a $builddir/src/c/liburweb_fastcgi.a $builddir/src/c/liburweb_static.a \"\$\$DESTDIR$LIB/\" && cp $srcdir/lib/ur/*.urs \"\$\$DESTDIR$SRCLIB/ur/\" && cp $srcdir/lib/ur/*.ur \"\$\$DESTDIR$SRCLIB/ur/\" && cp $srcdir/lib/js/*.js \"\$\$DESTDIR$SRCLIB/js/\" && cp $srcdir/include/urweb/*.h \"\$\$DESTDIR$INCLUDE/\" && cp $srcdir/doc/urweb.1 \"\$\$DESTDIR$MANDIR/man1/\" && (cp $builddir/include/urweb/config.h \"\$\$DESTDIR$INCLUDE/\" 2>/dev/null || true)"
 echo "  description = Install Ur/Web"
 echo ""
-echo "build install: install_cmd | $builddir/bin/urweb $builddir/src/c/liburweb.a $builddir/src/c/liburweb_http.a $builddir/src/c/liburweb_cgi.a $builddir/src/c/liburweb_fastcgi.a $builddir/src/c/liburweb_static.a"
+echo "build install: install_cmd | $builddir/bin/urweb $builddir/src/c/liburweb.a $builddir/src/c/liburweb_http.a $builddir/src/c/liburweb_cgi.a $builddir/src/c/liburweb_fastcgi.a $builddir/src/c/liburweb_static.a $srcdir/doc/urweb.1"
 echo ""
 
 # Uninstall (DESTDIR supported, must match install prefix)
 echo "rule uninstall_cmd"
-echo "  command = DESTDIR=\"\$\${DESTDIR:-}\" ; rm -f \"\$\$DESTDIR$BIN/urweb\" \"\$\$DESTDIR$LIB/liburweb.a\" \"\$\$DESTDIR$LIB/liburweb_http.a\" \"\$\$DESTDIR$LIB/liburweb_cgi.a\" \"\$\$DESTDIR$LIB/liburweb_fastcgi.a\" \"\$\$DESTDIR$LIB/liburweb_static.a\" && rm -f \"\$\$DESTDIR$SRCLIB/ur/\"*.urs \"\$\$DESTDIR$SRCLIB/ur/\"*.ur \"\$\$DESTDIR$SRCLIB/js/\"*.js \"\$\$DESTDIR$INCLUDE/\"*.h \"\$\$DESTDIR$INCLUDE/config.h\""
+echo "  command = DESTDIR=\"\$\${DESTDIR:-}\" ; rm -f \"\$\$DESTDIR$BIN/urweb\" \"\$\$DESTDIR$LIB/liburweb.a\" \"\$\$DESTDIR$LIB/liburweb_http.a\" \"\$\$DESTDIR$LIB/liburweb_cgi.a\" \"\$\$DESTDIR$LIB/liburweb_fastcgi.a\" \"\$\$DESTDIR$LIB/liburweb_static.a\" \"\$\$DESTDIR$MANDIR/man1/urweb.1\" && rm -f \"\$\$DESTDIR$SRCLIB/ur/\"*.urs \"\$\$DESTDIR$SRCLIB/ur/\"*.ur \"\$\$DESTDIR$SRCLIB/js/\"*.js \"\$\$DESTDIR$INCLUDE/\"*.h \"\$\$DESTDIR$INCLUDE/config.h\""
 echo "  description = Uninstall Ur/Web"
 echo ""
 echo "build uninstall: uninstall_cmd"

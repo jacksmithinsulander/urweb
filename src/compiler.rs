@@ -1170,6 +1170,24 @@ mod tests {
     }
 
     #[test]
+    fn js_compile_collects_javascript_decls() {
+        let mut errors = ErrorReporter::new();
+        let settings = Settings::default();
+        let file: crate::monomorphized::File = (
+            vec![crate::error_types::Located::dummy(
+                crate::monomorphized::Decl::JavaScript("alert(1)".into()),
+            )],
+            vec![],
+        );
+        let result = js_compile(&file, &settings, &mut errors);
+        assert!(
+            result.is_some(),
+            "js_compile must return Some when file has JavaScript decl (catches replace with None)"
+        );
+        assert!(result.unwrap().contains("alert(1)"));
+    }
+
+    #[test]
     fn sql_generate_empty_file() {
         let settings = Settings::default();
         let result = sql_generate(&Default::default(), &settings);
@@ -1189,5 +1207,16 @@ mod tests {
         );
         // Either Ok (if cc is available and links) or Err (no urweb runtime) — not a panic.
         let _ = result;
+    }
+
+    #[test]
+    fn cc_and_link_rejects_invalid_c() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("a.out");
+        let result = cc_and_link("not valid C {", &out, &Job::default(), &Settings::default());
+        assert!(
+            result.is_err(),
+            "cc_and_link must actually invoke compiler (catches replace with Ok(()))"
+        );
     }
 }
