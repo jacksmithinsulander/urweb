@@ -2060,7 +2060,7 @@ pub fn reduce(mut file: File, settings: &Settings) -> File {
 mod tests {
     use super::*;
     use crate::error_types::Located;
-    use crate::monomorphized::{CaseMeta, Exp, Pat, Typ};
+    use crate::monomorphized::{Exp, Pat, Typ};
     use crate::primitives::Prim;
     use crate::settings::Settings;
 

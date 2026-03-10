@@ -4,3 +4,6 @@
 [submodule "vendor/BearSSL"]
 	path = vendor/BearSSL
 	url = https://www.bearssl.org/git/BearSSL
+[submodule "vendor/cproc"]
+	path = vendor/cproc
+	url = https://git.sr.ht/~mcf/cproc

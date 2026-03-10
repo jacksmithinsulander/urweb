@@ -24,7 +24,14 @@ printf ' run...' >&2
 
 "$TESTSRV" -q -a 127.0.0.1 -p "$PORT" &
 printf '%s\n' "$!" > "$TESTPID"
-sleep 1
+# Wait for server to be listening (up to 15s)
+_wait=0
+while [ $_wait -lt 15 ]; do
+  (nc -z 127.0.0.1 "$PORT" 2>/dev/null || curl -s "http://127.0.0.1:$PORT/" >/dev/null 2>/dev/null) && break
+  sleep 1
+  _wait=$((_wait + 1))
+done
+[ $_wait -lt 15 ] || { printf ' FAIL\n' >&2; echo "FAIL [$Name]: server not ready after 15s" >&2; exit 1; }
 
 cleanup() {
     kill "$(cat "$TESTPID" 2>/dev/null)" 2>/dev/null || true

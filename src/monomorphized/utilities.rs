@@ -20,6 +20,30 @@ pub fn sort_fields<T>(fields: &mut Vec<(String, T)>) {
 }
 
 // ---------------------------------------------------------------------------
+// classify_datatype — same logic as core::utilities::classify_datatype
+// ---------------------------------------------------------------------------
+
+/// Classify a Mono datatype's representation kind from its constructor list.
+pub fn classify_datatype(constrs: &[(String, usize, Option<LocTyp>)]) -> DatatypeKind {
+    let mut nullary = 0usize;
+    let mut unary = 0usize;
+    for (_, _, arg) in constrs {
+        if arg.is_none() {
+            nullary += 1;
+        } else {
+            unary += 1;
+        }
+    }
+    if unary == 0 {
+        DatatypeKind::Enum
+    } else if nullary == 1 && unary == 1 {
+        DatatypeKind::Option
+    } else {
+        DatatypeKind::Default
+    }
+}
+
+// ---------------------------------------------------------------------------
 // pub mod typ
 // ---------------------------------------------------------------------------
 

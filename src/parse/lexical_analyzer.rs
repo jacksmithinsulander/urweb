@@ -384,6 +384,14 @@ pub enum Token {
     #[token("where", priority = 2)]
     Where,
 
+    // `Name` is the kind of field names; must be priority 3 to shadow UpperIdent.
+    #[token("Name", priority = 3)]
+    Name,
+
+    // `o` is the function-composition operator; priority 3 to shadow Ident.
+    #[token("o", priority = 3)]
+    Compose,
+
     // -----------------------------------------------------------------------
     // Identifiers — priority 1 (lower than keywords)
     // -----------------------------------------------------------------------

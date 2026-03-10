@@ -3493,7 +3493,7 @@ fun p_file env (ds, ps) =
              newline,
              newline,
 
-             box [string "static void uw_setup_limits() {",
+             box [string "static void uw_setup_limits(void) {",
                   newline,
                   case Settings.getMinHeap () of
                       0 => box []

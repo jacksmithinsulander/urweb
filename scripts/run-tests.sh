@@ -41,10 +41,27 @@ kill $_demo_heartbeat 2>/dev/null || true
 wait $_demo_heartbeat 2>/dev/null || true
 [ $_exit -eq 0 ] || { echo "FAIL: demo - build failed"; exit 1; }
 echo "[$(_ts)] Demo build done. Starting demo server..."
+# Free port 8080 in case a previous run left a server
+_pid=$(lsof -ti:8080 2>/dev/null) || true
+[ -n "$_pid" ] && kill $_pid 2>/dev/null || true
+sleep 1
 sqlite3 "$TESTDB" < "$srcdir/demo/demo.sql"
 "$srcdir/demo/demo.exe" -q -a 127.0.0.1 & echo $! > "$TESTPID"
-sleep 2
-curl -s 'http://localhost:8080/Demo/Hello/main' | diff "$srcdir/tests/hello.html" - || { kill $(cat "$TESTPID") 2>/dev/null; echo "FAIL: demo - Hello response mismatch"; exit 1; }
+# Wait for demo server to be ready (up to 15s)
+_dw=0
+while [ $_dw -lt 15 ]; do
+  curl -s 'http://127.0.0.1:8080/Demo/Hello/main' >/dev/null 2>/dev/null && break
+  sleep 1
+  _dw=$((_dw + 1))
+done
+[ $_dw -lt 15 ] || { kill $(cat "$TESTPID") 2>/dev/null; echo "FAIL: demo - server not ready after 15s"; exit 1; }
+# Normalize: trim trailing newlines so diff doesn't fail on that alone
+_hello=$(curl -s 'http://localhost:8080/Demo/Hello/main' | sed -e '$s/[[:space:]]*$//')
+_exp=$(cat "$srcdir/tests/hello.html" | sed -e '$s/[[:space:]]*$//')
+_expf=$(mktemp)
+printf '%s\n' "$_exp" > "$_expf"
+printf '%s\n' "$_hello" | diff - "$_expf" || { rm -f "$_expf"; kill $(cat "$TESTPID") 2>/dev/null; echo "FAIL: demo - Hello response mismatch"; exit 1; }
+rm -f "$_expf"
 curl -s 'http://localhost:8080/Demo/Crud1/create?A=1&B=2&C=3&D=4' | diff "$srcdir/tests/crud1.html" - || { kill $(cat "$TESTPID") 2>/dev/null; echo "FAIL: demo - Crud1 response mismatch"; exit 1; }
 kill $(cat "$TESTPID") 2>/dev/null || true
 echo "PASS: demo"
@@ -66,11 +83,17 @@ n=0
 total_driver=27
 echo ""
 echo "=== Driver tests ($total_driver tests, ~15-30s each to compile) ==="
+# Free driver test ports (8081-8107) before starting
+for _p in 8081 8082 8083 8084 8085 8086 8087 8088 8089 8090 8091 8092 8093 8094 8095 8096 8097 8098 8099 8100 8101 8102 8103 8104 8105 8106 8107; do
+  _pid=$(lsof -ti:$_p 2>/dev/null) || true
+  [ -n "$_pid" ] && kill $_pid 2>/dev/null || true
+done
+sleep 2
 for base in $DRIVER_TESTS; do
   [ -f "$testsdir/$base.sh" ] || { echo "Warning: $base.sh missing, skipping"; continue; }
   n=$((n + 1))
   echo "[$(_ts)] [$n/$total_driver] $base"
-  (cd "$testsdir" && URWEB="$URWEB" ./driver.sh "$base") || exit 1
+  (cd "$testsdir" && URWEB="$URWEB" PORT=$((8080 + n)) ./driver.sh "$base" $((8080 + n))) || exit 1
 done
 
 # Standalone tests (own compile + server lifecycle)

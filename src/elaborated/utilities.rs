@@ -79,7 +79,10 @@ pub fn set_mlift_con_in_con(
 /// # Returns
 ///
 /// The constructor with indices shifted. Panics if the lift function was not set.
-fn mlift_con_in_con(binder_count: usize, constructor: LocatedConstructor) -> LocatedConstructor {
+pub(crate) fn mlift_con_in_con(
+    binder_count: usize,
+    constructor: LocatedConstructor,
+) -> LocatedConstructor {
     match MLIFT_CON_IN_CON.get() {
         Some(lift_function) => lift_function(binder_count, constructor),
         None => panic!("ElabUtil: mliftConInCon not set"),

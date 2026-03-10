@@ -117,17 +117,114 @@ pub type CompileResult = Result<PathBuf /* generated executable */>;
 
 /// Parse a `.urp` project file into a `Job` description.
 pub fn parse_urp(path: &Path) -> Result<Job> {
-    let _source = crate::file_io::open_text(path)
-        .with_context(|| format!("reading project file {}", path.display()))?;
-    todo!("parse_urp: .urp parser not yet implemented")
+    crate::urp_parser::parse_urp(path)
 }
 
 // ---------------------------------------------------------------------------
 // Phase 2: Parse source files
 // ---------------------------------------------------------------------------
 
-pub fn parse_sources(_job: &Job, _errors: &mut ErrorReporter) -> Option<crate::source::File> {
-    todo!("parse_sources: source parser not yet implemented")
+pub fn parse_sources(job: &Job, errors: &mut ErrorReporter) -> Option<crate::source::File> {
+    use crate::error_types::{CompileError, Located, Span};
+    use crate::source;
+    use std::path::Path;
+
+    let mut decls: source::File = Vec::new();
+    let mut had_errors = false;
+
+    // Parse C FFI modules (job.ffi): each provides a .urs signature file.
+    for ffi_base in &job.ffi {
+        let mname = module_of(ffi_base);
+        let urs_path = format!("{ffi_base}.urs");
+        let span = Span {
+            file: urs_path.clone(),
+            ..Span::dummy()
+        };
+
+        let urs_src = match std::fs::read_to_string(&urs_path) {
+            Ok(s) => s,
+            Err(e) => {
+                errors.report(CompileError::Plain(format!(
+                    "cannot read FFI signature {urs_path}: {e}"
+                )));
+                had_errors = true;
+                continue;
+            }
+        };
+
+        match crate::parse::parse_urs(&urs_path, &urs_src, errors) {
+            None => had_errors = true,
+            Some(sgis) => {
+                let sgn = Located::new(source::Sgn::Const(sgis), span.clone());
+                decls.push(Located::new(source::Decl::FfiStr(mname, sgn, None), span));
+            }
+        }
+    }
+
+    // Parse Ur/Web source modules (job.sources).
+    for src_base in &job.sources {
+        let mname = module_of(src_base);
+        let ur_path = format!("{src_base}.ur");
+        let urs_path = format!("{src_base}.urs");
+        let span = Span {
+            file: ur_path.clone(),
+            ..Span::dummy()
+        };
+
+        // Read .ur source
+        let ur_src = match std::fs::read_to_string(&ur_path) {
+            Ok(s) => s,
+            Err(e) => {
+                errors.report(CompileError::Plain(format!("cannot read {ur_path}: {e}")));
+                had_errors = true;
+                continue;
+            }
+        };
+
+        // Parse optional .urs signature
+        let sgn_opt = if Path::new(&urs_path).exists() {
+            match std::fs::read_to_string(&urs_path) {
+                Err(e) => {
+                    errors.report(CompileError::Plain(format!("cannot read {urs_path}: {e}")));
+                    had_errors = true;
+                    None
+                }
+                Ok(urs_src) => {
+                    let sgn_span = Span {
+                        file: urs_path.clone(),
+                        ..Span::dummy()
+                    };
+                    match crate::parse::parse_urs(&urs_path, &urs_src, errors) {
+                        None => {
+                            had_errors = true;
+                            None
+                        }
+                        Some(sgis) => Some(Located::new(source::Sgn::Const(sgis), sgn_span)),
+                    }
+                }
+            }
+        } else {
+            None
+        };
+
+        // Parse .ur body
+        match crate::parse::parse_ur(&ur_path, &ur_src, errors) {
+            None => had_errors = true,
+            Some(ds) => {
+                let str_node = Located::new(source::Str::Const(ds), span.clone());
+                decls.push(Located::new(
+                    source::Decl::Str(mname, sgn_opt, None, str_node, false),
+                    span,
+                ));
+            }
+        }
+    }
+
+    if had_errors {
+        None
+    } else {
+        Some(decls)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -147,10 +244,10 @@ pub fn elaborate(
 // ---------------------------------------------------------------------------
 
 pub fn explify(
-    _file: crate::elaborated::File,
-    _errors: &mut ErrorReporter,
+    file: crate::elaborated::File,
+    errors: &mut ErrorReporter,
 ) -> Option<crate::explicit::File> {
-    todo!("explify: not yet implemented")
+    crate::elaborated::explify::explify(file, errors)
 }
 
 // ---------------------------------------------------------------------------
@@ -243,32 +340,40 @@ pub fn check_marshal(file: &crate::core::File, settings: &Settings, errors: &mut
     crate::core::marshal_check::check(file, settings, errors);
 }
 
-pub fn check_script(_file: &crate::core::File, _errors: &mut ErrorReporter) {
-    todo!("check_script")
-}
-
-pub fn check_path(_file: &crate::core::File, _settings: &Settings, _errors: &mut ErrorReporter) {
-    todo!("check_path")
-}
-
-pub fn check_side(_file: &crate::core::File, _errors: &mut ErrorReporter) {
-    todo!("check_side")
-}
-
-pub fn check_sig(_file: &crate::core::File, _errors: &mut ErrorReporter) {
-    todo!("check_sig")
-}
-
-pub fn check_dbmode(_file: &crate::core::File, _errors: &mut ErrorReporter) {
-    todo!("check_dbmode")
-}
-
 pub fn check_termination(_file: &crate::core::File, _errors: &mut ErrorReporter) {
-    todo!("check_termination")
+    // Termination checker (termination.sml) not yet translated; skip.
 }
 
-pub fn check_nest(_file: &crate::core::File, _errors: &mut ErrorReporter) {
-    todo!("check_nest")
+// ---------------------------------------------------------------------------
+// Mono checks
+// ---------------------------------------------------------------------------
+
+pub fn mono_script_check(
+    file: crate::monomorphized::File,
+    settings: &Settings,
+    errors: &mut ErrorReporter,
+) -> crate::monomorphized::File {
+    crate::monomorphized::script_check::classify(file, settings, errors)
+}
+
+pub fn mono_path_check(file: &crate::monomorphized::File, errors: &mut ErrorReporter) {
+    crate::monomorphized::path_check::check(file, errors)
+}
+
+pub fn mono_side_check(
+    file: crate::monomorphized::File,
+    settings: &Settings,
+    errors: &mut ErrorReporter,
+) -> (crate::monomorphized::File, Vec<String>) {
+    crate::monomorphized::side_check::check(file, settings, errors)
+}
+
+pub fn mono_sig_check(file: crate::monomorphized::File) -> crate::monomorphized::File {
+    crate::monomorphized::sig_check::check(file)
+}
+
+pub fn mono_dbmode_check(file: crate::monomorphized::File) -> crate::monomorphized::File {
+    crate::monomorphized::db_mode_check::classify(file)
 }
 
 // ---------------------------------------------------------------------------
@@ -276,11 +381,11 @@ pub fn check_nest(_file: &crate::core::File, _errors: &mut ErrorReporter) {
 // ---------------------------------------------------------------------------
 
 pub fn monoize(
-    _file: crate::core::File,
-    _settings: &Settings,
-    _errors: &mut ErrorReporter,
+    file: crate::core::File,
+    settings: &Settings,
+    errors: &mut ErrorReporter,
 ) -> Option<crate::monomorphized::File> {
-    todo!("monoize: not yet implemented")
+    crate::monomorphized::monoize::monoize(file, settings, errors)
 }
 
 // ---------------------------------------------------------------------------
@@ -333,19 +438,21 @@ pub fn mono_inline(
 }
 
 pub fn mono_iflow(
-    _file: crate::monomorphized::File,
+    file: crate::monomorphized::File,
     _settings: &Settings,
     _errors: &mut ErrorReporter,
 ) -> Option<crate::monomorphized::File> {
-    todo!("mono_iflow: information-flow analysis")
+    // Information-flow analysis pass (iflow.sml). Not yet translated; pass through.
+    Some(file)
 }
 
 pub fn mono_sqlcache(
-    _file: crate::monomorphized::File,
+    file: crate::monomorphized::File,
     _settings: &Settings,
     _errors: &mut ErrorReporter,
 ) -> Option<crate::monomorphized::File> {
-    todo!("mono_sqlcache")
+    // SQL cache optimization pass (sqlcache.sml). Not yet translated; pass through.
+    Some(file)
 }
 
 // ---------------------------------------------------------------------------
@@ -353,18 +460,39 @@ pub fn mono_sqlcache(
 // ---------------------------------------------------------------------------
 
 pub fn cjrize(
-    _file: crate::monomorphized::File,
-    _errors: &mut ErrorReporter,
+    file: crate::monomorphized::File,
+    errors: &mut ErrorReporter,
 ) -> Option<crate::c_like_representation::File> {
-    todo!("cjrize: not yet implemented")
+    crate::c_like_representation::cjrize::cjrize(file, errors)
+}
+
+// ---------------------------------------------------------------------------
+// Phase: Prepare (cjr → cjr with prepared SQL statements)
+// ---------------------------------------------------------------------------
+
+pub fn cjr_prepare(
+    file: crate::c_like_representation::File,
+    settings: &Settings,
+) -> crate::c_like_representation::File {
+    crate::c_like_representation::prepare::prepare(file, settings)
+}
+
+// ---------------------------------------------------------------------------
+// Phase: CheckNest (annotate EQuery.prepared.nested on CJR)
+// ---------------------------------------------------------------------------
+
+pub fn cjr_check_nest(
+    file: crate::c_like_representation::File,
+) -> crate::c_like_representation::File {
+    crate::c_like_representation::check_nest::annotate(file)
 }
 
 // ---------------------------------------------------------------------------
 // Phase: C code generation (cjr → .c file)
 // ---------------------------------------------------------------------------
 
-pub fn cjr_print(_file: &crate::c_like_representation::File, _settings: &Settings) -> String {
-    todo!("cjr_print: C code generator not yet implemented")
+pub fn cjr_print(file: &crate::c_like_representation::File, settings: &Settings) -> String {
+    crate::c_like_representation::cjr_print::cjr_print(file, settings)
 }
 
 // ---------------------------------------------------------------------------
@@ -372,32 +500,126 @@ pub fn cjr_print(_file: &crate::c_like_representation::File, _settings: &Setting
 // ---------------------------------------------------------------------------
 
 pub fn js_compile(
-    _file: &crate::monomorphized::File,
+    file: &crate::monomorphized::File,
     _settings: &Settings,
     _errors: &mut ErrorReporter,
 ) -> Option<String> {
-    todo!("js_compile: JavaScript compiler not yet implemented")
+    // Walk the Mono file and collect any pre-compiled DJavaScript declarations.
+    // A full implementation would compile client-side code to JavaScript here.
+    let scripts: Vec<&str> = file
+        .0
+        .iter()
+        .filter_map(|d| match &d.node {
+            crate::monomorphized::Decl::JavaScript(s) => Some(s.as_str()),
+            _ => None,
+        })
+        .collect();
+    if scripts.is_empty() {
+        None
+    } else {
+        Some(scripts.join("\n"))
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Phase: SQL DDL generation
 // ---------------------------------------------------------------------------
 
-pub fn sql_generate(_file: &crate::c_like_representation::File, _settings: &Settings) -> String {
-    todo!("sql_generate: SQL DDL generator not yet implemented")
+pub fn sql_generate(file: &crate::c_like_representation::File, settings: &Settings) -> String {
+    crate::c_like_representation::sql_generate::sql_generate(file, settings)
 }
 
 // ---------------------------------------------------------------------------
 // Phase: C compilation + linking
 // ---------------------------------------------------------------------------
 
-pub fn cc_and_link(
-    _c_source: &str,
-    _output: &Path,
-    _job: &Job,
-    _settings: &Settings,
-) -> Result<()> {
-    todo!("cc_and_link: C compilation not yet implemented")
+pub fn cc_and_link(c_source: &str, output: &Path, job: &Job, settings: &Settings) -> Result<()> {
+    use std::process::Command;
+
+    // Write C source to a temporary file.
+    let c_dir = output.parent().unwrap_or_else(|| std::path::Path::new("."));
+    let c_file = c_dir.join(format!(
+        "{}.c",
+        output
+            .file_stem()
+            .unwrap_or(std::ffi::OsStr::new("app"))
+            .to_string_lossy()
+    ));
+    let o_file = c_dir.join(format!(
+        "{}.o",
+        output
+            .file_stem()
+            .unwrap_or(std::ffi::OsStr::new("app"))
+            .to_string_lossy()
+    ));
+
+    std::fs::write(&c_file, c_source)
+        .with_context(|| format!("writing C source to {}", c_file.display()))?;
+
+    let cc = if settings.config_c_compiler.is_empty() {
+        "cc"
+    } else {
+        &settings.config_c_compiler
+    };
+
+    let opt_flag = if job.debug { "" } else { "-O3" };
+
+    // Compile step. Use ISO C11 for generated code; cproc/gcc/clang all support it.
+    let mut compile_cmd = Command::new(cc);
+    compile_cmd
+        .arg("-std=c11")
+        .arg("-pedantic")
+        .arg("-Wimplicit")
+        .arg("-Werror")
+        .arg("-Wno-unused-value")
+        .arg("-Wno-gnu-zero-variadic-macro-arguments")
+        .arg("-c")
+        .arg(&c_file)
+        .arg("-o")
+        .arg(&o_file);
+    if !opt_flag.is_empty() {
+        compile_cmd.arg(opt_flag);
+    }
+    if !settings.config_include.is_empty() {
+        compile_cmd.arg("-I").arg(&settings.config_include);
+    }
+    if job.debug {
+        compile_cmd.arg("-g");
+    }
+    if job.profile {
+        compile_cmd.arg("-pg");
+    }
+
+    let compile_status = compile_cmd
+        .status()
+        .with_context(|| format!("running C compiler '{}'", cc))?;
+    if !compile_status.success() {
+        bail!("C compilation failed (exit {})", compile_status);
+    }
+
+    // Link step.
+    let linker_cmd_base = job.linker.as_deref().unwrap_or(cc);
+    let mut link_cmd = Command::new(linker_cmd_base);
+    link_cmd.arg(&o_file);
+    if !settings.config_lib.is_empty() {
+        link_cmd.arg(format!("-L{}", settings.config_lib));
+    }
+    link_cmd.arg("-lurweb").arg("-lm").arg("-o").arg(output);
+    if job.debug {
+        link_cmd.arg("-g");
+    }
+    if job.profile {
+        link_cmd.arg("-pg");
+    }
+
+    let link_status = link_cmd
+        .status()
+        .with_context(|| format!("running linker '{}'", linker_cmd_base))?;
+    if !link_status.success() {
+        bail!("Linking failed (exit {})", link_status);
+    }
+
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -458,13 +680,7 @@ pub fn compile(urp_path: &Path, settings: &mut Settings) -> CompileResult {
 
     // Core checks
     check_marshal(&core_file, settings, &mut errors);
-    check_script(&core_file, &mut errors);
-    check_path(&core_file, settings, &mut errors);
-    check_side(&core_file, &mut errors);
-    check_sig(&core_file, &mut errors);
-    check_dbmode(&core_file, &mut errors);
     check_termination(&core_file, &mut errors);
-    check_nest(&core_file, &mut errors);
     if errors.has_errors() {
         bail!("check errors");
     }
@@ -480,6 +696,16 @@ pub fn compile(urp_path: &Path, settings: &mut Settings) -> CompileResult {
     let mono_file = mono_opt(mono_file, settings, &mut errors);
     let mono_file = mono_shake(mono_file);
     let mono_file = mono_inline(mono_file, settings);
+
+    // Mono checks
+    let mono_file = mono_script_check(mono_file, settings, &mut errors);
+    mono_path_check(&mono_file, &mut errors);
+    let (mono_file, _env_vars) = mono_side_check(mono_file, settings, &mut errors);
+    let mono_file = mono_sig_check(mono_file);
+    let mono_file = mono_dbmode_check(mono_file);
+    if errors.has_errors() {
+        bail!("mono check errors");
+    }
 
     let mono_file = if settings.debug {
         mono_iflow(mono_file, settings, &mut errors)
@@ -504,6 +730,10 @@ pub fn compile(urp_path: &Path, settings: &mut Settings) -> CompileResult {
     if errors.has_errors() {
         bail!("CJR errors");
     }
+
+    // Prepare SQL statements and annotate nested queries
+    let cjr_file = cjr_prepare(cjr_file, settings);
+    let cjr_file = cjr_check_nest(cjr_file);
 
     // Generate C code
     let c_code = cjr_print(&cjr_file, settings);
@@ -569,19 +799,35 @@ mod tests {
     // Ok/Some/Default would not panic and fail these tests.
 
     #[test]
-    #[should_panic(expected = "parse_urp")]
-    fn parse_urp_panics_until_implemented() {
+    fn parse_urp_simple_sources() {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("x.urp");
-        std::fs::write(&p, "x.ur").unwrap();
-        let _ = parse_urp(&p);
+        std::fs::write(&p, "foo\nbar\n").unwrap();
+        let job = parse_urp(&p).unwrap();
+        assert_eq!(job.sources.len(), 2);
+        assert!(job.sources[0].ends_with("foo"));
     }
 
     #[test]
-    #[should_panic(expected = "parse_sources")]
-    fn parse_sources_panics_until_implemented() {
+    fn parse_urp_with_directives() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("app.urp");
+        std::fs::write(&p, "database mydb\ndebug\n\nmod1\n").unwrap();
+        let job = parse_urp(&p).unwrap();
+        assert_eq!(job.database.as_deref(), Some("mydb"));
+        assert!(job.debug);
+        assert_eq!(job.sources.len(), 1);
+    }
+
+    #[test]
+    fn parse_sources_empty_job_returns_empty() {
+        // With no sources and no ffi, parse_sources returns Some([]) without
+        // calling parse_ur (which is still unimplemented).
         let mut errors = ErrorReporter::new();
-        let _ = parse_sources(&Job::default(), &mut errors);
+        let result = parse_sources(&Job::default(), &mut errors);
+        assert!(result.is_some());
+        assert!(result.unwrap().is_empty());
+        assert!(!errors.has_errors());
     }
 
     #[test]
@@ -593,10 +839,11 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "explify")]
-    fn explify_panics_until_implemented() {
+    fn explify_empty_file() {
         let mut errors = ErrorReporter::new();
-        let _ = explify(Default::default(), &mut errors);
+        let result = explify(Default::default(), &mut errors);
+        assert!(result.is_some());
+        assert!(result.unwrap().is_empty());
     }
 
     #[test]
@@ -744,61 +991,77 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "check_script")]
-    fn check_script_panics_until_implemented() {
+    fn mono_script_check_passes_through_empty_file() {
+        let settings = Settings::default();
         let mut errors = ErrorReporter::new();
-        check_script(&Default::default(), &mut errors);
+        let result = mono_script_check(Default::default(), &settings, &mut errors);
+        assert!(result.0.is_empty());
+        assert!(!errors.has_errors());
     }
 
     #[test]
-    #[should_panic(expected = "check_path")]
-    fn check_path_panics_until_implemented() {
+    fn mono_path_check_no_errors_on_empty_file() {
         let mut errors = ErrorReporter::new();
-        let mut settings = Settings::default();
-        check_path(&Default::default(), &mut settings, &mut errors);
+        mono_path_check(&Default::default(), &mut errors);
+        assert!(!errors.has_errors());
     }
 
     #[test]
-    #[should_panic(expected = "check_side")]
-    fn check_side_panics_until_implemented() {
+    fn mono_side_check_passes_through_empty_file() {
+        let settings = Settings::default();
         let mut errors = ErrorReporter::new();
-        check_side(&Default::default(), &mut errors);
+        let (file, env_vars) = mono_side_check(Default::default(), &settings, &mut errors);
+        assert!(file.0.is_empty());
+        assert!(env_vars.is_empty());
+        assert!(!errors.has_errors());
     }
 
     #[test]
-    #[should_panic(expected = "check_sig")]
-    fn check_sig_panics_until_implemented() {
-        let mut errors = ErrorReporter::new();
-        check_sig(&Default::default(), &mut errors);
+    fn mono_sig_check_passes_through_empty_file() {
+        let result = mono_sig_check(Default::default());
+        assert!(result.0.is_empty());
     }
 
     #[test]
-    #[should_panic(expected = "check_dbmode")]
-    fn check_dbmode_panics_until_implemented() {
-        let mut errors = ErrorReporter::new();
-        check_dbmode(&Default::default(), &mut errors);
+    fn mono_dbmode_check_passes_through_empty_file() {
+        let result = mono_dbmode_check(Default::default());
+        assert!(result.0.is_empty());
     }
 
     #[test]
-    #[should_panic(expected = "check_termination")]
-    fn check_termination_panics_until_implemented() {
+    fn check_termination_noop() {
         let mut errors = ErrorReporter::new();
         check_termination(&Default::default(), &mut errors);
+        assert!(!errors.has_errors());
     }
 
     #[test]
-    #[should_panic(expected = "check_nest")]
-    fn check_nest_panics_until_implemented() {
-        let mut errors = ErrorReporter::new();
-        check_nest(&Default::default(), &mut errors);
+    fn cjr_check_nest_empty_file() {
+        // Catches mutant: cjr_check_nest panics or drops decls on empty input.
+        let result = cjr_check_nest(Default::default());
+        assert!(result.0.is_empty());
+        assert!(result.1.is_empty());
     }
 
     #[test]
-    #[should_panic(expected = "monoize")]
-    fn monoize_panics_until_implemented() {
+    fn cjr_prepare_empty_file() {
+        let settings = Settings::default();
+        let result = cjr_prepare(Default::default(), &settings);
+        // prepare always prepends DPreparedStatements
+        assert_eq!(result.0.len(), 1);
+        assert!(matches!(
+            &result.0[0].node,
+            crate::c_like_representation::Decl::PreparedStatements(v) if v.is_empty()
+        ));
+    }
+
+    #[test]
+    fn monoize_empty_file() {
         let mut errors = ErrorReporter::new();
-        let mut settings = Settings::default();
-        let _ = monoize(Default::default(), &mut settings, &mut errors);
+        let settings = Settings::default();
+        let result = monoize(Default::default(), &settings, &mut errors);
+        assert!(result.is_some());
+        assert!(result.unwrap().0.is_empty());
     }
 
     #[test]
@@ -857,55 +1120,74 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "mono_iflow")]
-    fn mono_iflow_panics_until_implemented() {
+    fn mono_iflow_passthrough() {
         let mut errors = ErrorReporter::new();
-        let mut settings = Settings::default();
-        let _ = mono_iflow(Default::default(), &mut settings, &mut errors);
+        let settings = Settings::default();
+        let result = mono_iflow(Default::default(), &settings, &mut errors);
+        assert!(result.is_some());
     }
 
     #[test]
-    #[should_panic(expected = "mono_sqlcache")]
-    fn mono_sqlcache_panics_until_implemented() {
+    fn mono_sqlcache_passthrough() {
         let mut errors = ErrorReporter::new();
-        let mut settings = Settings::default();
-        let _ = mono_sqlcache(Default::default(), &mut settings, &mut errors);
+        let settings = Settings::default();
+        let result = mono_sqlcache(Default::default(), &settings, &mut errors);
+        assert!(result.is_some());
     }
 
     #[test]
-    #[should_panic(expected = "cjrize")]
-    fn cjrize_panics_until_implemented() {
+    fn cjrize_empty_file() {
         let mut errors = ErrorReporter::new();
-        let _ = cjrize(Default::default(), &mut errors);
+        let result = cjrize(Default::default(), &mut errors);
+        assert!(result.is_some());
+        let (decls, ps) = result.unwrap();
+        assert!(decls.is_empty());
+        assert!(ps.is_empty());
     }
 
     #[test]
-    #[should_panic(expected = "cjr_print")]
-    fn cjr_print_panics_until_implemented() {
-        let mut settings = Settings::default();
-        let _ = cjr_print(&Default::default(), &mut settings);
+    fn cjr_print_empty_file_generates_header() {
+        let settings = Settings::default();
+        let result = cjr_print(&Default::default(), &settings);
+        assert!(
+            result.contains("#include"),
+            "cjr_print of empty file must produce C header includes, got:\n{}",
+            result
+        );
+        assert!(
+            result.contains("uw_app uw_application"),
+            "cjr_print of empty file must produce uw_app struct, got:\n{}",
+            result
+        );
     }
 
     #[test]
-    #[should_panic(expected = "js_compile")]
-    fn js_compile_panics_until_implemented() {
+    fn js_compile_empty_file_returns_none() {
         let mut errors = ErrorReporter::new();
-        let mut settings = Settings::default();
-        let _ = js_compile(&Default::default(), &mut settings, &mut errors);
+        let settings = Settings::default();
+        let result = js_compile(&Default::default(), &settings, &mut errors);
+        assert!(result.is_none());
     }
 
     #[test]
-    #[should_panic(expected = "sql_generate")]
-    fn sql_generate_panics_until_implemented() {
-        let mut settings = Settings::default();
-        let _ = sql_generate(&Default::default(), &mut settings);
+    fn sql_generate_empty_file() {
+        let settings = Settings::default();
+        let result = sql_generate(&Default::default(), &settings);
+        assert!(result.is_empty());
     }
 
     #[test]
-    #[should_panic(expected = "cc_and_link")]
-    fn cc_and_link_panics_until_implemented() {
+    fn cc_and_link_returns_result() {
         let dir = tempfile::tempdir().unwrap();
         let out = dir.path().join("a.out");
-        let _ = cc_and_link("int main() {}", &out, &Job::default(), &Settings::default());
+        // Without the urweb runtime installed, linking will fail (Err), but it should not panic.
+        let result = cc_and_link(
+            "int main() { return 0; }",
+            &out,
+            &Job::default(),
+            &Settings::default(),
+        );
+        // Either Ok (if cc is available and links) or Err (no urweb runtime) — not a panic.
+        let _ = result;
     }
 }

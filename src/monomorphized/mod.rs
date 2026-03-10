@@ -5,11 +5,17 @@
 //!
 //! Mirrors `mono.sml`.
 
+pub mod db_mode_check;
 pub mod environment;
 pub mod fuse;
 pub mod mono_opt;
 pub mod mono_reduce;
 pub mod mono_shake;
+pub mod monoize;
+pub mod path_check;
+pub mod script_check;
+pub mod side_check;
+pub mod sig_check;
 pub mod untangle;
 pub mod utilities;
 

@@ -9,6 +9,7 @@
 pub mod disjointness_analysis;
 pub mod elaboration_errors;
 pub mod environment;
+pub mod explify;
 pub mod module_database;
 pub mod type_operations;
 pub mod utilities;

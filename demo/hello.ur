@@ -1,7 +1,7 @@
 val rec
  main : (_ :: Type) -> (_ :: Type) =
-  fn $x : (_ :: Type) =>
-   case $x of
+  fn x : (_ :: Type) =>
+   case x of
     
     {} =>
     

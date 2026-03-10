@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 
-use crate::monomorphized::{Exp, LocDecl, LocExp, LocPat, LocTyp, Pat, PatCon};
+use crate::monomorphized::{Exp, LocDecl, LocExp, LocPat, LocTyp, Pat};
 
 // ---------------------------------------------------------------------------
 // Error type
@@ -48,7 +48,7 @@ pub fn lift_exp_in_exp(bound: usize, e: &LocExp) -> LocExp {
 }
 
 fn lift_exp_node(bound: usize, e: &Exp) -> Exp {
-    use crate::monomorphized::{CaseMeta, JavaScriptMode, QueryMeta};
+    use crate::monomorphized::{JavaScriptMode, QueryMeta};
     match e {
         Exp::Rel(n) => {
             if *n < bound {

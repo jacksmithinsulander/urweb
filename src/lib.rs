@@ -44,3 +44,5 @@ pub mod primitives;
 pub mod settings;
 /// Source AST — surface syntax from the parser.
 pub mod source;
+/// Parser for `.urp` project files.
+pub mod urp_parser;

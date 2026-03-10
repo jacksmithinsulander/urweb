@@ -245,12 +245,13 @@ DeclNode: Decl = {
 
     // functor
     "functor" <name:"UIDENT"> "(" <arg:"UIDENT"> ":" <s:Sgn> ")" <ret:SgnAnnot?> "=" <body:Str> =>
-        todo!("functor decl"),
+        Decl::Str(name, None, None, Located::dummy(Str::Fun(arg, s, ret, Box::new(body))), false),
 
     // table / sequence / view / cookie / style
     "table" <name:"IDENT"> ":" <c:Con> <pol1:PolicyExp?> <pol2:PolicyExp?> =>
-        Decl::Table(name, c, pol1.unwrap_or_else(|| todo!("default table policy")),
-                              pol2.unwrap_or_else(|| todo!("default table policy"))),
+        Decl::Table(name, c,
+            pol1.unwrap_or_else(|| Located::dummy(Exp::Record(vec![], false))),
+            pol2.unwrap_or_else(|| Located::dummy(Exp::Record(vec![], false)))),
 
     "sequence" <name:"IDENT"> => Decl::Sequence(name),
 
@@ -331,8 +332,8 @@ SgnItemNode: SgnItem = {
     "class" <name:"IDENT"> "::" <k:Kind> "=" <c:Con> => SgnItem::Class(name, Box::new(k), c),
     "table" <name:"IDENT"> ":" <c:Con> <p1:PolicyExp?> <p2:PolicyExp?> =>
         SgnItem::Table(name, c,
-            p1.unwrap_or_else(|| todo!("default")),
-            p2.unwrap_or_else(|| todo!("default"))),
+            p1.unwrap_or_else(|| Located::dummy(Exp::Record(vec![], false))),
+            p2.unwrap_or_else(|| Located::dummy(Exp::Record(vec![], false)))),
 };
 
 // ---------------------------------------------------------------------------
@@ -523,16 +524,30 @@ ExpNode: Exp = {
     <e:AppExp> ":" <c:Con> => Exp::Annot(Box::new(e), c),
 
     // Abstractions
-    "fn" <p:Pat> "=>" <e:Exp> => Exp::Abs(
-        // simple variable pattern only for now
-        todo!("fn pat => e"),
-        None,
-        Box::new(e),
-    ),
+    "fn" <p:Pat> "=>" <e:Exp> => {
+        let span = p.span.clone();
+        match p.node {
+            Pat::Var(x) => Exp::Abs(x, None, Box::new(e)),
+            node => {
+                let fresh = "_fn_arg".to_string();
+                Exp::Abs(
+                    fresh.clone(),
+                    None,
+                    Box::new(Located::dummy(Exp::Case(
+                        Box::new(Located::dummy(Exp::Var(vec![], fresh, Inference::DontInfer))),
+                        vec![(Located::new(node, span), e)],
+                    ))),
+                )
+            },
+        }
+    },
 
     // if-then-else (desugars to case)
     "if" <cond:Exp> "then" <t:Exp> "else" <f:Exp> =>
-        todo!("if-then-else"),
+        Exp::Case(Box::new(cond), vec![
+            (Located::dummy(Pat::Con(vec!["Basis".into()], "True".into(), None)), t),
+            (Located::dummy(Pat::Con(vec!["Basis".into()], "False".into(), None)), f),
+        ]),
 
     // case
     "case" <e:Exp> "of" <arms:CaseArms> =>
@@ -542,13 +557,21 @@ ExpNode: Exp = {
     "let" <decls:EDecl*> "in" <e:Exp> "end" =>
         Exp::Let(decls, Box::new(e)),
 
-    // andalso / orelse (desugar to if)
-    <e1:Exp> "andalso" <e2:Exp> => todo!("andalso"),
-    <e1:Exp> "orelse"  <e2:Exp> => todo!("orelse"),
+    // andalso / orelse (desugar to case)
+    <e1:Exp> "andalso" <e2:Exp> => Exp::Case(Box::new(e1), vec![
+        (Located::dummy(Pat::Con(vec!["Basis".into()], "True".into(), None)), e2),
+        (Located::dummy(Pat::Con(vec!["Basis".into()], "False".into(), None)),
+         Located::dummy(Exp::Var(vec!["Basis".into()], "False".into(), Inference::DontInfer))),
+    ]),
+    <e1:Exp> "orelse"  <e2:Exp> => Exp::Case(Box::new(e1), vec![
+        (Located::dummy(Pat::Con(vec!["Basis".into()], "True".into(), None)),
+         Located::dummy(Exp::Var(vec!["Basis".into()], "True".into(), Inference::DontInfer))),
+        (Located::dummy(Pat::Con(vec!["Basis".into()], "False".into(), None)), e2),
+    ]),
 
     // Sequencing
     <e1:Exp> ";" <e2:Exp> =>
-        todo!("seq"),
+        Exp::Let(vec![Located::dummy(EDecl::Val(Located::dummy(Pat::Var("_".into())), e1))], Box::new(e2)),
 
     // Disjoint application
     <e:AppExp> "[" <c1:Con> "~" <c2:Con> "]" =>
@@ -587,8 +610,8 @@ AtomExpNode: Exp = {
     },
     "{" <fields:ExpFields> "}" => Exp::Record(fields, false),
     "{" <fields:ExpFields> "," "..." "}" => Exp::Record(fields, true),
-    <e:AtomExp> "." <name:"IDENT"> => todo!("field access"),
-    <e:AtomExp> "." "#" <name:"IDENT"> => Exp::Field(Box::new(e), todo!("field name con")),
+    <e:AtomExp> "." <name:"IDENT"> => Exp::Field(Box::new(e), Located::dummy(Con::Name(name))),
+    <e:AtomExp> "." "#" <name:"IDENT"> => Exp::Field(Box::new(e), Located::dummy(Con::Name(name))),
     "(" <e:Exp> ")" => e.node,
     "_" => Exp::Wild,
     "?" => Exp::Hole,
@@ -601,11 +624,11 @@ ExpFields: Vec<(LocCon, LocExp)> = {
 };
 
 ExpField: (LocCon, LocExp) = {
-    <name:"IDENT"> "=" <e:Exp> => (todo!("field name con from str"), e),
+    <name:"IDENT"> "=" <e:Exp> => (Located::dummy(Con::Name(name)), e),
     <name:"IDENT"> => {
         // Punning: {x} means {x = x}
         let e = Located::dummy(Exp::Var(vec![], name.clone(), Inference::DontInfer));
-        (todo!("field name con from str"), e)
+        (Located::dummy(Con::Name(name)), e)
     },
 };
 
@@ -710,11 +733,19 @@ FunBind: (String, Option<LocCon>, LocExp) = {
     <name:"IDENT"> <params:AtomPat+> <ret:(":" <Con>)?> "=" <e:Exp> => {
         // Wrap body in nested Abs for each parameter
         let body = params.into_iter().rev().fold(e, |acc, p| {
-            Located::dummy(Exp::Abs(
-                todo!("extract name from pattern"),
-                None,
-                Box::new(acc),
-            ))
+            let span = p.span.clone();
+            let (param_name, inner) = match p.node {
+                Pat::Var(x) => (x, acc),
+                node => {
+                    let fresh = "_arg".to_string();
+                    let case_e = Located::dummy(Exp::Case(
+                        Box::new(Located::dummy(Exp::Var(vec![], fresh.clone(), Inference::DontInfer))),
+                        vec![(Located::new(node, span), acc)],
+                    ));
+                    (fresh, case_e)
+                },
+            };
+            Located::dummy(Exp::Abs(param_name, None, Box::new(inner)))
         });
         (name, ret, body)
     },

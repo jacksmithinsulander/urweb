@@ -6,7 +6,7 @@ val q2 : sql_query [] [] _ _ = (SELECT AVG(t1.A) FROM t1)
 val q3 : sql_query [] [] _ _ = (SELECT SUM(t1.C) FROM t1)
 val q4 : sql_query [] [] _ _ = (SELECT MIN(t1.B), MAX(t1.A) FROM t1)
 val q5 : sql_query [] [] _ _ = (SELECT SUM(t1.A) FROM t1 GROUP BY t1.B)
-val q6 = (SELECT COUNT(t2.E) FROM t2 GROUP BY t2.D)
+val q6 = (SELECT COUNT(t2.E) FROM t2 GROUP BY t2.D ORDER BY t2.D)
 
 task initialize = fn () =>
      dml (INSERT INTO t1 (A, B, C) VALUES (1, 'a', 1.0));

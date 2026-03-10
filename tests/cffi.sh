@@ -28,9 +28,21 @@ URWEB="${URWEB:-../bin/urweb}"
 
 PORT=${PORT:-8080}
 export PORT
+# Free port in case a previous run left a server
+_pid=$(lsof -ti:$PORT 2>/dev/null) || true
+[ -n "$_pid" ] && kill $_pid 2>/dev/null || true
+sleep 1
+
 "$TESTSRV" -q -a 127.0.0.1 -p "$PORT" &
 printf '%s\n' "$!" > "$TESTPID"
-sleep 1
+# Wait for server to be ready (up to 15s)
+_wait=0
+while [ $_wait -lt 15 ]; do
+  (nc -z 127.0.0.1 "$PORT" 2>/dev/null || curl -s "http://127.0.0.1:$PORT/" >/dev/null 2>/dev/null) && break
+  sleep 1
+  _wait=$((_wait + 1))
+done
+[ $_wait -lt 15 ] || { printf 'FAIL [cffi]: server not ready after 15s\n' >&2; exit 1; }
 
 cleanup() { kill "$(cat "$TESTPID" 2>/dev/null)" 2>/dev/null || true; }
 trap cleanup EXIT

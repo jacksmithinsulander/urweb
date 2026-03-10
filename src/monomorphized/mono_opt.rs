@@ -893,22 +893,50 @@ fn opt_exp_peephole(
                         }
                         Exp::App(fexpr, earg) => {
                             if let Exp::Ffi(m2, f2) = &fexpr.node {
-                                if m2 == "Basis" && f2 == "intToString" {
-                                    if let Exp::Prim(Prim::Int(n)) = earg.node {
-                                        return Exp::Prim(Prim::String(
-                                            StringMode::Html,
-                                            htmlify_int(n),
-                                        ));
+                                if m2 == "Basis" {
+                                    if f2 == "intToString" {
+                                        if let Exp::Prim(Prim::Int(n)) = earg.node {
+                                            return Exp::Prim(Prim::String(
+                                                StringMode::Html,
+                                                htmlify_int(n),
+                                            ));
+                                        }
+                                        let t = Located::new(
+                                            Typ::Ffi("Basis".into(), "int".into()),
+                                            fexpr.span.clone(),
+                                        );
+                                        return Exp::FfiApp(
+                                            "Basis".into(),
+                                            "htmlifyInt".into(),
+                                            vec![(*earg.clone(), t)],
+                                        );
+                                    } else if f2 == "floatToString" {
+                                        if let Exp::Prim(Prim::Float(n)) = earg.node {
+                                            return Exp::Prim(Prim::String(
+                                                StringMode::Html,
+                                                htmlify_float(n),
+                                            ));
+                                        }
+                                        let t = Located::new(
+                                            Typ::Ffi("Basis".into(), "float".into()),
+                                            fexpr.span.clone(),
+                                        );
+                                        return Exp::FfiApp(
+                                            "Basis".into(),
+                                            "htmlifyFloat".into(),
+                                            vec![(*earg.clone(), t)],
+                                        );
+                                    } else if f2 == "timeToString" {
+                                        let t = Located::new(
+                                            Typ::Ffi("Basis".into(), "time".into()),
+                                            fexpr.span.clone(),
+                                        );
+                                        return Exp::FfiApp(
+                                            "Basis".into(),
+                                            "htmlifyTime".into(),
+                                            vec![(*earg.clone(), t)],
+                                        );
                                     }
-                                    let t = Located::new(
-                                        Typ::Ffi("Basis".into(), "int".into()),
-                                        fexpr.span.clone(),
-                                    );
-                                    return Exp::FfiApp(
-                                        "Basis".into(),
-                                        "htmlifyInt".into(),
-                                        vec![(*earg.clone(), t)],
-                                    );
                                 }
                             }
                             Exp::FfiApp("Basis".into(), "htmlifyString".into(), args)
@@ -924,24 +952,6 @@ fn opt_exp_peephole(
                                 }
                             }
                             Exp::FfiApp("Basis".into(), "htmlifyFloat".into(), args2.clone())
-                        }
-                        Exp::App(fexpr, earg)
-                            if {
-                                matches!(&fexpr.node, Exp::Ffi(m2, f2) if m2 == "Basis" && f2 == "floatToString")
-                            } =>
-                        {
-                            if let Exp::Prim(Prim::Float(n)) = earg.node {
-                                return Exp::Prim(Prim::String(StringMode::Html, htmlify_float(n)));
-                            }
-                            let t = Located::new(
-                                Typ::Ffi("Basis".into(), "float".into()),
-                                fexpr.span.clone(),
-                            );
-                            Exp::FfiApp(
-                                "Basis".into(),
-                                "htmlifyFloat".into(),
-                                vec![(*earg.clone(), t)],
-                            )
                         }
                         // htmlifyString(boolToString(...))
                         Exp::FfiApp(m2, f2, args2) if m2 == "Basis" && f2 == "boolToString" => {
@@ -963,19 +973,6 @@ fn opt_exp_peephole(
                                 }
                             }
                             Exp::FfiApp("Basis".into(), "htmlifyBool".into(), args2.clone())
-                        }
-                        // htmlifyString(timeToString(e))
-                        Exp::App(fexpr, earg) if matches!(&fexpr.node, Exp::Ffi(m2, f2) if m2 == "Basis" && f2 == "timeToString") =>
-                        {
-                            let t = Located::new(
-                                Typ::Ffi("Basis".into(), "time".into()),
-                                fexpr.span.clone(),
-                            );
-                            Exp::FfiApp(
-                                "Basis".into(),
-                                "htmlifyTime".into(),
-                                vec![(*earg.clone(), t)],
-                            )
                         }
                         // htmlifyString(literal)
                         Exp::Prim(Prim::String(_, s)) => {

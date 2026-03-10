@@ -212,6 +212,24 @@ echo ""
 echo "build test-minimal: test_minimal_cmd"
 echo ""
 
+# cproc (optional C11 compiler) - requires QBE: brew install qbe
+echo "rule build_cproc"
+echo "  command = cd $srcdir/vendor/cproc && (test -f config.h || ./configure) && make"
+echo "  description = Build cproc (C11 compiler)"
+echo "  pool = console"
+echo ""
+echo "build cproc: build_cproc"
+echo ""
+
+# C compiler tests (gcc, clang, cproc) - verifies C11 compliance
+echo "rule test_cc_compilers_cmd"
+echo "  command = sh $srcdir/scripts/test-cc-compilers.sh $srcdir $builddir"
+echo "  description = Run CC compiler tests (gcc/clang/cproc)"
+echo "  pool = console"
+echo ""
+echo "build test-cc-compilers: test_cc_compilers_cmd"
+echo ""
+
 # Rust coverage (lcov, 100% line; requires cargo-llvm-cov)
 echo "rule coverage_rust_cmd"
 echo "  command = sh $srcdir/scripts/coverage-rust.sh"

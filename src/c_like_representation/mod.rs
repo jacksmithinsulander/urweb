@@ -5,6 +5,12 @@
 //!
 //! Mirrors `cjr.sml`.
 
+pub mod check_nest;
+pub mod cjr_print;
+pub mod cjrize;
+pub mod prepare;
+pub mod sql_generate;
+
 use crate::datatype_kind::DatatypeKind;
 use crate::error_types::Located;
 use crate::export::ExportKind;
