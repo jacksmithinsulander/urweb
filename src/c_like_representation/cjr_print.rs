@@ -3,7 +3,8 @@
 //! Translates a CJR `File` into a C source string.
 //! Mirrors `cjr_print.sml`.
 
-use std::collections::HashMap;
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
 
 use crate::c_like_representation::{
     DatatypeDecl, Decl, DmlMeta, Exp, LocDecl, LocExp, LocPat, LocTyp, Pat, PatCon, QueryMeta, Typ,
@@ -12,6 +13,42 @@ use crate::datatype_kind::DatatypeKind;
 use crate::export::ExportKind;
 use crate::monomorphized::{DbMode, Sidedness};
 use crate::settings::{FailureMode, Settings};
+
+// ---------------------------------------------------------------------------
+// Thread-local URL handler accumulator
+// (mirrors the mutable `unurlifies`/`urlHandlerPrototypes` refs in cjr_print.sml)
+// ---------------------------------------------------------------------------
+
+thread_local! {
+    /// Datatype/list ids for which unurlify helpers have already been emitted.
+    static UNURLIFY_SEEN: RefCell<HashSet<usize>> = RefCell::new(HashSet::new());
+    /// Datatype/list ids for which urlify helpers have already been emitted.
+    static URLIFY_SEEN: RefCell<HashSet<usize>> = RefCell::new(HashSet::new());
+    /// Forward declarations for URL handler helper functions.
+    static URL_HANDLER_PROTOS: RefCell<Vec<String>> = RefCell::new(Vec::new());
+    /// Definitions for URL handler helper functions.
+    static URL_HANDLER_DEFS: RefCell<Vec<String>> = RefCell::new(Vec::new());
+}
+
+fn reset_url_handlers() {
+    UNURLIFY_SEEN.with(|s| s.borrow_mut().clear());
+    URLIFY_SEEN.with(|s| s.borrow_mut().clear());
+    URL_HANDLER_PROTOS.with(|s| s.borrow_mut().clear());
+    URL_HANDLER_DEFS.with(|s| s.borrow_mut().clear());
+}
+
+fn add_url_handler(proto: String, def: String) {
+    URL_HANDLER_PROTOS.with(|s| s.borrow_mut().push(proto));
+    URL_HANDLER_DEFS.with(|s| s.borrow_mut().push(def));
+}
+
+fn collect_url_handler_protos() -> Vec<String> {
+    URL_HANDLER_PROTOS.with(|s| s.borrow().clone())
+}
+
+fn collect_url_handler_defs() -> Vec<String> {
+    URL_HANDLER_DEFS.with(|s| s.borrow().clone())
+}
 
 // ---------------------------------------------------------------------------
 // CjrEnv — compilation environment
@@ -801,13 +838,22 @@ pub fn p_exp(env: &CjrEnv, e: &LocExp, settings: &Settings) -> String {
             )
         }
 
-        Exp::Uurlify(e1, t, _from_client) => {
+        Exp::Uurlify(e1, t, from_client) => {
             let e_s = p_exp(env, e1, settings);
             let t_s = p_typ(env, t);
-            format!(
-                "({{\nuw_Basis_string request = uw_maybe_strdup(ctx, {});\n/* TODO: unurlify {} */\n(request ? ({} ){{}} : ({}){{}});\n}})",
-                e_s, t_s, t_s, t_s
-            )
+            let unurl = unurlify_req("request", t, env, *from_client);
+            if is_unboxable(t) {
+                format!(
+                    "({{\nuw_Basis_string request = uw_maybe_strdup(ctx, {e_s});\n\
+                     (request ? {unurl} : ({t_s}){{}});\n}})"
+                )
+            } else {
+                format!(
+                    "({{\nuw_Basis_string request = uw_maybe_strdup(ctx, {e_s});\n\
+                     (request ? ({{\n{t_s} *tmp = uw_malloc(ctx, sizeof({t_s}));\n\
+                     *tmp = {unurl};\ntmp;\n}}) : ({t_s}*)NULL);\n}})"
+                )
+            }
         }
     }
 }
@@ -1665,38 +1711,110 @@ fn p_datatype_decl(env: &CjrEnv, dt: &DatatypeDecl) -> String {
 // URL unurlify helpers
 // ---------------------------------------------------------------------------
 
-/// Generate C code to parse a URL-encoded argument of type `t` from `request`.
-fn unurlify(t: &LocTyp, env: &CjrEnv, from_client: bool) -> String {
-    match &t.node {
-        Typ::Ffi(m, name) => {
-            let fn_name = if m == "Basis" && name == "string" {
-                if from_client {
-                    "uw_Basis_unurlifyString_fromClient".to_string()
-                } else {
-                    "uw_Basis_unurlifyString".to_string()
-                }
-            } else {
-                format!(
-                    "uw_{}_unurlify{}",
-                    ident(m),
-                    {
-                        let mut s = name.clone();
-                        if let Some(c) = s.get_mut(0..1) {
-                            c.make_ascii_uppercase();
-                        }
-                        s
-                    }
-                )
-            };
-            format!("{}(ctx, &request)", fn_name)
+/// `deStar` helper: convert `"(*request)"` to `"request"` and others to `"&X"`.
+fn de_star(request: &str) -> String {
+    if request == "(*request)" {
+        "request".to_string()
+    } else {
+        format!("&{}", request)
+    }
+}
+
+/// Capitalize the first ASCII character of `s`.
+fn capitalize(s: &str) -> String {
+    let mut out = s.to_string();
+    if let Some(c) = out.get_mut(0..1) {
+        c.make_ascii_uppercase();
+    }
+    out
+}
+
+/// Generate the chain of strncmp checks for an enum datatype's unurlification.
+fn do_em_enum(request: &str, xncs: &[(String, usize, Option<LocTyp>)], x: &str, i: usize) -> String {
+    match xncs {
+        [] => format!(
+            "(uw_error(ctx, FATAL, \"Error unurlifying datatype {x}\"), \
+             (enum __uwe_{x_ident}_{i})0)",
+            x_ident = ident(x)
+        ),
+        [(x_, n, _), rest @ ..] => {
+            let len = x_.len();
+            let x_ident = ident(x_);
+            let rest_s = do_em_enum(request, rest, x, i);
+            format!(
+                "((!strncmp({request}, \"{x_}\", {len}) \
+                 && ({request}[{len}] == 0 || {request}[{len}] == '/')) \
+                 ? ({request} += {len}, \
+                    ({request}[0] == '/' ? ++{request} : NULL), \
+                    __uwc_{x_ident}_{n}) \
+                 : {rest_s})"
+            )
         }
-        Typ::Record(0) => "uw_Basis_unurlifyUnit(ctx, &request)".to_string(),
+    }
+}
+
+/// Generate the chain of strncmp checks for a Default datatype's unurlification.
+fn do_em_default(
+    xncs: &[(String, usize, Option<LocTyp>)],
+    x: &str,
+    i: usize,
+    env: &CjrEnv,
+    from_client: bool,
+) -> String {
+    match xncs {
+        [] => format!("(uw_error(ctx, FATAL, \"Error unurlifying datatype {x}\"), NULL)"),
+        [(x_, n, to), rest @ ..] => {
+            let x_ident = ident(x_);
+            let x_dt_ident = ident(x);
+            let len = x_.len();
+            let rest_s = do_em_default(rest, x, i, env, from_client);
+            let tag_code = format!(
+                "struct __uwd_{x_dt_ident}_{i} *tmp = \
+                 uw_malloc(ctx, sizeof(struct __uwd_{x_dt_ident}_{i}));\n\
+                 tmp->tag = __uwc_{x_ident}_{n};\n\
+                 *request += {len};\n\
+                 if ((*request)[0] == '/') ++*request;\n"
+            );
+            let arg_code = match to {
+                None => String::new(),
+                Some(t_arg) => {
+                    let inner = unurlify_req("(*request)", t_arg, env, from_client);
+                    format!("tmp->data.uw_{x_ident} = {inner};\n")
+                }
+            };
+            format!(
+                "((!strncmp(*request, \"{x_}\", {len}) \
+                 && ((*request)[{len}] == 0 || (*request)[{len}] == '/')) \
+                 ? ({{\n{tag_code}{arg_code}tmp;\n}}) \
+                 : {rest_s})"
+            )
+        }
+    }
+}
+
+/// Generate C code to parse a URL-encoded value of type `t` from a `char **request` pointer.
+/// When called from the inline context (not a helper function), `request` is a `char *` local.
+fn unurlify_req(request: &str, t: &LocTyp, env: &CjrEnv, from_client: bool) -> String {
+    match &t.node {
+        Typ::Ffi(m, name) if m == "Basis" && name == "unit" => {
+            format!("uw_Basis_unurlifyUnit(ctx, {})", de_star(request))
+        }
+        Typ::Ffi(m, name) if m == "Basis" && name == "string" => {
+            if from_client {
+                format!("uw_Basis_unurlifyString_fromClient(ctx, {})", de_star(request))
+            } else {
+                format!("uw_Basis_unurlifyString(ctx, {})", de_star(request))
+            }
+        }
+        Typ::Ffi(m, name) => {
+            format!("uw_{}_{unurlify}{}(ctx, {})", ident(m), capitalize(name), de_star(request), unurlify = "unurlify")
+        }
+        Typ::Record(0) => format!("uw_Basis_unurlifyUnit(ctx, {})", de_star(request)),
         Typ::Record(i) => {
-            // Struct unurlification
             let fields = env.structs.get(i).cloned().unwrap_or_default();
             let mut out = String::from("({\n");
             for (x, ft) in &fields {
-                let inner = unurlify(ft, env, from_client);
+                let inner = unurlify_req(request, ft, env, from_client);
                 out.push_str(&format!(
                     "{} uwr_{} = {};\n",
                     p_typ(env, ft),
@@ -1711,17 +1829,336 @@ fn unurlify(t: &LocTyp, env: &CjrEnv, from_client: bool) -> String {
             out.push_str(" };\ntmp;\n})");
             out
         }
+        Typ::Datatype(DatatypeKind::Enum, i, xncs_ref) => {
+            let (x, xncs) = env
+                .lookup_datatype(*i)
+                .map(|(x, v)| (x.clone(), v.clone()))
+                .unwrap_or_else(|| {
+                    ("?".into(), xncs_ref.lock().unwrap().clone())
+                });
+            let inner = do_em_enum(request, &xncs, &x, *i);
+            format!(
+                "({request}[0] == '/' ? ++{request} : {request},\n{inner})"
+            )
+        }
+        Typ::Datatype(DatatypeKind::Option, i, xncs_ref) => {
+            let already = UNURLIFY_SEEN.with(|s| s.borrow().contains(i));
+            if already {
+                format!("unurlify_{i}(ctx, {})", de_star(request))
+            } else {
+                UNURLIFY_SEEN.with(|s| s.borrow_mut().insert(*i));
+                let (x, xncs) = env
+                    .lookup_datatype(*i)
+                    .map(|(x, v)| (x.clone(), v.clone()))
+                    .unwrap_or_else(|| ("?".into(), xncs_ref.lock().unwrap().clone()));
+                let (no_arg, has_arg, t_inner) = match xncs.as_slice() {
+                    [(a, _, None), (b, _, Some(t))] => (a.clone(), b.clone(), t.clone()),
+                    [(b, _, Some(t)), (a, _, None)] => (a.clone(), b.clone(), t.clone()),
+                    _ => return format!("/* unurlify: bad Option datatype */ NULL"),
+                };
+                let unboxable = is_unboxable(&t_inner);
+                let t_s = p_typ(env, &t_inner);
+                let no_arg_len = no_arg.len();
+                let has_arg_len = has_arg.len();
+                let has_arg_body = if unboxable {
+                    unurlify_req("(*request)", &t_inner, env, from_client)
+                } else {
+                    let inner = unurlify_req("(*request)", &t_inner, env, from_client);
+                    format!("({{\n{t_s} *tmp = uw_malloc(ctx, sizeof({t_s}));\n\
+                             *tmp = {inner};\ntmp;\n}})")
+                };
+                let star = if unboxable { "" } else { "*" };
+                let proto = format!(
+                    "static {t_s} {star}unurlify_{i}(uw_context, char **);\n"
+                );
+                let def = format!(
+                    "static {t_s} {star}unurlify_{i}(uw_context ctx, char **request) {{\n\
+                     return ((*request)[0] == '/' ? ++*request : *request,\n\
+                     ((!strncmp(*request, \"{no_arg}\", {no_arg_len}) \
+                     && ((*request)[{no_arg_len}] == 0 || (*request)[{no_arg_len}] == '/')) \
+                     ? (*request += {no_arg_len}, NULL) \
+                     : ((!strncmp(*request, \"{has_arg}\", {has_arg_len}) \
+                     && ((*request)[{has_arg_len}] == 0 || (*request)[{has_arg_len}] == '/')) \
+                     ? (*request += {has_arg_len}, \
+                        ((*request)[0] == '/' ? ++*request : NULL),\n\
+                        {has_arg_body})\n\
+                     : (uw_error(ctx, FATAL, \
+                        \"Error unurlifying datatype {x}\"), NULL))));\n}}\n"
+                );
+                add_url_handler(proto, def);
+                format!("unurlify_{i}(ctx, {})", de_star(request))
+            }
+        }
+        Typ::Datatype(DatatypeKind::Default, i, xncs_ref) => {
+            let already = UNURLIFY_SEEN.with(|s| s.borrow().contains(i));
+            if already {
+                format!("unurlify_{i}(ctx, {})", de_star(request))
+            } else {
+                UNURLIFY_SEEN.with(|s| s.borrow_mut().insert(*i));
+                let (x, xncs) = env
+                    .lookup_datatype(*i)
+                    .map(|(x, v)| (x.clone(), v.clone()))
+                    .unwrap_or_else(|| ("?".into(), xncs_ref.lock().unwrap().clone()));
+                let x_ident = ident(&x);
+                let t_name = format!("struct __uwd_{x_ident}_{i}");
+                let body = do_em_default(&xncs, &x, *i, env, from_client);
+                let proto = format!("static {t_name} *unurlify_{i}(uw_context, char **);\n");
+                let def = format!(
+                    "static {t_name} *unurlify_{i}(uw_context ctx, char **request) {{\n\
+                     return {body};\n}}\n"
+                );
+                add_url_handler(proto, def);
+                format!("unurlify_{i}(ctx, {})", de_star(request))
+            }
+        }
+        Typ::List(t_inner, i) => {
+            // Use a distinct key to avoid colliding with datatype ids: i | (1 << 63)
+            let list_key = *i | (1usize << 62);
+            let already = UNURLIFY_SEEN.with(|s| s.borrow().contains(&list_key));
+            if already {
+                format!("unurlify_list_{i}(ctx, {})", de_star(request))
+            } else {
+                UNURLIFY_SEEN.with(|s| s.borrow_mut().insert(list_key));
+                let t_s = p_typ(env, t_inner); // element type
+                // The list struct type
+                let list_t = format!("struct __uws_{i} *");
+                // unurlify a Cons node (Record of the list struct)
+                let record_t = crate::error_types::Located::dummy(Typ::Record(*i));
+                let inner_s = unurlify_req("(*request)", &record_t, env, from_client);
+                let proto = format!("static {list_t}unurlify_list_{i}(uw_context, char **);\n");
+                let _ = t_s;
+                let def = format!(
+                    "static {list_t}unurlify_list_{i}(uw_context ctx, char **request) {{\n\
+                     return ((*request)[0] == '/' ? ++*request : *request,\n\
+                     ((!strncmp(*request, \"Nil\", 3) && ((*request)[3] == 0 || (*request)[3] == '/')) \
+                     ? (*request += 3, \
+                        ((*request)[0] == '/' ? ((*request)[0] = 0, ++*request) : NULL), NULL) \
+                     : ((!strncmp(*request, \"Cons\", 4) && ((*request)[4] == 0 || (*request)[4] == '/')) \
+                     ? (*request += 4, ((*request)[0] == '/' ? ++*request : NULL),\n\
+                        ({{\n{list_t}tmp = uw_malloc(ctx, sizeof(struct __uws_{i}));\n\
+                        *tmp = {inner_s};\ntmp;\n}})) \
+                     : (uw_error(ctx, FATAL, \"Error unurlifying list: %s\", *request), NULL))));\n}}\n"
+                );
+                add_url_handler(proto, def);
+                format!("unurlify_list_{i}(ctx, {})", de_star(request))
+            }
+        }
         Typ::Option(inner) => {
-            let inner_unurl = unurlify(inner, env, from_client);
+            // Inline TOption (nullable pointer wrapping)
+            let inner_unurl = unurlify_req(request, inner, env, from_client);
             let inner_t = p_typ(env, inner);
             format!(
-                "((!strncmp(request, \"None\", 4) && (request[4] == 0 || request[4] == '/')) \
-                 ? (request += 4, (request[0] == '/' ? ++request : NULL), ({inner_t}*)NULL) \
-                 : (strncmp(request, \"Some/\", 5) ? (request += 5, ({inner_t}*)NULL) \
-                    : (request += 5, ({{ {inner_t} *tmp = uw_malloc(ctx, sizeof({inner_t})); *tmp = {inner_unurl}; tmp; }}))))"
+                "({request}[0] == '/' ? ++{request} : {request}, \
+                 ((!strncmp({request}, \"None\", 4) \
+                 && ({request}[4] == 0 || {request}[4] == '/')) \
+                 ? ({request} += ({request}[4] == 0 ? 4 : 5), NULL) \
+                 : ((!strncmp({request}, \"Some\", 4) && {request}[4] == '/') \
+                 ? ({request} += 5, \
+                    ({{ {inner_t} *tmp = uw_malloc(ctx, sizeof({inner_t})); \
+                    *tmp = {inner_unurl}; tmp; }}) \
+                 : (uw_error(ctx, FATAL, \"Error unurlifying option type\"), NULL))))"
             )
         }
         _ => format!("/* unurlify unknown type */ ({}){{}}", p_typ(env, t)),
+    }
+}
+
+/// Wrapper: parse from a `char *request` local (not a `char **`).
+fn unurlify(t: &LocTyp, env: &CjrEnv, from_client: bool) -> String {
+    unurlify_req("request", t, env, from_client)
+}
+
+// ---------------------------------------------------------------------------
+// URL urlify helpers
+// ---------------------------------------------------------------------------
+
+/// Generate C statements to urlify-write a value `it<level>` of type `t`.
+fn urlify_stmts(level: usize, t: &LocTyp, env: &CjrEnv) -> String {
+    match &t.node {
+        Typ::Ffi(m, name) if m == "Basis" && name == "unit" => {
+            "uw_Basis_urlifyString_w(ctx, \"\");\n".to_string()
+        }
+        Typ::Ffi(m, name) => {
+            format!("uw_{}_urlify{}_w(ctx, it{level});\n", ident(m), capitalize(name))
+        }
+        Typ::Record(0) => "uw_Basis_urlifyString_w(ctx, \"\");\n".to_string(),
+        Typ::Record(i) => {
+            let fields = env.structs.get(i).cloned().unwrap_or_default();
+            let mut out = String::new();
+            let mut printing_since_slash = false;
+            for (x, ft) in &fields {
+                let ft_s = p_typ(env, ft);
+                out.push_str("{\n");
+                out.push_str(&format!(
+                    "{ft_s} it{} = it{level}.__uwf_{};\n",
+                    level + 1,
+                    ident(x)
+                ));
+                if printing_since_slash {
+                    out.push_str("uw_write(ctx, \"/\");\n");
+                }
+                out.push_str(&urlify_stmts(level + 1, ft, env));
+                out.push_str("}\n");
+                printing_since_slash = true;
+            }
+            out
+        }
+        Typ::Datatype(DatatypeKind::Enum, i, xncs_ref) => {
+            let (x, xncs) = env
+                .lookup_datatype(*i)
+                .map(|(x, v)| (x.clone(), v.clone()))
+                .unwrap_or_else(|| ("?".into(), xncs_ref.lock().unwrap().clone()));
+            urlify_enum_stmts(level, &xncs, &x, *i)
+        }
+        Typ::Datatype(DatatypeKind::Option, i, xncs_ref) => {
+            let already = URLIFY_SEEN.with(|s| s.borrow().contains(i));
+            if !already {
+                URLIFY_SEEN.with(|s| s.borrow_mut().insert(*i));
+                let (x, xncs) = env
+                    .lookup_datatype(*i)
+                    .map(|(x, v)| (x.clone(), v.clone()))
+                    .unwrap_or_else(|| ("?".into(), xncs_ref.lock().unwrap().clone()));
+                let (no_arg, has_arg, t_inner) = match xncs.as_slice() {
+                    [(a, _, None), (b, _, Some(t))] => (a.clone(), b.clone(), t.clone()),
+                    [(b, _, Some(t)), (a, _, None)] => (a.clone(), b.clone(), t.clone()),
+                    _ => {
+                        return format!("urlify_{i}(ctx, it{level});\n");
+                    }
+                };
+                let unboxable = is_unboxable(&t_inner);
+                let t_s = p_typ(env, &t_inner);
+                let has_arg_body = if unboxable {
+                    format!(
+                        "uw_write(ctx, \"{has_arg}/\");\n{}",
+                        urlify_stmts(0, &t_inner, env)
+                    )
+                } else {
+                    format!(
+                        "{t_s} it1 = *it0;\nuw_write(ctx, \"{has_arg}/\");\n{}",
+                        urlify_stmts(1, &t_inner, env)
+                    )
+                };
+                let star = if unboxable { "" } else { "*" };
+                let proto = format!("static void urlify_{i}(uw_context, {t_s} {star});\n");
+                let def = format!(
+                    "static void urlify_{i}(uw_context ctx, {t_s} {star}it0) {{\n\
+                     if (it0) {{\n{has_arg_body}}} else {{\nuw_write(ctx, \"{no_arg}\");\n}}\n}}\n\n"
+                );
+                let _ = x;
+                add_url_handler(proto, def);
+            }
+            format!("urlify_{i}(ctx, it{level});\n")
+        }
+        Typ::Datatype(DatatypeKind::Default, i, xncs_ref) => {
+            let already = URLIFY_SEEN.with(|s| s.borrow().contains(i));
+            if !already {
+                URLIFY_SEEN.with(|s| s.borrow_mut().insert(*i));
+                let (x, xncs) = env
+                    .lookup_datatype(*i)
+                    .map(|(x, v)| (x.clone(), v.clone()))
+                    .unwrap_or_else(|| ("?".into(), xncs_ref.lock().unwrap().clone()));
+                let x_ident = ident(&x);
+                let t_name = format!("struct __uwd_{x_ident}_{i}");
+                let body = urlify_default_stmts(&xncs, &x, *i, env);
+                let proto = format!("static void urlify_{i}(uw_context, {t_name} *);\n");
+                let def = format!(
+                    "static void urlify_{i}(uw_context ctx, {t_name} *it0) {{\n{body}}}\n\n"
+                );
+                add_url_handler(proto, def);
+            }
+            format!("urlify_{i}(ctx, it{level});\n")
+        }
+        Typ::List(_t_inner, i) => {
+            let list_key = *i | (1usize << 62);
+            let already = URLIFY_SEEN.with(|s| s.borrow().contains(&list_key));
+            if !already {
+                URLIFY_SEEN.with(|s| s.borrow_mut().insert(list_key));
+                let list_t = format!("struct __uws_{i} *");
+                let record_t = crate::error_types::Located::dummy(Typ::Record(*i));
+                let inner_body = urlify_stmts(1, &record_t, env);
+                let proto = format!("static void urlifyl_{i}(uw_context, {list_t});\n");
+                let def = format!(
+                    "static void urlifyl_{i}(uw_context ctx, {list_t}it0) {{\n\
+                     if (it0) {{\n\
+                     uw_write(ctx, \"Cons/\");\n\
+                     struct __uws_{i} it1 = *it0;\n\
+                     {inner_body}\
+                     urlifyl_{i}(ctx, it0->next);\n\
+                     }} else {{\nuw_write(ctx, \"Nil\");\n}}\n}}\n\n"
+                );
+                add_url_handler(proto, def);
+            }
+            format!("urlifyl_{i}(ctx, it{level});\n")
+        }
+        Typ::Option(inner) => {
+            let inner_t = p_typ(env, inner);
+            let unboxable = is_unboxable(inner);
+            let next_level = if unboxable { level } else { level + 1 };
+            let deref = if unboxable {
+                String::new()
+            } else {
+                format!("{inner_t} it{next_level} = *it{level};\n")
+            };
+            let inner_stmts = urlify_stmts(next_level, inner, env);
+            format!(
+                "if (it{level}) {{\n\
+                 uw_write(ctx, \"Some/\");\n\
+                 {deref}\
+                 {inner_stmts}\
+                 }} else {{\nuw_write(ctx, \"None\");\n}}\n"
+            )
+        }
+        _ => format!("/* urlify unknown type: {} */\n", p_typ(env, t)),
+    }
+}
+
+/// Generate if-else chain for urlifying an enum datatype.
+fn urlify_enum_stmts(
+    level: usize,
+    xncs: &[(String, usize, Option<LocTyp>)],
+    x: &str,
+    i: usize,
+) -> String {
+    match xncs {
+        [] => format!("uw_error(ctx, FATAL, \"Error urlifying datatype {x}\");\n"),
+        [(x_, n, _), rest @ ..] => {
+            let x_ident = ident(x_);
+            let rest_s = urlify_enum_stmts(level, rest, x, i);
+            format!(
+                "if (it{level} == __uwc_{x_ident}_{n}) {{\n\
+                 uw_write(ctx, \"{x_}\");\n\
+                 }} else {{\n{rest_s}}}\n"
+            )
+        }
+    }
+}
+
+/// Generate if-else chain for urlifying a Default datatype.
+fn urlify_default_stmts(
+    xncs: &[(String, usize, Option<LocTyp>)],
+    x: &str,
+    i: usize,
+    env: &CjrEnv,
+) -> String {
+    match xncs {
+        [] => format!(
+            "uw_error(ctx, FATAL, \"Error urlifying datatype {x} (%d)\", it0->data);\n"
+        ),
+        [(x_, n, to), rest @ ..] => {
+            let x_ident = ident(x_);
+            let rest_s = urlify_default_stmts(rest, x, i, env);
+            let arm = match to {
+                None => format!("uw_write(ctx, \"{x_}\");\n"),
+                Some(t_arg) => {
+                    let t_s = p_typ(env, t_arg);
+                    let inner = urlify_stmts(1, t_arg, env);
+                    format!("uw_write(ctx, \"{x_}/\");\n{t_s} it1 = it0->data.uw_{x_ident};\n{inner}")
+                }
+            };
+            format!(
+                "if (it0->tag == __uwc_{x_ident}_{n}) {{\n{arm}}} else {{\n{rest_s}}}\n"
+            )
+        }
     }
 }
 
@@ -1883,10 +2320,7 @@ fn p_page(
              uw_write(ctx, \"\\n\");\n",
         ));
         // urlify the result
-        body.push_str(&format!(
-            "uw_write(ctx, /* urlify {} */ \"\");\n",
-            p_typ(env, ran)
-        ));
+        body.push_str(&urlify_stmts(0, ran, env));
     } else {
         body.push_str(&format!("{handler_name}({args_str});\n"));
         body.push_str("uw_write(ctx, \"</html>\");\n");
@@ -2033,6 +2467,9 @@ pub fn cjr_print(file: &crate::c_like_representation::File, settings: &Settings)
     // URL prefix
     let url_prefix = &settings.url_prefix;
 
+    // Reset URL handler accumulator before generating page handlers
+    reset_url_handlers();
+
     // Generate URL dispatch blocks for each export
     let mut page_handlers = String::new();
     for (ek, path, n, ts, ran, side, dbmode, tell_sig) in ps {
@@ -2040,6 +2477,10 @@ pub fn cjr_print(file: &crate::c_like_representation::File, settings: &Settings)
             p_page(ek, path, *n, ts, ran, side, dbmode, *tell_sig, &full_env, settings);
         page_handlers.push_str(&handler_block);
     }
+
+    // Collect URL handler helpers (generated during p_page via unurlify/urlify)
+    let url_handler_protos = collect_url_handler_protos();
+    let url_handler_defs = collect_url_handler_defs();
 
     // Global init function
     let init_body = if global_initializers.is_empty() {
@@ -2067,10 +2508,24 @@ pub fn cjr_print(file: &crate::c_like_representation::File, settings: &Settings)
         out.push_str("\n\n");
     }
 
+    // URL handler forward declarations (unurlify_N, urlify_N helpers)
+    if !url_handler_protos.is_empty() {
+        out.push_str("/* URL handler prototypes */\n");
+        out.push_str(&url_handler_protos.join(""));
+        out.push('\n');
+    }
+
     // Function and other declarations
     if !func_decls.is_empty() {
         out.push_str(&func_decls.join("\n\n"));
         out.push_str("\n\n");
+    }
+
+    // URL handler definitions
+    if !url_handler_defs.is_empty() {
+        out.push_str("/* URL handler helpers */\n");
+        out.push_str(&url_handler_defs.join(""));
+        out.push('\n');
     }
 
     // Page handlers
