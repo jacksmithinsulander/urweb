@@ -255,10 +255,11 @@ pub fn explify(
 // ---------------------------------------------------------------------------
 
 pub fn corify(
-    _file: crate::explicit::File,
-    _errors: &mut ErrorReporter,
+    file: crate::explicit::File,
+    settings: &mut Settings,
+    errors: &mut ErrorReporter,
 ) -> Option<crate::core::File> {
-    todo!("corify: not yet implemented")
+    crate::explicit::corify::corify(file, settings, errors)
 }
 
 // ---------------------------------------------------------------------------
@@ -501,24 +502,10 @@ pub fn cjr_print(file: &crate::c_like_representation::File, settings: &Settings)
 
 pub fn js_compile(
     file: &crate::monomorphized::File,
-    _settings: &Settings,
-    _errors: &mut ErrorReporter,
+    settings: &Settings,
+    errors: &mut ErrorReporter,
 ) -> Option<String> {
-    // Walk the Mono file and collect any pre-compiled DJavaScript declarations.
-    // A full implementation would compile client-side code to JavaScript here.
-    let scripts: Vec<&str> = file
-        .0
-        .iter()
-        .filter_map(|d| match &d.node {
-            crate::monomorphized::Decl::JavaScript(s) => Some(s.as_str()),
-            _ => None,
-        })
-        .collect();
-    if scripts.is_empty() {
-        None
-    } else {
-        Some(scripts.join("\n"))
-    }
+    crate::monomorphized::jscomp::js_compile(file, settings, errors)
 }
 
 // ---------------------------------------------------------------------------
@@ -662,7 +649,7 @@ pub fn compile(urp_path: &Path, settings: &mut Settings) -> CompileResult {
 
     // Phase 5: corify
     let core_file =
-        corify(expl_file, &mut errors).ok_or_else(|| anyhow::anyhow!("Corify failed"))?;
+        corify(expl_file, settings, &mut errors).ok_or_else(|| anyhow::anyhow!("Corify failed"))?;
 
     // Core passes
     let core_file = core_untangle(core_file);
@@ -847,10 +834,12 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "corify")]
-    fn corify_panics_until_implemented() {
+    fn corify_empty_file_returns_some() {
         let mut errors = ErrorReporter::new();
-        let _ = corify(Default::default(), &mut errors);
+        let mut settings = Settings::new();
+        let result = corify(Default::default(), &mut settings, &mut errors);
+        assert!(result.is_some());
+        assert!(result.unwrap().is_empty());
     }
 
     #[test]

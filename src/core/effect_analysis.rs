@@ -201,11 +201,17 @@ fn analyze_decl(
         }
 
         Declaration::ValRec(vis) => {
-            // Fixed-point: iterate until no new additions
+            // Precompute dejs_exp once per member to avoid repeated work in the fixed-point loop.
+            let precomputed: Vec<(usize, LocatedExpression, LocatedExpression, String)> = vis
+                .iter()
+                .map(|(_, n, _, e, s)| (*n, dejs_exp(e.clone()), e.clone(), s.clone()))
+                .collect();
+            // Fixed-point: iterate until no new additions (bounded to prevent runaway mutants).
+            const MAX_VALREC_ITERATIONS: usize = 10_000;
+            let mut iterations = 0;
             loop {
                 let mut changed = false;
-                for (_, n, _, e, s) in &vis {
-                    let e_dejs = dejs_exp(e.clone());
+                for (n, e_dejs, e, s) in &precomputed {
                     if exp_has_write(&e_dejs, writers, settings) && !writers.contains_key(n) {
                         writers.insert(*n, (span.clone(), s.clone()));
                         changed = true;
@@ -219,7 +225,8 @@ fn analyze_decl(
                         changed = true;
                     }
                 }
-                if !changed {
+                iterations += 1;
+                if !changed || iterations >= MAX_VALREC_ITERATIONS {
                     break;
                 }
             }

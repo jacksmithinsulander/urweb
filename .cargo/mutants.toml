@@ -5,5 +5,5 @@
 # Run: cargo mutants
 #
 # Faster builds (no debug symbols); faster tests with -j
+# No minimum_test_timeout: fixed-point loops are bounded so mutants cannot hang.
 profile = "mutants"
-minimum_test_timeout = 45

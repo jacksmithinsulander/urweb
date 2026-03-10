@@ -5,6 +5,7 @@
 //!
 //! Mirrors `expl.sml`.
 
+pub mod corify;
 pub mod environment;
 pub mod utilities;
 

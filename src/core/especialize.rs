@@ -826,8 +826,10 @@ struct State {
 
 fn build_known(file: &File) -> HashSet<usize> {
     // Collect Named constructors that contain function types or already-known Named ids.
-    // Fixed-point: iterate until stable.
+    // Fixed-point: iterate until stable (bounded to prevent runaway mutants).
+    const MAX_BUILD_KNOWN_ITERATIONS: usize = 10_000;
     let mut known: HashSet<usize> = HashSet::new();
+    let mut iterations = 0;
     loop {
         let mut changed = false;
         for d in file {
@@ -854,7 +856,8 @@ fn build_known(file: &File) -> HashSet<usize> {
                 _ => {}
             }
         }
-        if !changed {
+        iterations += 1;
+        if !changed || iterations >= MAX_BUILD_KNOWN_ITERATIONS {
             break;
         }
     }
@@ -1422,17 +1425,23 @@ fn specialize_pass(
 // Fixed-point loop
 // ---------------------------------------------------------------------------
 
+const MAX_ESPECIALIZE_ITERATIONS: usize = 1000;
+
 fn especialize_loop(
     funcs: HashMap<usize, FuncInfo>,
     specialized: HashSet<usize>,
     file: File,
+    iterations: usize,
 ) -> File {
+    if iterations >= MAX_ESPECIALIZE_ITERATIONS {
+        return file;
+    }
     let file = reduce(file);
     let (changed, file, funcs, specialized) = specialize_pass(funcs, specialized, file);
     if changed {
         let file = untangle(file);
         let file = shake(file);
-        especialize_loop(funcs, specialized, file)
+        especialize_loop(funcs, specialized, file, iterations + 1)
     } else {
         file
     }
@@ -1444,7 +1453,7 @@ fn especialize_loop(
 
 /// Run the expression specialization pass to a fixed point.
 pub fn especialize(file: File) -> File {
-    especialize_loop(HashMap::new(), HashSet::new(), file)
+    especialize_loop(HashMap::new(), HashSet::new(), file, 0)
 }
 
 // ---------------------------------------------------------------------------

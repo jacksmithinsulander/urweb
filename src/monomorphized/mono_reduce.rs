@@ -2041,12 +2041,17 @@ fn reduce_decl(env: &mut Env, d: Decl, ctx: &ReduceCtx, settings: &Settings) -> 
 ///
 /// If the "yanked case" optimisation fires, the entire pass is repeated
 /// (since new beta-reduction opportunities may appear).
+/// Bounded to prevent runaway mutants from looping forever.
+const MAX_REDUCE_ITERATIONS: usize = 1000;
+
 pub fn reduce(mut file: File, settings: &Settings) -> File {
     let full_mode = FULL_MODE.load(AtomicOrdering::Relaxed);
+    let mut iterations = 0;
     loop {
         let (new_file, did_yank) = reduce_once(file, settings, full_mode);
         file = new_file;
-        if !did_yank {
+        iterations += 1;
+        if !did_yank || iterations >= MAX_REDUCE_ITERATIONS {
             return file;
         }
     }
