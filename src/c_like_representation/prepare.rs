@@ -543,6 +543,48 @@ mod tests {
     }
 
     #[test]
+    fn prep_string_sqlify_float_postgres() {
+        let mut st = PrepareState::new();
+        let mut settings = Settings::default();
+        settings.dbms = "postgres".into();
+        let arg = Located::dummy(Exp::Rel(0));
+        let t = Located::dummy(crate::c_like_representation::Typ::Ffi(
+            "Basis".into(),
+            "float".into(),
+        ));
+        let e = Located::dummy(Exp::FfiApp(
+            "Basis".into(),
+            "sqlifyFloat".into(),
+            vec![(arg, t)],
+        ));
+        let result = try_prepare(&e, &mut st, &settings);
+        assert!(result.is_some());
+        let (_, tmpl) = result.unwrap();
+        assert_eq!(tmpl, "$1::float8");
+    }
+
+    #[test]
+    fn prep_string_sqlify_string_postgres() {
+        let mut st = PrepareState::new();
+        let mut settings = Settings::default();
+        settings.dbms = "postgres".into();
+        let arg = Located::dummy(Exp::Rel(0));
+        let t = Located::dummy(crate::c_like_representation::Typ::Ffi(
+            "Basis".into(),
+            "string".into(),
+        ));
+        let e = Located::dummy(Exp::FfiApp(
+            "Basis".into(),
+            "sqlifyString".into(),
+            vec![(arg, t)],
+        ));
+        let result = try_prepare(&e, &mut st, &settings);
+        assert!(result.is_some());
+        let (_, tmpl) = result.unwrap();
+        assert_eq!(tmpl, "$1::text");
+    }
+
+    #[test]
     fn prep_string_strcat_combines() {
         let mut st = PrepareState::new();
         let mut settings = Settings::default();

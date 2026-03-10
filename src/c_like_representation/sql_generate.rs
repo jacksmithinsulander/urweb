@@ -524,4 +524,83 @@ mod tests {
         let result = sql_generate(&(vec![], vec![]), &settings);
         assert!(result.contains("PRAGMA foreign_keys"), "got: {}", result);
     }
+
+    #[test]
+    fn table_mysql_uses_mysql_sql_types() {
+        let mut settings = Settings::default();
+        settings.dbms = "mysql".to_string();
+        let xts = vec![
+            ("Id".to_string(), ffi_typ("Basis", "int")),
+            ("Name".to_string(), ffi_typ("Basis", "string")),
+        ];
+        let decls = vec![Located::new(
+            Decl::Table("uw_users".to_string(), xts, "".to_string(), vec![]),
+            Span::dummy(),
+        )];
+        let result = sql_generate(&(decls, vec![]), &settings);
+        assert!(
+            result.contains("bigint"),
+            "mysql uses bigint for int, got: {}",
+            result
+        );
+        assert!(
+            result.contains("longtext"),
+            "mysql uses longtext, got: {}",
+            result
+        );
+    }
+
+    #[test]
+    fn table_sqlite_uses_sqlite_sql_types() {
+        let mut settings = Settings::default();
+        settings.dbms = "sqlite".to_string();
+        let xts = vec![
+            ("Id".to_string(), ffi_typ("Basis", "int")),
+            ("Name".to_string(), ffi_typ("Basis", "string")),
+        ];
+        let decls = vec![Located::new(
+            Decl::Table("uw_users".to_string(), xts, "".to_string(), vec![]),
+            Span::dummy(),
+        )];
+        let result = sql_generate(&(decls, vec![]), &settings);
+        assert!(
+            result.contains("integer"),
+            "sqlite uses integer, got: {}",
+            result
+        );
+        assert!(result.contains("text"), "sqlite uses text, got: {}", result);
+    }
+
+    #[test]
+    fn sequence_sqlite_uses_autoincrement() {
+        let mut settings = Settings::default();
+        settings.dbms = "sqlite".to_string();
+        let decls = vec![Located::new(
+            Decl::Sequence("uw_seq".to_string()),
+            Span::dummy(),
+        )];
+        let result = sql_generate(&(decls, vec![]), &settings);
+        assert!(
+            result.contains("AUTOINCREMENT"),
+            "sqlite create_sequence uses AUTOINCREMENT, got: {}",
+            result
+        );
+    }
+
+    #[test]
+    fn postgres_sql_type_produces_non_empty() {
+        let mut settings = Settings::default();
+        settings.dbms = "postgres".to_string();
+        let xts = vec![("x".to_string(), ffi_typ("Basis", "float"))];
+        let decls = vec![Located::new(
+            Decl::Table("t".to_string(), xts, "".to_string(), vec![]),
+            Span::dummy(),
+        )];
+        let result = sql_generate(&(decls, vec![]), &settings);
+        assert!(
+            result.contains("float8"),
+            "postgres_sql_type must produce float8 for float, got: {}",
+            result
+        );
+    }
 }

@@ -702,4 +702,265 @@ mod tests {
         assert_eq!(job.prefix, "/x");
         assert_eq!(job.sources.len(), 1);
     }
+
+    #[test]
+    fn parse_profile_directive() {
+        let dir = tempdir().unwrap();
+        let urp = write_urp(dir.path(), "app.urp", "profile\n\nmod1\n");
+        let job = parse_urp(&urp).unwrap();
+        assert!(job.profile);
+    }
+
+    #[test]
+    fn parse_link_directive() {
+        let dir = tempdir().unwrap();
+        let urp = write_urp(dir.path(), "app.urp", "link libfoo\n\nmod1\n");
+        let job = parse_urp(&urp).unwrap();
+        assert_eq!(job.link.len(), 1);
+        assert!(job.link[0].contains("libfoo"));
+    }
+
+    #[test]
+    fn parse_linker_directive() {
+        let dir = tempdir().unwrap();
+        let urp = write_urp(dir.path(), "app.urp", "linker ld\n\nmod1\n");
+        let job = parse_urp(&urp).unwrap();
+        assert_eq!(job.linker.as_deref(), Some("ld"));
+    }
+
+    #[test]
+    fn parse_include_directive() {
+        let dir = tempdir().unwrap();
+        let subdir = dir.path().join("inc");
+        std::fs::create_dir_all(&subdir).unwrap();
+        let urp = write_urp(dir.path(), "app.urp", &format!("include inc\n\nmod1\n"));
+        let job = parse_urp(&urp).unwrap();
+        assert!(!job.headers.is_empty(), "include must use resolve_path_abs");
+        assert!(
+            job.headers[0].contains("inc"),
+            "header path must contain inc, got: {}",
+            job.headers[0]
+        );
+    }
+
+    #[test]
+    fn parse_script_directive() {
+        let dir = tempdir().unwrap();
+        let urp = write_urp(dir.path(), "app.urp", "script foo.js\n\nmod1\n");
+        let job = parse_urp(&urp).unwrap();
+        assert_eq!(job.scripts, vec!["foo.js"]);
+    }
+
+    #[test]
+    fn parse_client_to_server_directive() {
+        let dir = tempdir().unwrap();
+        let urp = write_urp(dir.path(), "app.urp", "clientToServer Mod.fn\n\nmod1\n");
+        let job = parse_urp(&urp).unwrap();
+        assert_eq!(job.client_to_server.len(), 1);
+        assert_eq!(job.client_to_server[0].0, "Mod");
+        assert_eq!(job.client_to_server[0].1, "fn");
+    }
+
+    #[test]
+    fn parse_benign_effectful_directive() {
+        let dir = tempdir().unwrap();
+        let urp = write_urp(dir.path(), "app.urp", "benignEffectful Mod.fn\n\nmod1\n");
+        let job = parse_urp(&urp).unwrap();
+        assert_eq!(job.benign_effectful.len(), 1);
+        assert_eq!(job.benign_effectful[0].0, "Mod");
+        assert_eq!(job.benign_effectful[0].1, "fn");
+    }
+
+    #[test]
+    fn parse_server_only_directive() {
+        let dir = tempdir().unwrap();
+        let urp = write_urp(dir.path(), "app.urp", "serverOnly Mod.fn\n\nmod1\n");
+        let job = parse_urp(&urp).unwrap();
+        assert_eq!(job.server_only.len(), 1);
+        assert_eq!(job.server_only[0].0, "Mod");
+        assert_eq!(job.server_only[0].1, "fn");
+    }
+
+    #[test]
+    fn parse_js_module_directive() {
+        let dir = tempdir().unwrap();
+        let urp = write_urp(dir.path(), "app.urp", "jsModule m\n\nmod1\n");
+        let job = parse_urp(&urp).unwrap();
+        assert_eq!(job.js_module.as_deref(), Some("m"));
+    }
+
+    #[test]
+    fn parse_safe_get_default_directive() {
+        let dir = tempdir().unwrap();
+        let urp = write_urp(dir.path(), "app.urp", "safeGetDefault\n\nmod1\n");
+        let job = parse_urp(&urp).unwrap();
+        assert!(job.safe_get_default);
+    }
+
+    #[test]
+    fn parse_safe_get_directive() {
+        let dir = tempdir().unwrap();
+        let urp = write_urp(dir.path(), "app.urp", "safeGet path\n\nmod1\n");
+        let job = parse_urp(&urp).unwrap();
+        assert_eq!(job.safe_gets, vec!["path"]);
+    }
+
+    #[test]
+    fn parse_sigfile_directive() {
+        let dir = tempdir().unwrap();
+        let urp = write_urp(dir.path(), "app.urp", "sigfile s.urs\n\nmod1\n");
+        let job = parse_urp(&urp).unwrap();
+        assert_eq!(job.sig_file.as_deref(), Some("s.urs"));
+    }
+
+    #[test]
+    fn parse_filecache_directive() {
+        let dir = tempdir().unwrap();
+        let urp = write_urp(dir.path(), "app.urp", "filecache c\n\nmod1\n");
+        let job = parse_urp(&urp).unwrap();
+        assert_eq!(job.file_cache.as_deref(), Some("c"));
+    }
+
+    #[test]
+    fn parse_min_heap_directive() {
+        let dir = tempdir().unwrap();
+        let urp = write_urp(dir.path(), "app.urp", "minHeap 64\n\nmod1\n");
+        let job = parse_urp(&urp).unwrap();
+        assert_eq!(job.min_heap, 64);
+    }
+
+    #[test]
+    fn parse_mime_types_directive() {
+        let dir = tempdir().unwrap();
+        let urp = write_urp(dir.path(), "app.urp", "mimeTypes mime.types\n\nmod1\n");
+        let job = parse_urp(&urp).unwrap();
+        assert!(job.mime_types.is_some());
+        assert!(job.mime_types.as_ref().unwrap().contains("mime.types"));
+    }
+
+    #[test]
+    fn parse_filter_mime() {
+        let dir = tempdir().unwrap();
+        let urp = write_urp(
+            dir.path(),
+            "app.urp",
+            "allow mime text/plain\ndeny mime application/json\n\nmod1\n",
+        );
+        let job = parse_urp(&urp).unwrap();
+        assert_eq!(job.filter_mime.len(), 2);
+        assert_eq!(job.filter_mime[0].pattern, "text/plain");
+        assert_eq!(job.filter_mime[1].pattern, "application/json");
+    }
+
+    #[test]
+    fn parse_filter_request_header() {
+        let dir = tempdir().unwrap();
+        let urp = write_urp(
+            dir.path(),
+            "app.urp",
+            "allow requestHeader X-Custom\n\nmod1\n",
+        );
+        let job = parse_urp(&urp).unwrap();
+        assert_eq!(job.filter_request.len(), 1);
+        assert_eq!(job.filter_request[0].pattern, "X-Custom");
+    }
+
+    #[test]
+    fn parse_filter_response_header() {
+        let dir = tempdir().unwrap();
+        let urp = write_urp(
+            dir.path(),
+            "app.urp",
+            "allow responseHeader Content-Type\n\nmod1\n",
+        );
+        let job = parse_urp(&urp).unwrap();
+        assert_eq!(job.filter_response.len(), 1);
+        assert_eq!(job.filter_response[0].pattern, "Content-Type");
+    }
+
+    #[test]
+    fn parse_filter_env() {
+        let dir = tempdir().unwrap();
+        let urp = write_urp(dir.path(), "app.urp", "allow env VAR_NAME\n\nmod1\n");
+        let job = parse_urp(&urp).unwrap();
+        assert_eq!(job.filter_env.len(), 1);
+        assert_eq!(job.filter_env[0].pattern, "VAR_NAME");
+    }
+
+    #[test]
+    fn parse_filter_meta() {
+        let dir = tempdir().unwrap();
+        let urp = write_urp(dir.path(), "app.urp", "allow meta name\n\nmod1\n");
+        let job = parse_urp(&urp).unwrap();
+        assert_eq!(job.filter_meta.len(), 1);
+        assert_eq!(job.filter_meta[0].pattern, "name");
+    }
+
+    #[test]
+    fn parse_path_directive_no_error() {
+        let dir = tempdir().unwrap();
+        let urp = write_urp(dir.path(), "app.urp", "path FOO=/some/path\n\nmod1\n");
+        let job = parse_urp(&urp).unwrap();
+        assert_eq!(job.sources.len(), 1);
+    }
+
+    #[test]
+    fn parse_comment_whitespace_only_before_hash_strips_line() {
+        let dir = tempdir().unwrap();
+        let urp = write_urp(dir.path(), "app.urp", "   # comment\n\nmod1\n");
+        let job = parse_urp(&urp).unwrap();
+        assert_eq!(job.sources.len(), 1);
+    }
+
+    #[test]
+    fn parse_comment_non_whitespace_before_hash_keeps_prefix() {
+        let dir = tempdir().unwrap();
+        let urp = write_urp(dir.path(), "app.urp", "x # inline\n\nmod1\n");
+        let job = parse_urp(&urp).unwrap();
+        assert_eq!(job.sources.len(), 2);
+        assert!(job.sources[0].ends_with('x') || job.sources[1].ends_with('x'));
+    }
+
+    #[test]
+    fn parse_rewrite_four_tokens_with_hyphen() {
+        let dir = tempdir().unwrap();
+        let urp = write_urp(dir.path(), "app.urp", "rewrite url /old /new [-]\n\nmod1\n");
+        let job = parse_urp(&urp).unwrap();
+        assert_eq!(job.rewrites.len(), 1);
+        assert_eq!(job.rewrites[0].to, "/new");
+        assert!(job.rewrites[0].hyphenate);
+    }
+
+    #[test]
+    fn parse_rewrite_three_tokens_no_hyphen() {
+        let dir = tempdir().unwrap();
+        let urp = write_urp(dir.path(), "app.urp", "rewrite url /old /new\n\nmod1\n");
+        let job = parse_urp(&urp).unwrap();
+        assert_eq!(job.rewrites.len(), 1);
+        assert_eq!(job.rewrites[0].to, "/new");
+        assert!(!job.rewrites[0].hyphenate);
+    }
+
+    #[test]
+    fn parse_rewrite_two_tokens() {
+        let dir = tempdir().unwrap();
+        let urp = write_urp(dir.path(), "app.urp", "rewrite url /prefix\n\nmod1\n");
+        let job = parse_urp(&urp).unwrap();
+        assert_eq!(job.rewrites.len(), 1);
+        assert_eq!(job.rewrites[0].from, "/prefix");
+        assert_eq!(job.rewrites[0].to, "");
+    }
+
+    #[test]
+    fn parse_library_merge() {
+        let dir = tempdir().unwrap();
+        let lib_urp = dir.path().join("lib.urp");
+        std::fs::write(&lib_urp, "profile\n\nlibmod\n").unwrap();
+        let app_urp = write_urp(dir.path(), "app.urp", "library lib.urp\n\nappmod\n");
+        let job = parse_urp(&app_urp).unwrap();
+        assert!(
+            job.profile,
+            "library directive must be processed and profile merged from lib.urp"
+        );
+    }
 }

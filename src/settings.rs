@@ -888,6 +888,27 @@ mod tests {
     }
 
     #[test]
+    fn persistent_true_for_fastcgi() {
+        let mut s = Settings::new();
+        s.protocol = "fastcgi".into();
+        assert!(s.persistent(), "fastcgi must be persistent");
+    }
+
+    #[test]
+    fn persistent_true_for_http() {
+        let mut s = Settings::new();
+        s.protocol = "http".into();
+        assert!(s.persistent());
+    }
+
+    #[test]
+    fn persistent_false_for_cgi() {
+        let mut s = Settings::new();
+        s.protocol = "cgi".into();
+        assert!(!s.persistent());
+    }
+
+    #[test]
     fn subsumes_relation_accepts_sequence_and_view() {
         assert!(subsumes(&PathKind::Sequence, &PathKind::Relation));
         assert!(subsumes(&PathKind::View, &PathKind::Relation));
