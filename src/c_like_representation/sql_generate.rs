@@ -1089,4 +1089,34 @@ mod tests {
             result
         );
     }
+
+    #[test]
+    fn index_trigram_uses_gist_postgres() {
+        use crate::monomorphized::IndexMode;
+        let mut settings = Settings::default();
+        settings.dbms = "postgres".to_string();
+        let xts = vec![
+            ("id".to_string(), ffi_typ("Basis", "int")),
+            ("name".to_string(), ffi_typ("Basis", "string")),
+        ];
+        let decls = vec![
+            Located::new(
+                Decl::Table("uw_t".to_string(), xts, "id".to_string(), vec![]),
+                Span::dummy(),
+            ),
+            Located::new(
+                Decl::Index(
+                    "uw_t".to_string(),
+                    vec![("name".to_string(), IndexMode::Trigram)],
+                ),
+                Span::dummy(),
+            ),
+        ];
+        let result = sql_generate(&(decls, vec![]), &settings);
+        assert!(
+            result.contains("USING gist") || result.contains("gist_trgm_ops"),
+            "Trigram index must use gist on postgres: {}",
+            result
+        );
+    }
 }

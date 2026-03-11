@@ -1645,4 +1645,109 @@ mod tests {
         let result = opt_exp(cat, &settings(), &mut errors);
         assert!(matches!(&result.node, Exp::Prim(Prim::String(_, s)) if s == "foobar"));
     }
+
+    #[test]
+    fn attrify_float_positive() {
+        assert_eq!(attrify_float(1.5), "1.5");
+    }
+
+    #[test]
+    fn attrify_float_negative() {
+        assert_eq!(attrify_float(-2.0), "-2");
+    }
+
+    #[test]
+    fn attrify_string_escape() {
+        assert_eq!(attrify_string("a&b"), "a&amp;b");
+    }
+
+    #[test]
+    fn urlify_char_space() {
+        assert_eq!(urlify_char(' '), "+");
+    }
+
+    #[test]
+    fn urlify_char_alphanumeric() {
+        assert_eq!(urlify_char('a'), "a");
+    }
+
+    #[test]
+    fn urlify_char_underscore_prefix() {
+        // '_' gets prefix "_" + aux; aux for '_' is ".5F"
+        let s = urlify_char('_');
+        assert!(s.starts_with("_.5F") || s.contains("5F"), "got: {}", s);
+    }
+
+    #[test]
+    fn htmlify_special_char_formats_codepoint() {
+        assert_eq!(htmlify_special_char('x'), "&#120;");
+    }
+
+    #[test]
+    fn hex_pad_single_digit() {
+        assert_eq!(hex_pad(5), "05");
+    }
+
+    #[test]
+    fn fold_attrify_int() {
+        let mut errors = no_errors();
+        let arg = dummy(Exp::Prim(Prim::Int(99)));
+        let t = dummy(Typ::Ffi("Basis".into(), "int".into()));
+        let e = dummy(Exp::FfiApp(
+            "Basis".into(),
+            "attrifyInt".into(),
+            vec![(arg, t)],
+        ));
+        let result = opt_exp(e, &settings(), &mut errors);
+        assert!(
+            matches!(&result.node, Exp::Prim(Prim::String(_, s)) if s == "99"),
+            "attrifyInt(99) => \"99\""
+        );
+    }
+
+    #[test]
+    fn fold_attrify_string() {
+        let mut errors = no_errors();
+        let arg = dummy(Exp::Prim(Prim::String(StringMode::Normal, "a&b".into())));
+        let t = dummy(Typ::Ffi("Basis".into(), "string".into()));
+        let e = dummy(Exp::FfiApp(
+            "Basis".into(),
+            "attrifyString".into(),
+            vec![(arg, t)],
+        ));
+        let result = opt_exp(e, &settings(), &mut errors);
+        assert!(
+            matches!(&result.node, Exp::Prim(Prim::String(_, s)) if s == "a&amp;b"),
+            "attrifyString(\"a&b\") => \"a&amp;b\""
+        );
+    }
+
+    #[test]
+    fn fold_urlify_int() {
+        let mut errors = no_errors();
+        let arg = dummy(Exp::Prim(Prim::Int(1)));
+        let t = dummy(Typ::Ffi("Basis".into(), "int".into()));
+        let e = dummy(Exp::FfiApp(
+            "Basis".into(),
+            "urlifyInt".into(),
+            vec![(arg, t)],
+        ));
+        let result = opt_exp(e, &settings(), &mut errors);
+        assert!(
+            matches!(&result.node, Exp::Prim(Prim::String(_, s)) if s == "1"),
+            "urlifyInt(1) => \"1\""
+        );
+    }
+
+    #[test]
+    fn fold_strcat_three_lits() {
+        let mut errors = no_errors();
+        let e1 = dummy(Exp::Prim(Prim::String(StringMode::Normal, "a".into())));
+        let e2 = dummy(Exp::Prim(Prim::String(StringMode::Normal, "b".into())));
+        let e3 = dummy(Exp::Prim(Prim::String(StringMode::Normal, "c".into())));
+        let cat12 = dummy(Exp::Strcat(Box::new(e1), Box::new(e2)));
+        let cat = dummy(Exp::Strcat(Box::new(cat12), Box::new(e3)));
+        let result = opt_exp(cat, &settings(), &mut errors);
+        assert!(matches!(&result.node, Exp::Prim(Prim::String(_, s)) if s == "abc"));
+    }
 }

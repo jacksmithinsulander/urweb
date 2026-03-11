@@ -1735,4 +1735,161 @@ mod tests {
         let result = squish_at(&[1, 0], 2, e);
         assert!(matches!(result.node, Expression::Rel(2)));
     }
+
+    #[test]
+    fn test_collect_free_vars_case() {
+        use crate::core::Pattern;
+        use crate::primitives::Prim;
+        // Case with arm binding 1 var: body Rel(1) is free at top level 0.
+        let body = dummy(Expression::Rel(1));
+        let pat = dummy(Pattern::Var("x".into(), dummy(Constructor::Unit)));
+        let case = dummy(Expression::Case(
+            Box::new(dummy(Expression::Prim(Prim::Int(0)))),
+            vec![(pat, body)],
+            crate::core::CaseMeta {
+                disc: dummy_con(),
+                result: dummy_con(),
+            },
+        ));
+        let fvs = free_vars(&case);
+        assert_eq!(fvs, BTreeSet::from([0]));
+    }
+
+    #[test]
+    fn test_calc_const_args_prim() {
+        // Prim -> MAX_INT (never const).
+        let e = dummy(Expression::Prim(crate::primitives::Prim::Int(42)));
+        let enclosing = HashSet::new();
+        let n = calc_const_args(&enclosing, &e);
+        assert_eq!(n, usize::MAX);
+    }
+
+    #[test]
+    fn test_calc_const_args_enclosing_named() {
+        // Named in enclosing -> 0 const args.
+        let e = dummy(Expression::Named(5));
+        let enclosing = HashSet::from([5]);
+        let n = calc_const_args(&enclosing, &e);
+        assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn test_cmp_exp_node_prim_ordering() {
+        use crate::primitives::Prim;
+        use std::cmp::Ordering;
+        let a = Expression::Prim(Prim::Int(0));
+        let b = Expression::Prim(Prim::Int(1));
+        assert_eq!(cmp_exp_node(&a, &b), Ordering::Less);
+        assert_eq!(cmp_exp_node(&b, &a), Ordering::Greater);
+        assert_eq!(cmp_exp_node(&a, &a), Ordering::Equal);
+    }
+
+    #[test]
+    fn test_cmp_exp_node_rel_ordering() {
+        use std::cmp::Ordering;
+        assert_eq!(
+            cmp_exp_node(&Expression::Rel(0), &Expression::Rel(1)),
+            Ordering::Less
+        );
+        assert_eq!(
+            cmp_exp_node(&Expression::Rel(2), &Expression::Rel(1)),
+            Ordering::Greater
+        );
+    }
+
+    #[test]
+    fn test_cmp_exp_node_discriminant_order() {
+        use std::cmp::Ordering;
+        // Prim(0) < Rel(0) by disc.
+        assert_eq!(
+            cmp_exp_node(
+                &Expression::Prim(crate::primitives::Prim::Int(0)),
+                &Expression::Rel(0)
+            ),
+            Ordering::Less
+        );
+    }
+
+    #[test]
+    fn test_build_known_constructor_tfun() {
+        // Constructor(id, TFun(...)) -> id in known.
+        let tfun = dummy(Constructor::TFun(
+            Box::new(dummy_con()),
+            Box::new(dummy_con()),
+        ));
+        let file: File = vec![dummy(Declaration::Constructor(
+            "F".into(),
+            7,
+            dummy(Kind::Type),
+            tfun,
+        ))];
+        let known = build_known(&file);
+        assert!(known.contains(&7));
+    }
+
+    #[test]
+    fn test_build_known_datatype_tfun() {
+        // Datatype with constructor type TFun -> id in known.
+        let dt = crate::core::DatatypeDecl {
+            name: "T".into(),
+            id: 10,
+            params: vec![],
+            constrs: vec![(
+                "C".into(),
+                11,
+                Some(dummy(Constructor::TFun(
+                    Box::new(dummy_con()),
+                    Box::new(dummy_con()),
+                ))),
+            )],
+        };
+        let file: File = vec![dummy(Declaration::Datatype(vec![dt]))];
+        let known = build_known(&file);
+        assert!(known.contains(&10));
+    }
+
+    #[test]
+    fn test_sub_body_one_arg() {
+        let inner = dummy(Expression::Named(99));
+        let body = dummy(Expression::Abs(
+            "x".into(),
+            dummy_con(),
+            dummy_con(),
+            Box::new(inner),
+        ));
+        let typ = dummy(Constructor::TFun(
+            Box::new(dummy_con()),
+            Box::new(dummy_con()),
+        ));
+        let arg = dummy(Expression::Prim(crate::primitives::Prim::Int(42)));
+        let result = sub_body(body, typ, &[arg]);
+        assert!(result.is_some());
+        let (new_body, _) = result.unwrap();
+        assert!(matches!(new_body.node, Expression::Named(99)));
+    }
+
+    #[test]
+    fn test_sub_body_empty_args() {
+        let body = dummy(Expression::Rel(0));
+        let typ = dummy_con();
+        let result = sub_body(body, typ, &[]);
+        assert!(result.is_some());
+        let (b, _) = result.unwrap();
+        assert!(matches!(b.node, Expression::Rel(0)));
+    }
+
+    #[test]
+    fn test_find_split_tfun_function_dom() {
+        // Domain is TFun -> function_inside true, so we collect the arg.
+        let dom = dummy(Constructor::TFun(
+            Box::new(dummy_con()),
+            Box::new(dummy_con()),
+        ));
+        let typ = dummy(Constructor::TFun(Box::new(dom), Box::new(dummy_con())));
+        let arg = dummy(Expression::Prim(crate::primitives::Prim::Int(1)));
+        let known = HashSet::new();
+        let (fxs, remaining, _fvs) = find_split(&typ, 1, &[arg.clone()], &known, vec![arg.clone()]);
+        assert_eq!(fxs.len(), 1, "function domain should collect one arg");
+        assert!(remaining.is_empty());
+    }
 }

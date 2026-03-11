@@ -218,6 +218,33 @@ echo ""
 echo "build test-minimal: test_minimal_cmd"
 echo ""
 
+# Rust compiler (bin/urweb-rust) - build from Cargo, keep both ML and Rust binaries
+echo "rule build_urweb_rust"
+echo "  command = cd \$srcdir && CARGO_TARGET_DIR=\$srcdir/target cargo build --release && mkdir -p \$builddir/bin && cp \$srcdir/target/release/urweb \$builddir/bin/urweb-rust && chmod 755 \$builddir/bin/urweb-rust"
+echo "  description = Build Rust compiler (bin/urweb-rust)"
+echo "  pool = console"
+echo ""
+echo "build \$builddir/bin/urweb-rust: build_urweb_rust \$srcdir/Cargo.toml"
+echo ""
+
+# Demo tests using Rust compiler
+echo "rule test_demo_rust_cmd"
+echo "  command = sh \$srcdir/scripts/run-tests-minimal-rust.sh \$srcdir \$builddir"
+echo "  description = Run demo/hello test with Rust compiler"
+echo "  pool = console"
+echo ""
+echo "build test-demo-rust: test_demo_rust_cmd | \$builddir/bin/urweb-rust"
+echo ""
+
+# Compare ML vs Rust compiler output (C + SQL)
+echo "rule compare_compilers_cmd"
+echo "  command = sh \$srcdir/scripts/compare-compilers.sh \$srcdir \$builddir"
+echo "  description = Compare ML and Rust compiler output (goal: identical)"
+echo "  pool = console"
+echo ""
+echo "build compare-compilers: compare_compilers_cmd | \$builddir/bin/urweb \$builddir/bin/urweb-rust"
+echo ""
+
 # cproc (optional C11 compiler) - requires QBE: brew install qbe
 echo "rule build_cproc"
 echo "  command = cd $srcdir/vendor/cproc && (test -f config.h || ./configure) && make"

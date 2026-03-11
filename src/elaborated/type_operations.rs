@@ -345,6 +345,7 @@ pub fn lift_con_in_con(constructor: LocatedConstructor) -> LocatedConstructor {
 // ---------------------------------------------------------------------------
 
 /// Error sentinel: a unification variable with nesting level -1 (sentinel ~1 from SML).
+#[derive(Debug)]
 pub struct SubUnif;
 
 /// Substitute `rep` for `Constructor::Rel(xn)` in `c`, adjusting all free de Bruijn indices.
@@ -1238,5 +1239,136 @@ fn cons_eq_simple_normed(c1: &LocatedConstructor, c2: &LocatedConstructor) -> bo
         }
         (Constructor::TRecord(c1), Constructor::TRecord(c2)) => cons_eq_simple(c1, c2),
         _ => false,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests (catch missed mutants)
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::elaborated::{Constructor, Kind};
+    use crate::error_types::Located;
+
+    fn dummy<T>(node: T) -> Located<T> {
+        Located::dummy(node)
+    }
+
+    #[test]
+    fn lift_kind_in_kind_rel_plus_one() {
+        let k = dummy(Kind::Rel(0));
+        let out = lift_kind_in_kind(k);
+        assert!(matches!(out.node, Kind::Rel(1)));
+    }
+
+    #[test]
+    fn lift_kind_in_kind_bound_below_unchanged() {
+        let k = dummy(Kind::Rel(0));
+        let out = lift_kind_in_kind_bound(1, 1, k);
+        assert!(matches!(out.node, Kind::Rel(0)));
+    }
+
+    #[test]
+    fn sub_kind_in_kind_rel_zero_replaced() {
+        let rep = dummy(Kind::Type);
+        let k = dummy(Kind::Rel(0));
+        let out = sub_kind_in_kind(0, &rep, k);
+        assert!(matches!(out.node, Kind::Type));
+    }
+
+    #[test]
+    fn sub_kind_in_kind_rel_above_decremented() {
+        let rep = dummy(Kind::Type);
+        let k = dummy(Kind::Rel(2));
+        let out = sub_kind_in_kind(0, &rep, k);
+        assert!(matches!(out.node, Kind::Rel(1)));
+    }
+
+    #[test]
+    fn occurs_rel_zero() {
+        let c = dummy(Constructor::Rel(0));
+        assert!(occurs(&c));
+    }
+
+    #[test]
+    fn occurs_unit_false() {
+        let c = dummy(Constructor::Unit);
+        assert!(!occurs(&c));
+    }
+
+    #[test]
+    fn occurs_at_rel_at_bound() {
+        let c = dummy(Constructor::Rel(1));
+        assert!(occurs_at(0, 1, &c));
+    }
+
+    #[test]
+    fn occurs_at_rel_mismatch_false() {
+        let c = dummy(Constructor::Rel(2));
+        assert!(!occurs_at(0, 1, &c));
+    }
+
+    #[test]
+    fn lift_con_in_con_rel_plus_one() {
+        let c = dummy(Constructor::Rel(0));
+        let out = lift_con_in_con(c);
+        assert!(matches!(out.node, Constructor::Rel(1)));
+    }
+
+    #[test]
+    fn sub_con_in_con_rel_zero_replaced() {
+        let rep = dummy(Constructor::Named(42));
+        let c = dummy(Constructor::Rel(0));
+        let out = sub_con_in_con(0, &rep, c).unwrap();
+        assert!(matches!(out.node, Constructor::Named(42)));
+    }
+
+    #[test]
+    fn sub_con_in_con_rel_above_decremented() {
+        let rep = dummy(Constructor::Unit);
+        let c = dummy(Constructor::Rel(2));
+        let out = sub_con_in_con(0, &rep, c).unwrap();
+        assert!(matches!(out.node, Constructor::Rel(1)));
+    }
+
+    #[test]
+    fn cons_eq_simple_tfun_same() {
+        let u = dummy(Constructor::Unit);
+        let tfun = dummy(Constructor::TFun(Box::new(u.clone()), Box::new(u)));
+        assert!(cons_eq_simple(&tfun, &tfun));
+    }
+
+    #[test]
+    fn cons_eq_simple_tuple_same() {
+        let u = dummy(Constructor::Unit);
+        let t = dummy(Constructor::Tuple(vec![u.clone(), u]));
+        assert!(cons_eq_simple(&t, &t));
+    }
+
+    #[test]
+    fn cons_eq_simple_record_same() {
+        let k = dummy(Kind::Type);
+        let u = dummy(Constructor::Unit);
+        let r = dummy(Constructor::Record(
+            Box::new(k),
+            vec![(dummy(Constructor::Name("x".into())), u)],
+        ));
+        assert!(cons_eq_simple(&r, &r));
+    }
+
+    #[test]
+    fn hnorm_con_unit_unchanged() {
+        let c = dummy(Constructor::Unit);
+        let out = hnorm_con(c);
+        assert!(matches!(out.node, Constructor::Unit));
+    }
+
+    #[test]
+    fn reduce_con_unit_unchanged() {
+        let c = dummy(Constructor::Unit);
+        let out = reduce_con(c);
+        assert!(matches!(out.node, Constructor::Unit));
     }
 }

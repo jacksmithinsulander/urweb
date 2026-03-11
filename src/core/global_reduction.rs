@@ -2159,4 +2159,202 @@ mod tests {
             "Named(1) must be inlined when use_count=1"
         );
     }
+
+    // --- More tests to kill missed mutants ---
+
+    #[test]
+    fn passive_prim() {
+        let e = Located::new(Expression::Prim(Prim::Int(0)), dummy());
+        assert!(passive(&e.node), "Prim is passive");
+    }
+
+    #[test]
+    fn passive_rel() {
+        let e = Located::new(Expression::Rel(0), dummy());
+        assert!(passive(&e.node), "Rel is passive");
+    }
+
+    #[test]
+    fn passive_named() {
+        let e = Located::new(Expression::Named(1), dummy());
+        assert!(passive(&e.node), "Named is passive");
+    }
+
+    #[test]
+    fn passive_constructor_none() {
+        use crate::datatype_kind::DatatypeKind;
+        let con = Located::new(
+            Expression::Constructor(
+                DatatypeKind::Enum,
+                crate::core::PatternConstructor::Var(0),
+                vec![],
+                None,
+            ),
+            dummy(),
+        );
+        assert!(passive(&con.node), "Constructor(_,_,_,None) is passive");
+    }
+
+    #[test]
+    fn passive_constructor_some_inner_passive() {
+        use crate::datatype_kind::DatatypeKind;
+        let inner = Located::new(Expression::Prim(Prim::Int(0)), dummy());
+        let con = Located::new(
+            Expression::Constructor(
+                DatatypeKind::Enum,
+                crate::core::PatternConstructor::Var(0),
+                vec![],
+                Some(Box::new(inner)),
+            ),
+            dummy(),
+        );
+        assert!(
+            passive(&con.node),
+            "Constructor with passive inner is passive"
+        );
+    }
+
+    #[test]
+    fn passive_app_not_passive() {
+        let app = Located::new(
+            Expression::App(Box::new(prim_exp()), Box::new(prim_exp())),
+            dummy(),
+        );
+        assert!(!passive(&app.node), "App is not passive");
+    }
+
+    #[test]
+    fn not_ffi_unit() {
+        let t = unit_con();
+        assert!(not_ffi(&t.node), "Unit is not Ffi");
+    }
+
+    #[test]
+    fn not_ffi_false_for_ffi() {
+        let t = Located::new(Constructor::Ffi("Basis".into(), "int".into()), dummy());
+        assert!(!not_ffi(&t.node), "Ffi is ffi");
+    }
+
+    #[test]
+    fn pat_binds_n_var() {
+        use crate::core::Pattern;
+        let p = Located::new(Pattern::Var("x".into(), unit_con()), dummy());
+        assert_eq!(pat_binds_n(&p), 1);
+    }
+
+    #[test]
+    fn pat_binds_n_prim() {
+        use crate::core::Pattern;
+        let p = Located::new(Pattern::Prim(Prim::Int(0)), dummy());
+        assert_eq!(pat_binds_n(&p), 0);
+    }
+
+    #[test]
+    fn pat_binds_n_record() {
+        use crate::core::Pattern;
+        let field_pat = Located::new(Pattern::Var("x".into(), unit_con()), dummy());
+        let p = Located::new(
+            Pattern::Record(vec![("x".into(), field_pat, unit_con())]),
+            dummy(),
+        );
+        assert_eq!(pat_binds_n(&p), 1);
+    }
+
+    #[test]
+    fn count_exp_prim() {
+        let e = prim_exp();
+        assert_eq!(count_exp(&e), 1);
+    }
+
+    #[test]
+    fn count_exp_app() {
+        let app = Located::new(
+            Expression::App(Box::new(prim_exp()), Box::new(prim_exp())),
+            dummy(),
+        );
+        assert_eq!(count_exp(&app), 3);
+    }
+
+    #[test]
+    fn count_named_uses_single() {
+        let file = vec![
+            val_decl(1, prim_exp()),
+            val_decl(2, Located::new(Expression::Named(1), dummy())),
+        ];
+        let uses = count_named_uses(&file);
+        assert_eq!(uses.get(&1), Some(&1));
+    }
+
+    #[test]
+    fn is_poly_con_named_in_set() {
+        let mut poly = BTreeSet::new();
+        poly.insert(5);
+        let con = Located::new(Constructor::Named(5), dummy());
+        assert!(is_poly_con(&poly, &con));
+    }
+
+    #[test]
+    fn is_poly_con_named_not_in_set() {
+        let poly: BTreeSet<usize> = BTreeSet::new();
+        let con = Located::new(Constructor::Named(5), dummy());
+        assert!(!is_poly_con(&poly, &con));
+    }
+
+    #[test]
+    fn is_policy_sql_policy() {
+        let t = Located::new(
+            Constructor::Ffi("Basis".into(), "sql_policy".into()),
+            dummy(),
+        );
+        assert!(is_policy(&t.node));
+    }
+
+    #[test]
+    fn is_policy_not_basis_int() {
+        let t = Located::new(Constructor::Ffi("Basis".into(), "int".into()), dummy());
+        assert!(!is_policy(&t.node));
+    }
+
+    #[test]
+    fn prim_eq_int_same() {
+        assert!(prim_eq(&Prim::Int(42), &Prim::Int(42)));
+    }
+
+    #[test]
+    fn prim_eq_int_diff() {
+        assert!(!prim_eq(&Prim::Int(1), &Prim::Int(2)));
+    }
+
+    #[test]
+    fn prim_eq_float_same() {
+        assert!(prim_eq(&Prim::Float(1.0), &Prim::Float(1.0)));
+    }
+
+    #[test]
+    fn prim_eq_string_same() {
+        use crate::primitives::StringMode;
+        assert!(prim_eq(
+            &Prim::String(StringMode::Normal, "a".into()),
+            &Prim::String(StringMode::Normal, "a".into())
+        ));
+    }
+
+    #[test]
+    fn prim_eq_string_diff() {
+        use crate::primitives::StringMode;
+        assert!(!prim_eq(
+            &Prim::String(StringMode::Normal, "a".into()),
+            &Prim::String(StringMode::Normal, "b".into())
+        ));
+    }
+
+    #[test]
+    fn prim_eq_char_same() {
+        assert!(prim_eq(&Prim::Char('x'), &Prim::Char('x')));
+    }
+
+    #[test]
+    fn prim_eq_char_diff() {
+        assert!(!prim_eq(&Prim::Char('a'), &Prim::Char('b')));
+    }
 }

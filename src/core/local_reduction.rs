@@ -1679,4 +1679,101 @@ mod tests {
         // Should remain Case (no static match) since 1 != 2
         assert!(matches!(out.node, Expression::Case(_, _, _)));
     }
+
+    #[test]
+    fn reduce_exp_case_float_equal_matches() {
+        let disc = Located::dummy(Expression::Prim(Prim::Float(1.5)));
+        let body = Located::dummy(Expression::Prim(Prim::Int(101)));
+        let prim_pat = Located::dummy(crate::core::Pattern::Prim(Prim::Float(1.5)));
+        let case_meta = crate::core::CaseMeta {
+            disc: Located::dummy(Constructor::Unit),
+            result: Located::dummy(Constructor::Unit),
+        };
+        let case = Located::dummy(Expression::Case(
+            Box::new(disc),
+            vec![(prim_pat, body)],
+            case_meta,
+        ));
+        let out = reduce_exp(case);
+        assert!(matches!(out.node, Expression::Prim(Prim::Int(101))));
+    }
+
+    #[test]
+    fn reduce_exp_case_string_equal_matches() {
+        use crate::primitives::StringMode;
+        let disc = Located::dummy(Expression::Prim(Prim::String(
+            StringMode::Normal,
+            "hi".into(),
+        )));
+        let body = Located::dummy(Expression::Prim(Prim::Int(102)));
+        let prim_pat = Located::dummy(crate::core::Pattern::Prim(Prim::String(
+            StringMode::Normal,
+            "hi".into(),
+        )));
+        let case_meta = crate::core::CaseMeta {
+            disc: Located::dummy(Constructor::Unit),
+            result: Located::dummy(Constructor::Unit),
+        };
+        let case = Located::dummy(Expression::Case(
+            Box::new(disc),
+            vec![(prim_pat, body)],
+            case_meta,
+        ));
+        let out = reduce_exp(case);
+        assert!(matches!(out.node, Expression::Prim(Prim::Int(102))));
+    }
+
+    #[test]
+    fn reduce_exp_case_char_equal_matches() {
+        let disc = Located::dummy(Expression::Prim(Prim::Char('a')));
+        let body = Located::dummy(Expression::Prim(Prim::Int(103)));
+        let prim_pat = Located::dummy(crate::core::Pattern::Prim(Prim::Char('a')));
+        let case_meta = crate::core::CaseMeta {
+            disc: Located::dummy(Constructor::Unit),
+            result: Located::dummy(Constructor::Unit),
+        };
+        let case = Located::dummy(Expression::Case(
+            Box::new(disc),
+            vec![(prim_pat, body)],
+            case_meta,
+        ));
+        let out = reduce_exp(case);
+        assert!(matches!(out.node, Expression::Prim(Prim::Int(103))));
+    }
+
+    #[test]
+    fn reduce_con_record_concat_merges() {
+        // Record + Record -> merged Record. Kills delete Record arm in simplify_con.
+        let k = Located::dummy(crate::core::Kind::Type);
+        let unit = Located::dummy(Constructor::Unit);
+        let r1 = Located::dummy(Constructor::Record(
+            Box::new(k.clone()),
+            vec![(Located::dummy(Constructor::Name("x".into())), unit.clone())],
+        ));
+        let r2 = Located::dummy(Constructor::Record(
+            Box::new(k),
+            vec![(Located::dummy(Constructor::Name("y".into())), unit)],
+        ));
+        let concat = Located::dummy(Constructor::Concat(Box::new(r1), Box::new(r2)));
+        let out = reduce_con(concat);
+        let Constructor::Record(_, fields) = &out.node else {
+            panic!("expected Record, got {:?}", out.node)
+        };
+        assert_eq!(fields.len(), 2);
+    }
+
+    #[test]
+    fn pat_binds_n_var_one() {
+        let p = Located::dummy(crate::core::Pattern::Var(
+            "x".into(),
+            Located::dummy(Constructor::Unit),
+        ));
+        assert_eq!(pat_binds_n(&p), 1);
+    }
+
+    #[test]
+    fn pat_binds_n_prim_zero() {
+        let p = Located::dummy(crate::core::Pattern::Prim(Prim::Int(0)));
+        assert_eq!(pat_binds_n(&p), 0);
+    }
 }
