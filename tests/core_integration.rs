@@ -10,9 +10,12 @@
 use urweb::compiler;
 use urweb::core::environment::Env;
 use urweb::core::utilities::{classify_datatype, constructor, declaration, expression, file, kind};
-use urweb::core::{Constructor, Declaration, Expression, FieldMeta, Kind, LocatedConstructor, Pattern};
+use urweb::core::{
+    Constructor, Declaration, Expression, FieldMeta, Kind, LocatedConstructor, Pattern,
+};
 use urweb::datatype_kind::DatatypeKind;
 use urweb::error_types::{Located, Span};
+use urweb::export::{Effect, ExportKind};
 
 fn span() -> Span {
     Span::dummy()
@@ -1307,10 +1310,6 @@ fn integration_pat_binds_with_env() {
     assert!(binds.iter().any(|(s, _)| s == "y"));
 }
 
-// ---------------------------------------------------------------------------
-// Core pipeline tests (plan: catch missed mutants)
-// ---------------------------------------------------------------------------
-
 #[test]
 fn integration_core_reduce_preserves_exact_decl_count() {
     // Kills: mutant that drops decls. Exact count assertion.
@@ -1406,7 +1405,370 @@ fn integration_core_reduce_preserves_expression_shape() {
         panic!("expected Val decl");
     };
     assert!(
-        matches!(body.node, Expression::Prim(urweb::primitives::Prim::Int(17))),
+        matches!(
+            body.node,
+            Expression::Prim(urweb::primitives::Prim::Int(17))
+        ),
         "core_reduce must preserve Prim expression shape"
+    );
+}
+
+#[test]
+fn integration_core_reduce_preserves_record_expression() {
+    // Kills: passive() Record arm, count_exp_rec Record arm — reduce must not drop Record.
+    let span = span();
+    let unit = Located::dummy(Constructor::Unit);
+    let e = Located::dummy(Expression::Record(vec![(
+        unit.clone(),
+        Located::dummy(Expression::Prim(urweb::primitives::Prim::Int(1))),
+        unit.clone(),
+    )]));
+    let file: urweb::core::File = vec![Located::new(
+        Declaration::Val("x".into(), 1, unit.clone(), e, "".into()),
+        span,
+    )];
+    let result = compiler::core_reduce(file, &urweb::settings::Settings::default());
+    assert_eq!(result.len(), 1);
+    let Declaration::Val(_, _, _, body, _) = &result[0].node else {
+        panic!("expected Val");
+    };
+    assert!(
+        matches!(&body.node, Expression::Record(_)),
+        "core_reduce must preserve Record expression (catches passive/count_exp_rec Record arm)"
+    );
+}
+
+#[test]
+fn integration_core_reduce_preserves_constructor_with_payload() {
+    // Kills: passive() Constructor(_, _, _, Some(inner)) arm.
+    let span = span();
+    let unit = Located::dummy(Constructor::Unit);
+    let inner = Located::dummy(Expression::Prim(urweb::primitives::Prim::Int(2)));
+    let e = Located::dummy(Expression::Constructor(
+        DatatypeKind::Option,
+        urweb::core::PatternConstructor::Var(0),
+        vec![unit.clone()],
+        Some(Box::new(inner)),
+    ));
+    let file: urweb::core::File = vec![Located::new(
+        Declaration::Val("x".into(), 1, unit, e, "".into()),
+        span,
+    )];
+    let result = compiler::core_reduce(file, &urweb::settings::Settings::default());
+    assert_eq!(result.len(), 1);
+    let Declaration::Val(_, _, _, body, _) = &result[0].node else {
+        panic!("expected Val");
+    };
+    assert!(
+        matches!(&body.node, Expression::Constructor(_, _, _, Some(_))),
+        "core_reduce must preserve Constructor with payload (catches passive Constructor arm)"
+    );
+}
+
+#[test]
+fn integration_core_reduce_local_preserves_decl_count() {
+    // Kills: local_reduction mutants that drop decls.
+    let span = span();
+    let file: urweb::core::File = vec![
+        Located::new(Declaration::Database("d".into()), span.clone()),
+        Located::new(
+            Declaration::Val(
+                "x".into(),
+                1,
+                Located::dummy(Constructor::Unit),
+                Located::dummy(Expression::Prim(urweb::primitives::Prim::Int(0))),
+                "".into(),
+            ),
+            span,
+        ),
+    ];
+    let result = compiler::core_reduce_local(file);
+    assert_eq!(
+        result.len(),
+        2,
+        "core_reduce_local must preserve decl count"
+    );
+}
+
+#[test]
+fn integration_core_reduce_local_preserves_expression_shape() {
+    // Kills: shift_exp/corrupt mutants.
+    let span = span();
+    let file: urweb::core::File = vec![Located::new(
+        Declaration::Val(
+            "x".into(),
+            1,
+            Located::dummy(Constructor::Unit),
+            Located::dummy(Expression::Prim(urweb::primitives::Prim::Int(7))),
+            "".into(),
+        ),
+        span,
+    )];
+    let result = compiler::core_reduce_local(file);
+    assert_eq!(result.len(), 1);
+    let Declaration::Val(_, _, _, body, _) = &result[0].node else {
+        panic!("expected Val");
+    };
+    assert!(
+        matches!(body.node, Expression::Prim(urweb::primitives::Prim::Int(7))),
+        "core_reduce_local must preserve Prim shape"
+    );
+}
+
+#[test]
+fn integration_core_unpoly_preserves_decl_count() {
+    // Kills: unpoly mutants that drop decls.
+    let span = span();
+    let file: urweb::core::File = vec![
+        Located::new(Declaration::Database("d".into()), span.clone()),
+        Located::new(
+            Declaration::Val(
+                "x".into(),
+                1,
+                Located::dummy(Constructor::Unit),
+                Located::dummy(Expression::Prim(urweb::primitives::Prim::Int(0))),
+                "".into(),
+            ),
+            span,
+        ),
+    ];
+    let result = compiler::core_unpoly(file);
+    assert_eq!(result.len(), 2, "core_unpoly must preserve decl count");
+}
+
+#[test]
+fn integration_core_untangle_preserves_non_valrec_decls() {
+    // Kills: untangle mutants that drop or corrupt non-ValRec decls.
+    let span = span();
+    let file: urweb::core::File = vec![
+        Located::new(Declaration::Database("db".into()), span.clone()),
+        Located::new(
+            Declaration::Val(
+                "v".into(),
+                1,
+                Located::dummy(Constructor::Unit),
+                Located::dummy(Expression::Prim(urweb::primitives::Prim::Int(0))),
+                "".into(),
+            ),
+            span,
+        ),
+    ];
+    let result = compiler::core_untangle(file);
+    assert_eq!(result.len(), 2);
+    assert!(matches!(&result[0].node, Declaration::Database(_)));
+    assert!(matches!(&result[1].node, Declaration::Val(_, 1, _, _, _)));
+}
+
+#[test]
+fn integration_core_rpcify_rewrites_rpc_call_to_server_call_and_export() {
+    // Catches rpcify mutants: Basis.rpc guard, match arms, rewrite logic.
+    // Build: rpc ref (id 1), transaction fn (id 2), main that does rpc(trans).
+    let sp = span();
+    let unit_con = Located::dummy(Constructor::Unit);
+    let transaction_unit = Located::dummy(Constructor::App(
+        Box::new(Located::dummy(Constructor::Ffi(
+            "Basis".into(),
+            "transaction".into(),
+        ))),
+        Box::new(unit_con.clone()),
+    ));
+    let txn_type = Located::dummy(Constructor::TFun(
+        Box::new(unit_con.clone()),
+        Box::new(transaction_unit),
+    ));
+    let txn_body = Located::dummy(Expression::Abs(
+        "x".into(),
+        unit_con.clone(),
+        Located::dummy(Constructor::App(
+            Box::new(Located::dummy(Constructor::Ffi(
+                "Basis".into(),
+                "transaction".into(),
+            ))),
+            Box::new(unit_con.clone()),
+        )),
+        Box::new(Located::dummy(Expression::Prim(
+            urweb::primitives::Prim::Int(0),
+        ))),
+    ));
+    let rpc_call = Located::dummy(Expression::App(
+        Box::new(Located::dummy(Expression::CApp(
+            Box::new(Located::dummy(Expression::Ffi(
+                "Basis".into(),
+                "rpc".into(),
+            ))),
+            unit_con.clone(),
+        ))),
+        Box::new(Located::dummy(Expression::Named(2))),
+    ));
+    let file: urweb::core::File = vec![
+        Located::new(
+            Declaration::Val(
+                "rpc".into(),
+                1,
+                unit_con.clone(),
+                Located::dummy(Expression::Ffi("Basis".into(), "rpc".into())),
+                "".into(),
+            ),
+            sp.clone(),
+        ),
+        Located::new(
+            Declaration::Val("myTxn".into(), 2, txn_type, txn_body, "".into()),
+            sp.clone(),
+        ),
+        Located::new(
+            Declaration::Val("main".into(), 3, unit_con, rpc_call, "".into()),
+            sp,
+        ),
+    ];
+    let mut errors = urweb::error_types::ErrorReporter::new();
+    let mut settings = urweb::settings::Settings::default();
+    let result = compiler::core_rpcify(file, &mut settings, &mut errors);
+    let out = result.expect("rpcify must succeed");
+    let has_server_call = out.iter().any(|d| {
+        urweb::core::utilities::declaration::exists(
+            d,
+            &|_| false,
+            &|_| false,
+            &|e| matches!(&e.node, Expression::ServerCall(2, _, _, _)),
+            &|_| false,
+        )
+    });
+    assert!(
+        has_server_call,
+        "rpcify must rewrite rpc(trans) to ServerCall(2, ...)"
+    );
+    let has_rpc_export = out.iter().any(|d| {
+        matches!(
+            &d.node,
+            Declaration::Export(ExportKind::Rpc(Effect::ReadWrite), 2, false)
+        )
+    });
+    assert!(
+        has_rpc_export,
+        "rpcify must emit Export(Rpc(ReadWrite), 2, false) for the transaction"
+    );
+}
+
+#[test]
+fn integration_core_specialize_preserves_decl_count() {
+    // Catches specialize mutants: must not drop decls.
+    let span = span();
+    let file: urweb::core::File = vec![
+        Located::new(Declaration::Database("d".into()), span.clone()),
+        Located::new(
+            Declaration::Val(
+                "x".into(),
+                1,
+                Located::dummy(Constructor::Unit),
+                Located::dummy(Expression::Prim(urweb::primitives::Prim::Int(0))),
+                "".into(),
+            ),
+            span,
+        ),
+    ];
+    let result = compiler::core_specialize(file);
+    assert_eq!(result.len(), 2, "core_specialize must preserve decl count");
+}
+
+#[test]
+fn integration_core_specialize_preserves_expression_shape() {
+    // Catches specialize mutants that corrupt Val body.
+    let span = span();
+    let file: urweb::core::File = vec![Located::new(
+        Declaration::Val(
+            "x".into(),
+            1,
+            Located::dummy(Constructor::Unit),
+            Located::dummy(Expression::Prim(urweb::primitives::Prim::Int(99))),
+            "".into(),
+        ),
+        span,
+    )];
+    let result = compiler::core_specialize(file);
+    assert_eq!(result.len(), 1);
+    let Declaration::Val(_, _, _, body, _) = &result[0].node else {
+        panic!("expected Val decl");
+    };
+    assert!(
+        matches!(
+            body.node,
+            Expression::Prim(urweb::primitives::Prim::Int(99))
+        ),
+        "core_specialize must preserve Prim expression shape"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// check_termination — kills "replace check_termination with ()" mutant
+// ---------------------------------------------------------------------------
+
+#[test]
+fn integration_check_termination_rejects_non_terminating_valrec() {
+    // Build a Core file with a ValRec that calls itself with the same argument (no structural decrease).
+    // The termination checker must report an error (kills "replace check_termination with ()").
+    use urweb::error_types::ErrorReporter;
+
+    let unit_con = Located::dummy(Constructor::Unit);
+    let ret_con = Located::dummy(Constructor::Named(1));
+    let ty = Located::dummy(Constructor::TFun(
+        Box::new(unit_con.clone()),
+        Box::new(ret_con.clone()),
+    ));
+    // body: \x. f x  — recursive call with same arg, no decrease
+    let rec_call = Located::dummy(Expression::App(
+        Box::new(Located::dummy(Expression::Named(0))),
+        Box::new(Located::dummy(Expression::Rel(0))),
+    ));
+    let body = Located::dummy(Expression::Abs(
+        "x".into(),
+        unit_con.clone(),
+        ret_con,
+        Box::new(rec_call),
+    ));
+    let file: urweb::core::File = vec![Located::dummy(Declaration::ValRec(vec![(
+        "f".into(),
+        0,
+        ty,
+        body,
+        "".into(),
+    )]))];
+    let mut errors = ErrorReporter::new();
+    compiler::check_termination(&file, &mut errors);
+    assert!(
+        errors.has_errors(),
+        "check_termination must reject non-terminating ValRec (kills replace with () mutant)"
+    );
+}
+
+#[test]
+fn integration_check_termination_accepts_terminating_valrec() {
+    // ValRec with non-recursive body: no recursive call, so no error.
+    use urweb::error_types::ErrorReporter;
+
+    let unit_con = Located::dummy(Constructor::Unit);
+    let ty = Located::dummy(Constructor::TFun(
+        Box::new(unit_con.clone()),
+        Box::new(unit_con.clone()),
+    ));
+    let body = Located::dummy(Expression::Abs(
+        "x".into(),
+        unit_con.clone(),
+        unit_con.clone(),
+        Box::new(Located::dummy(Expression::Prim(
+            urweb::primitives::Prim::Int(0),
+        ))),
+    ));
+    let file: urweb::core::File = vec![Located::dummy(Declaration::ValRec(vec![(
+        "f".into(),
+        0,
+        ty,
+        body,
+        "".into(),
+    )]))];
+    let mut errors = ErrorReporter::new();
+    compiler::check_termination(&file, &mut errors);
+    assert!(
+        !errors.has_errors(),
+        "check_termination must accept terminating ValRec"
     );
 }

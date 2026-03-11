@@ -65,7 +65,9 @@ struct State {
 // ---------------------------------------------------------------------------
 
 /// Unravels nested `EApp` applications, collecting the head name and arguments.
-pub(crate) fn unravel_app(expression: &LocatedExpression) -> Option<(usize, Vec<LocatedExpression>)> {
+pub(crate) fn unravel_app(
+    expression: &LocatedExpression,
+) -> Option<(usize, Vec<LocatedExpression>)> {
     fn inner(expression: &LocatedExpression, args: &mut Vec<LocatedExpression>) -> Option<usize> {
         match &expression.node {
             Expression::Named(name_id) => Some(*name_id),
@@ -859,6 +861,8 @@ mod tests {
             ),
         ];
         let out = tag(file, &mut |_, _| {});
-        assert!(out.iter().any(|d| matches!(d.node, Declaration::Export(_, _, _))));
+        assert!(out
+            .iter()
+            .any(|d| matches!(d.node, Declaration::Export(_, _, _))));
     }
 }

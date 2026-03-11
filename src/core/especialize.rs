@@ -1655,7 +1655,9 @@ mod tests {
             Box::new(body),
         ));
         let lifted = lift_exp_by(0, 1, abs);
-        let Expression::Abs(_, _, _, inner) = lifted.node else { panic!("expected Abs") };
+        let Expression::Abs(_, _, _, inner) = lifted.node else {
+            panic!("expected Abs")
+        };
         assert!(matches!(inner.node, Expression::Rel(2)));
     }
 
@@ -1670,7 +1672,9 @@ mod tests {
             Box::new(e2),
         ));
         let lifted = lift_exp_by(0, 1, let_exp);
-        let Expression::Let(_, _, _, e2_out) = lifted.node else { panic!("expected Let") };
+        let Expression::Let(_, _, _, e2_out) = lifted.node else {
+            panic!("expected Let")
+        };
         assert!(matches!(e2_out.node, Expression::Rel(2)));
     }
 

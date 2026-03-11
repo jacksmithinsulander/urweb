@@ -375,6 +375,7 @@ fn parse_directive(job: &mut Job, line: &str, dir: &Path) -> Result<()> {
         "path" => {
             // path NAME=VALUE — sets a path variable for $NAME substitution.
             // We don't implement variable substitution fully; just ignore.
+            job.seen_directives.push("path".into());
         }
 
         // Settings-only directives (update Settings not Job)
@@ -382,6 +383,7 @@ fn parse_directive(job: &mut Job, line: &str, dir: &Path) -> Result<()> {
         | "alwaysInline" | "neverInline" | "coreInline" | "monoInline" | "file" | "jsFile"
         | "limit" => {
             // These affect global Settings rather than the Job; skip for now.
+            job.seen_directives.push(cmd.to_string());
         }
 
         _ => {
@@ -669,11 +671,12 @@ mod tests {
         // Catches mutant: delete match arm "path".
         let dir = tempdir().unwrap();
         let urp = write_urp(dir.path(), "app.urp", "path FOO=/some/path\n\nmod1\n");
-        let result = parse_urp(&urp);
+        let job = parse_urp(&urp).unwrap();
         assert!(
-            result.is_ok(),
-            "path directive must parse without error (catches delete arm path)"
+            job.seen_directives.contains(&"path".to_string()),
+            "path directive must be recorded (catches delete arm path)"
         );
+        assert_eq!(job.sources.len(), 1);
     }
 
     #[test]
@@ -990,6 +993,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let urp = write_urp(dir.path(), "app.urp", "path FOO=/some/path\n\nmod1\n");
         let job = parse_urp(&urp).unwrap();
+        assert!(job.seen_directives.contains(&"path".to_string()));
         assert_eq!(job.sources.len(), 1);
     }
 
@@ -1141,6 +1145,10 @@ mod tests {
             "path FOO=/some/path\ndatabase mydb\n\nmod1\n",
         );
         let job = parse_urp(&urp).unwrap();
+        assert!(
+            job.seen_directives.contains(&"path".to_string()),
+            "path directive must be recorded (catches delete path arm)"
+        );
         assert_eq!(
             job.database.as_deref(),
             Some("mydb"),
@@ -1154,16 +1162,22 @@ mod tests {
         // Catches mutant: delete match arm for html5|limit|etc.
         let dir = tempdir().unwrap();
         let urp = write_urp(dir.path(), "app.urp", "limit Class 5\n\nmod1\n");
-        let result = parse_urp(&urp);
-        assert!(result.is_ok(), "limit directive must parse without error");
+        let job = parse_urp(&urp).unwrap();
+        assert!(
+            job.seen_directives.contains(&"limit".to_string()),
+            "limit directive must be recorded (catches delete match arm)"
+        );
     }
 
     #[test]
     fn parse_html5_directive_no_error() {
         let dir = tempdir().unwrap();
         let urp = write_urp(dir.path(), "app.urp", "html5\n\nmod1\n");
-        let result = parse_urp(&urp);
-        assert!(result.is_ok(), "html5 directive must parse without error");
+        let job = parse_urp(&urp).unwrap();
+        assert!(
+            job.seen_directives.contains(&"html5".to_string()),
+            "html5 directive must be recorded (catches delete match arm)"
+        );
     }
 
     #[test]
@@ -1171,10 +1185,10 @@ mod tests {
         // Catches mutant: delete match arm html5|xhtml|...
         let dir = tempdir().unwrap();
         let urp = write_urp(dir.path(), "app.urp", "xhtml\n\nmod1\n");
-        let result = parse_urp(&urp);
+        let job = parse_urp(&urp).unwrap();
         assert!(
-            result.is_ok(),
-            "xhtml directive must parse (catches delete match arm)"
+            job.seen_directives.contains(&"xhtml".to_string()),
+            "xhtml directive must be recorded (catches delete match arm)"
         );
     }
 
@@ -1183,10 +1197,10 @@ mod tests {
         // Catches mutant: delete match arm noMangleSql in settings-only arm.
         let dir = tempdir().unwrap();
         let urp = write_urp(dir.path(), "app.urp", "noMangleSql\n\nmod1\n");
-        let result = parse_urp(&urp);
+        let job = parse_urp(&urp).unwrap();
         assert!(
-            result.is_ok(),
-            "noMangleSql directive must parse (catches delete match arm)"
+            job.seen_directives.contains(&"noMangleSql".to_string()),
+            "noMangleSql directive must be recorded (catches delete match arm)"
         );
     }
 
@@ -1195,10 +1209,10 @@ mod tests {
         // Catches mutant: delete match arm file in settings-only arm.
         let dir = tempdir().unwrap();
         let urp = write_urp(dir.path(), "app.urp", "file index.html\n\nmod1\n");
-        let result = parse_urp(&urp);
+        let job = parse_urp(&urp).unwrap();
         assert!(
-            result.is_ok(),
-            "file directive must parse (catches delete match arm)"
+            job.seen_directives.contains(&"file".to_string()),
+            "file directive must be recorded (catches delete match arm)"
         );
     }
 

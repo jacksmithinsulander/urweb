@@ -23,6 +23,7 @@ pub mod local_reduction;
 pub mod marshal_check;
 pub mod rpc_elaboration;
 pub mod specialize;
+pub mod termination_check;
 pub mod unpoly;
 pub mod untangling;
 pub mod utilities;

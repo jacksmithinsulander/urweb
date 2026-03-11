@@ -746,7 +746,10 @@ mod tests {
             ("Id".to_string(), ffi_typ("Basis", "int")),
             ("Ref".to_string(), ffi_typ("Basis", "string")),
         ];
-        let csts = vec![("fk_ref".to_string(), "FOREIGN KEY (uw_ref) REFERENCES t(id)".to_string())];
+        let csts = vec![(
+            "fk_ref".to_string(),
+            "FOREIGN KEY (uw_ref) REFERENCES t(id)".to_string(),
+        )];
         let decls = vec![Located::new(
             Decl::Table("uw_mytable".to_string(), xts, "Id".to_string(), csts),
             Span::dummy(),
@@ -797,7 +800,10 @@ mod tests {
         )];
         let result = sql_generate(&(decls, vec![]), &settings);
         // MySQL returns Some("") for supports_sha512, so no extra init; shouldn't panic.
-        assert!(!result.contains("pgcrypto"), "MySQL uses built-in SHA2, not pgcrypto");
+        assert!(
+            !result.contains("pgcrypto"),
+            "MySQL uses built-in SHA2, not pgcrypto"
+        );
     }
 
     #[test]
@@ -907,7 +913,10 @@ mod tests {
         let result = sql_generate(&(decls, vec![]), &settings);
         assert!(result.contains("CREATE INDEX"));
         assert!(result.contains("name"));
-        assert!(!result.contains("id") || result.contains("_pkey"), "index should not include Skipped id col");
+        assert!(
+            !result.contains("id") || result.contains("_pkey"),
+            "index should not include Skipped id col"
+        );
     }
 
     #[test]
@@ -1066,7 +1075,10 @@ mod tests {
                 Span::dummy(),
             ),
             Located::new(
-                Decl::Index("uw_tab".to_string(), vec![("col".to_string(), IndexMode::Equality)]),
+                Decl::Index(
+                    "uw_tab".to_string(),
+                    vec![("col".to_string(), IndexMode::Equality)],
+                ),
                 Span::dummy(),
             ),
         ];

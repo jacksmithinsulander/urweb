@@ -3318,8 +3318,8 @@ mod tests {
     #[test]
     fn url_handler_registration_in_output() {
         // Catches mutant: reset_url_handlers/add_url_handler/collect replaced with no-op.
-        use crate::export::ExportKind;
         use crate::export::Effect;
+        use crate::export::ExportKind;
         use crate::monomorphized::{DbMode, Sidedness};
         use std::sync::{Arc, Mutex};
 
@@ -3331,8 +3331,10 @@ mod tests {
             constrs: vec![("Red".into(), 21, None), ("Blue".into(), 22, None)],
         };
         let d = dummy(Decl::Datatype(vec![dt]));
-        let dt_ref: crate::c_like_representation::DatatypeRef =
-            Arc::new(Mutex::new(vec![("Red".into(), 21, None), ("Blue".into(), 22, None)]));
+        let dt_ref: crate::c_like_representation::DatatypeRef = Arc::new(Mutex::new(vec![
+            ("Red".into(), 21, None),
+            ("Blue".into(), 22, None),
+        ]));
         let url_arg = dummy(Typ::Datatype(DatatypeKind::Default, 20, dt_ref));
         let ran = dummy(Typ::Record(0));
         // ts: param types; for Link, url_ts = ts[..ts.len()-1], so we need 2+ to get url args
@@ -3348,7 +3350,9 @@ mod tests {
         );
         let result = cjr_print(&(vec![d], vec![export]), &settings);
         assert!(
-            result.contains("unurlify_") || result.contains("urlify_") || result.contains("URL handler"),
+            result.contains("unurlify_")
+                || result.contains("urlify_")
+                || result.contains("URL handler"),
             "Export with Datatype URL arg must emit URL handler code, got excerpt: ...",
         );
     }

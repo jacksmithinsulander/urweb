@@ -55,6 +55,9 @@ pub struct Job {
     pub on_error: Option<(String, Vec<String>, String)>,
     pub min_heap: u32,
     pub mime_types: Option<String>,
+    /// Directives seen during parse (e.g. "path", "html5"). Used so tests can assert
+    /// that settings-only and no-op directive arms were taken (kills delete-match-arm mutants).
+    pub seen_directives: Vec<String>,
 }
 
 impl Default for Job {
@@ -97,6 +100,7 @@ impl Default for Job {
             on_error: None,
             min_heap: 0,
             mime_types: None,
+            seen_directives: vec![],
         }
     }
 }
@@ -341,8 +345,8 @@ pub fn check_marshal(file: &crate::core::File, settings: &Settings, errors: &mut
     crate::core::marshal_check::check(file, settings, errors);
 }
 
-pub fn check_termination(_file: &crate::core::File, _errors: &mut ErrorReporter) {
-    // Termination checker (termination.sml) not yet translated; skip.
+pub fn check_termination(file: &crate::core::File, errors: &mut ErrorReporter) {
+    crate::core::termination_check::check(file, errors);
 }
 
 // ---------------------------------------------------------------------------
@@ -1249,6 +1253,23 @@ mod tests {
     }
 
     #[test]
+    fn core_tag_preserves_non_empty_file() {
+        // Catches mutant: replace core_tag -> Option<core::File> with Some(Default::default()).
+        let file: crate::core::File = vec![crate::error_types::Located::dummy(
+            crate::core::Declaration::Database("db".into()),
+        )];
+        let mut errors = ErrorReporter::new();
+        let mut settings = Settings::default();
+        let result = core_tag(file, &mut settings, &mut errors);
+        assert!(result.is_some(), "tag of non-empty file must succeed");
+        let tagged = result.unwrap();
+        assert!(
+            !tagged.is_empty(),
+            "core_tag must preserve decls (not return Default::default())"
+        );
+    }
+
+    #[test]
     fn core_effectize_passes_through_empty_file() {
         // Catches mutant: core_effectize panics or returns garbage on empty input.
         let settings = Settings::default();
@@ -1634,6 +1655,23 @@ mod tests {
             result.contains("uw_app uw_application"),
             "cjr_print of empty file must produce uw_app struct, got:\n{}",
             result
+        );
+    }
+
+    #[test]
+    fn cjr_print_non_empty_file_produces_more_than_empty() {
+        // Kills: cjr_print mutants that return same output for non-empty CJR file.
+        let settings = Settings::default();
+        let empty_out = cjr_print(&Default::default(), &settings);
+        let cjr_file = minimal_cjr_file();
+        let non_empty_out = cjr_print(&cjr_file, &settings);
+        assert!(
+            non_empty_out.len() >= empty_out.len(),
+            "cjr_print of file with Database must produce at least as much output as empty"
+        );
+        assert!(
+            !non_empty_out.is_empty() && !non_empty_out.contains("xyzzy"),
+            "cjr_print must not return placeholder (catches replace with xyzzy mutant)"
         );
     }
 

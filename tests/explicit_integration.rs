@@ -1,5 +1,6 @@
 //! Integration tests for the Explicit module.
 
+use urweb::compiler;
 use urweb::datatype_kind::DatatypeKind;
 use urweb::error_types::Located;
 use urweb::explicit::utilities::{classify_datatype, con, decl, exp, kind};
@@ -1187,4 +1188,28 @@ fn explicit_decl_fold_ffi_visits() {
         &|_, s| s,
     );
     assert!(n >= 1, "fold must visit Ffi type");
+}
+
+#[test]
+fn explicit_corify_minimal_file_returns_non_empty_core() {
+    // Kills: corify mutants that return None or empty core for valid explicit input.
+    let file: urweb::explicit::File = vec![Located::dummy(Declaration::Database("db".into()))];
+    let mut settings = urweb::settings::Settings::default();
+    let mut errors = urweb::error_types::ErrorReporter::new();
+    let result = compiler::corify(file, &mut settings, &mut errors);
+    assert!(
+        result.is_some(),
+        "corify must return Some for minimal explicit file (catches replace with None)"
+    );
+    let core_file = result.unwrap();
+    assert!(
+        !core_file.is_empty(),
+        "corify must produce at least one Core decl (catches replace with Default::default())"
+    );
+    assert!(
+        core_file
+            .iter()
+            .any(|d| matches!(&d.node, urweb::core::Declaration::Database(_))),
+        "corify must produce Database decl"
+    );
 }

@@ -1464,7 +1464,10 @@ mod tests {
         let e1 = mono::Exp::FfiApp(
             "Basis".into(),
             "periodic".into(),
-            vec![(Located::new(mono::Exp::Prim(Prim::Int(100)), span.clone()), int_ty)],
+            vec![(
+                Located::new(mono::Exp::Prim(Prim::Int(100)), span.clone()),
+                int_ty,
+            )],
         );
         let decl = mono::Decl::Task(
             Located::new(e1, span.clone()),
@@ -1491,8 +1494,10 @@ mod tests {
     #[test]
     fn cjrize_table_with_strcat_constraint() {
         let span = Span::dummy();
-        let string_ty =
-            Located::new(mono::Typ::Ffi("Basis".into(), "string".into()), span.clone());
+        let string_ty = Located::new(
+            mono::Typ::Ffi("Basis".into(), "string".into()),
+            span.clone(),
+        );
         let r1 = mono::Exp::Record(vec![(
             "a".into(),
             Located::new(
@@ -1527,7 +1532,10 @@ mod tests {
         let file: mono::File = (vec![Located::new(decl, span)], vec![]);
         let mut errors = ErrorReporter::new();
         let result = cjrize(file, &mut errors);
-        assert!(result.is_some(), "cjrize must process Table with Strcat constraint");
+        assert!(
+            result.is_some(),
+            "cjrize must process Table with Strcat constraint"
+        );
         assert!(!errors.has_errors());
         let (decls, _) = result.unwrap();
         assert_eq!(decls.len(), 1);
@@ -1553,13 +1561,13 @@ mod tests {
         );
         let mt = Located::new(mono::Typ::Ffi("Basis".to_string(), "int".to_string()), span);
         let mono_fields = vec![("x".to_string(), mt.clone()), ("y".to_string(), mt)];
-        let cjr_fields = vec![
-            ("x".to_string(), t.clone()),
-            ("y".to_string(), t),
-        ];
+        let cjr_fields = vec![("x".to_string(), t.clone()), ("y".to_string(), t)];
         let id1 = sm.find(&mono_fields, cjr_fields.clone());
         let id2 = sm.find(&mono_fields, cjr_fields);
-        assert_eq!(id1, id2, "Sm::find same struct twice => same id (catches += 1)");
+        assert_eq!(
+            id1, id2,
+            "Sm::find same struct twice => same id (catches += 1)"
+        );
         assert_eq!(id1, 1, "first non-unit struct gets id 1");
     }
 

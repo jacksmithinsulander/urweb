@@ -1614,11 +1614,7 @@ mod tests {
                 vec![],
             )),
         };
-        let field_exp = Located::dummy(Expression::Field(
-            Box::new(rec),
-            field_name,
-            meta,
-        ));
+        let field_exp = Located::dummy(Expression::Field(Box::new(rec), field_name, meta));
         let out = reduce_exp(field_exp);
         assert!(matches!(out.node, Expression::Prim(Prim::Int(42))));
     }

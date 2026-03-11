@@ -629,7 +629,11 @@ mod tests {
             "sqlifyClocktime must be recognized (catches delete sqlifyClocktime arm)"
         );
         let (_, tmpl) = result.unwrap();
-        assert!(tmpl.contains("time"), "sqlifyClocktime must produce time type: {}", tmpl);
+        assert!(
+            tmpl.contains("time"),
+            "sqlifyClocktime must produce time type: {}",
+            tmpl
+        );
     }
 
     #[test]
@@ -654,7 +658,11 @@ mod tests {
             "sqlifyCalendardate must be recognized (catches delete sqlifyCalendardate arm)"
         );
         let (_, tmpl) = result.unwrap();
-        assert!(tmpl.contains("date"), "sqlifyCalendardate must produce date: {}", tmpl);
+        assert!(
+            tmpl.contains("date"),
+            "sqlifyCalendardate must produce date: {}",
+            tmpl
+        );
     }
 
     #[test]
@@ -679,7 +687,11 @@ mod tests {
             "sqlifyBlob must be recognized (catches delete sqlifyBlob arm)"
         );
         let (_, tmpl) = result.unwrap();
-        assert!(tmpl.contains("bytea") || tmpl.contains("?"), "sqlifyBlob must produce blob type: {}", tmpl);
+        assert!(
+            tmpl.contains("bytea") || tmpl.contains("?"),
+            "sqlifyBlob must produce blob type: {}",
+            tmpl
+        );
     }
 
     #[test]
@@ -738,10 +750,7 @@ mod tests {
             "Basis".into(),
             "string".into(),
         ));
-        let lit = Located::dummy(Exp::Prim(Prim::String(
-            StringMode::Normal,
-            "a".into(),
-        )));
+        let lit = Located::dummy(Exp::Prim(Prim::String(StringMode::Normal, "a".into())));
         let dynamic = Located::dummy(Exp::Rel(0));
         let e = Located::dummy(Exp::FfiApp(
             "Basis".into(),

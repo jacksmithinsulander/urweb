@@ -859,12 +859,7 @@ mod tests {
                 "getCookie".into(),
             ))),
         );
-        let body_10 = Expression::ServerCall(
-            11,
-            vec![],
-            unit_ty.clone(),
-            FailureMode::Error,
-        );
+        let body_10 = Expression::ServerCall(11, vec![], unit_ty.clone(), FailureMode::Error);
         let file: File = vec![
             Located::new(
                 Declaration::ValRec(vec![

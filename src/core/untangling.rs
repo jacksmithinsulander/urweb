@@ -221,7 +221,13 @@ fn tarjan_sccs_topological(
         on_stack.insert(start_node);
         tarjan_stack.push(start_node);
 
+        const MAX_TARJAN_ITERATIONS: usize = 100_000;
+        let mut iter_count = 0;
         'outer: while let Some((current_node, ref mut remaining_succs)) = dfs_stack.last_mut() {
+            iter_count += 1;
+            if iter_count > MAX_TARJAN_ITERATIONS {
+                break;
+            }
             let current_node = *current_node;
 
             // Process the next unvisited or on-stack successor.

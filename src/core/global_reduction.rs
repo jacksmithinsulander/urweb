@@ -2035,10 +2035,7 @@ mod tests {
     fn reduce_exp_case_var_matches() {
         // Kills: delete Var arm in match_pat. Case(_, [(Var, body)]) -> body.
         use crate::core::Pattern;
-        let var_pat = Located::new(
-            Pattern::Var("x".into(), unit_con()),
-            dummy(),
-        );
+        let var_pat = Located::new(Pattern::Var("x".into(), unit_con()), dummy());
         let disc = Located::new(Expression::Prim(Prim::Int(0)), dummy());
         let body = Located::new(Expression::Prim(Prim::Int(77)), dummy());
         let case_meta = crate::core::CaseMeta {
@@ -2125,14 +2122,12 @@ mod tests {
             )]),
             dummy(),
         );
-        let concat_t = Located::new(Constructor::Concat(Box::new(unit_ty.clone()), Box::new(unit_ty)), dummy());
+        let concat_t = Located::new(
+            Constructor::Concat(Box::new(unit_ty.clone()), Box::new(unit_ty)),
+            dummy(),
+        );
         let concat = Located::new(
-            Expression::Concat(
-                Box::new(rec1),
-                concat_t.clone(),
-                Box::new(rec2),
-                concat_t,
-            ),
+            Expression::Concat(Box::new(rec1), concat_t.clone(), Box::new(rec2), concat_t),
             dummy(),
         );
         let reducer = Reducer::new();
