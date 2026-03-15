@@ -2326,3 +2326,168 @@ pub fn js_compile(
     let (_new_file, script) = process(file, settings, errors);
     script
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::datatype_kind::DatatypeKind;
+    use crate::error_types::Located;
+    use crate::monomorphized::{DatatypeDef, DatatypeRef};
+    use std::sync::{Arc, Mutex};
+
+    fn span() -> Span {
+        Span::dummy()
+    }
+
+    fn ffi_typ(m: &str, f: &str) -> LocTyp {
+        Located::new(Typ::Ffi(m.to_string(), f.to_string()), span())
+    }
+
+    fn option_datatype_typ(kind: DatatypeKind) -> LocTyp {
+        let def = DatatypeDef {
+            kind,
+            constrs: vec![],
+        };
+        let arc: DatatypeRef = Arc::new(Mutex::new(def));
+        Located::new(Typ::Datatype(1, arc), span())
+    }
+
+    #[test]
+    fn alloc_name_increments_from_max() {
+        let mut st = State::new(10);
+        let first = st.alloc_name();
+        let second = st.alloc_name();
+        assert_eq!(first, 10);
+        assert_eq!(second, 11);
+    }
+
+    #[test]
+    fn fmt_typ_formats_variants() {
+        let t_fun = Located::new(
+            Typ::Fun(
+                Box::new(ffi_typ("Basis", "int")),
+                Box::new(ffi_typ("Basis", "string")),
+            ),
+            span(),
+        );
+        assert_eq!(fmt_typ(&t_fun), "Fun(Ffi(Basis.int),Ffi(Basis.string))");
+
+        let t_rec = Located::new(
+            Typ::Record(vec![("x".into(), ffi_typ("Basis", "int"))]),
+            span(),
+        );
+        assert_eq!(fmt_typ(&t_rec), "Rec(x:Ffi(Basis.int))");
+
+        let t_dt = option_datatype_typ(DatatypeKind::Option);
+        assert_eq!(fmt_typ(&t_dt), "Dt(1)");
+
+        let t_opt = Located::new(Typ::Option(Box::new(ffi_typ("Basis", "int"))), span());
+        assert_eq!(fmt_typ(&t_opt), "Opt(Ffi(Basis.int))");
+
+        let t_list = Located::new(Typ::List(Box::new(ffi_typ("Basis", "int"))), span());
+        assert_eq!(fmt_typ(&t_list), "List(Ffi(Basis.int))");
+
+        let t_src = Located::new(Typ::Source, span());
+        assert_eq!(fmt_typ(&t_src), "Source");
+
+        let t_sig = Located::new(Typ::Signal(Box::new(ffi_typ("Basis", "string"))), span());
+        assert_eq!(fmt_typ(&t_sig), "Signal(Ffi(Basis.string))");
+    }
+
+    #[test]
+    fn strcat_exp_zero_one_many() {
+        let s = span();
+
+        // len 0 -> empty string literal (exact to kill return-value mutants)
+        let e0 = strcat_exp(&s, vec![]);
+        match &e0.node {
+            Exp::Prim(Prim::String(StringMode::Normal, v)) => assert_eq!(v.as_str(), ""),
+            _ => panic!("len 0 must produce empty string Prim"),
+        }
+
+        // len 1 -> same expression (exact)
+        let one = str_lit(&s, "x");
+        let e1 = strcat_exp(&s, vec![one.clone()]);
+        match &e1.node {
+            Exp::Prim(Prim::String(StringMode::Normal, v)) => assert_eq!(v.as_str(), "x"),
+            _ => panic!("len 1 must return the single expr"),
+        }
+
+        // len >= 2 -> nested Strcat
+        let a = str_lit(&s, "a");
+        let b = str_lit(&s, "b");
+        let c = str_lit(&s, "c");
+        let e3 = strcat_exp(&s, vec![a.clone(), b.clone(), c.clone()]);
+        // Expect Strcat(a, Strcat(b, c)) up to associativity
+        fn collect(e: &LocExp, out: &mut Vec<String>) {
+            match &e.node {
+                Exp::Strcat(e1, e2) => {
+                    collect(e1, out);
+                    collect(e2, out);
+                }
+                Exp::Prim(Prim::String(StringMode::Normal, v)) => out.push(v.clone()),
+                _ => {}
+            }
+        }
+        let mut parts = Vec::new();
+        collect(&e3, &mut parts);
+        assert_eq!(parts, vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn is_nullable_covers_all_cases() {
+        // Option and List are always nullable
+        let opt_int = Located::new(Typ::Option(Box::new(ffi_typ("Basis", "int"))), span());
+        assert!(is_nullable(&opt_int));
+
+        let list_int = Located::new(Typ::List(Box::new(ffi_typ("Basis", "int"))), span());
+        assert!(is_nullable(&list_int));
+
+        // Datatype with Option kind is nullable
+        let dt_opt = option_datatype_typ(DatatypeKind::Option);
+        assert!(is_nullable(&dt_opt));
+
+        // Datatype with Default kind is not nullable
+        let dt_def = option_datatype_typ(DatatypeKind::Default);
+        assert!(!is_nullable(&dt_def));
+
+        // Empty record is nullable; non-empty is not
+        let rec_empty = Located::new(Typ::Record(vec![]), span());
+        assert!(is_nullable(&rec_empty));
+
+        let rec_nonempty = Located::new(
+            Typ::Record(vec![("x".into(), ffi_typ("Basis", "int"))]),
+            span(),
+        );
+        assert!(!is_nullable(&rec_nonempty));
+    }
+
+    #[test]
+    fn max_name_in_file_sees_named_and_closure() {
+        let s = span();
+        // Decl: x = ENamed 3
+        let e1 = Located::new(Exp::Named(3), s.clone());
+        let d1 = Located::new(
+            Decl::Val("x".into(), 3, ffi_typ("Basis", "int"), e1, String::new()),
+            s.clone(),
+        );
+
+        // Decl: y = Closure(10, [ENamed 20])
+        let clo = Located::new(
+            Exp::Closure(10, vec![Located::new(Exp::Named(20), s.clone())]),
+            s.clone(),
+        );
+        let d2 = Located::new(
+            Decl::Val("y".into(), 7, ffi_typ("Basis", "int"), clo, String::new()),
+            s.clone(),
+        );
+
+        let file: crate::monomorphized::File = (vec![d1, d2], vec![]);
+        // max should see decl ids 3,7, closure id 10, and env named 20
+        assert_eq!(max_name_in_file(&file), 20);
+    }
+}

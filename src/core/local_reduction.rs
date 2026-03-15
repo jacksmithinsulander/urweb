@@ -1776,4 +1776,21 @@ mod tests {
         let p = Located::dummy(crate::core::Pattern::Prim(Prim::Int(0)));
         assert_eq!(pat_binds_n(&p), 0);
     }
+
+    #[test]
+    fn de_known_removes_known_and_knownc() {
+        let unit = Located::dummy(Constructor::Unit);
+        let env: Environment = vec![
+            EnvItem::Unknown,
+            EnvItem::Known(Located::dummy(Expression::Prim(Prim::Int(0)))),
+            EnvItem::UnknownC,
+            EnvItem::KnownC(unit),
+            EnvItem::Lift(1, 1),
+        ];
+        let out = de_known(&env);
+        assert_eq!(out.len(), 3);
+        assert!(matches!(out[0], EnvItem::Unknown));
+        assert!(matches!(out[1], EnvItem::UnknownC));
+        assert!(matches!(out[2], EnvItem::Lift(1, 1)));
+    }
 }

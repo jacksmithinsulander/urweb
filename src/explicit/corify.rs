@@ -2434,3 +2434,109 @@ pub fn corify(
         Some(out)
     }
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core as core_ir;
+    use crate::core::Constructor;
+    use crate::error_types::Located;
+
+    #[test]
+    fn do_restify_empty_mods_identity() {
+        let s = Settings::default();
+        let out = do_restify(&s, &PathKind::Any, &[], "foo");
+        assert_eq!(out, "foo");
+    }
+
+    #[test]
+    fn do_restify_strips_wrap_prefix() {
+        let s = Settings::default();
+        let out = do_restify(&s, &PathKind::Any, &[], "wrap_foo");
+        assert_eq!(out, "foo");
+    }
+
+    #[test]
+    fn do_restify_with_mods_reversed() {
+        let s = Settings::default();
+        let mods: Vec<String> = vec!["a".into(), "b".into()];
+        let out = do_restify(&s, &PathKind::Any, &mods, "x");
+        assert_eq!(out, "b/a/x");
+    }
+
+    #[test]
+    fn do_restify_removes_dollar() {
+        let s = Settings::default();
+        let out = do_restify(&s, &PathKind::Any, &[], "foo$bar");
+        assert_eq!(out, "foobar");
+    }
+
+    #[test]
+    fn relify_slash_to_underscore() {
+        assert_eq!(relify("a/b"), "a_b");
+    }
+
+    #[test]
+    fn relify_no_slash_unchanged() {
+        assert_eq!(relify("ab"), "ab");
+    }
+
+    #[test]
+    fn alloc_increments() {
+        let mut c = 0usize;
+        assert_eq!(alloc(&mut c), 0);
+        assert_eq!(alloc(&mut c), 1);
+        assert_eq!(alloc(&mut c), 2);
+    }
+
+    #[test]
+    fn is_transactional_basis_transaction() {
+        let span = loc_dummy();
+        let ffi = Located::new(
+            Constructor::Ffi("Basis".into(), "transaction".into()),
+            span.clone(),
+        );
+        let arg = Located::new(Constructor::Unit, span.clone());
+        let app = Located::new(Constructor::App(Box::new(ffi), Box::new(arg)), span);
+        assert!(is_transactional(&app));
+    }
+
+    #[test]
+    fn is_transactional_ffi_int_false() {
+        let c = Located::new(Constructor::Ffi("Basis".into(), "int".into()), loc_dummy());
+        assert!(!is_transactional(&c));
+    }
+
+    #[test]
+    fn classify_datatype_core_enum() {
+        let xncs: Vec<(String, usize, Option<core_ir::LocatedConstructor>)> =
+            vec![("A".into(), 0, None), ("B".into(), 1, None)];
+        assert_eq!(classify_datatype_core(&xncs), DatatypeKind::Enum);
+    }
+
+    #[test]
+    fn classify_datatype_core_option() {
+        let unit = Located::new(Constructor::Unit, loc_dummy());
+        let xncs: Vec<(String, usize, Option<core_ir::LocatedConstructor>)> =
+            vec![("None".into(), 0, None), ("Some".into(), 1, Some(unit))];
+        assert_eq!(classify_datatype_core(&xncs), DatatypeKind::Option);
+    }
+
+    #[test]
+    fn classify_datatype_core_default() {
+        let unit = Located::new(Constructor::Unit, loc_dummy());
+        let xncs: Vec<(String, usize, Option<core_ir::LocatedConstructor>)> =
+            vec![("C".into(), 0, Some(unit))];
+        assert_eq!(classify_datatype_core(&xncs), DatatypeKind::Default);
+    }
+
+    #[test]
+    fn flattening_name_normal() {
+        let f = Flattening::new_normal(vec!["m".into(), "n".into()]);
+        assert_eq!(f.name(), vec!["m", "n"]);
+    }
+}

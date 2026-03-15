@@ -1311,6 +1311,46 @@ mod tests {
     }
 
     #[test]
+    fn occurs_at_tfun_in_left() {
+        let left = dummy(Constructor::Rel(0));
+        let right = dummy(Constructor::Unit);
+        let c = dummy(Constructor::TFun(Box::new(left), Box::new(right)));
+        assert!(occurs_at(0, 0, &c));
+    }
+
+    #[test]
+    fn occurs_at_tfun_in_right() {
+        let left = dummy(Constructor::Unit);
+        let right = dummy(Constructor::Rel(0));
+        let c = dummy(Constructor::TFun(Box::new(left), Box::new(right)));
+        assert!(occurs_at(0, 0, &c));
+    }
+
+    #[test]
+    fn occurs_at_abs_shifts_bound() {
+        // Under Abs, bound becomes bound+1; index 0 at outer is index 1 in body.
+        let body = dummy(Constructor::Rel(2));
+        let k = dummy(Kind::Type);
+        let c = dummy(Constructor::Abs("x".into(), Box::new(k), Box::new(body)));
+        assert!(occurs_at(0, 1, &c));
+    }
+
+    #[test]
+    fn occurs_at_app_in_fun() {
+        let f = dummy(Constructor::Rel(0));
+        let a = dummy(Constructor::Unit);
+        let c = dummy(Constructor::App(Box::new(f), Box::new(a)));
+        assert!(occurs_at(0, 0, &c));
+    }
+
+    #[test]
+    fn occurs_at_trecord_inner() {
+        let inner = dummy(Constructor::Rel(0));
+        let r = dummy(Constructor::TRecord(Box::new(inner)));
+        assert!(occurs_at(0, 0, &r));
+    }
+
+    #[test]
     fn lift_con_in_con_rel_plus_one() {
         let c = dummy(Constructor::Rel(0));
         let out = lift_con_in_con(c);

@@ -1,11 +1,11 @@
 //! Integration tests for the Explicit Env module.
 //! Catches mutants in lift_kind_in_kind, lift_con_in_con, Env methods.
 
-use urweb::error_types::Located;
-use urweb::explicit::environment::{
+use ur::error_types::Located;
+use ur::explicit::environment::{
     lift_con_in_con, lift_kind_in_con, lift_kind_in_kind, Env, EnvError,
 };
-use urweb::explicit::{Constructor, Declaration, Expression, Kind, Signature, SignatureItem};
+use ur::explicit::{Constructor, Declaration, Expression, Kind, Signature, SignatureItem};
 
 #[test]
 fn lift_kind_in_kind_rel_ge_bound() {
@@ -344,7 +344,7 @@ fn env_decl_binds_con() {
 #[test]
 fn env_decl_binds_datatype_with_params() {
     // Exercises nxs - i - 1 in decl_binds (line 385); Rel indices in base type
-    let dt = urweb::explicit::DatatypeDecl {
+    let dt = ur::explicit::DatatypeDecl {
         name: "T".into(),
         id: 10,
         params: vec!["a".into()],
@@ -370,7 +370,7 @@ fn env_decl_binds_datatype_with_params() {
 #[test]
 fn env_decl_binds_datatype_two_params() {
     // With 2 params, base type is App(App(Named(10), Rel(1)), Rel(0)). Catches nxs-i-1 mutant.
-    let dt = urweb::explicit::DatatypeDecl {
+    let dt = ur::explicit::DatatypeDecl {
         name: "T".into(),
         id: 20,
         params: vec!["a".into(), "b".into()],
@@ -406,7 +406,7 @@ fn env_decl_binds_datatype_two_params() {
 #[test]
 fn env_pat_binds_adds_variable() {
     let t = Located::dummy(Constructor::Unit);
-    let p = Located::dummy(urweb::explicit::Pattern::Var("z".into(), t));
+    let p = Located::dummy(ur::explicit::Pattern::Var("z".into(), t));
     let mut env = Env::new();
     env.pat_binds(&p);
     let (name, _) = env.lookup_e_rel(0).unwrap();
@@ -416,7 +416,7 @@ fn env_pat_binds_adds_variable() {
 #[test]
 fn env_decl_binds_val() {
     let t = Located::dummy(Constructor::Unit);
-    let e = Located::dummy(Expression::Prim(urweb::primitives::Prim::Int(0)));
+    let e = Located::dummy(Expression::Prim(ur::primitives::Prim::Int(0)));
     let d = Located::dummy(Declaration::Val("x".into(), 5, t, e));
     let mut env = Env::new();
     env.decl_binds(&d);
@@ -433,4 +433,99 @@ fn env_sgi_binds_con() {
     env.sgi_binds(&sgi);
     let (name, _, _) = env.lookup_c_named(8).unwrap();
     assert_eq!(name, "C");
+}
+
+// Phase 5 expanded: lift_con_in_con Record, Concat, Map, Tuple, TCFun; Env push/lookup
+#[test]
+fn lift_con_in_con_record_recurses() {
+    let k = Located::dummy(Kind::Type);
+    let rel0 = Located::dummy(Constructor::Rel(0));
+    let unit = Located::dummy(Constructor::Unit);
+    let rec = Located::dummy(Constructor::Record(Box::new(k), vec![(rel0, unit)]));
+    let out = lift_con_in_con(rec, 0);
+    match &out.node {
+        Constructor::Record(_, pairs) => {
+            assert_eq!(pairs.len(), 1);
+            assert!(matches!(pairs[0].0.node, Constructor::Rel(1)));
+        }
+        _ => panic!("expected Record"),
+    }
+}
+
+#[test]
+fn lift_con_in_con_map_unchanged() {
+    let k = Located::dummy(Kind::Type);
+    let map = Located::dummy(Constructor::Map(Box::new(k.clone()), Box::new(k)));
+    let out = lift_con_in_con(map, 0);
+    assert!(matches!(out.node, Constructor::Map(_, _)));
+}
+
+#[test]
+fn lift_con_in_con_app_recurses() {
+    let n = Located::dummy(Constructor::Named(1));
+    let rel0 = Located::dummy(Constructor::Rel(0));
+    let app = Located::dummy(Constructor::App(Box::new(n), Box::new(rel0)));
+    let out = lift_con_in_con(app, 0);
+    match &out.node {
+        Constructor::App(_, arg) => assert!(matches!(arg.node, Constructor::Rel(1))),
+        _ => panic!("expected App"),
+    }
+}
+
+#[test]
+fn lift_con_in_con_proj_recurses() {
+    let rel0 = Located::dummy(Constructor::Rel(0));
+    let tup = Located::dummy(Constructor::Tuple(vec![rel0]));
+    let proj = Located::dummy(Constructor::Proj(Box::new(tup), 1));
+    let out = lift_con_in_con(proj, 0);
+    match &out.node {
+        Constructor::Proj(inner, n) => {
+            assert_eq!(*n, 1);
+            match &inner.node {
+                Constructor::Tuple(cs) => assert!(matches!(cs[0].node, Constructor::Rel(1))),
+                _ => {}
+            }
+        }
+        _ => panic!("expected Proj"),
+    }
+}
+
+#[test]
+fn lift_kind_in_kind_record_recurses() {
+    let rel1 = Located::dummy(Kind::Rel(1));
+    let k = Located::dummy(Kind::Record(Box::new(rel1)));
+    let out = lift_kind_in_kind(k, 0);
+    match &out.node {
+        Kind::Record(inner) => assert!(matches!(inner.node, Kind::Rel(2))),
+        _ => panic!("expected Record"),
+    }
+}
+
+#[test]
+fn lift_kind_in_kind_tuple_recurses() {
+    let rel1 = Located::dummy(Kind::Rel(1));
+    let k = Located::dummy(Kind::Tuple(vec![rel1]));
+    let out = lift_kind_in_kind(k, 0);
+    match &out.node {
+        Kind::Tuple(ks) => assert!(matches!(ks[0].node, Kind::Rel(2))),
+        _ => panic!("expected Tuple"),
+    }
+}
+
+#[test]
+fn env_push_c_rel_then_lookup() {
+    let k = Located::dummy(Kind::Type);
+    let mut env = Env::new();
+    env = env.push_c_rel("a".into(), k);
+    let (name, _) = env.lookup_c_rel(0).unwrap();
+    assert_eq!(name, "a");
+}
+
+#[test]
+fn env_push_e_rel_then_lookup() {
+    let t = Located::dummy(Constructor::Unit);
+    let mut env = Env::new();
+    env.push_e_rel("x".into(), t);
+    let (name, _) = env.lookup_e_rel(0).unwrap();
+    assert_eq!(name, "x");
 }

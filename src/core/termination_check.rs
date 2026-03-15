@@ -575,7 +575,8 @@ mod tests {
     #[test]
     fn test_empty() {
         let mut errors = ErrorReporter::new();
-        check(&vec![], &mut errors);
+        let file: File = vec![];
+        check(&file, &mut errors);
         assert!(!errors.has_errors());
     }
 

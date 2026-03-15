@@ -1,21 +1,21 @@
 //! Integration tests for the Explicit module.
 
-use urweb::compiler;
-use urweb::datatype_kind::DatatypeKind;
-use urweb::error_types::Located;
-use urweb::explicit::utilities::{classify_datatype, con, decl, exp, kind};
-use urweb::explicit::{CaseMeta, Constructor, Declaration, Expression, FieldMeta, Kind, RestMeta};
+use ur::compiler;
+use ur::datatype_kind::DatatypeKind;
+use ur::error_types::Located;
+use ur::explicit::utilities::{classify_datatype, con, decl, exp, kind};
+use ur::explicit::{CaseMeta, Constructor, Declaration, Expression, FieldMeta, Kind, RestMeta};
 
 #[test]
 fn explicit_classify_datatype_enum() {
-    let constrs: Vec<(String, usize, Option<urweb::explicit::LocatedConstructor>)> =
+    let constrs: Vec<(String, usize, Option<ur::explicit::LocatedConstructor>)> =
         vec![("A".into(), 0, None), ("B".into(), 1, None)];
     assert_eq!(classify_datatype(&constrs), DatatypeKind::Enum);
 }
 
 #[test]
 fn explicit_classify_datatype_enum_single_nullary() {
-    let constrs: Vec<(String, usize, Option<urweb::explicit::LocatedConstructor>)> =
+    let constrs: Vec<(String, usize, Option<ur::explicit::LocatedConstructor>)> =
         vec![("Unit".into(), 0, None)];
     assert_eq!(classify_datatype(&constrs), DatatypeKind::Enum);
 }
@@ -23,7 +23,7 @@ fn explicit_classify_datatype_enum_single_nullary() {
 #[test]
 fn explicit_classify_datatype_option() {
     let unit = Located::dummy(Constructor::Unit);
-    let constrs: Vec<(String, usize, Option<urweb::explicit::LocatedConstructor>)> =
+    let constrs: Vec<(String, usize, Option<ur::explicit::LocatedConstructor>)> =
         vec![("None".into(), 0, None), ("Some".into(), 1, Some(unit))];
     assert_eq!(classify_datatype(&constrs), DatatypeKind::Option);
 }
@@ -31,7 +31,7 @@ fn explicit_classify_datatype_option() {
 #[test]
 fn explicit_classify_datatype_default() {
     let unit = Located::dummy(Constructor::Unit);
-    let constrs: Vec<(String, usize, Option<urweb::explicit::LocatedConstructor>)> = vec![
+    let constrs: Vec<(String, usize, Option<ur::explicit::LocatedConstructor>)> = vec![
         ("A".into(), 0, Some(unit.clone())),
         ("B".into(), 1, Some(unit)),
     ];
@@ -42,7 +42,7 @@ fn explicit_classify_datatype_default() {
 fn explicit_classify_datatype_default_two_nullary_one_unary() {
     // (2 nullary, 1 unary) must be Default, not Option. Catches && vs || mutant.
     let unit = Located::dummy(Constructor::Unit);
-    let constrs: Vec<(String, usize, Option<urweb::explicit::LocatedConstructor>)> = vec![
+    let constrs: Vec<(String, usize, Option<ur::explicit::LocatedConstructor>)> = vec![
         ("A".into(), 0, None),
         ("B".into(), 0, None),
         ("C".into(), 1, Some(unit)),
@@ -282,13 +282,13 @@ fn explicit_con_exists_map_second_kind_only() {
 
 #[test]
 fn explicit_exp_exists_returns_false_when_nothing_matches() {
-    let e = Located::dummy(Expression::Prim(urweb::primitives::Prim::Int(0)));
+    let e = Located::dummy(Expression::Prim(ur::primitives::Prim::Int(0)));
     assert!(!exp::exists(&e, &|_| false, &|_| false, &|_| false));
 }
 
 #[test]
 fn explicit_exp_exists_returns_true_when_fe_matches() {
-    let e = Located::dummy(Expression::Prim(urweb::primitives::Prim::Int(42)));
+    let e = Located::dummy(Expression::Prim(ur::primitives::Prim::Int(42)));
     assert!(exp::exists(&e, &|_| false, &|_| false, &|ex| matches!(
         ex,
         Expression::Prim(_)
@@ -298,9 +298,9 @@ fn explicit_exp_exists_returns_true_when_fe_matches() {
 #[test]
 fn explicit_exp_exists_app_first_only() {
     let e = Located::dummy(Expression::App(
-        Box::new(Located::dummy(Expression::Prim(
-            urweb::primitives::Prim::Int(1),
-        ))),
+        Box::new(Located::dummy(Expression::Prim(ur::primitives::Prim::Int(
+            1,
+        )))),
         Box::new(Located::dummy(Expression::Rel(0))),
     ));
     assert!(exp::exists(&e, &|_| false, &|_| false, &|ex| matches!(
@@ -312,7 +312,7 @@ fn explicit_exp_exists_app_first_only() {
 #[test]
 fn explicit_decl_map_preserves_datatype_constrs() {
     let unit = Located::dummy(Constructor::Unit);
-    let dt = urweb::explicit::DatatypeDecl {
+    let dt = ur::explicit::DatatypeDecl {
         name: "T".into(),
         id: 0,
         params: vec![],
@@ -335,9 +335,9 @@ fn explicit_decl_map_preserves_datatype_constrs() {
 fn explicit_exp_exists_capp_exp_only() {
     let unit = Located::dummy(Constructor::Unit);
     let e = Located::dummy(Expression::CApp(
-        Box::new(Located::dummy(Expression::Prim(
-            urweb::primitives::Prim::Int(0),
-        ))),
+        Box::new(Located::dummy(Expression::Prim(ur::primitives::Prim::Int(
+            0,
+        )))),
         unit,
     ));
     assert!(exp::exists(&e, &|_| false, &|_| false, &|ex| matches!(
@@ -350,9 +350,9 @@ fn explicit_exp_exists_capp_exp_only() {
 fn explicit_exp_exists_app_second_only() {
     let e = Located::dummy(Expression::App(
         Box::new(Located::dummy(Expression::Rel(0))),
-        Box::new(Located::dummy(Expression::Prim(
-            urweb::primitives::Prim::Int(1),
-        ))),
+        Box::new(Located::dummy(Expression::Prim(ur::primitives::Prim::Int(
+            1,
+        )))),
     ));
     assert!(exp::exists(&e, &|_| false, &|_| false, &|ex| matches!(
         ex,
@@ -378,7 +378,7 @@ fn explicit_exp_exists_capp_con_only() {
 #[test]
 fn explicit_exp_exists_abs_body_only() {
     let unit = Located::dummy(Constructor::Unit);
-    let body = Located::dummy(Expression::Prim(urweb::primitives::Prim::Int(0)));
+    let body = Located::dummy(Expression::Prim(ur::primitives::Prim::Int(0)));
     let e = Located::dummy(Expression::Abs(
         "x".into(),
         unit.clone(),
@@ -393,7 +393,7 @@ fn explicit_exp_exists_abs_body_only() {
 
 #[test]
 fn explicit_exp_exists_cabs_body_only() {
-    let body = Located::dummy(Expression::Prim(urweb::primitives::Prim::Int(0)));
+    let body = Located::dummy(Expression::Prim(ur::primitives::Prim::Int(0)));
     let k = Located::dummy(Kind::Type);
     let e = Located::dummy(Expression::CAbs("x".into(), Box::new(k), Box::new(body)));
     assert!(exp::exists(&e, &|_| false, &|_| false, &|ex| matches!(
@@ -420,9 +420,9 @@ fn explicit_exp_exists_kapp_kind_only() {
 #[test]
 fn explicit_exp_exists_kapp_exp_only() {
     let e = Located::dummy(Expression::KApp(
-        Box::new(Located::dummy(Expression::Prim(
-            urweb::primitives::Prim::Int(0),
-        ))),
+        Box::new(Located::dummy(Expression::Prim(ur::primitives::Prim::Int(
+            0,
+        )))),
         Box::new(Located::dummy(Kind::Type)),
     ));
     assert!(exp::exists(&e, &|_| false, &|_| false, &|ex| matches!(
@@ -433,7 +433,7 @@ fn explicit_exp_exists_kapp_exp_only() {
 
 #[test]
 fn explicit_exp_exists_kabs_body_only() {
-    let body = Located::dummy(Expression::Prim(urweb::primitives::Prim::Int(0)));
+    let body = Located::dummy(Expression::Prim(ur::primitives::Prim::Int(0)));
     let e = Located::dummy(Expression::KAbs("x".into(), Box::new(body)));
     assert!(exp::exists(&e, &|_| false, &|_| false, &|ex| matches!(
         ex,
@@ -549,7 +549,7 @@ fn explicit_exp_exists_let_t_only() {
 #[test]
 fn explicit_exp_exists_let_e1_only() {
     let unit = Located::dummy(Constructor::Unit);
-    let prim = Located::dummy(Expression::Prim(urweb::primitives::Prim::Int(0)));
+    let prim = Located::dummy(Expression::Prim(ur::primitives::Prim::Int(0)));
     let e = Located::dummy(Expression::Let(
         "x".into(),
         unit,
@@ -566,7 +566,7 @@ fn explicit_exp_exists_let_e1_only() {
 fn explicit_exp_exists_record_middle_only() {
     // (x, e, t): only e matches
     let unit = Located::dummy(Constructor::Unit);
-    let prim = Located::dummy(Expression::Prim(urweb::primitives::Prim::Int(0)));
+    let prim = Located::dummy(Expression::Prim(ur::primitives::Prim::Int(0)));
     let e = Located::dummy(Expression::Record(vec![(unit.clone(), prim, unit)]));
     assert!(exp::exists(&e, &|_| false, &|_| false, &|ex| matches!(
         ex,
@@ -577,7 +577,7 @@ fn explicit_exp_exists_record_middle_only() {
 #[test]
 fn explicit_exp_exists_concat_e2_only() {
     let unit = Located::dummy(Constructor::Unit);
-    let prim = Located::dummy(Expression::Prim(urweb::primitives::Prim::Int(0)));
+    let prim = Located::dummy(Expression::Prim(ur::primitives::Prim::Int(0)));
     let e = Located::dummy(Expression::Concat(
         Box::new(Located::dummy(Expression::Rel(0))),
         unit.clone(),
@@ -593,7 +593,7 @@ fn explicit_exp_exists_concat_e2_only() {
 #[test]
 fn explicit_exp_exists_let_e2_only() {
     let unit = Located::dummy(Constructor::Unit);
-    let prim = Located::dummy(Expression::Prim(urweb::primitives::Prim::Int(0)));
+    let prim = Located::dummy(Expression::Prim(ur::primitives::Prim::Int(0)));
     let e = Located::dummy(Expression::Let(
         "x".into(),
         unit,
@@ -610,7 +610,7 @@ fn explicit_exp_exists_let_e2_only() {
 #[test]
 fn explicit_exp_exists_case_disc_only() {
     let unit = Located::dummy(Constructor::Unit);
-    let disc = Located::dummy(Expression::Prim(urweb::primitives::Prim::Int(0)));
+    let disc = Located::dummy(Expression::Prim(ur::primitives::Prim::Int(0)));
     let arm_exp = Located::dummy(Expression::Rel(0));
     let meta = CaseMeta {
         disc: unit.clone(),
@@ -619,7 +619,7 @@ fn explicit_exp_exists_case_disc_only() {
     let e = Located::dummy(Expression::Case(
         Box::new(disc),
         vec![(
-            Located::dummy(urweb::explicit::Pattern::Var(
+            Located::dummy(ur::explicit::Pattern::Var(
                 "_".into(),
                 Located::dummy(Constructor::Unit),
             )),
@@ -637,7 +637,7 @@ fn explicit_exp_exists_case_disc_only() {
 fn explicit_exp_exists_case_arm_only() {
     let unit = Located::dummy(Constructor::Unit);
     let disc = Located::dummy(Expression::Rel(0));
-    let arm_exp = Located::dummy(Expression::Prim(urweb::primitives::Prim::Int(0)));
+    let arm_exp = Located::dummy(Expression::Prim(ur::primitives::Prim::Int(0)));
     let meta = CaseMeta {
         disc: unit.clone(),
         result: unit,
@@ -645,7 +645,7 @@ fn explicit_exp_exists_case_arm_only() {
     let e = Located::dummy(Expression::Case(
         Box::new(disc),
         vec![(
-            Located::dummy(urweb::explicit::Pattern::Var(
+            Located::dummy(ur::explicit::Pattern::Var(
                 "_".into(),
                 Located::dummy(Constructor::Unit),
             )),
@@ -671,7 +671,7 @@ fn explicit_exp_exists_case_dt_only() {
     let e = Located::dummy(Expression::Case(
         Box::new(disc),
         vec![(
-            Located::dummy(urweb::explicit::Pattern::Var(
+            Located::dummy(ur::explicit::Pattern::Var(
                 "_".into(),
                 Located::dummy(Constructor::Named(1)),
             )),
@@ -699,7 +699,7 @@ fn explicit_exp_exists_case_result_only() {
     let e = Located::dummy(Expression::Case(
         Box::new(disc),
         vec![(
-            Located::dummy(urweb::explicit::Pattern::Var(
+            Located::dummy(ur::explicit::Pattern::Var(
                 "_".into(),
                 Located::dummy(Constructor::Named(1)),
             )),
@@ -758,7 +758,7 @@ fn explicit_exp_exists_field_field_only() {
 #[test]
 fn explicit_exp_exists_field_e_only() {
     let _unit = Located::dummy(Constructor::Unit);
-    let prim = Located::dummy(Expression::Prim(urweb::primitives::Prim::Int(0)));
+    let prim = Located::dummy(Expression::Prim(ur::primitives::Prim::Int(0)));
     let meta = FieldMeta {
         field: Located::dummy(Constructor::Named(1)),
         rest: Located::dummy(Constructor::Named(2)),
@@ -797,7 +797,7 @@ fn explicit_exp_exists_field_c_only() {
 #[test]
 fn explicit_exp_exists_concat_e1_only() {
     let unit = Located::dummy(Constructor::Unit);
-    let prim = Located::dummy(Expression::Prim(urweb::primitives::Prim::Int(0)));
+    let prim = Located::dummy(Expression::Prim(ur::primitives::Prim::Int(0)));
     let e = Located::dummy(Expression::Concat(
         Box::new(prim),
         Located::dummy(Constructor::Named(1)),
@@ -847,7 +847,7 @@ fn explicit_exp_exists_concat_c2_only() {
 #[test]
 fn explicit_exp_exists_cut_e_only() {
     let _unit = Located::dummy(Constructor::Unit);
-    let prim = Located::dummy(Expression::Prim(urweb::primitives::Prim::Int(0)));
+    let prim = Located::dummy(Expression::Prim(ur::primitives::Prim::Int(0)));
     let meta = FieldMeta {
         field: Located::dummy(Constructor::Named(1)),
         rest: Located::dummy(Constructor::Named(2)),
@@ -925,7 +925,7 @@ fn explicit_exp_exists_cut_rest_only() {
 
 #[test]
 fn explicit_exp_exists_cutmulti_e_only() {
-    let prim = Located::dummy(Expression::Prim(urweb::primitives::Prim::Int(0)));
+    let prim = Located::dummy(Expression::Prim(ur::primitives::Prim::Int(0)));
     let meta = RestMeta {
         rest: Located::dummy(Constructor::Named(1)),
     };
@@ -1022,7 +1022,7 @@ fn explicit_decl_fold_datatypeimp_visits() {
 #[test]
 fn explicit_decl_fold_valrec_visits() {
     let unit = Located::dummy(Constructor::Unit);
-    let e = Located::dummy(Expression::Prim(urweb::primitives::Prim::Int(0)));
+    let e = Located::dummy(Expression::Prim(ur::primitives::Prim::Int(0)));
     let d = Located::dummy(Declaration::ValRec(vec![("x".into(), 0, unit, e)]));
     let n = decl::fold(
         &d,
@@ -1038,7 +1038,7 @@ fn explicit_decl_fold_valrec_visits() {
 #[test]
 fn explicit_decl_fold_datatype_visits() {
     let unit = Located::dummy(Constructor::Unit);
-    let dt = urweb::explicit::DatatypeDecl {
+    let dt = ur::explicit::DatatypeDecl {
         name: "T".into(),
         id: 0,
         params: vec![],
@@ -1059,7 +1059,7 @@ fn explicit_decl_fold_datatype_visits() {
 #[test]
 fn explicit_decl_fold_val_visits() {
     let unit = Located::dummy(Constructor::Unit);
-    let e = Located::dummy(Expression::Prim(urweb::primitives::Prim::Int(0)));
+    let e = Located::dummy(Expression::Prim(ur::primitives::Prim::Int(0)));
     let d = Located::dummy(Declaration::Val("x".into(), 0, unit, e));
     let n = decl::fold(
         &d,
@@ -1116,7 +1116,7 @@ fn explicit_decl_fold_view_visits() {
 #[test]
 fn explicit_decl_fold_index_visits() {
     let e1 = Located::dummy(Expression::Rel(0));
-    let e2 = Located::dummy(Expression::Prim(urweb::primitives::Prim::Int(0)));
+    let e2 = Located::dummy(Expression::Prim(ur::primitives::Prim::Int(0)));
     let d = Located::dummy(Declaration::Index(e1, e2));
     let n = decl::fold(
         &d,
@@ -1147,7 +1147,7 @@ fn explicit_decl_fold_cookie_visits() {
 #[test]
 fn explicit_decl_fold_task_visits() {
     let e1 = Located::dummy(Expression::Rel(0));
-    let e2 = Located::dummy(Expression::Prim(urweb::primitives::Prim::Int(0)));
+    let e2 = Located::dummy(Expression::Prim(ur::primitives::Prim::Int(0)));
     let d = Located::dummy(Declaration::Task(e1, e2));
     let n = decl::fold(
         &d,
@@ -1162,7 +1162,7 @@ fn explicit_decl_fold_task_visits() {
 
 #[test]
 fn explicit_decl_fold_policy_visits() {
-    let e = Located::dummy(Expression::Prim(urweb::primitives::Prim::Int(0)));
+    let e = Located::dummy(Expression::Prim(ur::primitives::Prim::Int(0)));
     let d = Located::dummy(Declaration::Policy(e));
     let n = decl::fold(
         &d,
@@ -1193,9 +1193,9 @@ fn explicit_decl_fold_ffi_visits() {
 #[test]
 fn explicit_corify_minimal_file_returns_non_empty_core() {
     // Kills: corify mutants that return None or empty core for valid explicit input.
-    let file: urweb::explicit::File = vec![Located::dummy(Declaration::Database("db".into()))];
-    let mut settings = urweb::settings::Settings::default();
-    let mut errors = urweb::error_types::ErrorReporter::new();
+    let file: ur::explicit::File = vec![Located::dummy(Declaration::Database("db".into()))];
+    let mut settings = ur::settings::Settings::default();
+    let mut errors = ur::error_types::ErrorReporter::new();
     let result = compiler::corify(file, &mut settings, &mut errors);
     assert!(
         result.is_some(),
@@ -1209,7 +1209,373 @@ fn explicit_corify_minimal_file_returns_non_empty_core() {
     assert!(
         core_file
             .iter()
-            .any(|d| matches!(&d.node, urweb::core::Declaration::Database(_))),
+            .any(|d| matches!(&d.node, ur::core::Declaration::Database(_))),
         "corify must produce Database decl"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3: corify variants, explicit environment (lift_kind_in_kind, lift_con_in_con)
+// ---------------------------------------------------------------------------
+
+use ur::explicit::environment;
+
+#[test]
+fn explicit_corify_val_produces_core_val() {
+    let unit = Located::dummy(ur::explicit::Constructor::Unit);
+    let prim = Located::dummy(ur::explicit::Expression::Prim(ur::primitives::Prim::Int(0)));
+    let decl = Located::dummy(ur::explicit::Declaration::Val("x".into(), 0, unit, prim));
+    let file: ur::explicit::File = vec![decl];
+    let mut settings = ur::settings::Settings::default();
+    let mut errors = ur::error_types::ErrorReporter::new();
+    let result = compiler::corify(file, &mut settings, &mut errors);
+    assert!(result.is_some());
+    let core_file = result.unwrap();
+    assert!(
+        core_file
+            .iter()
+            .any(|d| matches!(&d.node, ur::core::Declaration::Val(_, _, _, _, _))),
+        "corify must produce Val decl"
+    );
+}
+
+#[test]
+fn explicit_corify_datatype_produces_core_datatype() {
+    let unit = Located::dummy(ur::explicit::Constructor::Unit);
+    let dt = ur::explicit::DatatypeDecl {
+        name: "T".into(),
+        id: 0,
+        params: vec![],
+        constrs: vec![("A".into(), 1, None), ("B".into(), 2, Some(unit))],
+    };
+    let decl = Located::dummy(ur::explicit::Declaration::Datatype(vec![dt]));
+    let file: ur::explicit::File = vec![decl];
+    let mut settings = ur::settings::Settings::default();
+    let mut errors = ur::error_types::ErrorReporter::new();
+    let result = compiler::corify(file, &mut settings, &mut errors);
+    assert!(result.is_some());
+    let core_file = result.unwrap();
+    assert!(
+        core_file
+            .iter()
+            .any(|d| matches!(&d.node, ur::core::Declaration::Datatype(_))),
+        "corify must produce Datatype decl"
+    );
+}
+
+#[test]
+fn explicit_lift_kind_in_kind_rel_at_bound() {
+    let k = Located::dummy(ur::explicit::Kind::Rel(0));
+    let out = environment::lift_kind_in_kind(k, 0);
+    assert!(matches!(out.node, ur::explicit::Kind::Rel(1)));
+}
+
+#[test]
+fn explicit_lift_kind_in_kind_rel_below_bound() {
+    let k = Located::dummy(ur::explicit::Kind::Rel(0));
+    let out = environment::lift_kind_in_kind(k, 1);
+    assert!(matches!(out.node, ur::explicit::Kind::Rel(0)));
+}
+
+#[test]
+fn explicit_lift_con_in_con_rel_at_bound() {
+    let c = Located::dummy(ur::explicit::Constructor::Rel(0));
+    let out = environment::lift_con_in_con(c, 0);
+    assert!(matches!(out.node, ur::explicit::Constructor::Rel(1)));
+}
+
+#[test]
+fn explicit_lift_con_in_con_unit_unchanged() {
+    let c = Located::dummy(ur::explicit::Constructor::Unit);
+    let out = environment::lift_con_in_con(c, 0);
+    assert!(matches!(out.node, ur::explicit::Constructor::Unit));
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3 expanded: corify (Sequence, Cookie, Style, Ffi, Constructor), lift_con variants
+// ---------------------------------------------------------------------------
+
+#[test]
+fn explicit_corify_sequence_produces_core_sequence() {
+    let decl = Located::dummy(ur::explicit::Declaration::Sequence(0, "s".into(), 1));
+    let file: ur::explicit::File = vec![decl];
+    let mut settings = ur::settings::Settings::default();
+    let mut errors = ur::error_types::ErrorReporter::new();
+    let result = compiler::corify(file, &mut settings, &mut errors);
+    assert!(result.is_some());
+    let core_file = result.unwrap();
+    assert!(core_file
+        .iter()
+        .any(|d| matches!(&d.node, ur::core::Declaration::Sequence(_, _, _))));
+}
+
+#[test]
+fn explicit_corify_cookie_produces_core_cookie() {
+    let unit = Located::dummy(ur::explicit::Constructor::Unit);
+    let decl = Located::dummy(ur::explicit::Declaration::Cookie(0, "c".into(), 1, unit));
+    let file: ur::explicit::File = vec![decl];
+    let mut settings = ur::settings::Settings::default();
+    let mut errors = ur::error_types::ErrorReporter::new();
+    let result = compiler::corify(file, &mut settings, &mut errors);
+    assert!(result.is_some());
+    let core_file = result.unwrap();
+    assert!(core_file
+        .iter()
+        .any(|d| matches!(&d.node, ur::core::Declaration::Cookie(_, _, _, _))));
+}
+
+#[test]
+fn explicit_corify_style_produces_core_style() {
+    let decl = Located::dummy(ur::explicit::Declaration::Style(0, "s".into(), 1));
+    let file: ur::explicit::File = vec![decl];
+    let mut settings = ur::settings::Settings::default();
+    let mut errors = ur::error_types::ErrorReporter::new();
+    let result = compiler::corify(file, &mut settings, &mut errors);
+    assert!(result.is_some());
+    let core_file = result.unwrap();
+    assert!(core_file
+        .iter()
+        .any(|d| matches!(&d.node, ur::core::Declaration::Style(_, _, _))));
+}
+
+#[test]
+fn explicit_corify_constructor_produces_core_constructor() {
+    let k = Located::dummy(ur::explicit::Kind::Type);
+    let unit = Located::dummy(ur::explicit::Constructor::Unit);
+    let decl = Located::dummy(ur::explicit::Declaration::Constructor(
+        "C".into(),
+        0,
+        k,
+        unit,
+    ));
+    let file: ur::explicit::File = vec![decl];
+    let mut settings = ur::settings::Settings::default();
+    let mut errors = ur::error_types::ErrorReporter::new();
+    let result = compiler::corify(file, &mut settings, &mut errors);
+    assert!(result.is_some());
+    let core_file = result.unwrap();
+    assert!(core_file
+        .iter()
+        .any(|d| matches!(&d.node, ur::core::Declaration::Constructor(_, _, _, _))));
+}
+
+#[test]
+fn explicit_lift_con_in_con_record() {
+    let k = Located::dummy(ur::explicit::Kind::Type);
+    let unit = Located::dummy(ur::explicit::Constructor::Unit);
+    let rel0 = Located::dummy(ur::explicit::Constructor::Rel(0));
+    let rec = Located::dummy(ur::explicit::Constructor::Record(
+        Box::new(k),
+        vec![(rel0, unit)],
+    ));
+    let out = environment::lift_con_in_con(rec, 0);
+    match &out.node {
+        ur::explicit::Constructor::Record(_, pairs) => {
+            assert_eq!(pairs.len(), 1);
+            assert!(matches!(pairs[0].0.node, ur::explicit::Constructor::Rel(1)));
+        }
+        _ => panic!("expected Record"),
+    }
+}
+
+#[test]
+fn explicit_lift_con_in_con_concat() {
+    let rel0 = Located::dummy(ur::explicit::Constructor::Rel(0));
+    let unit = Located::dummy(ur::explicit::Constructor::Unit);
+    let concat = Located::dummy(ur::explicit::Constructor::Concat(
+        Box::new(rel0),
+        Box::new(unit),
+    ));
+    let out = environment::lift_con_in_con(concat, 0);
+    match &out.node {
+        ur::explicit::Constructor::Concat(a, b) => {
+            assert!(matches!(a.node, ur::explicit::Constructor::Rel(1)));
+            assert!(matches!(b.node, ur::explicit::Constructor::Unit));
+        }
+        _ => panic!("expected Concat"),
+    }
+}
+
+#[test]
+fn explicit_lift_con_in_con_tuple() {
+    let rel0 = Located::dummy(ur::explicit::Constructor::Rel(0));
+    let unit = Located::dummy(ur::explicit::Constructor::Unit);
+    let tup = Located::dummy(ur::explicit::Constructor::Tuple(vec![rel0, unit]));
+    let out = environment::lift_con_in_con(tup, 0);
+    match &out.node {
+        ur::explicit::Constructor::Tuple(cs) => {
+            assert_eq!(cs.len(), 2);
+            assert!(matches!(cs[0].node, ur::explicit::Constructor::Rel(1)));
+            assert!(matches!(cs[1].node, ur::explicit::Constructor::Unit));
+        }
+        _ => panic!("expected Tuple"),
+    }
+}
+
+#[test]
+fn explicit_lift_con_in_con_tfun() {
+    let unit = Located::dummy(ur::explicit::Constructor::Unit);
+    let rel1 = Located::dummy(ur::explicit::Constructor::Rel(1));
+    let tfun = Located::dummy(ur::explicit::Constructor::TFun(
+        Box::new(unit),
+        Box::new(rel1),
+    ));
+    let out = environment::lift_con_in_con(tfun, 1);
+    match &out.node {
+        ur::explicit::Constructor::TFun(_, b) => {
+            assert!(matches!(b.node, ur::explicit::Constructor::Rel(2)))
+        }
+        _ => panic!("expected TFun"),
+    }
+}
+
+// Phase D: corify Export/Task/Policy/Index, lift_con_in_con KAbs/KApp/Proj/TRecord, lift_kind_in_con
+#[test]
+fn explicit_corify_index_produces_core_index() {
+    let prim = Located::dummy(ur::explicit::Expression::Prim(ur::primitives::Prim::Int(0)));
+    let decl_db = Located::dummy(ur::explicit::Declaration::Database("db".into()));
+    let decl_idx = Located::dummy(ur::explicit::Declaration::Index(prim.clone(), prim));
+    let file: ur::explicit::File = vec![decl_db, decl_idx];
+    let mut settings = ur::settings::Settings::default();
+    let mut errors = ur::error_types::ErrorReporter::new();
+    let result = compiler::corify(file, &mut settings, &mut errors);
+    assert!(result.is_some());
+    let core_file = result.unwrap();
+    assert!(core_file
+        .iter()
+        .any(|d| matches!(&d.node, ur::core::Declaration::Index(_, _))));
+}
+
+#[test]
+fn explicit_corify_task_produces_core_task() {
+    let prim = Located::dummy(ur::explicit::Expression::Prim(ur::primitives::Prim::Int(0)));
+    let decl_db = Located::dummy(ur::explicit::Declaration::Database("db".into()));
+    let decl_task = Located::dummy(ur::explicit::Declaration::Task(prim.clone(), prim));
+    let file: ur::explicit::File = vec![decl_db, decl_task];
+    let mut settings = ur::settings::Settings::default();
+    let mut errors = ur::error_types::ErrorReporter::new();
+    let result = compiler::corify(file, &mut settings, &mut errors);
+    assert!(result.is_some());
+    let core_file = result.unwrap();
+    assert!(core_file
+        .iter()
+        .any(|d| matches!(&d.node, ur::core::Declaration::Task(_, _))));
+}
+
+#[test]
+fn explicit_corify_policy_produces_core_policy() {
+    let prim = Located::dummy(ur::explicit::Expression::Prim(ur::primitives::Prim::Int(0)));
+    let decl_db = Located::dummy(ur::explicit::Declaration::Database("db".into()));
+    let decl_policy = Located::dummy(ur::explicit::Declaration::Policy(prim));
+    let file: ur::explicit::File = vec![decl_db, decl_policy];
+    let mut settings = ur::settings::Settings::default();
+    let mut errors = ur::error_types::ErrorReporter::new();
+    let result = compiler::corify(file, &mut settings, &mut errors);
+    assert!(result.is_some());
+    let core_file = result.unwrap();
+    assert!(core_file
+        .iter()
+        .any(|d| matches!(&d.node, ur::core::Declaration::Policy(_))));
+}
+
+#[test]
+fn explicit_lift_con_in_con_kabs() {
+    let rel0 = Located::dummy(ur::explicit::Constructor::Rel(0));
+    let kabs = Located::dummy(ur::explicit::Constructor::KAbs("a".into(), Box::new(rel0)));
+    let out = environment::lift_con_in_con(kabs, 0);
+    match &out.node {
+        ur::explicit::Constructor::KAbs(_, b) => {
+            assert!(
+                matches!(b.node, ur::explicit::Constructor::Rel(1)),
+                "KAbs does not bind con, so Rel(0) lifts to Rel(1)"
+            );
+        }
+        _ => panic!("expected KAbs"),
+    }
+}
+
+#[test]
+fn explicit_lift_con_in_con_kapp() {
+    let unit = Located::dummy(ur::explicit::Constructor::Unit);
+    let k = Located::dummy(ur::explicit::Kind::Type);
+    let kapp = Located::dummy(ur::explicit::Constructor::KApp(
+        Box::new(unit),
+        Box::new(k.clone()),
+    ));
+    let out = environment::lift_con_in_con(kapp, 0);
+    assert!(matches!(out.node, ur::explicit::Constructor::KApp(_, _)));
+}
+
+#[test]
+fn explicit_lift_con_in_con_proj() {
+    let rel0 = Located::dummy(ur::explicit::Constructor::Rel(0));
+    let unit = Located::dummy(ur::explicit::Constructor::Unit);
+    let tup = Located::dummy(ur::explicit::Constructor::Tuple(vec![rel0, unit]));
+    let proj = Located::dummy(ur::explicit::Constructor::Proj(Box::new(tup), 1));
+    let out = environment::lift_con_in_con(proj, 0);
+    match &out.node {
+        ur::explicit::Constructor::Proj(c, 1) => match &c.node {
+            ur::explicit::Constructor::Tuple(cs) => {
+                assert!(matches!(cs[0].node, ur::explicit::Constructor::Rel(1)));
+            }
+            _ => {}
+        },
+        _ => panic!("expected Proj"),
+    }
+}
+
+#[test]
+fn explicit_lift_con_in_con_trecord() {
+    let rel0 = Located::dummy(ur::explicit::Constructor::Rel(0));
+    let trec = Located::dummy(ur::explicit::Constructor::TRecord(Box::new(rel0)));
+    let out = environment::lift_con_in_con(trec, 0);
+    match &out.node {
+        ur::explicit::Constructor::TRecord(c) => {
+            assert!(matches!(c.node, ur::explicit::Constructor::Rel(1)));
+        }
+        _ => panic!("expected TRecord"),
+    }
+}
+
+#[test]
+fn explicit_lift_kind_in_con_kabs() {
+    let k_type = Located::dummy(ur::explicit::Kind::Type);
+    let unit = Located::dummy(ur::explicit::Constructor::Unit);
+    let kabs = Located::dummy(ur::explicit::Constructor::KAbs("a".into(), Box::new(unit)));
+    let out = environment::lift_kind_in_con(kabs, 0);
+    assert!(matches!(out.node, ur::explicit::Constructor::KAbs(_, _)));
+}
+
+#[test]
+fn explicit_lift_kind_in_con_kapp() {
+    let k_rel = Located::dummy(ur::explicit::Kind::Rel(0));
+    let unit = Located::dummy(ur::explicit::Constructor::Unit);
+    let kapp = Located::dummy(ur::explicit::Constructor::KApp(
+        Box::new(unit),
+        Box::new(k_rel.clone()),
+    ));
+    let out = environment::lift_kind_in_con(kapp, 0);
+    match &out.node {
+        ur::explicit::Constructor::KApp(_, k) => {
+            assert!(matches!(k.node, ur::explicit::Kind::Rel(1)));
+        }
+        _ => panic!("expected KApp"),
+    }
+}
+
+#[test]
+fn explicit_lift_kind_in_con_proj() {
+    let unit = Located::dummy(ur::explicit::Constructor::Unit);
+    let tup = Located::dummy(ur::explicit::Constructor::Tuple(vec![unit]));
+    let proj = Located::dummy(ur::explicit::Constructor::Proj(Box::new(tup), 1));
+    let out = environment::lift_kind_in_con(proj, 0);
+    assert!(matches!(out.node, ur::explicit::Constructor::Proj(_, 1)));
+}
+
+#[test]
+fn explicit_lift_kind_in_con_trecord() {
+    let unit = Located::dummy(ur::explicit::Constructor::Unit);
+    let trec = Located::dummy(ur::explicit::Constructor::TRecord(Box::new(unit)));
+    let out = environment::lift_kind_in_con(trec, 0);
+    assert!(matches!(out.node, ur::explicit::Constructor::TRecord(_)));
 }

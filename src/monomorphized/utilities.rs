@@ -1106,3 +1106,154 @@ pub mod decl {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::error_types::Located;
+    use std::cmp::Ordering;
+
+    #[test]
+    fn sort_fields_orders_by_name() {
+        let mut fields: Vec<(String, i32)> =
+            vec![("z".into(), 3), ("a".into(), 1), ("m".into(), 2)];
+        sort_fields(&mut fields);
+        assert_eq!(fields[0].0, "a");
+        assert_eq!(fields[1].0, "m");
+        assert_eq!(fields[2].0, "z");
+    }
+
+    #[test]
+    fn classify_datatype_enum() {
+        let constrs: Vec<(String, usize, Option<LocTyp>)> =
+            vec![("A".into(), 0, None), ("B".into(), 1, None)];
+        assert_eq!(classify_datatype(&constrs), DatatypeKind::Enum);
+    }
+
+    #[test]
+    fn classify_datatype_option() {
+        let unit = Located::dummy(Typ::Record(vec![]));
+        let constrs: Vec<(String, usize, Option<LocTyp>)> =
+            vec![("None".into(), 0, None), ("Some".into(), 1, Some(unit))];
+        assert_eq!(classify_datatype(&constrs), DatatypeKind::Option);
+    }
+
+    #[test]
+    fn classify_datatype_default() {
+        let unit = Located::dummy(Typ::Record(vec![]));
+        let constrs: Vec<(String, usize, Option<LocTyp>)> = vec![("C".into(), 0, Some(unit))];
+        assert_eq!(classify_datatype(&constrs), DatatypeKind::Default);
+    }
+
+    #[test]
+    fn typ_compare_fun_orders_correctly() {
+        let unit = Located::dummy(Typ::Record(vec![]));
+        let t1 = Located::dummy(Typ::Fun(Box::new(unit.clone()), Box::new(unit.clone())));
+        let t2 = Located::dummy(Typ::Fun(Box::new(unit.clone()), Box::new(unit.clone())));
+        assert_eq!(typ::compare(&t1, &t2), Ordering::Equal);
+    }
+
+    #[test]
+    fn typ_compare_ffi_orders_by_module_then_name() {
+        let a = Located::dummy(Typ::Ffi("A".into(), "x".into()));
+        let b = Located::dummy(Typ::Ffi("B".into(), "y".into()));
+        assert_eq!(typ::compare(&a, &b), Ordering::Less);
+        assert_eq!(typ::compare(&b, &a), Ordering::Greater);
+    }
+
+    #[test]
+    fn typ_compare_record_same_order() {
+        let unit = Located::dummy(Typ::Record(vec![]));
+        let r = Located::dummy(Typ::Record(vec![
+            ("x".into(), unit.clone()),
+            ("y".into(), unit),
+        ]));
+        assert_eq!(typ::compare(&r, &r), Ordering::Equal);
+    }
+
+    #[test]
+    fn typ_compare_option_less_than_list() {
+        let unit = Located::dummy(Typ::Record(vec![]));
+        let opt = Located::dummy(Typ::Option(Box::new(unit.clone())));
+        let list = Located::dummy(Typ::List(Box::new(unit)));
+        assert_eq!(typ::compare(&opt, &list), Ordering::Less);
+    }
+
+    #[test]
+    fn typ_compare_source_equal() {
+        let s = Located::dummy(Typ::Source);
+        assert_eq!(typ::compare(&s, &s), Ordering::Equal);
+    }
+
+    #[test]
+    fn typ_compare_signal_equal() {
+        let inner = Located::dummy(Typ::Ffi("Basis".into(), "int".into()));
+        let sig = Located::dummy(Typ::Signal(Box::new(inner)));
+        assert_eq!(typ::compare(&sig, &sig), Ordering::Equal);
+    }
+
+    #[test]
+    fn typ_compare_fun_less_than_record_by_tag() {
+        let unit = Located::dummy(Typ::Record(vec![]));
+        let fun = Located::dummy(Typ::Fun(Box::new(unit.clone()), Box::new(unit.clone())));
+        let rec = Located::dummy(Typ::Record(vec![]));
+        assert_eq!(typ::compare(&fun, &rec), Ordering::Less);
+    }
+
+    #[test]
+    fn typ_exists_fun_true_in_domain() {
+        let unit = Located::dummy(Typ::Record(vec![]));
+        let ffi = Located::dummy(Typ::Ffi("Basis".into(), "int".into()));
+        let fun = Located::dummy(Typ::Fun(Box::new(ffi), Box::new(unit)));
+        let pred = |t: &Typ| matches!(t, Typ::Ffi(m, x) if m == "Basis" && x == "int");
+        assert!(typ::exists(&fun, &pred));
+    }
+
+    #[test]
+    fn typ_exists_record_true_in_field() {
+        let unit = Located::dummy(Typ::Record(vec![]));
+        let ffi = Located::dummy(Typ::Ffi("Basis".into(), "int".into()));
+        let rec = Located::dummy(Typ::Record(vec![("x".into(), unit), ("y".into(), ffi)]));
+        let pred = |t: &Typ| matches!(t, Typ::Ffi(m, x) if m == "Basis" && x == "int");
+        assert!(typ::exists(&rec, &pred));
+    }
+
+    #[test]
+    fn typ_exists_option_true_in_inner() {
+        let ffi = Located::dummy(Typ::Ffi("Basis".into(), "int".into()));
+        let opt = Located::dummy(Typ::Option(Box::new(ffi)));
+        let pred = |t: &Typ| matches!(t, Typ::Ffi(m, x) if m == "Basis" && x == "int");
+        assert!(typ::exists(&opt, &pred));
+    }
+
+    #[test]
+    fn typ_exists_false_for_ffi_no_match() {
+        let t = Located::dummy(Typ::Ffi("Basis".into(), "int".into()));
+        let pred = |t: &Typ| matches!(t, Typ::Ffi(_, x) if x == "string");
+        assert!(!typ::exists(&t, &pred));
+    }
+
+    #[test]
+    fn classify_datatype_default_two_nullary_one_unary() {
+        let unit = Located::dummy(Typ::Record(vec![]));
+        let constrs: Vec<(String, usize, Option<LocTyp>)> = vec![
+            ("A".into(), 0, None),
+            ("B".into(), 1, None),
+            ("C".into(), 2, Some(unit)),
+        ];
+        assert_eq!(classify_datatype(&constrs), DatatypeKind::Default);
+    }
+
+    #[test]
+    fn sort_fields_changes_order() {
+        let mut fields: Vec<(String, i32)> = vec![("b".into(), 2), ("a".into(), 1)];
+        let before = fields[0].0.clone();
+        sort_fields(&mut fields);
+        assert_eq!(fields[0].0, "a");
+        assert_ne!(fields[0].0, before, "sort_fields must reorder");
+    }
+}

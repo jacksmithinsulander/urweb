@@ -526,6 +526,8 @@ pub fn sql_generate(file: &crate::c_like_representation::File, settings: &Settin
 
 pub fn cc_and_link(c_source: &str, output: &Path, job: &Job, settings: &Settings) -> Result<()> {
     use std::process::Command;
+    #[cfg(test)]
+    use std::process::Stdio;
 
     // Write C source to a temporary file.
     let c_dir = output.parent().unwrap_or_else(|| std::path::Path::new("."));
@@ -574,6 +576,10 @@ pub fn cc_and_link(c_source: &str, output: &Path, job: &Job, settings: &Settings
     if !settings.config_include.is_empty() {
         compile_cmd.arg("-I").arg(&settings.config_include);
     }
+    #[cfg(test)]
+    {
+        compile_cmd.stderr(Stdio::null()).stdout(Stdio::null());
+    }
     if job.debug {
         compile_cmd.arg("-g");
     }
@@ -591,6 +597,10 @@ pub fn cc_and_link(c_source: &str, output: &Path, job: &Job, settings: &Settings
     // Link step.
     let linker_cmd_base = job.linker.as_deref().unwrap_or(cc);
     let mut link_cmd = Command::new(linker_cmd_base);
+    #[cfg(test)]
+    {
+        link_cmd.stderr(Stdio::null()).stdout(Stdio::null());
+    }
     link_cmd.arg(&o_file);
     if !settings.config_lib.is_empty() {
         link_cmd.arg(format!("-L{}", settings.config_lib));
@@ -1739,7 +1749,7 @@ mod tests {
         let out = dir.path().join("a.out");
         // Without the urweb runtime installed, linking will fail (Err), but it should not panic.
         let result = cc_and_link(
-            "int main() { return 0; }",
+            "int main(void) { return 0; }\n",
             &out,
             &Job::default(),
             &Settings::default(),

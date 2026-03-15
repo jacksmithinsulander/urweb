@@ -18,6 +18,8 @@
 
 /// CJR AST — C-like IR, final stage before C emission.
 pub mod c_like_representation;
+/// Shared CLI helpers and templates.
+pub mod cli_common;
 /// Pipeline orchestration — wires all compilation phases.
 pub mod compiler;
 /// Core AST — simplified IR before monomorphization.

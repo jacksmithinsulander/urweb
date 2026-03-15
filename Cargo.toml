@@ -1,5 +1,5 @@
 [package]
-name = "urweb"
+name = "ur"
 version = "0.1.0"
 edition = "2021"
 
@@ -8,8 +8,32 @@ inherits = "test"
 debug = false  # Faster builds for cargo-mutants
 
 [[bin]]
-name = "urweb"
-path = "src/main.rs"
+name = "ur"
+path = "src/bin/ur.rs"
+
+[[bin]]
+name = "ur-compile"
+path = "src/bin/ur_compile.rs"
+
+[[bin]]
+name = "ur-fmt"
+path = "src/bin/ur_fmt.rs"
+
+[[bin]]
+name = "ur-new"
+path = "src/bin/ur_new.rs"
+
+[[bin]]
+name = "ur-install"
+path = "src/bin/ur_install.rs"
+
+[[bin]]
+name = "ur-daemon"
+path = "src/bin/ur_daemon.rs"
+
+[[bin]]
+name = "ur-lsp"
+path = "src/bin/ur_lsp.rs"
 
 [[example]]
 name = "dump_output"

@@ -23,11 +23,11 @@ fn main() {
         std::process::exit(1);
     }
 
-    let mut settings = urweb::settings::Settings::default();
+    let mut settings = ur::settings::Settings::default();
     settings.dbms = "sqlite".to_string();
     settings.boot_linking = true;
 
-    match urweb::compiler::compile_to_outputs(urp_path, &mut settings) {
+    match ur::compiler::compile_to_outputs(urp_path, &mut settings) {
         Ok((c_code, sql_ddl)) => {
             fs::write(c_out, c_code).expect("write C output");
             fs::write(sql_out, sql_ddl).expect("write SQL output");

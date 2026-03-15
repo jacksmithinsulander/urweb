@@ -2064,10 +2064,12 @@ pub fn reduce(mut file: File, settings: &Settings) -> File {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::datatype_kind::DatatypeKind;
     use crate::error_types::Located;
-    use crate::monomorphized::{Exp, Pat, Typ};
+    use crate::monomorphized::{DatatypeDef, DatatypeRef, Exp, Pat, Typ};
     use crate::primitives::Prim;
     use crate::settings::Settings;
+    use std::sync::{Arc, Mutex};
 
     fn span() -> Span {
         Span::dummy()
@@ -2349,5 +2351,85 @@ mod tests {
         let p = Located::dummy(Pat::Prim(Prim::Int(1)));
         let e = prim_int(42);
         assert!(matches!(match_pat(vec![], &p, &e), MatchResult::No));
+    }
+
+    #[test]
+    fn test_simple_type_impure_fun_true() {
+        let t = Located::dummy(Typ::Fun(Box::new(dummy_typ()), Box::new(dummy_typ())));
+        let timpures = HashSet::new();
+        assert!(simple_type_impure(&t, &timpures));
+    }
+
+    #[test]
+    fn test_simple_type_impure_ffi_false() {
+        let t = dummy_typ();
+        let timpures = HashSet::new();
+        assert!(!simple_type_impure(&t, &timpures));
+    }
+
+    #[test]
+    fn test_simple_type_impure_datatype_in_set() {
+        let mut timpures = HashSet::new();
+        timpures.insert(1);
+        let dt_ref: DatatypeRef = Arc::new(Mutex::new(DatatypeDef {
+            kind: DatatypeKind::Default,
+            constrs: vec![],
+        }));
+        let t = Located::dummy(Typ::Datatype(1, dt_ref));
+        assert!(simple_type_impure(&t, &timpures));
+    }
+
+    #[test]
+    fn test_impure_rough_write_true() {
+        let e = Located::dummy(Exp::Write(Box::new(prim_int(0))));
+        assert!(impure_rough(&e));
+    }
+
+    #[test]
+    fn test_impure_rough_prim_false() {
+        assert!(!impure_rough(&prim_int(0)));
+    }
+
+    #[test]
+    fn test_impure_rough_app_ffi_false() {
+        let f = Located::dummy(Exp::Ffi("Basis".into(), "id".into()));
+        let app = Located::dummy(Exp::App(Box::new(f), Box::new(prim_int(1))));
+        assert!(!impure_rough(&app));
+    }
+
+    #[test]
+    fn test_summarize_write_emits_write_page() {
+        let e = Located::dummy(Exp::Write(Box::new(prim_int(0))));
+        let evs = summarize(-1, &e);
+        assert_eq!(evs.len(), 1);
+        assert_eq!(evs[0], Event::WritePage);
+    }
+
+    #[test]
+    fn test_summarize_prim_empty() {
+        let evs = summarize(-1, &prim_int(0));
+        assert!(evs.is_empty());
+    }
+
+    #[test]
+    fn test_impure_rough_app_non_ffi_true() {
+        let f = Located::dummy(Exp::Named(1));
+        let app = Located::dummy(Exp::App(Box::new(f), Box::new(prim_int(0))));
+        assert!(impure_rough(&app));
+    }
+
+    #[test]
+    fn test_summarize_rel_emits_use_rel() {
+        let e = rel(0);
+        let evs = summarize(0, &e);
+        assert_eq!(evs.len(), 1);
+        assert_eq!(evs[0], Event::UseRel);
+    }
+
+    #[test]
+    fn test_summarize_rel_d_mismatch_empty() {
+        let e = rel(1);
+        let evs = summarize(0, &e);
+        assert!(evs.is_empty());
     }
 }

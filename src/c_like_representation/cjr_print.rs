@@ -3416,4 +3416,174 @@ mod tests {
             s
         );
     }
+
+    #[test]
+    fn p_exp_division_includes_zero_guard() {
+        // Kills: replace "/" branch or "division by zero" text.
+        let env = CjrEnv::new();
+        let settings = Settings::default();
+        let a = dummy(Exp::Prim(Prim::Int(10)));
+        let b = dummy(Exp::Prim(Prim::Int(2)));
+        let div = dummy(Exp::Binop("/".into(), Box::new(a), Box::new(b)));
+        let s = p_exp(&env, &div, &settings);
+        assert!(
+            s.contains("division by zero") && s.contains("dividend") && s.contains("divisor"),
+            "Division must emit zero guard, got: {}",
+            s
+        );
+    }
+
+    #[test]
+    fn p_exp_strcat_three_parts_uses_mstrcat() {
+        // flatten_strcat(strcat(a,b), c) has len 3 => mstrcat with NULL.
+        let env = CjrEnv::new();
+        let settings = Settings::default();
+        let t = dummy(Typ::Ffi("Basis".into(), "string".into()));
+        let a = dummy(Exp::Prim(Prim::String(StringMode::Normal, "a".into())));
+        let b = dummy(Exp::Prim(Prim::String(StringMode::Normal, "b".into())));
+        let c = dummy(Exp::Prim(Prim::String(StringMode::Normal, "c".into())));
+        let strcat_ab = dummy(Exp::FfiApp(
+            "Basis".into(),
+            "strcat".into(),
+            vec![(a, t.clone()), (b, t.clone())],
+        ));
+        let strcat_abc = dummy(Exp::FfiApp(
+            "Basis".into(),
+            "strcat".into(),
+            vec![(strcat_ab, t.clone()), (c, t)],
+        ));
+        let s = p_exp(&env, &strcat_abc, &settings);
+        assert!(
+            s.contains("mstrcat") && s.contains("NULL"),
+            "Three-part strcat must use mstrcat with NULL, got: {}",
+            s
+        );
+    }
+
+    #[test]
+    fn p_exp_binop_exact_operators() {
+        // Exact string so ==/!= and &&/|| mutants change output.
+        let env = CjrEnv::new();
+        let settings = Settings::default();
+        let one = dummy(Exp::Prim(Prim::Int(1)));
+        let two = dummy(Exp::Prim(Prim::Int(2)));
+        let eq = dummy(Exp::Binop(
+            "==".into(),
+            Box::new(one.clone()),
+            Box::new(two.clone()),
+        ));
+        let ne = dummy(Exp::Binop(
+            "!=".into(),
+            Box::new(one.clone()),
+            Box::new(two.clone()),
+        ));
+        let and = dummy(Exp::Binop(
+            "&&".into(),
+            Box::new(one.clone()),
+            Box::new(two.clone()),
+        ));
+        let or = dummy(Exp::Binop(
+            "||".into(),
+            Box::new(one.clone()),
+            Box::new(two),
+        ));
+        assert_eq!(p_exp(&env, &eq, &settings), "(1LL == 2LL)");
+        assert_eq!(p_exp(&env, &ne, &settings), "(1LL != 2LL)");
+        assert!(p_exp(&env, &and, &settings).contains("&&"));
+        assert!(p_exp(&env, &or, &settings).contains("||"));
+    }
+
+    #[test]
+    fn de_star_request_strips_parens() {
+        assert_eq!(de_star("(*request)"), "request");
+    }
+
+    #[test]
+    fn de_star_other_prepends_amp() {
+        assert_eq!(de_star("foo"), "&foo");
+    }
+
+    #[test]
+    fn capitalize_first_char() {
+        assert_eq!(capitalize("hello"), "Hello");
+    }
+
+    #[test]
+    fn capitalize_empty_unchanged() {
+        assert_eq!(capitalize(""), "");
+    }
+
+    #[test]
+    fn sql_type_in_basis_int() {
+        use crate::settings::SqlType;
+        let t = dummy(Typ::Ffi("Basis".into(), "int".into()));
+        assert!(matches!(sql_type_in(&t), SqlType::Int));
+    }
+
+    #[test]
+    fn sql_type_in_basis_string() {
+        use crate::settings::SqlType;
+        let t = dummy(Typ::Ffi("Basis".into(), "string".into()));
+        assert!(matches!(sql_type_in(&t), SqlType::String));
+    }
+
+    #[test]
+    fn sql_type_in_option_nullable() {
+        use crate::settings::SqlType;
+        let inner = dummy(Typ::Ffi("Basis".into(), "int".into()));
+        let t = dummy(Typ::Option(Box::new(inner)));
+        match &sql_type_in(&t) {
+            SqlType::Nullable(b) => assert!(matches!(b.as_ref(), SqlType::Int)),
+            _ => panic!("Option must yield Nullable"),
+        }
+    }
+
+    #[test]
+    fn sql_type_in_basis_char() {
+        use crate::settings::SqlType;
+        let t = dummy(Typ::Ffi("Basis".into(), "char".into()));
+        assert!(matches!(sql_type_in(&t), SqlType::Char));
+    }
+
+    #[test]
+    fn sql_type_in_basis_time() {
+        use crate::settings::SqlType;
+        let t = dummy(Typ::Ffi("Basis".into(), "time".into()));
+        assert!(matches!(sql_type_in(&t), SqlType::Time));
+    }
+
+    #[test]
+    fn sql_type_in_basis_blob() {
+        use crate::settings::SqlType;
+        let t = dummy(Typ::Ffi("Basis".into(), "blob".into()));
+        assert!(matches!(sql_type_in(&t), SqlType::Blob));
+    }
+
+    #[test]
+    fn sql_type_in_basis_channel() {
+        use crate::settings::SqlType;
+        let t = dummy(Typ::Ffi("Basis".into(), "channel".into()));
+        assert!(matches!(sql_type_in(&t), SqlType::Channel));
+    }
+
+    #[test]
+    fn sql_type_in_basis_client() {
+        use crate::settings::SqlType;
+        let t = dummy(Typ::Ffi("Basis".into(), "client".into()));
+        assert!(matches!(sql_type_in(&t), SqlType::Client));
+    }
+
+    #[test]
+    fn sql_type_in_basis_clocktime() {
+        use crate::settings::SqlType;
+        let t = dummy(Typ::Ffi("Basis".into(), "clocktime".into()));
+        assert!(matches!(sql_type_in(&t), SqlType::Clocktime));
+    }
+
+    #[test]
+    fn sql_type_in_basis_calendardate() {
+        use crate::settings::SqlType;
+        let t = dummy(Typ::Ffi("Basis".into(), "calendardate".into()));
+        assert!(matches!(sql_type_in(&t), SqlType::Calendardate));
+    }
 }

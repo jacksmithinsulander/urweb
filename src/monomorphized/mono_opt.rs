@@ -1573,6 +1573,18 @@ mod tests {
         Settings::default()
     }
 
+    fn settings_mysql() -> Settings {
+        let mut s = Settings::default();
+        s.dbms = "mysql".into();
+        s
+    }
+
+    fn settings_postgres() -> Settings {
+        let mut s = Settings::default();
+        s.dbms = "postgres".into();
+        s
+    }
+
     fn no_errors() -> ErrorReporter {
         ErrorReporter::new()
     }
@@ -1592,6 +1604,12 @@ mod tests {
     #[test]
     fn attrify_int_negative() {
         assert_eq!(attrify_int(-7), "-7");
+    }
+
+    #[test]
+    fn attrify_int_zero_not_negative() {
+        // Kills: replace < with == or <= in attrify_int (0 < 0 false => "0"; 0==0 true => "-0")
+        assert_eq!(attrify_int(0), "0");
     }
 
     #[test]
@@ -1657,6 +1675,12 @@ mod tests {
     }
 
     #[test]
+    fn attrify_float_zero_not_negative() {
+        // Kills: replace < with == or <= in attrify_float
+        assert_eq!(attrify_float(0.0), "0");
+    }
+
+    #[test]
     fn attrify_string_escape() {
         assert_eq!(attrify_string("a&b"), "a&amp;b");
     }
@@ -1686,6 +1710,19 @@ mod tests {
     #[test]
     fn hex_pad_single_digit() {
         assert_eq!(hex_pad(5), "05");
+    }
+
+    #[test]
+    fn hex_pad_zero() {
+        // format!("{:X}", 0) = "0", len 1 => "0" + "0" = "00"
+        assert_eq!(hex_pad(0), "00");
+    }
+
+    #[test]
+    fn hex_it_two_byte_boundary() {
+        // 0x80 = 128: first branch c <= 0x7f is false, second c <= 0x7ff true
+        let s = hex_it(std::char::from_u32(0x80).unwrap());
+        assert!(s.len() >= 2 && s.chars().all(|c| c.is_ascii_hexdigit()));
     }
 
     #[test]
@@ -1749,5 +1786,137 @@ mod tests {
         let cat = dummy(Exp::Strcat(Box::new(cat12), Box::new(e3)));
         let result = opt_exp(cat, &settings(), &mut errors);
         assert!(matches!(&result.node, Exp::Prim(Prim::String(_, s)) if s == "abc"));
+    }
+
+    // --- sqlify_*: exact output so return-value mutants are killed ---
+    #[test]
+    fn sqlify_int_postgres_adds_cast() {
+        assert_eq!(sqlify_int(42, &settings_postgres()), "42::int8");
+    }
+
+    #[test]
+    fn sqlify_int_mysql_no_cast() {
+        assert_eq!(sqlify_int(42, &settings_mysql()), "42");
+    }
+
+    #[test]
+    fn sqlify_float_postgres_adds_cast() {
+        assert_eq!(sqlify_float(1.5, &settings_postgres()), "1.5::float8");
+    }
+
+    #[test]
+    fn sqlify_float_mysql_no_cast() {
+        assert_eq!(sqlify_float(1.5, &settings_mysql()), "1.5");
+    }
+
+    #[test]
+    fn sqlify_string_postgres_doubles_quote() {
+        assert_eq!(sqlify_string("'", &settings_postgres()), "''''");
+    }
+
+    #[test]
+    fn sqlify_string_mysql_escapes_backslash() {
+        assert_eq!(sqlify_string("\\", &settings_mysql()), "'\\\\'");
+    }
+
+    #[test]
+    fn sqlify_char_postgres() {
+        assert_eq!(sqlify_char('x', &settings_postgres()), "'x'");
+    }
+
+    #[test]
+    fn sqlify_bool_true_postgres() {
+        assert_eq!(sqlify_bool_true(&settings_postgres()), "TRUE");
+    }
+
+    #[test]
+    fn sqlify_bool_true_mysql() {
+        assert_eq!(sqlify_bool_true(&settings_mysql()), "1");
+    }
+
+    #[test]
+    fn sqlify_bool_false_postgres() {
+        assert_eq!(sqlify_bool_false(&settings_postgres()), "FALSE");
+    }
+
+    #[test]
+    fn sqlify_bool_false_mysql() {
+        assert_eq!(sqlify_bool_false(&settings_mysql()), "0");
+    }
+
+    // --- check_url, check_data, check_atom, check_css_url, check_property ---
+    #[test]
+    fn check_url_true_when_rule_allows() {
+        let mut s = Settings::default();
+        s.url_rules.push(crate::settings::Rule {
+            action: crate::settings::Action::Allow,
+            kind: crate::settings::PatternKind::Exact,
+            pattern: "/foo".into(),
+        });
+        assert!(check_url("/foo", &s), "allowed URL must be true");
+    }
+
+    #[test]
+    fn check_url_false_when_no_rule() {
+        let s = Settings::default();
+        assert!(!check_url("/bar", &s), "no rule => false");
+    }
+
+    #[test]
+    fn check_data_allows_alphanumeric_underscore_hyphen() {
+        assert!(check_data("a_1"));
+        assert!(check_data("x-y"));
+        assert!(!check_data("a b"));
+    }
+
+    #[test]
+    fn check_atom_allows_plus_minus_dot() {
+        assert!(check_atom("a+b"));
+        assert!(check_atom("1.2"));
+        assert!(!check_atom("a!b"));
+    }
+
+    #[test]
+    fn check_css_url_allows_slash_colon() {
+        assert!(check_css_url("https://x/y"));
+        assert!(!check_css_url("a<>"));
+    }
+
+    #[test]
+    fn hex_pad_two_digits_unchanged() {
+        // len 2 => no leading zero. Kills "delete match arm 0" and arm 1.
+        assert_eq!(hex_pad(0x0A), "0A");
+        assert_eq!(hex_pad(0xFF), "FF");
+    }
+
+    #[test]
+    fn hex_it_three_byte_utf8() {
+        // Codepoint > 0x7ff hits third branch (c <= 0xffff).
+        let ch = std::char::from_u32(0x0800).unwrap();
+        let s = hex_it(ch);
+        assert!(
+            s.len() >= 3,
+            "three-byte UTF-8 produces at least 3 hex pairs"
+        );
+    }
+
+    #[test]
+    fn check_data_rejects_space() {
+        assert!(!check_data("a b"));
+    }
+
+    #[test]
+    fn check_data_allows_hyphen() {
+        assert!(check_data("a-b"));
+    }
+
+    #[test]
+    fn check_atom_rejects_bang() {
+        assert!(!check_atom("a!b"));
+    }
+
+    #[test]
+    fn check_atom_allows_hash() {
+        assert!(check_atom("a#b"));
     }
 }

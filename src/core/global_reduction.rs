@@ -2357,4 +2357,81 @@ mod tests {
     fn prim_eq_char_diff() {
         assert!(!prim_eq(&Prim::Char('a'), &Prim::Char('b')));
     }
+
+    #[test]
+    fn passive_record_of_prim() {
+        let field_name = Located::new(Constructor::Name("x".into()), dummy());
+        let rec = Located::new(
+            Expression::Record(vec![(field_name, prim_exp(), unit_con())]),
+            dummy(),
+        );
+        assert!(passive(&rec.node));
+    }
+
+    #[test]
+    fn passive_field_of_prim() {
+        let inner = prim_exp();
+        let fm = FieldMeta {
+            field: unit_con(),
+            rest: Located::new(
+                Constructor::Record(Box::new(Located::new(Kind::Type, dummy())), vec![]),
+                dummy(),
+            ),
+        };
+        let field = Located::new(
+            Expression::Field(
+                Box::new(inner),
+                Located::new(Constructor::Name("x".into()), dummy()),
+                fm,
+            ),
+            dummy(),
+        );
+        assert!(passive(&field.node));
+    }
+
+    #[test]
+    fn count_exp_prim_is_one() {
+        let e = prim_exp();
+        assert_eq!(count_exp(&e), 1);
+    }
+
+    #[test]
+    fn count_exp_app_counts_both() {
+        let span = dummy();
+        let app = Located::new(
+            Expression::App(Box::new(prim_exp()), Box::new(prim_exp())),
+            span,
+        );
+        assert_eq!(count_exp(&app), 3);
+    }
+
+    #[test]
+    fn count_named_uses_sees_named_refs() {
+        let file = vec![
+            val_decl(1, prim_exp()),
+            val_decl(2, Located::new(Expression::Named(1), dummy())),
+            val_decl(3, Located::new(Expression::Named(1), dummy())),
+        ];
+        let uses = count_named_uses(&file);
+        assert_eq!(uses.get(&1), Some(&2));
+    }
+
+    #[test]
+    fn is_poly_con_ffi_false() {
+        let c = Located::new(Constructor::Ffi("Basis".into(), "int".into()), dummy());
+        let empty: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
+        assert!(!is_poly_con(&empty, &c));
+    }
+
+    #[test]
+    fn is_policy_basis_sql_policy() {
+        let c = Constructor::Ffi("Basis".into(), "sql_policy".into());
+        assert!(is_policy(&c));
+    }
+
+    #[test]
+    fn is_policy_basis_int_false() {
+        let c = Constructor::Ffi("Basis".into(), "int".into());
+        assert!(!is_policy(&c));
+    }
 }

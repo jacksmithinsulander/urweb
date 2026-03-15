@@ -2219,6 +2219,11 @@ pub fn monoize(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::Constructor as CC;
+
+    fn loc() -> Span {
+        Span::dummy()
+    }
 
     #[test]
     fn empty_file_monoizes_to_empty() {
@@ -2229,5 +2234,42 @@ mod tests {
         let (decls, ps) = result.unwrap();
         assert!(decls.is_empty());
         assert!(ps.is_empty());
+    }
+
+    #[test]
+    fn mono_name_extracts_name() {
+        let c = Located::new(CC::Name("foo".into()), loc());
+        assert_eq!(mono_name(&c), "foo");
+    }
+
+    #[test]
+    fn mono_name_fallback_for_non_name() {
+        let c = Located::new(CC::Ffi("Basis".into(), "int".into()), loc());
+        assert_eq!(mono_name(&c), "?");
+    }
+
+    #[test]
+    fn mono_type_ffi_basis_unit() {
+        let t = mono_type_ffi("Basis", "unit", &loc());
+        assert!(matches!(&t.node, Typ::Record(fs) if fs.is_empty()));
+    }
+
+    #[test]
+    fn mono_type_ffi_basis_int() {
+        let t = mono_type_ffi("Basis", "int", &loc());
+        assert!(matches!(&t.node, Typ::Ffi(m, x) if m == "Basis" && x == "int"));
+    }
+
+    #[test]
+    fn mono_type_ffi_non_basis_passthrough() {
+        let t = mono_type_ffi("Other", "foo", &loc());
+        assert!(matches!(&t.node, Typ::Ffi(m, x) if m == "Other" && x == "foo"));
+    }
+
+    #[test]
+    fn fm_fresh_name_increments() {
+        let mut fm = Fm::empty(10);
+        assert_eq!(fm.fresh_name(), 10);
+        assert_eq!(fm.fresh_name(), 11);
     }
 }
