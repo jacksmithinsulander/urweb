@@ -7,6 +7,7 @@
 //! Mirrors `elab.sml`.
 
 pub mod disjointness_analysis;
+pub mod elaborate;
 pub mod elaboration_errors;
 pub mod environment;
 pub mod explify;

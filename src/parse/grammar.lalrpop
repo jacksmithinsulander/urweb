@@ -182,7 +182,7 @@ extern {
         // Identifiers
         "IDENT"  => crate::parse::lexical_analyzer::Token::Ident(<String>),
         "UIDENT" => crate::parse::lexical_analyzer::Token::UpperIdent(<String>),
-        "SYMBOL" => crate::parse::lexical_analyzer::Token::Symbol(<String>),
+        "SYMBOL" => crate::parse::lexical_analyzer::Token::Csymbol(<String>),
         "BACKTICK_PATH" => crate::parse::lexical_analyzer::Token::BacktickPath(<String>),
 
         // XML
@@ -201,6 +201,12 @@ pub File: File = {
     <decls:Decl*> => decls,
 };
 
+/// Entry point for `.urs` signature files: the caller wraps the input in
+/// `sig … end` so we parse a sequence of signature items directly.
+pub SgnItems: Vec<LocSgnItem> = {
+    <items:SgnItem*> => items,
+};
+
 // ---------------------------------------------------------------------------
 // Declarations
 // ---------------------------------------------------------------------------
@@ -211,7 +217,7 @@ Decl: LocDecl = {
 
 DeclNode: Decl = {
     // val p = e
-    "val" <p:Pat> "=" <e:Exp> => Decl::Val(p, e),
+    "val" <p:Pat> "=" <e:NonSeqExp> => Decl::Val(p, e),
 
     // val rec f : t = e and ...
     "val" "rec" <binds:ValRecBindings> => Decl::ValRec(binds),
@@ -248,23 +254,30 @@ DeclNode: Decl = {
         Decl::Str(name, None, None, Located::dummy(Str::Fun(arg, s, ret, Box::new(body))), false),
 
     // table / sequence / view / cookie / style
-    "table" <name:"IDENT"> ":" <c:Con> <pol1:PolicyExp?> <pol2:PolicyExp?> =>
+    "table" <name:"IDENT"> ":" <c:Con> =>
         Decl::Table(name, c,
-            pol1.unwrap_or_else(|| Located::dummy(Exp::Record(vec![], false))),
-            pol2.unwrap_or_else(|| Located::dummy(Exp::Record(vec![], false)))),
+            Located::dummy(Exp::Record(vec![], false)),
+            Located::dummy(Exp::Record(vec![], false))),
+
+    "table" <name:"IDENT"> ":" <c:Con> "where" <pol1:NonSeqExp> =>
+        Decl::Table(name, c, pol1,
+            Located::dummy(Exp::Record(vec![], false))),
+
+    "table" <name:"IDENT"> ":" <c:Con> "where" <pol1:NonSeqExp> "where" <pol2:NonSeqExp> =>
+        Decl::Table(name, c, pol1, pol2),
 
     "sequence" <name:"IDENT"> => Decl::Sequence(name),
 
-    "view" <name:"IDENT"> "=" <e:Exp> => Decl::View(name, e),
+    "view" <name:"IDENT"> "=" <e:NonSeqExp> => Decl::View(name, e),
 
     "cookie" <name:"IDENT"> ":" <c:Con> => Decl::Cookie(name, c),
 
     "style" <name:"IDENT"> => Decl::Style(name),
 
     // task / policy / on_error
-    "task" <e1:AppExp> "=" <e2:Exp> => Decl::Task(e1, e2),
+    "task" <e1:AppExp> "=" <e2:NonSeqExp> => Decl::Task(e1, e2),
 
-    "policy" <e:Exp> => Decl::Policy(e),
+    "policy" <e:NonSeqExp> => Decl::Policy(e),
 
     // export
     "export" <st:Str> => Decl::Export(st),
@@ -284,14 +297,32 @@ Str: LocStr = {
     <l:@L> <s:StrNode> <r:@R> => Located::new(s, Span::from_offsets("", l, r, &[])),
 };
 
+// AppStr handles dot-projection to avoid shift/reduce conflict
+AppStr: LocStr = {
+    <l:@L> <s:AppStrInner> <r:@R> => Located::new(s, Span::from_offsets("", l, r, &[])),
+};
+
+AppStrInner: Str = {
+    // Module projection: M.N — s is already LocStr, no need to re-wrap
+    <s:AppStr> "." <field:"UIDENT"> => Str::Proj(Box::new(s), field),
+    <s:AtomStr> => s.node,
+};
+
+AtomStr: LocStr = {
+    <l:@L> <s:AtomStrNode> <r:@R> => Located::new(s, Span::from_offsets("", l, r, &[])),
+};
+
+AtomStrNode: Str = {
+    <name:"UIDENT"> => Str::Var(name),
+    "(" <s:Str> ")" => s.node,
+};
+
 StrNode: Str = {
     "struct" <decls:Decl*> "end" => Str::Const(decls),
-    <name:"UIDENT"> => Str::Var(name),
-    <s:Str> "." <field:"UIDENT"> => Str::Proj(Box::new(s), field),
     "functor" "(" <arg:"UIDENT"> ":" <sgn:Sgn> ")" <ret:SgnAnnot?> "=>" <body:Str> =>
         Str::Fun(arg, sgn, ret, Box::new(body)),
-    <f:Str> "(" <x:Str> ")" => Str::App(Box::new(f), Box::new(x)),
-    "(" <s:Str> ")" => s,
+    <f:AppStr> "(" <x:AppStr> ")" => Str::App(Box::new(f), Box::new(x)),
+    <s:AppStr> => s.node,
 };
 
 // ---------------------------------------------------------------------------
@@ -302,17 +333,35 @@ Sgn: LocSgn = {
     <l:@L> <s:SgnNode> <r:@R> => Located::new(s, Span::from_offsets("", l, r, &[])),
 };
 
-SgnNode: Sgn = {
-    "sig" <items:SgnItem*> "end" => Sgn::Const(items),
-    <name:"UIDENT"> => Sgn::Var(name),
-    "functor" "(" <arg:"UIDENT"> ":" <s1:Sgn> ")" "->" <s2:Sgn> =>
-        Sgn::Fun(arg, Box::new(s1), Box::new(s2)),
-    <s:Sgn> "where" <path:ModPath> "=" <c:Con> => {
+// AppSgn handles "where" extension to avoid shift/reduce conflict
+AppSgn: LocSgn = {
+    <l:@L> <s:AppSgnInner> <r:@R> => Located::new(s, Span::from_offsets("", l, r, &[])),
+};
+
+AppSgnInner: Sgn = {
+    // Sgn "where" path "=" con — s is already LocSgn, no re-wrap needed
+    <s:AppSgn> "where" <path:ModPath> "=" <c:Con> => {
         let mut p = path;
         let last = p.pop().unwrap_or_default();
         Sgn::Where(Box::new(s), p, last, c)
     },
-    "(" <s:Sgn> ")" => s,
+    <s:AtomSgn> => s.node,
+};
+
+AtomSgn: LocSgn = {
+    <l:@L> <s:AtomSgnNode> <r:@R> => Located::new(s, Span::from_offsets("", l, r, &[])),
+};
+
+AtomSgnNode: Sgn = {
+    <name:"UIDENT"> => Sgn::Var(name),
+    "(" <s:Sgn> ")" => s.node,
+};
+
+SgnNode: Sgn = {
+    "sig" <items:SgnItem*> "end" => Sgn::Const(items),
+    "functor" "(" <arg:"UIDENT"> ":" <s1:Sgn> ")" "->" <s2:Sgn> =>
+        Sgn::Fun(arg, Box::new(s1), Box::new(s2)),
+    <s:AppSgn> => s.node,
 };
 
 SgnItem: LocSgnItem = {
@@ -320,6 +369,10 @@ SgnItem: LocSgnItem = {
 };
 
 SgnItemNode: SgnItem = {
+    // Abstract type: `type X`  →  con X :: Type (no definition)
+    "type" <name:"IDENT"> => SgnItem::ConAbs(name, Box::new(Located::dummy(Kind::Type))),
+    // Type alias: `type X = C`  →  con X = C (kind inferred)
+    "type" <name:"IDENT"> "=" <c:Con> => SgnItem::Con(name, None, c),
     "con" <name:"IDENT"> "::" <k:Kind> => SgnItem::ConAbs(name, Box::new(k)),
     "con" <name:"IDENT"> "::" <k:Kind> "=" <c:Con> => SgnItem::Con(name, Some(Box::new(k)), c),
     "val" <name:"IDENT"> ":" <c:Con> => SgnItem::Val(name, c),
@@ -328,12 +381,19 @@ SgnItemNode: SgnItem = {
     "signature" <name:"UIDENT"> "=" <s:Sgn> => SgnItem::Sgn(name, s),
     "include" <s:Sgn> => SgnItem::Include(s),
     "constraint" <c1:Con> "~" <c2:Con> => SgnItem::Constraint(c1, c2),
+    // Class without kind: `class C`  →  default kind Type
+    "class" <name:"IDENT"> => SgnItem::ClassAbs(name, Box::new(Located::dummy(Kind::Type))),
     "class" <name:"IDENT"> "::" <k:Kind> => SgnItem::ClassAbs(name, Box::new(k)),
     "class" <name:"IDENT"> "::" <k:Kind> "=" <c:Con> => SgnItem::Class(name, Box::new(k), c),
-    "table" <name:"IDENT"> ":" <c:Con> <p1:PolicyExp?> <p2:PolicyExp?> =>
+    "table" <name:"IDENT"> ":" <c:Con> =>
         SgnItem::Table(name, c,
-            p1.unwrap_or_else(|| Located::dummy(Exp::Record(vec![], false))),
-            p2.unwrap_or_else(|| Located::dummy(Exp::Record(vec![], false)))),
+            Located::dummy(Exp::Record(vec![], false)),
+            Located::dummy(Exp::Record(vec![], false))),
+    "table" <name:"IDENT"> ":" <c:Con> "where" <p1:NonSeqExp> =>
+        SgnItem::Table(name, c, p1,
+            Located::dummy(Exp::Record(vec![], false))),
+    "table" <name:"IDENT"> ":" <c:Con> "where" <p1:NonSeqExp> "where" <p2:NonSeqExp> =>
+        SgnItem::Table(name, c, p1, p2),
 };
 
 // ---------------------------------------------------------------------------
@@ -355,17 +415,22 @@ KindApp: LocKind = {
 
 KindAtom: Kind = {
     "*"     => Kind::Type,
-    "Name"  => Kind::Name, // recognised as UIDENT "Name"
     "#" <k:KindAtom> => Kind::Record(Box::new(Located::dummy(k))),
-    "()"    => Kind::Unit,
+    // `{k}` = row kind (same as # k)
+    "{" <k:Kind> "}" => Kind::Record(Box::new(k)),
+    // Note: "()" as Kind::Unit is NOT here to avoid LALR conflict with AtomConNode = "()".
+    // Use "( )" or just avoid it; basis.urs never uses () as a kind.
     "(" <k:Kind> ")" => k.node,
     "_"     => Kind::Wild,
     <name:"IDENT"> => Kind::Var(name),
+    // "Name" is a UIDENT that maps to the Name kind; other UIDENTs become kind vars
+    <name:"UIDENT"> => if name == "Name" { Kind::Name } else { Kind::Var(name) },
 };
 
 KindAnnot: LocKind = {
     "::" <k:Kind> => k,
 };
+
 
 // ---------------------------------------------------------------------------
 // Constructors / types
@@ -376,6 +441,17 @@ Con: LocCon = {
 };
 
 ConNode: Con = {
+    // product/tuple type: `A * B`  →  Tuple([A, B])
+    // Right-associative; flattens nested tuples so `A * B * C` = Tuple([A, B, C]).
+    <c1:AppCon> "*" <c2:Con> => {
+        let mut parts = vec![c1];
+        match c2.node {
+            Con::Tuple(mut rest) => parts.append(&mut rest),
+            other => parts.push(Located::new(other, c2.span)),
+        }
+        Con::Tuple(parts)
+    },
+
     // function type
     <c1:AppCon> "->" <c2:Con> => Con::TFun(Box::new(c1), Box::new(c2)),
 
@@ -383,17 +459,20 @@ ConNode: Con = {
     "(" <name:"IDENT"> "::" <k:Kind> ")" "->" <c:Con> =>
         Con::TCFun(Explicitness::Explicit, name, Box::new(k), Box::new(c)),
 
-    // constructor-level function type (implicit)
-    "[" <name:"IDENT"> <k:KindAnnot?> "]" "->" <c:Con> =>
+    // constructor-level function type (implicit) — kind annotation required
+    // to avoid ambiguity with "[" FieldName "]" row literal
+    "[" <name:"IDENT"> "::" <k:Kind> "]" "->" <c:Con> =>
         Con::TCFun(Explicitness::Implicit, name,
-            k.map(Box::new).unwrap_or_else(|| Box::new(Located::dummy(Kind::Wild))),
+            Box::new(k),
             Box::new(c)),
 
     // disjointness constraint
     "[" <c1:Con> "~" <c2:Con> "]" "=>" <c3:Con> =>
         Con::TDisjoint(Box::new(c1), Box::new(c2), Box::new(c3)),
 
-    // record type
+    // empty record type: `{}`  →  TRecord (empty row)
+    "{" "}" => Con::TRecord(Box::new(Located::dummy(Con::Record(vec![])))),
+    // non-empty record type: `{c}`
     "{" <c:Con> "}" => Con::TRecord(Box::new(c)),
 
     // kind abstraction
@@ -416,6 +495,24 @@ AppCon: LocCon = {
 
 AppConInner: Con = {
     <f:AppCon> <x:AtomCon> => Con::App(Box::new(f), Box::new(x)),
+    // Module-qualified access or tuple projection: handled at AppCon level
+    // to avoid shift/reduce conflict with ModPath in AtomCon.
+    // "." IDENT/UIDENT → module qualification (extend qualifier list)
+    // "." INT → tuple projection
+    // f: LocCon — use f.node to get the Con variant, no re-wrapping
+    <f:AppCon> "." <name:"IDENT"> => {
+        match f.node.clone() {
+            Con::Var(mut quals, last) => { quals.push(last); Con::Var(quals, name) }
+            _ => Con::Var(vec![], name)
+        }
+    },
+    <f:AppCon> "." <name:"UIDENT"> => {
+        match f.node.clone() {
+            Con::Var(mut quals, last) => { quals.push(last); Con::Var(quals, name) }
+            _ => Con::Var(vec![], name)
+        }
+    },
+    <f:AppCon> "." <n:"INT"> => Con::Proj(Box::new(f), n as usize),
     <c:AtomCon> => c.node,
 };
 
@@ -429,16 +526,16 @@ AtomConNode: Con = {
     "#" <name:"IDENT"> => Con::Name(name),
     "#" <name:"UIDENT"> => Con::Name(name),
     "map" => Con::Map,
-    <path:ModPath> => {
-        let mut v = path;
-        let last = v.pop().unwrap_or_default();
-        Con::Var(v, last)
-    },
-    "[" <fields:ConFields> "]" => Con::Record(fields),
+    // Simple identifiers (no dots — dots are handled in AppConInner above)
+    <name:"IDENT">  => Con::Var(vec![], name),
+    <name:"UIDENT"> => Con::Var(vec![], name),
+    // Empty row: []
+    "[" "]" => Con::Record(vec![]),
+    // Non-empty row literal
+    "[" <fields:ConFieldList> "]" => Con::Record(fields),
     "(" <c:Con> ")" => c.node,
     "(" <cs:ConList2> ")" => Con::Tuple(cs),
     "(" <c:Con> ":" <k:Kind> ")" => Con::Annot(Box::new(c), Box::new(k)),
-    <c:AtomCon> "." <n:"INT"> => Con::Proj(Box::new(c), n as usize),
 };
 
 ConList2: Vec<LocCon> = {
@@ -446,10 +543,10 @@ ConList2: Vec<LocCon> = {
     <cs:ConList2> "," <c:Con> => { let mut v = cs; v.push(c); v },
 };
 
-ConFields: Vec<(LocCon, LocCon)> = {
-    => vec![],
+// Non-empty comma-separated list of constructor fields (no empty alternative)
+ConFieldList: Vec<(LocCon, LocCon)> = {
     <f:ConField> => vec![f],
-    <fs:ConFields> "," <f:ConField> => { let mut v = fs; v.push(f); v },
+    <fs:ConFieldList> "," <f:ConField> => { let mut v = fs; v.push(f); v },
 };
 
 ConField: (LocCon, LocCon) = {
@@ -464,12 +561,30 @@ ConField: (LocCon, LocCon) = {
 // Patterns
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Pattern grammar
+//
+// Constructor patterns with arguments must be parenthesized: (Con arg).
+// This avoids the LR(1) ambiguity in both function argument lists and case
+// arms. The "Pat" level handles type annotation.
+// ---------------------------------------------------------------------------
+
 Pat: LocPat = {
     <l:@L> <p:PatNode> <r:@R> => Located::new(p, Span::from_offsets("", l, r, &[])),
 };
 
 PatNode: Pat = {
+    // Type annotation on an atomic pattern
     <p:AtomPat> ":" <c:Con> => Pat::Annot(Box::new(p), c),
+    // Constructor pattern with one AtomPat argument: Con pat
+    // This is at PatNode level (not AtomPat) to avoid LR(1) conflict in AtomPat+.
+    // Pattern `Con arg` is valid where a full Pat is expected (case arms, val bindings).
+    // In function heads (AtomPat+), use "(Con arg)" instead.
+    <path:UpperPath> <inner:AtomPat> => {
+        let mut v = path;
+        let last = v.pop().unwrap_or_default();
+        Pat::Con(v, last, Some(Box::new(inner)))
+    },
     <p:AtomPat> => p.node,
 };
 
@@ -484,23 +599,33 @@ AtomPatNode: Pat = {
     <f:"FLOAT"> => Pat::Prim(crate::primitives::Prim::Float(f)),
     <s:"STRING"> => Pat::Prim(crate::primitives::Prim::String(crate::primitives::StringMode::Normal, s)),
     <ch:"CHAR"> => Pat::Prim(crate::primitives::Prim::Char(ch)),
-    "true"  => Pat::Prim(crate::primitives::Prim::Int(1)), // booleans as ints at pattern level
+    "true"  => Pat::Prim(crate::primitives::Prim::Int(1)),
     "false" => Pat::Prim(crate::primitives::Prim::Int(0)),
-    <path:UpperPath> <inner:AtomPat?> =>
-        Pat::Con(path_qualifier(&path), path_last(&path), inner.map(Box::new)),
-    "{" <fields:PatFields> <open:DotDotDot?> "}" =>
-        Pat::Record(fields, open.is_some()),
+    // Bare constructor without argument (uppercase identifier or path)
+    // Constructor-with-argument is handled at ConPat level (not here), to avoid
+    // the LR(1) ambiguity in function argument lists.
+    <path:UpperPath> => {
+        let mut v = path;
+        let last = v.pop().unwrap_or_default();
+        Pat::Con(v, last, None)
+    },
+    // Record pattern — explicit empty/nonempty/open cases to avoid nullable conflict
+    "{" "}" =>
+        Pat::Record(vec![], false),
+    "{" "..." "}" =>
+        Pat::Record(vec![], true),
+    "{" <fields:PatFieldList> "}" =>
+        Pat::Record(fields, false),
+    "{" <fields:PatFieldList> "," "..." "}" =>
+        Pat::Record(fields, true),
+    // Parenthesized pattern: also handles constructor-with-arg (e.g. "(Some x)")
     "(" <p:Pat> ")" => p.node,
 };
 
-DotDotDot: () = {
-    "..." => (),
-};
-
-PatFields: Vec<(String, LocPat)> = {
-    => vec![],
+// Non-empty comma-separated list of pattern fields
+PatFieldList: Vec<(String, LocPat)> = {
     <f:PatField> => vec![f],
-    <fs:PatFields> "," <f:PatField> => { let mut v = fs; v.push(f); v },
+    <fs:PatFieldList> "," <f:PatField> => { let mut v = fs; v.push(f); v },
 };
 
 PatField: (String, LocPat) = {
@@ -513,18 +638,62 @@ PatField: (String, LocPat) = {
 
 // ---------------------------------------------------------------------------
 // Expressions
+//
+// Precedence levels (low to high):
+//   Exp       — sequencing (e1 ; e2), right-associative
+//   NonSeqExp — andalso/orelse chains, left-associative
+//   BoolExp   — type annotation, fn, if, case, let, disjoint
+//   AppExp    — function application (left-assoc) + field access + module qual
+//   AtomExp   — atomic (literals, identifiers, records, parens)
+//
+// The split between Exp and NonSeqExp is critical: declarations use NonSeqExp
+// so that the greedy ";" does not create shift/reduce conflicts at the
+// declaration boundary (Decl*).
 // ---------------------------------------------------------------------------
 
+// Full expression including sequencing (used inside let/case/parens)
 Exp: LocExp = {
     <l:@L> <e:ExpNode> <r:@R> => Located::new(e, Span::from_offsets("", l, r, &[])),
 };
 
 ExpNode: Exp = {
-    // Annotations
+    // Sequencing — right-associative via NonSeqExp on left, Exp on right
+    <e1:NonSeqExp> ";" <e2:Exp> =>
+        Exp::Let(vec![Located::dummy(EDecl::Val(Located::dummy(Pat::Var("_".into())), e1))], Box::new(e2)),
+    <e:NonSeqExp> => e.node,
+};
+
+// Non-sequencing expression — used at declaration level
+NonSeqExp: LocExp = {
+    <l:@L> <e:NonSeqExpNode> <r:@R> => Located::new(e, Span::from_offsets("", l, r, &[])),
+};
+
+NonSeqExpNode: Exp = {
+    // Left-associative andalso/orelse: BoolExp andalso BoolExp andalso ...
+    <e1:NonSeqExp> "andalso" <e2:BoolExp> => Exp::Case(Box::new(e1), vec![
+        (Located::dummy(Pat::Con(vec!["Basis".into()], "True".into(), None)), e2),
+        (Located::dummy(Pat::Con(vec!["Basis".into()], "False".into(), None)),
+         Located::dummy(Exp::Var(vec!["Basis".into()], "False".into(), Inference::DontInfer))),
+    ]),
+    <e1:NonSeqExp> "orelse" <e2:BoolExp> => Exp::Case(Box::new(e1), vec![
+        (Located::dummy(Pat::Con(vec!["Basis".into()], "True".into(), None)),
+         Located::dummy(Exp::Var(vec!["Basis".into()], "True".into(), Inference::DontInfer))),
+        (Located::dummy(Pat::Con(vec!["Basis".into()], "False".into(), None)), e2),
+    ]),
+    <e:BoolExp> => e.node,
+};
+
+// Boolean/annotation level — fn, if, case, let, type annotation, disjoint
+BoolExp: LocExp = {
+    <l:@L> <e:BoolExpNode> <r:@R> => Located::new(e, Span::from_offsets("", l, r, &[])),
+};
+
+BoolExpNode: Exp = {
+    // Type annotation
     <e:AppExp> ":" <c:Con> => Exp::Annot(Box::new(e), c),
 
-    // Abstractions
-    "fn" <p:Pat> "=>" <e:Exp> => {
+    // fn — body is full Exp to allow sequencing inside lambda
+    "fn" <p:Pat> "=>" <e:BoolExp> => {
         let span = p.span.clone();
         match p.node {
             Pat::Var(x) => Exp::Abs(x, None, Box::new(e)),
@@ -542,36 +711,20 @@ ExpNode: Exp = {
         }
     },
 
-    // if-then-else (desugars to case)
-    "if" <cond:Exp> "then" <t:Exp> "else" <f:Exp> =>
+    // if-then-else
+    "if" <cond:NonSeqExp> "then" <t:BoolExp> "else" <f:BoolExp> =>
         Exp::Case(Box::new(cond), vec![
             (Located::dummy(Pat::Con(vec!["Basis".into()], "True".into(), None)), t),
             (Located::dummy(Pat::Con(vec!["Basis".into()], "False".into(), None)), f),
         ]),
 
     // case
-    "case" <e:Exp> "of" <arms:CaseArms> =>
+    "case" <e:NonSeqExp> "of" <arms:CaseArms> =>
         Exp::Case(Box::new(e), arms),
 
-    // let
+    // let — body uses full Exp to allow sequencing
     "let" <decls:EDecl*> "in" <e:Exp> "end" =>
         Exp::Let(decls, Box::new(e)),
-
-    // andalso / orelse (desugar to case)
-    <e1:Exp> "andalso" <e2:Exp> => Exp::Case(Box::new(e1), vec![
-        (Located::dummy(Pat::Con(vec!["Basis".into()], "True".into(), None)), e2),
-        (Located::dummy(Pat::Con(vec!["Basis".into()], "False".into(), None)),
-         Located::dummy(Exp::Var(vec!["Basis".into()], "False".into(), Inference::DontInfer))),
-    ]),
-    <e1:Exp> "orelse"  <e2:Exp> => Exp::Case(Box::new(e1), vec![
-        (Located::dummy(Pat::Con(vec!["Basis".into()], "True".into(), None)),
-         Located::dummy(Exp::Var(vec!["Basis".into()], "True".into(), Inference::DontInfer))),
-        (Located::dummy(Pat::Con(vec!["Basis".into()], "False".into(), None)), e2),
-    ]),
-
-    // Sequencing
-    <e1:Exp> ";" <e2:Exp> =>
-        Exp::Let(vec![Located::dummy(EDecl::Val(Located::dummy(Pat::Var("_".into())), e1))], Box::new(e2)),
 
     // Disjoint application
     <e:AppExp> "[" <c1:Con> "~" <c2:Con> "]" =>
@@ -588,6 +741,17 @@ AppExpInner: Exp = {
     <f:AppExp> <x:AtomExp> => Exp::App(Box::new(f), Box::new(x)),
     // Constructor-level application
     <f:AppExp> "[" <c:Con> "]" => Exp::CApp(Box::new(f), c),
+    // "." IDENT → field access (IDENT is always lowercase)
+    <f:AppExp> "." <name:"IDENT"> => Exp::Field(Box::new(f), Located::dummy(Con::Name(name))),
+    // "." "#" IDENT → hash field access
+    <f:AppExp> "." "#" <name:"IDENT"> => Exp::Field(Box::new(f), Located::dummy(Con::Name(name))),
+    // "." UIDENT → module qualification — f: LocExp, use f.node directly
+    <f:AppExp> "." <name:"UIDENT"> => {
+        match f.node {
+            Exp::Var(mut quals, last, inf) => { quals.push(last); Exp::Var(quals, name, inf) }
+            _ => Exp::Var(vec![], name, Inference::DontInfer)
+        }
+    },
     <e:AtomExp> => e.node,
 };
 
@@ -603,28 +767,29 @@ AtomExpNode: Exp = {
     <ch:"CHAR">  => Exp::Prim(crate::primitives::Prim::Char(ch)),
     "true"  => Exp::Var(vec!["Basis".into()], "True".into(), Inference::DontInfer),
     "false" => Exp::Var(vec!["Basis".into()], "False".into(), Inference::DontInfer),
-    <path:ModPath> => {
-        let mut v = path;
-        let last = v.pop().unwrap_or_default();
-        Exp::Var(v, last, Inference::DontInfer)
-    },
-    "{" <fields:ExpFields> "}" => Exp::Record(fields, false),
-    "{" <fields:ExpFields> "," "..." "}" => Exp::Record(fields, true),
-    <e:AtomExp> "." <name:"IDENT"> => Exp::Field(Box::new(e), Located::dummy(Con::Name(name))),
-    <e:AtomExp> "." "#" <name:"IDENT"> => Exp::Field(Box::new(e), Located::dummy(Con::Name(name))),
+    // Simple identifier (no dots — dots handled in AppExpInner)
+    <name:"IDENT">  => Exp::Var(vec![], name, Inference::DontInfer),
+    <name:"UIDENT"> => Exp::Var(vec![], name, Inference::DontInfer),
+    // Record expressions — explicit empty and non-empty cases to avoid
+    // nullable ExpFields conflict
+    "{" "}" => Exp::Record(vec![], false),
+    "{" "..." "}" => Exp::Record(vec![], true),
+    "{" <fields:ExpFieldList> "}" => Exp::Record(fields, false),
+    "{" <fields:ExpFieldList> "," "..." "}" => Exp::Record(fields, true),
+    // Parenthesized expression — uses full Exp to allow sequencing
     "(" <e:Exp> ")" => e.node,
     "_" => Exp::Wild,
-    "?" => Exp::Hole,
+    "___" => Exp::Hole,
 };
 
-ExpFields: Vec<(LocCon, LocExp)> = {
-    => vec![],
+// Non-empty comma-separated list of expression fields
+ExpFieldList: Vec<(LocCon, LocExp)> = {
     <f:ExpField> => vec![f],
-    <fs:ExpFields> "," <f:ExpField> => { let mut v = fs; v.push(f); v },
+    <fs:ExpFieldList> "," <f:ExpField> => { let mut v = fs; v.push(f); v },
 };
 
 ExpField: (LocCon, LocExp) = {
-    <name:"IDENT"> "=" <e:Exp> => (Located::dummy(Con::Name(name)), e),
+    <name:"IDENT"> "=" <e:NonSeqExp> => (Located::dummy(Con::Name(name)), e),
     <name:"IDENT"> => {
         // Punning: {x} means {x = x}
         let e = Located::dummy(Exp::Var(vec![], name.clone(), Inference::DontInfer));
@@ -632,14 +797,48 @@ ExpField: (LocCon, LocExp) = {
     },
 };
 
-// Case arms
+// Case arms — each arm's body uses NonCaseBoolExp to avoid the dangling-case
+// ambiguity where `|` after a nested case could belong to the inner or outer case.
+// To write a case expression as a case arm body, use `(case ...)` or `let...in case...end`.
 CaseArms: Vec<(LocPat, LocExp)> = {
     <arm:CaseArm> => vec![arm],
     <arms:CaseArms> "|" <arm:CaseArm> => { let mut v = arms; v.push(arm); v },
 };
 
 CaseArm: (LocPat, LocExp) = {
-    <p:Pat> "=>" <e:Exp> => (p, e),
+    <p:Pat> "=>" <e:NonCaseBoolExp> => (p, e),
+};
+
+// BoolExp without top-level "case" and "fn" — used as case arm body to avoid
+// the dangling-case shift/reduce conflict on "|".
+// "if" and "let" are allowed because they have unambiguous terminators
+// ("else" and "end" respectively).
+NonCaseBoolExp: LocExp = {
+    <l:@L> <e:NonCaseBoolExpNode> <r:@R> => Located::new(e, Span::from_offsets("", l, r, &[])),
+};
+
+NonCaseBoolExpNode: Exp = {
+    // Type annotation
+    <e:AppExp> ":" <c:Con> => Exp::Annot(Box::new(e), c),
+
+    // if-then-else — the else branch uses NonCaseBoolExp to avoid the
+    // dangling-case problem: "if cond then t else case e of ... | ..."
+    // where "|" would be ambiguous if the else branch allowed top-level case.
+    "if" <cond:NonSeqExp> "then" <t:BoolExp> "else" <f:NonCaseBoolExp> =>
+        Exp::Case(Box::new(cond), vec![
+            (Located::dummy(Pat::Con(vec!["Basis".into()], "True".into(), None)), t),
+            (Located::dummy(Pat::Con(vec!["Basis".into()], "False".into(), None)), f),
+        ]),
+
+    // let — unambiguous because terminated by "end"
+    "let" <decls:EDecl*> "in" <e:Exp> "end" =>
+        Exp::Let(decls, Box::new(e)),
+
+    // Disjoint application
+    <e:AppExp> "[" <c1:Con> "~" <c2:Con> "]" =>
+        Exp::Disjoint(c1, c2, Box::new(e)),
+
+    <e:AppExp> => e.node,
 };
 
 // Local declarations inside let
@@ -648,7 +847,7 @@ EDecl: LocEDecl = {
 };
 
 EDeclNode: EDecl = {
-    "val" <p:Pat> "=" <e:Exp> => EDecl::Val(p, e),
+    "val" <p:Pat> "=" <e:NonSeqExp> => EDecl::Val(p, e),
     "val" "rec" <binds:ValRecBindings> => EDecl::ValRec(binds),
     "fun" <binds:FunBindings> => EDecl::ValRec(binds),
 };
@@ -658,6 +857,7 @@ EDeclNode: EDecl = {
 // ---------------------------------------------------------------------------
 
 // A dot-separated path of identifiers: `A.B.c`
+// Used in open declarations and Sgn.where; NOT used inside expressions.
 ModPath: Vec<String> = {
     <name:"IDENT">  => vec![name],
     <name:"UIDENT"> => vec![name],
@@ -674,18 +874,19 @@ SgnAnnot: LocSgn = {
     ":" <s:Sgn> => s,
 };
 
-PolicyExp: LocExp = {
-    // placeholder
-    "where" <e:Exp> => e,
-};
-
 FfiModes: Vec<FfiMode> = {
     => vec![],
     <modes:FfiModes> <m:FfiMode> => { let mut v = modes; v.push(m); v },
 };
 
 FfiMode: FfiMode = {
-    "effectful" => FfiMode::Effectful,
+    <s:"IDENT"> => match s.as_str() {
+        "effectful" => FfiMode::Effectful,
+        "benignEffectful" => FfiMode::BenignEffectful,
+        "clientOnly" => FfiMode::ClientOnly,
+        "serverOnly" => FfiMode::ServerOnly,
+        _ => FfiMode::Effectful,
+    },
 };
 
 DatatypeDecls: Vec<DatatypeDecl> = {
@@ -721,7 +922,7 @@ ValRecBindings: Vec<(String, Option<LocCon>, LocExp)> = {
 };
 
 ValRecBind: (String, Option<LocCon>, LocExp) = {
-    <name:"IDENT"> <ann:(":" <Con>)?> "=" <e:Exp> => (name, ann, e),
+    <name:"IDENT"> <ann:(":" <Con>)?> "=" <e:NonSeqExp> => (name, ann, e),
 };
 
 FunBindings: Vec<(String, Option<LocCon>, LocExp)> = {
@@ -730,7 +931,7 @@ FunBindings: Vec<(String, Option<LocCon>, LocExp)> = {
 };
 
 FunBind: (String, Option<LocCon>, LocExp) = {
-    <name:"IDENT"> <params:AtomPat+> <ret:(":" <Con>)?> "=" <e:Exp> => {
+    <name:"IDENT"> <params:AtomPat+> <ret:(":" <Con>)?> "=" <e:NonSeqExp> => {
         // Wrap body in nested Abs for each parameter
         let body = params.into_iter().rev().fold(e, |acc, p| {
             let span = p.span.clone();

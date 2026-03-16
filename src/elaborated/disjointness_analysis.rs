@@ -83,6 +83,7 @@ pub fn print_env(env: &DisjointEnv) {
 // ---------------------------------------------------------------------------
 
 /// An unresolved disjointness goal.
+#[derive(Debug, Clone)]
 pub struct Goal {
     pub span: Span,
     pub c1: LocatedConstructor,

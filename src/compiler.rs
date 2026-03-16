@@ -134,6 +134,23 @@ pub fn parse_sources(job: &Job, errors: &mut ErrorReporter) -> Option<crate::sou
     use std::path::Path;
 
     let mut decls: source::File = Vec::new();
+
+    // Always prepend a minimal synthetic Basis FFI structure so that primitive
+    // types (int, float, string, char, …) resolve to Basis.int etc. during
+    // elaboration.  A Flattening::Ffi module in corify returns Ffi(module, name)
+    // for any name lookup, so an empty signature suffices.
+    {
+        let basis_span = Span {
+            file: "<basis>".into(),
+            ..Span::dummy()
+        };
+        let sgn = Located::new(source::Sgn::Const(vec![]), basis_span.clone());
+        decls.push(Located::new(
+            source::Decl::FfiStr("Basis".into(), sgn, None),
+            basis_span,
+        ));
+    }
+
     let mut had_errors = false;
 
     // Parse C FFI modules (job.ffi): each provides a .urs signature file.
@@ -236,11 +253,11 @@ pub fn parse_sources(job: &Job, errors: &mut ErrorReporter) -> Option<crate::sou
 // ---------------------------------------------------------------------------
 
 pub fn elaborate(
-    _file: crate::source::File,
-    _settings: &Settings,
-    _errors: &mut ErrorReporter,
+    file: crate::source::File,
+    settings: &Settings,
+    errors: &mut ErrorReporter,
 ) -> Option<crate::elaborated::File> {
-    todo!("elaborate: type checker not yet implemented")
+    crate::elaborated::elaborate::elab_file(file, settings, errors)
 }
 
 // ---------------------------------------------------------------------------
@@ -946,17 +963,17 @@ mod tests {
 
     #[test]
     fn parse_sources_empty_job_returns_empty() {
-        // With no sources and no ffi, parse_sources returns Some([]) without
-        // calling parse_ur (which is still unimplemented).
+        // With no sources and no ffi, parse_sources returns Some([Basis]) —
+        // the synthetic Basis FfiStr is always prepended.
         let mut errors = ErrorReporter::new();
         let result = parse_sources(&Job::default(), &mut errors);
         assert!(result.is_some());
-        assert!(result.unwrap().is_empty());
+        // Only the synthetic Basis decl is present (no user sources).
+        assert_eq!(result.unwrap().len(), 1);
         assert!(!errors.has_errors());
     }
 
     #[test]
-    #[ignore = "requires parse_ur (LALRPOP grammar)"]
     fn parse_sources_returns_meaningful_content() {
         // Catches mutants: replace parse_sources result with Some(Default::default()).
         let dir = tempfile::tempdir().unwrap();
@@ -974,20 +991,20 @@ mod tests {
             "parse_sources must return Some (catches replace with None)"
         );
         let source_file = result.unwrap();
+        // source_file[0] is the synthetic Basis FfiStr; user modules start at index 1.
         assert!(
-            !source_file.is_empty(),
-            "parse_sources must return non-empty for valid project (catches Some(Default::default()))"
+            source_file.len() >= 2,
+            "parse_sources must return Basis + at least one user module (catches Some(Default::default()))"
         );
-        let first = &source_file[0];
+        let user_module = &source_file[1];
         assert!(
-            first.span.file.ends_with("x.ur"),
+            user_module.span.file.ends_with("x.ur"),
             "span.file must be set to source path (catches delete field file mutant): {}",
-            first.span.file
+            user_module.span.file
         );
     }
 
     #[test]
-    #[ignore = "requires parse_ur (LALRPOP grammar)"]
     fn compile_to_outputs_produces_c_and_sql() {
         // Catches mutants that replace pipeline phases with Default::default().
         let dir = tempfile::tempdir().unwrap();
@@ -1073,11 +1090,19 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "elaborate")]
-    fn elaborate_panics_until_implemented() {
+    fn elaborate_empty_file_returns_some() {
         let mut errors = ErrorReporter::new();
         let mut settings = Settings::default();
-        let _ = elaborate(Default::default(), &mut settings, &mut errors);
+        let result = elaborate(Default::default(), &mut settings, &mut errors);
+        // An empty source file should elaborate to an empty elab file without errors.
+        assert!(
+            result.is_some(),
+            "elaborate should succeed on an empty file"
+        );
+        assert!(
+            !errors.has_errors(),
+            "elaborate should not produce errors on an empty file"
+        );
     }
 
     #[test]

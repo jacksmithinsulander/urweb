@@ -128,7 +128,7 @@ pub struct ClassRules {
 }
 
 impl ClassRules {
-    fn empty() -> Self {
+    pub fn empty() -> Self {
         ClassRules {
             closed_rules: vec![],
             open_rules: vec![],
@@ -1789,6 +1789,28 @@ impl Env {
                 (name.clone(), kind)
             })
             .collect()
+    }
+
+    /// Return the number of relative constructor bindings currently in scope.
+    pub fn rel_c_len(&self) -> usize {
+        self.rel_c.len()
+    }
+
+    /// Return the number of relative expression bindings currently in scope.
+    pub fn rel_e_len(&self) -> usize {
+        self.rel_e.len()
+    }
+
+    /// Return the classes map (read-only) for typeclass resolution.
+    pub fn classes(&self) -> &HashMap<ClassName, ClassRules> {
+        &self.classes
+    }
+
+    /// Add a closed rule to the given class.
+    pub fn add_class_rule(mut self, cn: ClassName, rule: ClassRule) -> Self {
+        let entry = self.classes.entry(cn).or_insert_with(ClassRules::empty);
+        entry.closed_rules.push(rule);
+        self
     }
 
     /// Return a snapshot of all in-scope expression names and their types.

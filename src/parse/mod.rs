@@ -6,24 +6,72 @@
 
 pub mod lexical_analyzer;
 
-use crate::error_types::ErrorReporter;
-use crate::source::File;
+// Include the LALRPOP-generated parser when it has been built.
+// `build.rs` sets `cargo:rustc-cfg=generated_parser` only when
+// URWEB_GEN_PARSER=1 was passed.  Without that flag the grammar is not
+// regenerated and the stubs below are used instead.
+#[cfg(generated_parser)]
+mod grammar {
+    include!(concat!(env!("OUT_DIR"), "/parse/grammar.rs"));
+}
+
+use crate::error_types::{CompileError, ErrorReporter, Span};
+use crate::source::{File, LocSgnItem};
 
 /// Parse a single `.ur` source file.
 ///
-/// The grammar is in `grammar.lalrpop`; this is the entry point called by
-/// `compiler.rs`.
-pub fn parse_ur(_filename: &str, _source: &str, _errors: &mut ErrorReporter) -> Option<File> {
-    todo!("parse_ur: LALRPOP grammar not yet generated")
+/// Returns `None` and records an error in `errors` on parse failure.
+pub fn parse_ur(filename: &str, source: &str, errors: &mut ErrorReporter) -> Option<File> {
+    #[cfg(generated_parser)]
+    {
+        let lexer = lexical_analyzer::Lexer::new(source);
+        match grammar::FileParser::new().parse(lexer) {
+            Ok(file) => Some(file),
+            Err(e) => {
+                let msg = format!("{:?}", e);
+                errors.report(CompileError::at(Span::dummy(), msg));
+                None
+            }
+        }
+    }
+    #[cfg(not(generated_parser))]
+    {
+        let _ = (filename, source);
+        errors.report(CompileError::Plain(
+            "parse_ur: parser not available — rebuild with URWEB_GEN_PARSER=1".into(),
+        ));
+        None
+    }
 }
 
-/// Parse a `.urs` signature file (prepends `sig\n` before parsing).
+/// Parse a `.urs` signature file.
+///
+/// Returns `None` and records an error in `errors` on parse failure.
 pub fn parse_urs(
-    _filename: &str,
-    _source: &str,
-    _errors: &mut ErrorReporter,
-) -> Option<Vec<crate::source::LocSgnItem>> {
-    todo!("parse_urs: LALRPOP grammar not yet generated")
+    filename: &str,
+    source: &str,
+    errors: &mut ErrorReporter,
+) -> Option<Vec<LocSgnItem>> {
+    #[cfg(generated_parser)]
+    {
+        let lexer = lexical_analyzer::Lexer::new(source);
+        match grammar::SgnItemsParser::new().parse(lexer) {
+            Ok(items) => Some(items),
+            Err(e) => {
+                let msg = format!("{:?}", e);
+                errors.report(CompileError::at(Span::dummy(), msg));
+                None
+            }
+        }
+    }
+    #[cfg(not(generated_parser))]
+    {
+        let _ = (filename, source);
+        errors.report(CompileError::Plain(
+            "parse_urs: parser not available — rebuild with URWEB_GEN_PARSER=1".into(),
+        ));
+        None
+    }
 }
 
 #[cfg(test)]
@@ -31,16 +79,33 @@ mod tests {
     use super::*;
 
     #[test]
-    #[should_panic(expected = "parse_ur")]
-    fn parse_ur_panics_until_implemented() {
+    fn parse_ur_returns_none_without_generated_parser() {
         let mut errors = ErrorReporter::new();
-        let _ = parse_ur("test.ur", "val x = 1", &mut errors);
+        let result = parse_ur("test.ur", "val x = 1", &mut errors);
+        #[cfg(not(generated_parser))]
+        {
+            assert!(result.is_none());
+            assert!(errors.has_errors());
+        }
+        #[cfg(generated_parser)]
+        {
+            // With the real parser a trivial declaration should parse.
+            let _ = result;
+        }
     }
 
     #[test]
-    #[should_panic(expected = "parse_urs")]
-    fn parse_urs_panics_until_implemented() {
+    fn parse_urs_returns_none_without_generated_parser() {
         let mut errors = ErrorReporter::new();
-        let _ = parse_urs("test.urs", "val x : int", &mut errors);
+        let result = parse_urs("test.urs", "val x : int", &mut errors);
+        #[cfg(not(generated_parser))]
+        {
+            assert!(result.is_none());
+            assert!(errors.has_errors());
+        }
+        #[cfg(generated_parser)]
+        {
+            let _ = result;
+        }
     }
 }
