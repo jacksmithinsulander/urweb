@@ -1097,18 +1097,7 @@ fn unnest_exp(ctx: &mut Ctx, e: LocatedExpression) -> LocatedExpression {
                 })
                 .collect();
 
-            // Step 2: process each decl, hoisting EDValRec, tracking substitutions.
-            let mut remaining_eds: Vec<LocatedElaboratedDeclaration> = Vec::new();
-            let mut subs: Vec<(usize, LocatedExpression)> = Vec::new();
-            let mut by: usize = 0; // total hoisted bindings count (for lifting)
-
-            let state_start = &mut State::new(0); // will be filled by parent
-                                                  // We need a local State for subs collection; we'll merge into the caller's state.
-                                                  // Actually we need to pass state in. Let me restructure.
-                                                  // ... this approach is getting complex. Let's use a different pattern.
-
-            // We'll collect everything into a temporary unnest result.
-            let (new_eds, final_subs, final_body) = process_let_eds(ctx, eds, body, t.clone());
+            let (new_eds, _final_subs, final_body) = process_let_eds(ctx, eds, body, t.clone());
 
             let new_let = Expression::Let(new_eds, Box::new(final_body), t);
             Located::new(new_let, span)

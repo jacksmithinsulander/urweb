@@ -21,7 +21,7 @@ use crate::source::{File, LocSgnItem};
 /// Parse a single `.ur` source file.
 ///
 /// Returns `None` and records an error in `errors` on parse failure.
-pub fn parse_ur(filename: &str, source: &str, errors: &mut ErrorReporter) -> Option<File> {
+pub fn parse_ur(_filename: &str, source: &str, errors: &mut ErrorReporter) -> Option<File> {
     #[cfg(generated_parser)]
     {
         let lexer = lexical_analyzer::Lexer::new(source);
@@ -48,7 +48,7 @@ pub fn parse_ur(filename: &str, source: &str, errors: &mut ErrorReporter) -> Opt
 ///
 /// Returns `None` and records an error in `errors` on parse failure.
 pub fn parse_urs(
-    filename: &str,
+    _filename: &str,
     source: &str,
     errors: &mut ErrorReporter,
 ) -> Option<Vec<LocSgnItem>> {

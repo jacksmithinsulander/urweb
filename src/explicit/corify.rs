@@ -2345,9 +2345,8 @@ fn corify_str(
 
             let (xa, na, body) = unwind_functor(&str1.node, st);
 
-            // Rename body to get fresh ids (stub: we skip ExplRename and just use body as-is)
-            // In a full implementation, ExplRename.rename would be called here to avoid capture.
-            // For now we proceed without renaming.
+            // Freshen all named ids in the functor body to avoid id capture.
+            let body = crate::explicit::expl_rename::rename(counter, &xa, na, body);
 
             let (ds1, inner_prime) = corify_str(mods, *str2, st, counter, settings, errors);
 

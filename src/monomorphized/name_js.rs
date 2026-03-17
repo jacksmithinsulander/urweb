@@ -454,7 +454,7 @@ impl<'a> State<'a> {
     }
 
     /// Recurse into the children of a non-binder expression node.
-    fn rw_node(&mut self, env: &[(String, LocTyp)], e: Exp, span: &Span) -> Exp {
+    fn rw_node(&mut self, env: &[(String, LocTyp)], e: Exp, _span: &Span) -> Exp {
         use Exp::*;
         macro_rules! rw {
             ($e:expr) => {

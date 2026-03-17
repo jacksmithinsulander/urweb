@@ -7,6 +7,7 @@
 
 pub mod corify;
 pub mod environment;
+pub mod expl_rename;
 pub mod utilities;
 
 use crate::datatype_kind::DatatypeKind;
