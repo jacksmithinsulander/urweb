@@ -13,6 +13,7 @@
 //!
 //! Mirrors `core.sml`.
 
+pub mod css;
 pub mod dead_code_elimination;
 pub mod effect_analysis;
 pub mod environment;

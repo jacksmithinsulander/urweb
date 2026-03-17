@@ -13,6 +13,7 @@ pub mod environment;
 pub mod explify;
 pub mod module_database;
 pub mod type_operations;
+pub mod unnest;
 pub mod utilities;
 
 use std::sync::{Arc, Mutex};

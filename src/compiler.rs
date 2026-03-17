@@ -261,6 +261,14 @@ pub fn elaborate(
 }
 
 // ---------------------------------------------------------------------------
+// Phase 3.5: Unnest (elab → elab, lambda-lift nested val recs)
+// ---------------------------------------------------------------------------
+
+pub fn unnest(file: crate::elaborated::File) -> crate::elaborated::File {
+    crate::elaborated::unnest::unnest(file)
+}
+
+// ---------------------------------------------------------------------------
 // Phase 4: Explify (elab → expl)
 // ---------------------------------------------------------------------------
 
@@ -459,22 +467,42 @@ pub fn mono_inline(
     mono_shake(file)
 }
 
+pub fn mono_name_js(file: crate::monomorphized::File) -> crate::monomorphized::File {
+    crate::monomorphized::name_js::rewrite(file)
+}
+
+pub fn mono_endpoints(
+    file: crate::monomorphized::File,
+) -> (crate::monomorphized::File, Vec<crate::monomorphized::endpoints::Endpoint>) {
+    crate::monomorphized::endpoints::collect(file)
+}
+
+pub fn mono_filecache(
+    file: crate::monomorphized::File,
+    settings: &Settings,
+) -> crate::monomorphized::File {
+    crate::monomorphized::filecache::instrument(file, settings)
+}
+
 pub fn mono_iflow(
     file: crate::monomorphized::File,
-    _settings: &Settings,
-    _errors: &mut ErrorReporter,
+    settings: &Settings,
+    errors: &mut ErrorReporter,
 ) -> Option<crate::monomorphized::File> {
-    // Information-flow analysis pass (iflow.sml). Not yet translated; pass through.
-    Some(file)
+    crate::monomorphized::iflow::check(&file, settings, errors);
+    if errors.has_errors() {
+        None
+    } else {
+        Some(file)
+    }
 }
 
 pub fn mono_sqlcache(
     file: crate::monomorphized::File,
-    _settings: &Settings,
+    settings: &Settings,
     _errors: &mut ErrorReporter,
 ) -> Option<crate::monomorphized::File> {
-    // SQL cache optimization pass (sqlcache.sml). Not yet translated; pass through.
-    Some(file)
+    Some(crate::monomorphized::sqlcache::go(file, settings))
 }
 
 // ---------------------------------------------------------------------------
@@ -535,6 +563,14 @@ pub fn js_compile(
 
 pub fn sql_generate(file: &crate::c_like_representation::File, settings: &Settings) -> String {
     crate::c_like_representation::sql_generate::sql_generate(file, settings)
+}
+
+// ---------------------------------------------------------------------------
+// Phase: CSS summary (after core shake, optional diagnostic)
+// ---------------------------------------------------------------------------
+
+pub fn css_summarize(file: &crate::core::File) -> crate::core::css::Summary {
+    crate::core::css::summarize(file)
 }
 
 // ---------------------------------------------------------------------------
@@ -674,6 +710,9 @@ pub fn compile(urp_path: &Path, settings: &mut Settings) -> CompileResult {
         bail!("elaboration errors");
     }
 
+    // Phase 3.5: unnest
+    let elab_file = unnest(elab_file);
+
     // Phase 4: explify
     let expl_file =
         explify(elab_file, &mut errors).ok_or_else(|| anyhow::anyhow!("Explify failed"))?;
@@ -707,6 +746,9 @@ pub fn compile(urp_path: &Path, settings: &mut Settings) -> CompileResult {
     let mono_file = monoize(core_file, settings, &mut errors)
         .ok_or_else(|| anyhow::anyhow!("Monoize failed"))?;
 
+    // Collect endpoint metadata (endpoints.sml) — side output, file unchanged.
+    let (mono_file, _endpoints) = mono_endpoints(mono_file);
+
     // Mono passes
     let mono_file = mono_untangle(mono_file);
     let mono_file = mono_fuse(mono_file);
@@ -731,6 +773,11 @@ pub fn compile(urp_path: &Path, settings: &mut Settings) -> CompileResult {
     } else {
         mono_file
     };
+
+    // Name JavaScript fragments (name_js.sml) — hoist non-trivial EJavaScript
+    // sub-expressions to top-level DVal bindings for app.js placement.
+    let mono_file = mono_name_js(mono_file);
+    let mono_file = mono_filecache(mono_file, settings);
 
     let mono_file = if settings.sqlcache {
         mono_sqlcache(mono_file, settings, &mut errors)
@@ -797,6 +844,7 @@ pub fn compile_to_outputs(urp_path: &Path, settings: &mut Settings) -> Result<(S
         bail!("elaboration errors");
     }
 
+    let elab_file = unnest(elab_file);
     let expl_file =
         explify(elab_file, &mut errors).ok_or_else(|| anyhow::anyhow!("Explify failed"))?;
     let core_file =
@@ -823,6 +871,7 @@ pub fn compile_to_outputs(urp_path: &Path, settings: &mut Settings) -> Result<(S
 
     let mono_file = monoize(core_file, settings, &mut errors)
         .ok_or_else(|| anyhow::anyhow!("Monoize failed"))?;
+    let (mono_file, _endpoints) = mono_endpoints(mono_file);
     let mono_file = mono_untangle(mono_file);
     let mono_file = mono_fuse(mono_file);
     let mono_file = mono_reduce(mono_file, settings);
@@ -844,6 +893,7 @@ pub fn compile_to_outputs(urp_path: &Path, settings: &mut Settings) -> Result<(S
     } else {
         mono_file
     };
+    let mono_file = mono_name_js(mono_file);
     let mono_file = if settings.sqlcache {
         mono_sqlcache(mono_file, settings, &mut errors)
             .ok_or_else(|| anyhow::anyhow!("Sqlcache failed"))?
@@ -1087,6 +1137,87 @@ mod tests {
             errors.has_errors(),
             "mono_path_check must report duplicate path (catches replace with () mutant)"
         );
+    }
+
+    #[test]
+    fn mono_iflow_passthrough_when_debug_false() {
+        // When debug=false, mono_iflow must return Some(file) unchanged.
+        let file = minimal_mono_file();
+        let settings = Settings::default();
+        assert!(!settings.debug, "default settings must have debug=false");
+        let mut errors = ErrorReporter::new();
+        let result = mono_iflow(file.clone(), &settings, &mut errors);
+        assert!(
+            result.is_some(),
+            "mono_iflow must return Some when debug=false (catches replace with None mutant)"
+        );
+        assert!(
+            !errors.has_errors(),
+            "mono_iflow must not report errors on empty file with debug=false"
+        );
+    }
+
+    #[test]
+    fn mono_sqlcache_passthrough_when_sqlcache_false() {
+        // When sqlcache=false, mono_sqlcache must return Some(file) unchanged.
+        let file = minimal_mono_file();
+        let settings = Settings::default();
+        assert!(!settings.sqlcache, "default settings must have sqlcache=false");
+        let mut errors = ErrorReporter::new();
+        let result = mono_sqlcache(file.clone(), &settings, &mut errors);
+        assert!(
+            result.is_some(),
+            "mono_sqlcache must return Some(file) when sqlcache=false (catches replace with None mutant)"
+        );
+        // The file should be structurally unchanged.
+        let (decls, _) = result.unwrap();
+        assert_eq!(
+            decls.len(),
+            1,
+            "mono_sqlcache must preserve file contents when sqlcache=false"
+        );
+    }
+
+    #[test]
+    fn mono_sqlcache_wraps_queries_when_enabled() {
+        // When sqlcache=true, mono_sqlcache must transform the file.
+        use crate::error_types::Located;
+        use crate::monomorphized::{Decl, Exp, QueryMeta, Typ};
+        let dummy_typ = Located::dummy(Typ::Record(vec![]));
+        let query_exp = Located::dummy(Exp::Query(QueryMeta {
+            exps: vec![],
+            tables: vec![("t1".to_string(), vec![])],
+            state: dummy_typ.clone(),
+            query: Box::new(Located::dummy(Exp::Record(vec![]))),
+            body: Box::new(Located::dummy(Exp::Record(vec![]))),
+            initial: Box::new(Located::dummy(Exp::Record(vec![]))),
+        }));
+        let file: crate::monomorphized::File = (
+            vec![Located::dummy(Decl::Val(
+                "q".into(),
+                1,
+                dummy_typ,
+                query_exp,
+                "q".into(),
+            ))],
+            vec![],
+        );
+        let mut settings = Settings::default();
+        settings.sqlcache = true;
+        let mut errors = ErrorReporter::new();
+        let result = mono_sqlcache(file, &settings, &mut errors);
+        assert!(result.is_some(), "mono_sqlcache must return Some");
+        let (decls, _) = result.unwrap();
+        assert_eq!(decls.len(), 1, "decl count must be preserved");
+        match &decls[0].node {
+            Decl::Val(_, _, _, e, _) => {
+                assert!(
+                    matches!(e.node, Exp::Case(..)),
+                    "sqlcache must wrap query in Case node (catches pass-through mutant)"
+                );
+            }
+            other => panic!("expected Val, got {:?}", other),
+        }
     }
 
     #[test]
@@ -1600,6 +1731,22 @@ mod tests {
         assert!(
             !result.0.is_empty(),
             "mono_inline must preserve decls (catches replace with Default::default())"
+        );
+    }
+
+    #[test]
+    fn mono_name_js_passthrough() {
+        let result = mono_name_js(Default::default());
+        assert!(result.0.is_empty());
+    }
+
+    #[test]
+    fn mono_name_js_preserves_non_empty_file() {
+        let file = minimal_mono_file();
+        let result = mono_name_js(file);
+        assert!(
+            !result.0.is_empty(),
+            "mono_name_js must preserve decls (catches replace with Default::default())"
         );
     }
 
