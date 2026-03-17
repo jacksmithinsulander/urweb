@@ -97,8 +97,12 @@ fn collect_free(e: &LocExp, depth: usize, out: &mut BTreeSet<usize>) {
                 collect_free(a, depth, out);
             }
         }
-        App(e1, e2) | Strcat(e1, e2) | Seq(e1, e2) | Setval(e1, e2)
-        | Binop(_, _, e1, e2) | SignalBind(e1, e2) => {
+        App(e1, e2)
+        | Strcat(e1, e2)
+        | Seq(e1, e2)
+        | Setval(e1, e2)
+        | Binop(_, _, e1, e2)
+        | SignalBind(e1, e2) => {
             collect_free(e1, depth, out);
             collect_free(e2, depth, out);
         }
@@ -129,7 +133,9 @@ fn collect_free(e: &LocExp, depth: usize, out: &mut BTreeSet<usize>) {
             }
         }
         Error(e1, _) => collect_free(e1, depth, out),
-        ReturnBlob { blob, mime_type, .. } => {
+        ReturnBlob {
+            blob, mime_type, ..
+        } => {
             if let std::option::Option::Some(b) = blob {
                 collect_free(b, depth, out);
             }
@@ -195,9 +201,7 @@ fn squish_node(vs: &[usize], depth: usize, e: Exp) -> Exp {
             Box::new(squish_at(vs, depth, *e1)),
             Box::new(squish_at(vs, depth, *e2)),
         ),
-        Abs(x, dom, ran, body) => {
-            Abs(x, dom, ran, Box::new(squish_at(vs, depth + 1, *body)))
-        }
+        Abs(x, dom, ran, body) => Abs(x, dom, ran, Box::new(squish_at(vs, depth + 1, *body))),
         Unop(s, e1) => Unop(s, Box::new(squish_at(vs, depth, *e1))),
         Binop(bi, s, e1, e2) => Binop(
             bi,
@@ -246,9 +250,7 @@ fn squish_node(vs: &[usize], depth: usize, e: Exp) -> Exp {
         ),
         Closure(n, envs) => Closure(
             n,
-            envs.into_iter()
-                .map(|a| squish_at(vs, depth, a))
-                .collect(),
+            envs.into_iter().map(|a| squish_at(vs, depth, a)).collect(),
         ),
         Query(qm) => {
             use crate::monomorphized::QueryMeta;
@@ -273,9 +275,7 @@ fn squish_node(vs: &[usize], depth: usize, e: Exp) -> Exp {
             Box::new(squish_at(vs, depth, *e2)),
         ),
         SignalSource(e1) => SignalSource(Box::new(squish_at(vs, depth, *e1))),
-        ServerCall(e1, t, eff, fm) => {
-            ServerCall(Box::new(squish_at(vs, depth, *e1)), t, eff, fm)
-        }
+        ServerCall(e1, t, eff, fm) => ServerCall(Box::new(squish_at(vs, depth, *e1)), t, eff, fm),
         Recv(e1, t) => Recv(Box::new(squish_at(vs, depth, *e1)), t),
         Sleep(e1) => Sleep(Box::new(squish_at(vs, depth, *e1))),
         Spawn(e1) => Spawn(Box::new(squish_at(vs, depth, *e1))),
@@ -436,9 +436,7 @@ impl<'a> State<'a> {
                         Located::new(JavaScript(mode, Box::new(inner2)), span)
                     }
                     _ => {
-                        if is_already_simple(&inner2)
-                            || is_tricky(self.dont_name, &inner2)
-                        {
+                        if is_already_simple(&inner2) || is_tricky(self.dont_name, &inner2) {
                             Located::new(JavaScript(mode, Box::new(inner2)), span)
                         } else {
                             self.hoist(env, mode, inner2, span)
@@ -467,23 +465,13 @@ impl<'a> State<'a> {
             Prim(_) | Rel(_) | Named(_) | Ffi(_, _) | None(_) => e,
             Con(dk, pc, arg) => Con(dk, pc, arg.map(|a| Box::new(rw!(*a)))),
             Some(t, inner) => Some(t, Box::new(rw!(*inner))),
-            FfiApp(m, x, args) => FfiApp(
-                m,
-                x,
-                args.into_iter()
-                    .map(|(a, t)| (rw!(a), t))
-                    .collect(),
-            ),
+            FfiApp(m, x, args) => {
+                FfiApp(m, x, args.into_iter().map(|(a, t)| (rw!(a), t)).collect())
+            }
             App(e1, e2) => App(Box::new(rw!(*e1)), Box::new(rw!(*e2))),
             Unop(s, e1) => Unop(s, Box::new(rw!(*e1))),
-            Binop(bi, s, e1, e2) => {
-                Binop(bi, s, Box::new(rw!(*e1)), Box::new(rw!(*e2)))
-            }
-            Record(xets) => Record(
-                xets.into_iter()
-                    .map(|(x, e, t)| (x, rw!(e), t))
-                    .collect(),
-            ),
+            Binop(bi, s, e1, e2) => Binop(bi, s, Box::new(rw!(*e1)), Box::new(rw!(*e2))),
+            Record(xets) => Record(xets.into_iter().map(|(x, e, t)| (x, rw!(e), t)).collect()),
             Field(e1, x) => Field(Box::new(rw!(*e1)), x),
             Strcat(e1, e2) => Strcat(Box::new(rw!(*e1)), Box::new(rw!(*e2))),
             Error(e1, t) => Error(Box::new(rw!(*e1)), t),
@@ -512,9 +500,7 @@ impl<'a> State<'a> {
             SignalReturn(e1) => SignalReturn(Box::new(rw!(*e1))),
             SignalBind(e1, e2) => SignalBind(Box::new(rw!(*e1)), Box::new(rw!(*e2))),
             SignalSource(e1) => SignalSource(Box::new(rw!(*e1))),
-            ServerCall(e1, t, eff, fm) => {
-                ServerCall(Box::new(rw!(*e1)), t, eff, fm)
-            }
+            ServerCall(e1, t, eff, fm) => ServerCall(Box::new(rw!(*e1)), t, eff, fm),
             Recv(e1, t) => Recv(Box::new(rw!(*e1)), t),
             Sleep(e1) => Sleep(Box::new(rw!(*e1))),
             Spawn(e1) => Spawn(Box::new(rw!(*e1))),
@@ -553,7 +539,10 @@ impl<'a> State<'a> {
 
         let unit_t = mkt(Typ::Record(vec![]));
         let string_t = mkt(Typ::Ffi("Basis".into(), "string".into()));
-        let base_t = mkt(Typ::Fun(Box::new(unit_t.clone()), Box::new(string_t.clone())));
+        let base_t = mkt(Typ::Fun(
+            Box::new(unit_t.clone()),
+            Box::new(string_t.clone()),
+        ));
 
         // Build the full function type: type0 → type1 → … → unit → string
         // (foldl over vs in order, so vs[0] is the outermost param)
@@ -700,10 +689,7 @@ pub fn rewrite(file: File) -> File {
                 // SML: `List.revAppend (map DVal newDs, [d])` = rev(newDs) ++ [d].
                 // `new_vals` is in encounter order; we emit them as-is.
                 for (vx, vn, vt, ve, vs) in new_vals {
-                    result.push(Located::new(
-                        Decl::Val(vx, vn, vt, ve, vs),
-                        span.clone(),
-                    ));
+                    result.push(Located::new(Decl::Val(vx, vn, vt, ve, vs), span.clone()));
                 }
                 result.push(new_d);
             }

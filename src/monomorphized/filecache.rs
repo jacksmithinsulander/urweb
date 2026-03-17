@@ -16,9 +16,10 @@ use crate::settings::Settings;
 
 /// `true` if the type contains `Typ::Ffi("Basis", "blob")` anywhere.
 pub fn has_blob(t: &crate::monomorphized::LocTyp) -> bool {
-    crate::monomorphized::utilities::typ::exists(t, &|node| {
-        matches!(node, Typ::Ffi(m, x) if m == "Basis" && x == "blob")
-    })
+    crate::monomorphized::utilities::typ::exists(
+        t,
+        &|node| matches!(node, Typ::Ffi(m, x) if m == "Basis" && x == "blob"),
+    )
 }
 
 /// Replace every `Typ::Ffi("Basis", "blob")` with `Typ::Ffi("Basis", "string")`

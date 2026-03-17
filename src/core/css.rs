@@ -86,7 +86,10 @@ fn build_tag_table() -> BTreeMap<&'static str, TagSummary> {
         vec![Inheritable::Block, Inheritable::List],
         vec![Other::OBlock, Other::Width, Other::Height],
     );
-    let replaced: TagSummary = (vec![], vec![Other::ReplacedInline, Other::Width, Other::Height]);
+    let replaced: TagSummary = (
+        vec![],
+        vec![Other::ReplacedInline, Other::Width, Other::Height],
+    );
     let table: TagSummary = (
         vec![Inheritable::Block, Inheritable::Table],
         vec![Other::OBlock, Other::OTable, Other::Width, Other::Height],
@@ -315,7 +318,8 @@ impl Summarizer {
                                 let combined = merge_parent_child(&tag_summary, &merged_xml.0);
 
                                 if let Some(cid) = class_id {
-                                    let old = self.classes.entry(cid).or_insert_with(|| (vec![], vec![]));
+                                    let old =
+                                        self.classes.entry(cid).or_insert_with(|| (vec![], vec![]));
                                     merge_summary(old, &combined);
                                 }
                                 // Return the inheritable part + tag's other properties.
@@ -337,9 +341,7 @@ impl Summarizer {
                     }
                 }
             }
-            Expression::CApp(f, _) | Expression::KApp(f, _) => {
-                self.exp_app_tag(f, xml_sm)
-            }
+            Expression::CApp(f, _) | Expression::KApp(f, _) => self.exp_app_tag(f, xml_sm),
             _ => self.exp(e),
         }
     }

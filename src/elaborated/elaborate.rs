@@ -676,7 +676,7 @@ pub fn elab_con(
             let ku = fresh_kunif(span.clone(), "_");
             let krow = Located::new(elab::Kind::Record(Box::new(ku)), span.clone());
             check_kind(ctx, env, &c1.span, &c1e, &k1, &krow);
-            // TODO: check k2 ~ record too
+            check_kind(ctx, env, &c2.span, &c2e, &k2, &krow);
             let result = Located::new(
                 elab::Constructor::TDisjoint(Box::new(c1e), Box::new(c2e), Box::new(bodye)),
                 span,

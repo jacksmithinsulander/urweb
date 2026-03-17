@@ -473,7 +473,10 @@ pub fn mono_name_js(file: crate::monomorphized::File) -> crate::monomorphized::F
 
 pub fn mono_endpoints(
     file: crate::monomorphized::File,
-) -> (crate::monomorphized::File, Vec<crate::monomorphized::endpoints::Endpoint>) {
+) -> (
+    crate::monomorphized::File,
+    Vec<crate::monomorphized::endpoints::Endpoint>,
+) {
     crate::monomorphized::endpoints::collect(file)
 }
 
@@ -1162,7 +1165,10 @@ mod tests {
         // When sqlcache=false, mono_sqlcache must return Some(file) unchanged.
         let file = minimal_mono_file();
         let settings = Settings::default();
-        assert!(!settings.sqlcache, "default settings must have sqlcache=false");
+        assert!(
+            !settings.sqlcache,
+            "default settings must have sqlcache=false"
+        );
         let mut errors = ErrorReporter::new();
         let result = mono_sqlcache(file.clone(), &settings, &mut errors);
         assert!(

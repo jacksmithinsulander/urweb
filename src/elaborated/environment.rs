@@ -1573,8 +1573,6 @@ impl Env {
                         )
                     })
                     .collect();
-                // TODO: call rule_in(expression_type) and add to open_rules if it's
-                // a class instance type.  For now, closed_rules are unchanged.
                 (
                     class_name,
                     ClassRules {
@@ -1584,6 +1582,17 @@ impl Env {
                 )
             })
             .collect();
+
+        // If `expression_type` is a class instance type, add it as an open rule
+        // (witness = ERel 0) for the relevant class.
+        let loc = expression_type.span.clone();
+        let mut new_classes = new_classes;
+        if let Some((cn, nvs, hyps, conclusion)) = rule_in(&expression_type) {
+            if let Some(class) = new_classes.get_mut(&cn) {
+                let witness = Located::new(Expression::Rel(0), loc);
+                class.open_rules.insert(0, (nvs, hyps, conclusion, witness));
+            }
+        }
 
         Env {
             rename_e: new_rename_e,
@@ -1617,12 +1626,21 @@ impl Env {
         let mut new_named_e = self.named_e;
         new_named_e.insert(id, (name, expression_type.clone()));
 
-        // TODO: call rule_in(expression_type) and add to closed_rules of the class
-        // if applicable.  For now classes are unchanged.
+        // If `expression_type` is a class instance type, add it as a closed rule
+        // (witness = ENamed id) for the relevant class.
+        let loc = expression_type.span.clone();
+        let mut new_classes = self.classes;
+        if let Some((cn, nvs, hyps, conclusion)) = rule_in(&expression_type) {
+            if let Some(class) = new_classes.get_mut(&cn) {
+                let witness = Located::new(Expression::Named(id), loc);
+                class.closed_rules.push((nvs, hyps, conclusion, witness));
+            }
+        }
 
         Env {
             rename_e: new_rename_e,
             named_e: new_named_e,
+            classes: new_classes,
             ..self
         }
     }
@@ -1744,9 +1762,11 @@ impl Env {
     ///
     /// Mirrors `fun pushStrNamedAs env x n sgn = pushStrNamedAs' true env x n sgn`.
     pub fn push_str_named_as(self, name: String, id: usize, signature: LocatedSignature) -> Self {
-        // TODO: implement enrich_classes to scan the signature.
-        // For now fall back to no-enrich.
-        self.push_str_named_as_no_enrich(name, id, signature)
+        let mut env_with_str = self.push_str_named_as_no_enrich(name, id, signature.clone());
+        // Enrich classes: scan the signature for Val declarations that are
+        // class instances, and add them as closed rules (witness = ModProj).
+        enrich_classes(&mut env_with_str, id, &[], &signature);
+        env_with_str
     }
 
     /// Push a named structure, allocating a fresh id automatically.
@@ -1844,20 +1864,95 @@ fn class_head_of(constructor: &LocatedConstructor) -> Option<ClassName> {
             Some(ClassName::Proj(*module_id, path.clone(), name.clone()))
         }
         Constructor::App(function_con, _) => class_head_of(function_con),
+        Constructor::Abs(_, _, body) => class_head_of(body),
+        Constructor::Unif(_, _, _, _, cell) => {
+            let guard = cell.lock().unwrap();
+            match &*guard {
+                super::CUnif::Known(inner) => class_head_of(inner),
+                super::CUnif::Unknown => None,
+            }
+        }
         _ => None,
     }
+}
+
+// ---------------------------------------------------------------------------
+// Class instance rule extraction
+// ---------------------------------------------------------------------------
+
+/// Try to interpret a constructor `c` as a typeclass instance type, returning
+/// `(class_head, num_quantifiers, hypotheses, conclusion)` if successful.
+///
+/// Mirrors `fun rule_in c = ...` in `elab_env.sml`.
+fn rule_in(
+    c: &LocatedConstructor,
+) -> Option<(
+    ClassName,
+    usize,
+    Vec<LocatedConstructor>,
+    LocatedConstructor,
+)> {
+    // Peel TCFun quantifiers (counting them), chasing through solved CUnif.
+    fn quantifiers(
+        c: &LocatedConstructor,
+        nvars: usize,
+    ) -> Option<(
+        ClassName,
+        usize,
+        Vec<LocatedConstructor>,
+        LocatedConstructor,
+    )> {
+        match &c.node {
+            Constructor::Unif(_, _, _, _, cell) => {
+                let guard = cell.lock().unwrap();
+                match &*guard {
+                    super::CUnif::Known(inner) => {
+                        let inner = inner.clone();
+                        drop(guard);
+                        quantifiers(&inner, nvars)
+                    }
+                    super::CUnif::Unknown => None,
+                }
+            }
+            Constructor::TCFun(_, _, _, body) => quantifiers(body, nvars + 1),
+            _ => clauses(c, nvars, vec![]),
+        }
+    }
+
+    // Peel TFun hypotheses that themselves have class heads; then check the
+    // remaining conclusion has a class head.
+    fn clauses(
+        c: &LocatedConstructor,
+        nvars: usize,
+        hyps: Vec<LocatedConstructor>,
+    ) -> Option<(
+        ClassName,
+        usize,
+        Vec<LocatedConstructor>,
+        LocatedConstructor,
+    )> {
+        match &c.node {
+            Constructor::TFun(hyp, body) => {
+                if class_head_of(hyp).is_some() {
+                    let mut new_hyps = hyps;
+                    new_hyps.push(*hyp.clone());
+                    clauses(body, nvars, new_hyps)
+                } else {
+                    None
+                }
+            }
+            _ => class_head_of(c).map(|cn| (cn, nvars, hyps, c.clone())),
+        }
+    }
+
+    quantifiers(c, 0)
 }
 
 // ---------------------------------------------------------------------------
 // Signature head-normalisation (hnormSgn)
 // ---------------------------------------------------------------------------
 
-/// Head-normalise a signature: chase `SgnVar` and `SgnWhere` forms as far as possible.
-///
-/// This is needed to project out components of a module.
-/// The fully general version also handles `SgnProj` (by chasing structures) and
-/// `SgnWhere` (by rewriting `SgiConAbs` to `SgiCon`); those are stubbed as `todo!`
-/// for now and will be filled in when the elaborator is complete.
+/// Head-normalise a signature: chase `SgnVar`, `SgnWhere`, and `SgnProj` forms.
 ///
 /// Mirrors `fun hnormSgn env (all as (sgn, loc)) = ...` in `elab_env.sml`.
 pub fn hnorm_sgn(env: &Env, signature: &LocatedSignature) -> LocatedSignature {
@@ -1871,13 +1966,185 @@ pub fn hnorm_sgn(env: &Env, signature: &LocatedSignature) -> LocatedSignature {
             Err(_) => signature.clone(),
         },
 
-        // SgnProj — walk the structure path to find the named sub-signature.
-        // TODO: implement full projection through nested structures.
-        Signature::Proj(_, _, _) => signature.clone(),
+        // SgnProj(m, ms, x) — walk structure `m` through path `ms`, then project out `x`.
+        Signature::Proj(m, ms, x) => {
+            // Get the signature of structure `m`.
+            let root_sgn = match env.lookup_str_named(*m) {
+                Ok((_, sgn)) => sgn.clone(),
+                Err(_) => return signature.clone(),
+            };
+            // Walk through intermediate path components `ms`.
+            let mut cur_sgn = hnorm_sgn(env, &root_sgn);
+            for field in ms {
+                cur_sgn = match project_str_field(env, &cur_sgn, field) {
+                    Some(s) => hnorm_sgn(env, &s),
+                    None => return signature.clone(),
+                };
+            }
+            // Project out the target signature name `x`.
+            match project_sgn_field(env, &cur_sgn, x) {
+                Some(s) => hnorm_sgn(env, &s),
+                None => signature.clone(),
+            }
+        }
 
-        // SgnWhere — rewrite the targeted SgiConAbs to SgiCon.
-        // TODO: implement rewriting.
-        Signature::Where(_, _, _, _) => signature.clone(),
+        // SgnWhere(inner, ms, x, c) — rewrite SgiConAbs(x) to SgiCon(x, c) at path `ms`.
+        Signature::Where(inner, ms, x, c) => {
+            sgn_where_rewrite(env, inner, ms, x, c, &signature.span)
+        }
+    }
+}
+
+/// Walk a `SgnConst` to find sub-structure `field` and return its signature.
+fn project_str_field(env: &Env, sgn: &LocatedSignature, field: &str) -> Option<LocatedSignature> {
+    match &hnorm_sgn(env, sgn).node {
+        Signature::Const(items) => {
+            for item in items {
+                if let SignatureItem::Structure(_, name, _, sub_sgn) = &item.node {
+                    if name == field {
+                        return Some(sub_sgn.clone());
+                    }
+                }
+            }
+            None
+        }
+        Signature::Error => Some(Located::new(Signature::Error, sgn.span.clone())),
+        _ => None,
+    }
+}
+
+/// Walk a `SgnConst` to find sub-signature `field` and return it.
+fn project_sgn_field(env: &Env, sgn: &LocatedSignature, field: &str) -> Option<LocatedSignature> {
+    match &hnorm_sgn(env, sgn).node {
+        Signature::Const(items) => {
+            for item in items {
+                if let SignatureItem::Signature(name, _, sub_sgn) = &item.node {
+                    if name == field {
+                        return Some(sub_sgn.clone());
+                    }
+                }
+            }
+            None
+        }
+        Signature::Error => Some(Located::new(Signature::Error, sgn.span.clone())),
+        _ => None,
+    }
+}
+
+/// Implement the `SgnWhere` rewrite: replace `SgiConAbs(x, n, k)` at path `ms`
+/// with `SgiCon(x, n, k, c)`.
+///
+/// Mirrors the `rewrite` helper inside `hnormSgn` for the `SgnWhere` case in `elab_env.sml`.
+fn sgn_where_rewrite(
+    env: &Env,
+    inner: &LocatedSignature,
+    ms: &[String],
+    x: &str,
+    c: &LocatedConstructor,
+    loc: &crate::error_types::Span,
+) -> LocatedSignature {
+    let hn = hnorm_sgn(env, inner);
+    match hn.node {
+        Signature::Error => Located::new(Signature::Error, hn.span),
+        Signature::Const(items) => {
+            let new_items = sgn_where_traverse(items, ms, x, c, hn.span.clone());
+            Located::new(Signature::Const(new_items), hn.span)
+        }
+        _ => hn,
+    }
+}
+
+fn sgn_where_traverse(
+    items: Vec<LocatedSignatureItem>,
+    ms: &[String],
+    x: &str,
+    c: &LocatedConstructor,
+    loc: crate::error_types::Span,
+) -> Vec<LocatedSignatureItem> {
+    let mut result = Vec::with_capacity(items.len());
+    for item in items {
+        let new_item = match &item.node {
+            SignatureItem::ConAbs(name, id, kind) if ms.is_empty() && name == x => Located::new(
+                SignatureItem::Constructor(name.clone(), *id, kind.clone(), c.clone()),
+                item.span.clone(),
+            ),
+            SignatureItem::Structure(im, name, id, sub_sgn) if !ms.is_empty() && name == &ms[0] => {
+                let new_sub = sgn_where_rewrite_const(sub_sgn, &ms[1..], x, c);
+                Located::new(
+                    SignatureItem::Structure(*im, name.clone(), *id, new_sub),
+                    item.span.clone(),
+                )
+            }
+            _ => item,
+        };
+        result.push(new_item);
+    }
+    result
+}
+
+fn sgn_where_rewrite_const(
+    sgn: &LocatedSignature,
+    ms: &[String],
+    x: &str,
+    c: &LocatedConstructor,
+) -> LocatedSignature {
+    match &sgn.node {
+        Signature::Const(items) => {
+            let new_items = sgn_where_traverse(items.clone(), ms, x, c, sgn.span.clone());
+            Located::new(Signature::Const(new_items), sgn.span.clone())
+        }
+        _ => sgn.clone(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// enrich_classes — scan a signature for class instance Val declarations
+// ---------------------------------------------------------------------------
+
+/// Scan `signature` (bound to structure id `m1` at sub-path `ms`) and add any
+/// `Val` declarations that are class instances as closed rules to `env.classes`.
+///
+/// Mirrors `fun enrichClasses env classes (m1, ms) sgn = ...` in `elab_env.sml`.
+fn enrich_classes(env: &mut Env, m1: usize, ms: &[String], signature: &LocatedSignature) {
+    let hn = {
+        let env_ref = &*env;
+        hnorm_sgn(env_ref, signature)
+    };
+    let items = match hn.node {
+        Signature::Const(items) => items,
+        _ => return,
+    };
+    for item in &items {
+        match &item.node {
+            SignatureItem::Val(val_name, _val_id, con) => {
+                if let Some((cn, nvs, hyps, conclusion)) = rule_in(con) {
+                    if env.classes.contains_key(&cn) {
+                        let loc = item.span.clone();
+                        let witness = Located::new(
+                            Expression::ModProj(m1, ms.to_vec(), val_name.clone()),
+                            loc,
+                        );
+                        if let Some(class) = env.classes.get_mut(&cn) {
+                            class.closed_rules.push((nvs, hyps, conclusion, witness));
+                        }
+                    }
+                }
+            }
+            SignatureItem::Structure(super::ImportMode::Import, sub_name, _sub_id, sub_sgn) => {
+                let mut new_ms = ms.to_vec();
+                new_ms.push(sub_name.clone());
+                enrich_classes(env, m1, &new_ms, sub_sgn);
+            }
+            SignatureItem::ClassAbs(cls_name, cls_id, _) => {
+                let cn = ClassName::Proj(m1, ms.to_vec(), cls_name.clone());
+                env.classes.entry(cn).or_insert_with(ClassRules::empty);
+            }
+            SignatureItem::Class(cls_name, cls_id, _, _) => {
+                let cn = ClassName::Proj(m1, ms.to_vec(), cls_name.clone());
+                env.classes.entry(cn).or_insert_with(ClassRules::empty);
+            }
+            _ => {}
+        }
     }
 }
 

@@ -96,8 +96,12 @@ fn collect_free(e: &LocExp, depth: usize, out: &mut BTreeSet<usize>) {
                 collect_free(a, depth, out);
             }
         }
-        App(e1, e2) | Strcat(e1, e2) | Seq(e1, e2) | Setval(e1, e2)
-        | Binop(_, _, e1, e2) | SignalBind(e1, e2) => {
+        App(e1, e2)
+        | Strcat(e1, e2)
+        | Seq(e1, e2)
+        | Setval(e1, e2)
+        | Binop(_, _, e1, e2)
+        | SignalBind(e1, e2) => {
             collect_free(e1, depth, out);
             collect_free(e2, depth, out);
         }
@@ -128,7 +132,9 @@ fn collect_free(e: &LocExp, depth: usize, out: &mut BTreeSet<usize>) {
             }
         }
         Error(e1, _) => collect_free(e1, depth, out),
-        ReturnBlob { blob, mime_type, .. } => {
+        ReturnBlob {
+            blob, mime_type, ..
+        } => {
             if let std::option::Option::Some(b) = blob {
                 collect_free(b, depth, out);
             }
@@ -323,12 +329,7 @@ fn wrap_query_with_cache(
     let string_t = string_typ(span);
     let key_args: Vec<(LocExp, LocTyp)> = free
         .iter()
-        .map(|&v| {
-            (
-                mk_exp(Exp::Rel(v), span),
-                string_t.clone(),
-            )
-        })
+        .map(|&v| (mk_exp(Exp::Rel(v), span), string_t.clone()))
         .collect();
 
     // check{i}(keys…) : option string
@@ -354,16 +355,10 @@ fn wrap_query_with_cache(
         store_args.push((mk_exp(Exp::Rel(v + 1), span), string_t.clone()));
     }
     let store_name = format!("store{}", i);
-    let store_call = mk_exp(
-        Exp::FfiApp("Sqlcache".into(), store_name, store_args),
-        span,
-    );
+    let store_call = mk_exp(Exp::FfiApp("Sqlcache".into(), store_name, store_args), span);
 
     // Sequence: store; result  (both evaluated, result returned)
-    let store_then_result = mk_exp(
-        Exp::Seq(Box::new(store_call), Box::new(result_rel)),
-        span,
-    );
+    let store_then_result = mk_exp(Exp::Seq(Box::new(store_call), Box::new(result_rel)), span);
 
     // let result = <original query> in store; result
     let none_branch = mk_exp(
@@ -380,10 +375,7 @@ fn wrap_query_with_cache(
     // For now we use Uurlify in decode mode (third arg = true) on ERel 0
     // (the bound `s` from the Some pattern).
     let s_rel = mk_exp(Exp::Rel(0), span);
-    let some_branch = mk_exp(
-        Exp::Uurlify(Box::new(s_rel), state_typ.clone(), true),
-        span,
-    );
+    let some_branch = mk_exp(Exp::Uurlify(Box::new(s_rel), state_typ.clone(), true), span);
 
     // case check{i}(keys…) of
     //   None   => none_branch
@@ -429,19 +421,13 @@ fn make_flush_call(slot: &CacheSlot, span: &Span, depth: usize) -> LocExp {
         .iter()
         .map(|&v| {
             let rel = mk_exp(Exp::Rel(v + depth), span);
-            let some_rel = mk_exp(
-                Exp::Some(string_t.clone(), Box::new(rel)),
-                span,
-            );
+            let some_rel = mk_exp(Exp::Some(string_t.clone(), Box::new(rel)), span);
             (some_rel, opt_str_t.clone())
         })
         .collect();
 
     let flush_name = format!("flush{}", slot.index);
-    mk_exp(
-        Exp::FfiApp("Sqlcache".into(), flush_name, flush_args),
-        span,
-    )
+    mk_exp(Exp::FfiApp("Sqlcache".into(), flush_name, flush_args), span)
 }
 
 // ---------------------------------------------------------------------------
@@ -505,11 +491,9 @@ impl Transformer {
             Prim(_) | Rel(_) | Named(_) | Ffi(_, _) | None(_) => e,
             Con(dk, pc, arg) => Con(dk, pc, arg.map(|a| Box::new(p1!(*a)))),
             Some(t, inner) => Some(t, Box::new(p1!(*inner))),
-            FfiApp(m, x, args) => FfiApp(
-                m,
-                x,
-                args.into_iter().map(|(a, t)| (p1!(a), t)).collect(),
-            ),
+            FfiApp(m, x, args) => {
+                FfiApp(m, x, args.into_iter().map(|(a, t)| (p1!(a), t)).collect())
+            }
             App(e1, e2) => App(Box::new(p1!(*e1)), Box::new(p1!(*e2))),
             Abs(x, dom, ran, body) => Abs(x, dom, ran, Box::new(p1!(*body))),
             Unop(s, e1) => Unop(s, Box::new(p1!(*e1))),
@@ -518,10 +502,7 @@ impl Transformer {
             Field(e1, x) => Field(Box::new(p1!(*e1)), x),
             Case(disc, arms, meta) => {
                 let disc2 = p1!(*disc);
-                let arms2 = arms
-                    .into_iter()
-                    .map(|(p, arm_e)| (p, p1!(arm_e)))
-                    .collect();
+                let arms2 = arms.into_iter().map(|(p, arm_e)| (p, p1!(arm_e))).collect();
                 Case(Box::new(disc2), arms2, meta)
             }
             Strcat(e1, e2) => Strcat(Box::new(p1!(*e1)), Box::new(p1!(*e2))),
@@ -588,17 +569,14 @@ impl Transformer {
                 let slot_map: BTreeMap<usize, &CacheSlot> =
                     self.slots.iter().map(|s| (s.index, s)).collect();
 
-                flush_indices
-                    .into_iter()
-                    .rev()
-                    .fold(dml_node, |acc, ci| {
-                        if let std::option::Option::Some(slot) = slot_map.get(&ci) {
-                            let flush = make_flush_call(slot, &span, 0);
-                            mk_exp(Exp::Seq(Box::new(flush), Box::new(acc)), &span)
-                        } else {
-                            acc
-                        }
-                    })
+                flush_indices.into_iter().rev().fold(dml_node, |acc, ci| {
+                    if let std::option::Option::Some(slot) = slot_map.get(&ci) {
+                        let flush = make_flush_call(slot, &span, 0);
+                        mk_exp(Exp::Seq(Box::new(flush), Box::new(acc)), &span)
+                    } else {
+                        acc
+                    }
+                })
             }
             node => {
                 let new_node = self.phase2_node(node, &span);
@@ -618,11 +596,9 @@ impl Transformer {
             Prim(_) | Rel(_) | Named(_) | Ffi(_, _) | None(_) => e,
             Con(dk, pc, arg) => Con(dk, pc, arg.map(|a| Box::new(p2!(*a)))),
             Some(t, inner) => Some(t, Box::new(p2!(*inner))),
-            FfiApp(m, x, args) => FfiApp(
-                m,
-                x,
-                args.into_iter().map(|(a, t)| (p2!(a), t)).collect(),
-            ),
+            FfiApp(m, x, args) => {
+                FfiApp(m, x, args.into_iter().map(|(a, t)| (p2!(a), t)).collect())
+            }
             App(e1, e2) => App(Box::new(p2!(*e1)), Box::new(p2!(*e2))),
             Abs(x, dom, ran, body) => Abs(x, dom, ran, Box::new(p2!(*body))),
             Unop(s, e1) => Unop(s, Box::new(p2!(*e1))),
@@ -631,10 +607,7 @@ impl Transformer {
             Field(e1, x) => Field(Box::new(p2!(*e1)), x),
             Case(disc, arms, meta) => {
                 let disc2 = p2!(*disc);
-                let arms2 = arms
-                    .into_iter()
-                    .map(|(p, arm_e)| (p, p2!(arm_e)))
-                    .collect();
+                let arms2 = arms.into_iter().map(|(p, arm_e)| (p, p2!(arm_e))).collect();
                 Case(Box::new(disc2), arms2, meta)
             }
             Strcat(e1, e2) => Strcat(Box::new(p2!(*e1)), Box::new(p2!(*e2))),
@@ -705,12 +678,18 @@ fn phase1_decl_node(state: &mut CachingState, d: Decl, span: &Span) -> Decl {
 
         fn node(&mut self, e: Exp, span: &Span) -> Exp {
             use Exp::*;
-            macro_rules! p { ($e:expr) => { self.exp($e) }; }
+            macro_rules! p {
+                ($e:expr) => {
+                    self.exp($e)
+                };
+            }
             match e {
                 Prim(_) | Rel(_) | Named(_) | Ffi(_, _) | None(_) => e,
                 Con(dk, pc, arg) => Con(dk, pc, arg.map(|a| Box::new(p!(*a)))),
                 Some(t, inner) => Some(t, Box::new(p!(*inner))),
-                FfiApp(m, x, args) => FfiApp(m, x, args.into_iter().map(|(a, t)| (p!(a), t)).collect()),
+                FfiApp(m, x, args) => {
+                    FfiApp(m, x, args.into_iter().map(|(a, t)| (p!(a), t)).collect())
+                }
                 App(e1, e2) => App(Box::new(p!(*e1)), Box::new(p!(*e2))),
                 Abs(x, dom, ran, body) => Abs(x, dom, ran, Box::new(p!(*body))),
                 Unop(s, e1) => Unop(s, Box::new(p!(*e1))),
@@ -719,7 +698,10 @@ fn phase1_decl_node(state: &mut CachingState, d: Decl, span: &Span) -> Decl {
                 Field(e1, x) => Field(Box::new(p!(*e1)), x),
                 Case(disc, arms, meta) => {
                     let disc2 = p!(*disc);
-                    let arms2 = arms.into_iter().map(|(p, arm_e)| (p, self.exp(arm_e))).collect();
+                    let arms2 = arms
+                        .into_iter()
+                        .map(|(p, arm_e)| (p, self.exp(arm_e)))
+                        .collect();
                     Case(Box::new(disc2), arms2, meta)
                 }
                 Strcat(e1, e2) => Strcat(Box::new(p!(*e1)), Box::new(p!(*e2))),
@@ -856,10 +838,7 @@ pub fn go(file: File, settings: &Settings) -> File {
         slots,
     };
 
-    let decls: Vec<LocDecl> = decls
-        .into_iter()
-        .map(|d| phase2_decl(&xfm, d))
-        .collect();
+    let decls: Vec<LocDecl> = decls.into_iter().map(|d| phase2_decl(&xfm, d)).collect();
 
     (decls, exports)
 }
@@ -907,7 +886,10 @@ mod tests {
             vec![],
         );
         let settings = Settings::default();
-        assert!(!settings.sqlcache, "default settings must have sqlcache=false");
+        assert!(
+            !settings.sqlcache,
+            "default settings must have sqlcache=false"
+        );
         let result = go(file.clone(), &settings);
         // With sqlcache=false, file returned unchanged (same structure).
         assert_eq!(result.0.len(), 1);
@@ -991,7 +973,10 @@ mod tests {
             StringMode::Normal,
             "INSERT INTO t1 (x) VALUES (1)".into(),
         )));
-        let dml_exp = Located::dummy(Exp::Dml(Box::new(dml_str), crate::settings::FailureMode::Error));
+        let dml_exp = Located::dummy(Exp::Dml(
+            Box::new(dml_str),
+            crate::settings::FailureMode::Error,
+        ));
         let file: File = (
             vec![
                 Located::dummy(Decl::Val(
@@ -1001,13 +986,7 @@ mod tests {
                     make_query_exp("t1"),
                     "q".into(),
                 )),
-                Located::dummy(Decl::Val(
-                    "d".into(),
-                    2,
-                    dummy_typ(),
-                    dml_exp,
-                    "d".into(),
-                )),
+                Located::dummy(Decl::Val("d".into(), 2, dummy_typ(), dml_exp, "d".into())),
             ],
             vec![],
         );

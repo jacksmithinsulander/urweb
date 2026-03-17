@@ -57,20 +57,18 @@ impl PolicyEnv {
         let mut env = PolicyEnv::default();
         for d in decls {
             match &d.node {
-                Decl::Policy(pol) => {
-                    match pol {
-                        Policy::Client(e) => {
-                            env.has_client_policy = true;
-                            collect_table_names(e, &mut env.covered);
-                        }
-                        Policy::Insert(e)
-                        | Policy::Delete(e)
-                        | Policy::Update(e)
-                        | Policy::Sequence(e) => {
-                            collect_table_names(e, &mut env.covered);
-                        }
+                Decl::Policy(pol) => match pol {
+                    Policy::Client(e) => {
+                        env.has_client_policy = true;
+                        collect_table_names(e, &mut env.covered);
                     }
-                }
+                    Policy::Insert(e)
+                    | Policy::Delete(e)
+                    | Policy::Update(e)
+                    | Policy::Sequence(e) => {
+                        collect_table_names(e, &mut env.covered);
+                    }
+                },
                 _ => {}
             }
         }
@@ -190,7 +188,9 @@ fn collect_query_accesses(e: &LocExp, out: &mut Vec<(String, Span)>) {
         }
         Exp::Error(e1, _) => collect_query_accesses(e1, out),
         Exp::Redirect(e1, _) => collect_query_accesses(e1, out),
-        Exp::ReturnBlob { blob, mime_type, .. } => {
+        Exp::ReturnBlob {
+            blob, mime_type, ..
+        } => {
             if let std::option::Option::Some(b) = blob {
                 collect_query_accesses(b, out);
             }
@@ -217,12 +217,7 @@ fn collect_query_accesses(e: &LocExp, out: &mut Vec<(String, Span)>) {
 
 /// Check the expression `e` (belonging to declaration named `decl_name`)
 /// for uncovered table accesses.  Reports each violation via `errors`.
-fn check_exp(
-    decl_name: &str,
-    e: &LocExp,
-    policies: &PolicyEnv,
-    errors: &mut ErrorReporter,
-) {
+fn check_exp(decl_name: &str, e: &LocExp, policies: &PolicyEnv, errors: &mut ErrorReporter) {
     let mut accesses: Vec<(String, Span)> = Vec::new();
     collect_query_accesses(e, &mut accesses);
 
@@ -324,10 +319,7 @@ mod tests {
         assert!(!settings.debug, "default settings must have debug=false");
         let mut errors = ErrorReporter::new();
         check(&file, &settings, &mut errors);
-        assert!(
-            !errors.has_errors(),
-            "check must be no-op when debug=false"
-        );
+        assert!(!errors.has_errors(), "check must be no-op when debug=false");
     }
 
     #[test]
@@ -337,10 +329,7 @@ mod tests {
         settings.debug = true;
         let mut errors = ErrorReporter::new();
         check(&file, &settings, &mut errors);
-        assert!(
-            !errors.has_errors(),
-            "empty file must not produce errors"
-        );
+        assert!(!errors.has_errors(), "empty file must not produce errors");
     }
 
     #[test]
