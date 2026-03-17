@@ -174,6 +174,8 @@ pub fn run_compiler_args(args: &[String]) -> i32 {
                     }
                 }
             }
+            // Ignored flags (SML compiler compat)
+            "noEmacs" => {}
             "partialBuild" => {
                 if let Some(m) = opt_val.or_else(|| args_iter.next().cloned()) {
                     _partial_build = Some(m);
@@ -209,12 +211,14 @@ pub fn run_compiler_args(args: &[String]) -> i32 {
         }
     };
 
-    eprintln!(
-        "note: Rust compiler pipeline not yet implemented; \
-please use the SML binary for actual compilation"
-    );
-    eprintln!("(would compile: {})", project);
-    1
+    let urp_path = std::path::Path::new(&project);
+    match ur::compiler::compile(urp_path, &mut settings) {
+        Ok(_exe) => 0,
+        Err(e) => {
+            eprintln!("{}", e);
+            1
+        }
+    }
 }
 
 fn main() {

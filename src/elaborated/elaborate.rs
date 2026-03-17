@@ -672,11 +672,14 @@ pub fn elab_con(
             let (c1e, k1) = elab_con(ctx, env, c1);
             let (c2e, k2) = elab_con(ctx, env, c2);
             let (bodye, bodyk) = elab_con(ctx, env, body);
-            // c1 and c2 should be rows
-            let ku = fresh_kunif(span.clone(), "_");
-            let krow = Located::new(elab::Kind::Record(Box::new(ku)), span.clone());
-            check_kind(ctx, env, &c1.span, &c1e, &k1, &krow);
-            check_kind(ctx, env, &c2.span, &c2e, &k2, &krow);
+            // c1 and c2 should each be rows; disjointness is about key sets
+            // so their element kinds may differ independently.
+            let ku1 = fresh_kunif(span.clone(), "_");
+            let krow1 = Located::new(elab::Kind::Record(Box::new(ku1)), span.clone());
+            check_kind(ctx, env, &c1.span, &c1e, &k1, &krow1);
+            let ku2 = fresh_kunif(span.clone(), "_");
+            let krow2 = Located::new(elab::Kind::Record(Box::new(ku2)), span.clone());
+            check_kind(ctx, env, &c2.span, &c2e, &k2, &krow2);
             let result = Located::new(
                 elab::Constructor::TDisjoint(Box::new(c1e), Box::new(c2e), Box::new(bodye)),
                 span,

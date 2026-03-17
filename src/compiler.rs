@@ -58,6 +58,9 @@ pub struct Job {
     /// Directives seen during parse (e.g. "path", "html5"). Used so tests can assert
     /// that settings-only and no-op directive arms were taken (kills delete-match-arm mutants).
     pub seen_directives: Vec<String>,
+    /// Path to the Basis library source directory (e.g. `lib/ur`). When set,
+    /// `basis.urs` is loaded from this directory to provide the Basis signature.
+    pub basis_lib_dir: Option<std::path::PathBuf>,
 }
 
 impl Default for Job {
@@ -101,6 +104,7 @@ impl Default for Job {
             min_heap: 0,
             mime_types: None,
             seen_directives: vec![],
+            basis_lib_dir: None,
         }
     }
 }
@@ -135,16 +139,36 @@ pub fn parse_sources(job: &Job, errors: &mut ErrorReporter) -> Option<crate::sou
 
     let mut decls: source::File = Vec::new();
 
-    // Always prepend a minimal synthetic Basis FFI structure so that primitive
-    // types (int, float, string, char, …) resolve to Basis.int etc. during
-    // elaboration.  A Flattening::Ffi module in corify returns Ffi(module, name)
-    // for any name lookup, so an empty signature suffices.
+    // Prepend the Basis FFI module.  When job.basis_lib_dir is set (boot mode),
+    // parse lib/ur/basis.urs to get the full Basis signature.  Otherwise use an
+    // empty signature (sufficient when Basis names are resolved via FFI pass-through).
     {
         let basis_span = Span {
             file: "<basis>".into(),
             ..Span::dummy()
         };
-        let sgn = Located::new(source::Sgn::Const(vec![]), basis_span.clone());
+        let sgis = if let Some(ref lib_dir) = job.basis_lib_dir {
+            let urs_path = lib_dir.join("basis.urs");
+            match std::fs::read_to_string(&urs_path) {
+                Ok(src) => {
+                    match crate::parse::parse_urs(&urs_path.to_string_lossy(), &src, errors) {
+                        Some(items) => items,
+                        None => return None, // parse errors already recorded
+                    }
+                }
+                Err(e) => {
+                    errors.report(CompileError::Plain(format!(
+                        "cannot read basis library {}: {}",
+                        urs_path.display(),
+                        e
+                    )));
+                    return None;
+                }
+            }
+        } else {
+            vec![]
+        };
+        let sgn = Located::new(source::Sgn::Const(sgis), basis_span.clone());
         decls.push(Located::new(
             source::Decl::FfiStr("Basis".into(), sgn, None),
             basis_span,
@@ -689,8 +713,37 @@ pub fn cc_and_link(c_source: &str, output: &Path, job: &Job, settings: &Settings
 pub fn compile(urp_path: &Path, settings: &mut Settings) -> CompileResult {
     let mut errors = ErrorReporter::new();
 
-    // Phase 1: parse project file
-    let job = parse_urp(urp_path)?;
+    // Phase 1: parse project file (append .urp if not already present)
+    let urp_path_buf;
+    let urp_path = if urp_path.extension().map_or(true, |e| e != "urp") {
+        urp_path_buf = urp_path.with_extension("urp");
+        urp_path_buf.as_path()
+    } else {
+        urp_path
+    };
+    let mut job = parse_urp(urp_path)?;
+
+    // In boot mode, locate lib/ur relative to the executable so that
+    // basis.urs is loaded from the source tree rather than an installed copy.
+    if settings.boot_linking && job.basis_lib_dir.is_none() {
+        if let Ok(exe) = std::env::current_exe() {
+            // exe is e.g. .../bin/urweb-rust or .../target/release/ur-compile
+            // Walk up until we find a directory that contains lib/ur/basis.urs.
+            let mut candidate = exe.parent().map(|p| p.to_path_buf());
+            job.basis_lib_dir = loop {
+                match candidate {
+                    None => break None,
+                    Some(ref dir) => {
+                        let lib_ur = dir.join("lib/ur");
+                        if lib_ur.join("basis.urs").exists() {
+                            break Some(lib_ur);
+                        }
+                        candidate = dir.parent().map(|p| p.to_path_buf());
+                    }
+                }
+            };
+        }
+    }
 
     // Apply job settings globally
     settings.set_url_prefix(&job.prefix);

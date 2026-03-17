@@ -183,30 +183,10 @@ pub enum Token {
     And,
     #[token("andalso", priority = 2)]
     Andalso,
-    #[token("andthen", priority = 2)]
-    Andthen,
-    #[token("as", priority = 2)]
-    As,
-    #[token("asc", priority = 2)]
-    Asc,
-    #[token("avg", priority = 2)]
-    Avg,
-    #[token("begin", priority = 2)]
-    Begin,
-    #[token("by", priority = 2)]
-    By,
-    #[token("cand", priority = 2)]
-    Cand,
-    #[token("cascade", priority = 2)]
-    Cascade,
     #[token("case", priority = 2)]
     Case,
-    #[token("check", priority = 2)]
-    Check,
     #[token("class", priority = 2)]
     Class,
-    #[token("coalesce", priority = 2)]
-    Coalesce,
     #[token("con", priority = 2)]
     Con,
     #[token("constraint", priority = 2)]
@@ -215,28 +195,12 @@ pub enum Token {
     Constraints,
     #[token("cookie", priority = 2)]
     Cookie,
-    #[token("count", priority = 2)]
-    Count,
-    #[token("cross", priority = 2)]
-    Cross,
-    #[token("current_timestamp", priority = 2)]
-    CurrentTimestamp,
     #[token("datatype", priority = 2)]
     Datatype,
-    #[token("delete", priority = 2)]
-    Delete,
-    #[token("desc", priority = 2)]
-    Desc,
-    #[token("distinct", priority = 2)]
-    Distinct,
-    #[token("distance", priority = 2)]
-    Distance,
     #[token("else", priority = 2)]
     Else,
     #[token("end", priority = 2)]
     End,
-    #[token("except", priority = 2)]
-    Except,
     #[token("export", priority = 2)]
     Export,
     #[token("false", priority = 2)]
@@ -245,120 +209,43 @@ pub enum Token {
     Ffi,
     #[token("fn", priority = 2)]
     Fn,
-    #[token("foreign", priority = 2)]
-    Foreign,
-    #[token("from", priority = 2)]
-    From,
-    #[token("full", priority = 2)]
-    Full,
     #[token("fun", priority = 2)]
     Fun,
     #[token("functor", priority = 2)]
     Functor,
-    #[token("group", priority = 2)]
-    Group,
-    #[token("having", priority = 2)]
-    Having,
     #[token("if", priority = 2)]
     If,
     #[token("in", priority = 2)]
     In,
     #[token("include", priority = 2)]
     Include,
-    #[token("index", priority = 2)]
-    Index,
-    #[token("inner", priority = 2)]
-    Inner,
-    #[token("insert", priority = 2)]
-    Insert,
-    #[token("intersect", priority = 2)]
-    Intersect,
-    #[token("into", priority = 2)]
-    Into,
-    #[token("is", priority = 2)]
-    Is,
-    #[token("join", priority = 2)]
-    Join,
-    #[token("key", priority = 2)]
-    Key,
-    #[token("left", priority = 2)]
-    Left,
+    // "join" is not a reserved keyword; lexes as Ident
     #[token("let", priority = 2)]
     Let,
-    #[token("like", priority = 2)]
-    Like,
-    #[token("limit", priority = 2)]
-    Limit,
-    #[token("ltype", priority = 2)]
-    Ltype,
     #[token("map", priority = 2)]
     Map,
-    #[token("max", priority = 2)]
-    Max,
-    #[token("min", priority = 2)]
-    Min,
-    #[token("no", priority = 2)]
-    No,
-    #[token("not", priority = 2)]
-    Not,
-    #[token("null", priority = 2)]
-    Null,
     #[token("of", priority = 2)]
     Of,
-    #[token("offset", priority = 2)]
-    Offset,
-    #[token("on", priority = 2)]
-    On,
     #[token("open", priority = 2)]
     Open,
-    #[token("or", priority = 2)]
-    Or,
-    #[token("order", priority = 2)]
-    Order,
     #[token("orelse", priority = 2)]
     Orelse,
-    #[token("outer", priority = 2)]
-    Outer,
-    #[token("over", priority = 2)]
-    Over,
-    #[token("partition", priority = 2)]
-    Partition,
     #[token("policy", priority = 2)]
     Policy,
-    #[token("primary", priority = 2)]
-    Primary,
-    #[token("random", priority = 2)]
-    Random,
-    #[token("rank", priority = 2)]
-    Rank,
     #[token("rec", priority = 2)]
     Rec,
-    #[token("references", priority = 2)]
-    References,
-    #[token("restrict", priority = 2)]
-    Restrict,
-    #[token("right", priority = 2)]
-    Right,
-    #[token("select", priority = 2)]
-    Select,
     #[token("sequence", priority = 2)]
     Sequence,
-    #[token("set", priority = 2)]
-    Set,
     #[token("sig", priority = 2)]
     Sig,
     #[token("signature", priority = 2)]
     Signature,
-    #[token("sql", priority = 2)]
-    Sql,
     #[token("struct", priority = 2)]
     Struct,
     #[token("structure", priority = 2)]
     Structure,
     #[token("style", priority = 2)]
     Style,
-    #[token("sum", priority = 2)]
-    Sum,
     #[token("table", priority = 2)]
     Table,
     #[token("task", priority = 2)]
@@ -369,16 +256,8 @@ pub enum Token {
     True,
     #[token("type", priority = 2)]
     Type,
-    #[token("union", priority = 2)]
-    Union,
-    #[token("unique", priority = 2)]
-    Unique,
-    #[token("update", priority = 2)]
-    Update,
     #[token("val", priority = 2)]
     Val,
-    #[token("values", priority = 2)]
-    Values,
     #[token("view", priority = 2)]
     View,
     #[token("where", priority = 2)]
@@ -388,9 +267,13 @@ pub enum Token {
     #[token("Name", priority = 3)]
     Name,
 
-    // `o` is the function-composition operator; priority 3 to shadow Ident.
-    #[token("o", priority = 3)]
-    Compose,
+    // `Type` is the kind of types; must be priority 3 to shadow UpperIdent.
+    #[token("Type", priority = 3)]
+    KindType,
+
+    // `Unit` is the kind of unit/constraints; must be priority 3 to shadow UpperIdent.
+    #[token("Unit", priority = 3)]
+    KindUnit,
 
     // -----------------------------------------------------------------------
     // Identifiers — priority 1 (lower than keywords)

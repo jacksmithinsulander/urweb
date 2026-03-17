@@ -118,7 +118,9 @@ fn looks_like_directive(line: &str) -> bool {
 // ---------------------------------------------------------------------------
 
 fn resolve_source(dir: &Path, name: &str) -> String {
-    // Source names may contain $VARIABLE prefixes; we do a best-effort join.
+    // Source names in .urp files may be written with or without the .ur extension.
+    // Strip it here so that parse_sources can append .ur/.urs uniformly.
+    let name = name.strip_suffix(".ur").unwrap_or(name);
     let p = if name.starts_with('/') {
         PathBuf::from(name)
     } else {

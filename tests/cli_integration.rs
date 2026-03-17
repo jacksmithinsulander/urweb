@@ -119,14 +119,19 @@ fn cli_build_with_toml_does_not_say_not_found() {
     let out = ur().arg("build").output().unwrap();
     std::env::set_current_dir(&cwd).unwrap();
     let stderr = String::from_utf8_lossy(&out.stderr);
+    // The compiler was invoked — it should not say the binary is missing.
     assert!(
-        !stderr.contains("not found"),
-        "with ur.toml present, stderr must not say 'not found': {}",
+        !stderr.contains("ur-compile: command not found")
+            && !stderr.contains("ur-compile not found"),
+        "with ur.toml present, ur-compile must be found: {}",
         stderr
     );
-    // Catches build_project -> 1 mutant: mutant returns 1 immediately, never reaches run_compiler_args
+    // Catches build_project -> 1 mutant: mutant returns 1 immediately, never reaches run_compiler_args.
+    // The real compiler now runs and fails at C compilation (urweb.h not in test env).
     assert!(
-        stderr.contains("would compile"),
+        stderr.contains("C compilation")
+            || stderr.contains("Elaboration")
+            || stderr.contains("Parse"),
         "build must reach compiler (catches build_project -> 1 mutant): {}",
         stderr
     );

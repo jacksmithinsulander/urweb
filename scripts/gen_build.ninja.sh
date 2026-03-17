@@ -40,7 +40,7 @@ GENEOF
 
 # Emit variables (single-quote in the heredoc prevents expansion; we need the values)
 echo "srcdir = $srcdir"
-echo "builddir = $builddir"
+echo "builddir = ."
 echo "prefix = $prefix"
 echo "BIN = $BIN"
 echo "LIB = $LIB"

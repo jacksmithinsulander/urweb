@@ -29,106 +29,48 @@ extern {
         // Keywords
         "and"       => crate::parse::lexical_analyzer::Token::And,
         "andalso"   => crate::parse::lexical_analyzer::Token::Andalso,
-        "andthen"   => crate::parse::lexical_analyzer::Token::Andthen,
-        "as"        => crate::parse::lexical_analyzer::Token::As,
-        "asc"       => crate::parse::lexical_analyzer::Token::Asc,
-        "avg"       => crate::parse::lexical_analyzer::Token::Avg,
-        "begin"     => crate::parse::lexical_analyzer::Token::Begin,
-        "by"        => crate::parse::lexical_analyzer::Token::By,
-        "cand"      => crate::parse::lexical_analyzer::Token::Cand,
-        "cascade"   => crate::parse::lexical_analyzer::Token::Cascade,
         "case"      => crate::parse::lexical_analyzer::Token::Case,
-        "check"     => crate::parse::lexical_analyzer::Token::Check,
         "class"     => crate::parse::lexical_analyzer::Token::Class,
-        "coalesce"  => crate::parse::lexical_analyzer::Token::Coalesce,
         "con"       => crate::parse::lexical_analyzer::Token::Con,
         "constraint"  => crate::parse::lexical_analyzer::Token::Constraint,
         "constraints" => crate::parse::lexical_analyzer::Token::Constraints,
         "cookie"    => crate::parse::lexical_analyzer::Token::Cookie,
-        "count"     => crate::parse::lexical_analyzer::Token::Count,
-        "cross"     => crate::parse::lexical_analyzer::Token::Cross,
-        "current_timestamp" => crate::parse::lexical_analyzer::Token::CurrentTimestamp,
         "datatype"  => crate::parse::lexical_analyzer::Token::Datatype,
-        "delete"    => crate::parse::lexical_analyzer::Token::Delete,
-        "desc"      => crate::parse::lexical_analyzer::Token::Desc,
-        "distinct"  => crate::parse::lexical_analyzer::Token::Distinct,
-        "distance"  => crate::parse::lexical_analyzer::Token::Distance,
         "else"      => crate::parse::lexical_analyzer::Token::Else,
         "end"       => crate::parse::lexical_analyzer::Token::End,
-        "except"    => crate::parse::lexical_analyzer::Token::Except,
         "export"    => crate::parse::lexical_analyzer::Token::Export,
         "false"     => crate::parse::lexical_analyzer::Token::False,
         "ffi"       => crate::parse::lexical_analyzer::Token::Ffi,
         "fn"        => crate::parse::lexical_analyzer::Token::Fn,
-        "foreign"   => crate::parse::lexical_analyzer::Token::Foreign,
-        "from"      => crate::parse::lexical_analyzer::Token::From,
-        "full"      => crate::parse::lexical_analyzer::Token::Full,
         "fun"       => crate::parse::lexical_analyzer::Token::Fun,
         "functor"   => crate::parse::lexical_analyzer::Token::Functor,
-        "group"     => crate::parse::lexical_analyzer::Token::Group,
-        "having"    => crate::parse::lexical_analyzer::Token::Having,
         "if"        => crate::parse::lexical_analyzer::Token::If,
         "in"        => crate::parse::lexical_analyzer::Token::In,
         "include"   => crate::parse::lexical_analyzer::Token::Include,
-        "index"     => crate::parse::lexical_analyzer::Token::Index,
-        "inner"     => crate::parse::lexical_analyzer::Token::Inner,
-        "insert"    => crate::parse::lexical_analyzer::Token::Insert,
-        "intersect" => crate::parse::lexical_analyzer::Token::Intersect,
-        "into"      => crate::parse::lexical_analyzer::Token::Into,
-        "is"        => crate::parse::lexical_analyzer::Token::Is,
-        "join"      => crate::parse::lexical_analyzer::Token::Join,
-        "key"       => crate::parse::lexical_analyzer::Token::Key,
-        "left"      => crate::parse::lexical_analyzer::Token::Left,
         "let"       => crate::parse::lexical_analyzer::Token::Let,
-        "like"      => crate::parse::lexical_analyzer::Token::Like,
-        "limit"     => crate::parse::lexical_analyzer::Token::Limit,
-        "ltype"     => crate::parse::lexical_analyzer::Token::Ltype,
         "map"       => crate::parse::lexical_analyzer::Token::Map,
-        "max"       => crate::parse::lexical_analyzer::Token::Max,
-        "min"       => crate::parse::lexical_analyzer::Token::Min,
-        "no"        => crate::parse::lexical_analyzer::Token::No,
-        "not"       => crate::parse::lexical_analyzer::Token::Not,
-        "null"      => crate::parse::lexical_analyzer::Token::Null,
         "of"        => crate::parse::lexical_analyzer::Token::Of,
-        "offset"    => crate::parse::lexical_analyzer::Token::Offset,
-        "on"        => crate::parse::lexical_analyzer::Token::On,
         "open"      => crate::parse::lexical_analyzer::Token::Open,
-        "or"        => crate::parse::lexical_analyzer::Token::Or,
-        "order"     => crate::parse::lexical_analyzer::Token::Order,
         "orelse"    => crate::parse::lexical_analyzer::Token::Orelse,
-        "outer"     => crate::parse::lexical_analyzer::Token::Outer,
-        "over"      => crate::parse::lexical_analyzer::Token::Over,
-        "partition" => crate::parse::lexical_analyzer::Token::Partition,
         "policy"    => crate::parse::lexical_analyzer::Token::Policy,
-        "primary"   => crate::parse::lexical_analyzer::Token::Primary,
-        "random"    => crate::parse::lexical_analyzer::Token::Random,
-        "rank"      => crate::parse::lexical_analyzer::Token::Rank,
         "rec"       => crate::parse::lexical_analyzer::Token::Rec,
-        "references" => crate::parse::lexical_analyzer::Token::References,
-        "restrict"  => crate::parse::lexical_analyzer::Token::Restrict,
-        "right"     => crate::parse::lexical_analyzer::Token::Right,
-        "select"    => crate::parse::lexical_analyzer::Token::Select,
         "sequence"  => crate::parse::lexical_analyzer::Token::Sequence,
-        "set"       => crate::parse::lexical_analyzer::Token::Set,
         "sig"       => crate::parse::lexical_analyzer::Token::Sig,
         "signature" => crate::parse::lexical_analyzer::Token::Signature,
-        "sql"       => crate::parse::lexical_analyzer::Token::Sql,
         "struct"    => crate::parse::lexical_analyzer::Token::Struct,
         "structure" => crate::parse::lexical_analyzer::Token::Structure,
         "style"     => crate::parse::lexical_analyzer::Token::Style,
-        "sum"       => crate::parse::lexical_analyzer::Token::Sum,
         "table"     => crate::parse::lexical_analyzer::Token::Table,
         "task"      => crate::parse::lexical_analyzer::Token::Task,
         "then"      => crate::parse::lexical_analyzer::Token::Then,
         "true"      => crate::parse::lexical_analyzer::Token::True,
         "type"      => crate::parse::lexical_analyzer::Token::Type,  // ltype in SML grammar
-        "union"     => crate::parse::lexical_analyzer::Token::Union,
-        "unique"    => crate::parse::lexical_analyzer::Token::Unique,
-        "update"    => crate::parse::lexical_analyzer::Token::Update,
         "val"       => crate::parse::lexical_analyzer::Token::Val,
-        "values"    => crate::parse::lexical_analyzer::Token::Values,
         "view"      => crate::parse::lexical_analyzer::Token::View,
         "where"     => crate::parse::lexical_analyzer::Token::Where,
+        "Name"      => crate::parse::lexical_analyzer::Token::Name,
+        "Type"      => crate::parse::lexical_analyzer::Token::KindType,
+        "Unit"      => crate::parse::lexical_analyzer::Token::KindUnit,
 
         // Operators & punctuation
         "("   => crate::parse::lexical_analyzer::Token::Lparen,
@@ -175,7 +117,6 @@ extern {
         "/"   => crate::parse::lexical_analyzer::Token::Divide,
         "%"   => crate::parse::lexical_analyzer::Token::Mod,
         "@"   => crate::parse::lexical_analyzer::Token::At,
-        "o"   => crate::parse::lexical_analyzer::Token::Compose,
         "|>"  => crate::parse::lexical_analyzer::Token::Fwdapp,
         "<|"  => crate::parse::lexical_analyzer::Token::Revapp,
 
@@ -375,6 +316,8 @@ SgnItemNode: SgnItem = {
     "type" <name:"IDENT"> "=" <c:Con> => SgnItem::Con(name, None, c),
     "con" <name:"IDENT"> "::" <k:Kind> => SgnItem::ConAbs(name, Box::new(k)),
     "con" <name:"IDENT"> "::" <k:Kind> "=" <c:Con> => SgnItem::Con(name, Some(Box::new(k)), c),
+    // con alias without explicit kind: `con foo = T`
+    "con" <name:"IDENT"> "=" <c:Con> => SgnItem::Con(name, None, c),
     "val" <name:"IDENT"> ":" <c:Con> => SgnItem::Val(name, c),
     "datatype" <dts:DatatypeDecls> => SgnItem::Datatype(dts),
     "structure" <name:"UIDENT"> ":" <s:Sgn> => SgnItem::Str(name, s),
@@ -406,6 +349,16 @@ Kind: LocKind = {
 
 KindNode: Kind = {
     <k1:KindApp> "->" <k2:Kind> => Kind::Arrow(Box::new(k1), Box::new(k2)),
+    // Kind product: `K1 * K2` (e.g. `{Type} * {Type}`)
+    // Right-associative; flatten nested tuples.
+    <k1:KindApp> "*" <k2:Kind> => {
+        let mut parts = vec![k1];
+        match k2.node {
+            Kind::Tuple(mut rest) => parts.append(&mut rest),
+            other => parts.push(Located::new(other, k2.span)),
+        }
+        Kind::Tuple(parts)
+    },
     <k:KindApp>                 => k.node,
 };
 
@@ -415,6 +368,10 @@ KindApp: LocKind = {
 
 KindAtom: Kind = {
     "*"     => Kind::Type,
+    // Ur/Web uses uppercase `Type` for the kind of types
+    "Type"  => Kind::Type,
+    // Ur/Web uses uppercase `Unit` for the kind of unit/constraints
+    "Unit"  => Kind::Unit,
     "#" <k:KindAtom> => Kind::Record(Box::new(Located::dummy(k))),
     // `{k}` = row kind (same as # k)
     "{" <k:Kind> "}" => Kind::Record(Box::new(k)),
@@ -423,8 +380,10 @@ KindAtom: Kind = {
     "(" <k:Kind> ")" => k.node,
     "_"     => Kind::Wild,
     <name:"IDENT"> => Kind::Var(name),
-    // "Name" is a UIDENT that maps to the Name kind; other UIDENTs become kind vars
-    <name:"UIDENT"> => if name == "Name" { Kind::Name } else { Kind::Var(name) },
+    // "Name" is a keyword token (priority 3 over UIDENT); handle it explicitly
+    "Name" => Kind::Name,
+    // Other UIDENTs become kind vars
+    <name:"UIDENT"> => Kind::Var(name),
 };
 
 KindAnnot: LocKind = {
@@ -462,31 +421,55 @@ ConNode: Con = {
     // constructor-level function type (implicit) — kind annotation required
     // to avoid ambiguity with "[" FieldName "]" row literal
     "[" <name:"IDENT"> "::" <k:Kind> "]" "->" <c:Con> =>
-        Con::TCFun(Explicitness::Implicit, name,
-            Box::new(k),
-            Box::new(c)),
+        Con::TCFun(Explicitness::Implicit, name, Box::new(k), Box::new(c)),
+    // Same with ::: (Tcolonwild — "implicit, wildcard-named" in SML grammar)
+    "[" <name:"IDENT"> ":::" <k:Kind> "]" "->" <c:Con> =>
+        Con::TCFun(Explicitness::Implicit, name, Box::new(k), Box::new(c)),
+
 
     // disjointness constraint
     "[" <c1:Con> "~" <c2:Con> "]" "=>" <c3:Con> =>
         Con::TDisjoint(Box::new(c1), Box::new(c2), Box::new(c3)),
 
-    // empty record type: `{}`  →  TRecord (empty row)
-    "{" "}" => Con::TRecord(Box::new(Located::dummy(Con::Record(vec![])))),
-    // non-empty record type: `{c}`
-    "{" <c:Con> "}" => Con::TRecord(Box::new(c)),
 
-    // kind abstraction
-    "fn" "[" <name:"IDENT"> "]" "=>" <c:Con> =>
-        Con::KAbs(name, Box::new(c)),
-    "fn" "[" <name:"IDENT"> "::" <k:Kind> "]" "=>" <c:Con> =>
-        Con::KAbs(name, Box::new(c)),
-    "fn" <name:"IDENT"> <k:KindAnnot?> "=>" <c:Con> =>
-        Con::Abs(name, k.map(Box::new), Box::new(c)),
+    // kind abstraction and constructor lambdas; ConFnRest handles remaining args
+    "fn" "[" <name:"IDENT"> "]" <rest:ConFnRest> =>
+        Con::KAbs(name, rest),
+    "fn" "[" <name:"IDENT"> "::" <k:Kind> "]" <rest:ConFnRest> =>
+        Con::KAbs(name, rest),
+    "fn" <name:"IDENT"> <k:KindAnnot?> <rest:ConFnRest> =>
+        Con::Abs(name, k.map(Box::new), rest),
+    // wildcard constructor lambda: `fn _ => c`
+    "fn" "_" <k:KindAnnot?> <rest:ConFnRest> =>
+        Con::Abs("_".into(), k.map(Box::new), rest),
+    // parenthesized kind-annotated constructor lambda: `fn (nm :: K) rest`
+    "fn" "(" <name:"IDENT"> "::" <k:Kind> ")" <rest:ConFnRest> =>
+        Con::Abs(name, Some(Box::new(k)), rest),
 
     // concatenation
     <c1:AppCon> "++" <c2:Con> => Con::Concat(Box::new(c1), Box::new(c2)),
 
+    // kind-annotated wildcard: `_ :: K`  (e.g. in `fn x : (_ :: Type) =>`)
+    "_" "::" <k:Kind> => Con::Wild(Box::new(k)),
+
     <c:AppCon> => c.node,
+};
+
+// ConFnRest: the tail of a constructor lambda, after the first binder.
+// Either `=> Con` (done) or another binder followed by more.
+// Returns LocCon because Con::KAbs/Abs take Box<LocCon>.
+ConFnRest: Box<LocCon> = {
+    "=>" <c:Con> => Box::new(c),
+    <l:@L> "[" <name:"IDENT"> "]" <rest:ConFnRest> <r:@R> =>
+        Box::new(Located::new(Con::KAbs(name, rest), Span::from_offsets("", l, r, &[]))),
+    <l:@L> "[" <name:"IDENT"> "::" <k:Kind> "]" <rest:ConFnRest> <r:@R> =>
+        Box::new(Located::new(Con::KAbs(name, rest), Span::from_offsets("", l, r, &[]))),
+    <l:@L> <name:"IDENT"> <k:KindAnnot?> <rest:ConFnRest> <r:@R> =>
+        Box::new(Located::new(Con::Abs(name, k.map(Box::new), rest), Span::from_offsets("", l, r, &[]))),
+    <l:@L> "_" <k:KindAnnot?> <rest:ConFnRest> <r:@R> =>
+        Box::new(Located::new(Con::Abs("_".into(), k.map(Box::new), rest), Span::from_offsets("", l, r, &[]))),
+    <l:@L> "(" <name:"IDENT"> "::" <k:Kind> ")" <rest:ConFnRest> <r:@R> =>
+        Box::new(Located::new(Con::Abs(name, Some(Box::new(k)), rest), Span::from_offsets("", l, r, &[]))),
 };
 
 AppCon: LocCon = {
@@ -523,6 +506,20 @@ AtomCon: LocCon = {
 AtomConNode: Con = {
     "()" => Con::Unit,
     "_"  => Con::Wild(Box::new(Located::dummy(Kind::Wild))),
+    // `$C` — record type from row constructor (syntactic sugar for TRecord(C))
+    "$" <c:AtomCon> => Con::TRecord(Box::new(c)),
+    // Record type forms — must be at AtomCon level so they can appear left of `->`
+    // empty record type: `{}`  →  TRecord (empty row)
+    "{" "}" => Con::TRecord(Box::new(Located::dummy(Con::Record(vec![])))),
+    // named record type: `{nm : T, ...}` — sugar for `$[nm = T, ...]`
+    "{" <fields:TypeRecordFields> "}" => {
+        let row: Vec<(LocCon, LocCon)> = fields.into_iter()
+            .map(|(nm, typ)| (Located::dummy(Con::Name(nm)), typ))
+            .collect();
+        Con::TRecord(Box::new(Located::dummy(Con::Record(row))))
+    },
+    // record type from a row expression: `{C}`
+    "{" <c:Con> "}" => Con::TRecord(Box::new(c)),
     "#" <name:"IDENT"> => Con::Name(name),
     "#" <name:"UIDENT"> => Con::Name(name),
     "map" => Con::Map,
@@ -547,6 +544,20 @@ ConList2: Vec<LocCon> = {
 ConFieldList: Vec<(LocCon, LocCon)> = {
     <f:ConField> => vec![f],
     <fs:ConFieldList> "," <f:ConField> => { let mut v = fs; v.push(f); v },
+};
+
+/// Named record type fields: `nm : T, ...` (uses `:` not `=`)
+/// Used in `{nm : T}` record-type syntax.
+TypeRecordFields: Vec<(String, LocCon)> = {
+    <nm:TypeRecordFieldName> ":" <c:Con> => vec![(nm, c)],
+    <rest:TypeRecordFields> "," <nm:TypeRecordFieldName> ":" <c:Con> => {
+        let mut v = rest; v.push((nm, c)); v
+    },
+};
+
+TypeRecordFieldName: String = {
+    <name:"IDENT">  => name,
+    <name:"UIDENT"> => name,
 };
 
 ConField: (LocCon, LocCon) = {

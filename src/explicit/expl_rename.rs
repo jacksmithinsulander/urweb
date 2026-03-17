@@ -43,17 +43,14 @@ impl St {
 // Rename helpers
 // ---------------------------------------------------------------------------
 
-
 fn rename_con(st: &St, lc: expl::LocatedConstructor) -> expl::LocatedConstructor {
     let loc = lc.span.clone();
     let mk = |node| Located::new(node, loc.clone());
     match lc.node {
-        expl::Constructor::TFun(c1, c2) => {
-            mk(expl::Constructor::TFun(
-                Box::new(rename_con(st, *c1)),
-                Box::new(rename_con(st, *c2)),
-            ))
-        }
+        expl::Constructor::TFun(c1, c2) => mk(expl::Constructor::TFun(
+            Box::new(rename_con(st, *c1)),
+            Box::new(rename_con(st, *c2)),
+        )),
         expl::Constructor::TCFun(x, k, c) => {
             mk(expl::Constructor::TCFun(x, k, Box::new(rename_con(st, *c))))
         }
@@ -69,12 +66,10 @@ fn rename_con(st: &St, lc: expl::LocatedConstructor) -> expl::LocatedConstructor
             None => mk(expl::Constructor::ModProj(n, ms, x)),
             Some(n2) => mk(expl::Constructor::ModProj(n2, ms, x)),
         },
-        expl::Constructor::App(c1, c2) => {
-            mk(expl::Constructor::App(
-                Box::new(rename_con(st, *c1)),
-                Box::new(rename_con(st, *c2)),
-            ))
-        }
+        expl::Constructor::App(c1, c2) => mk(expl::Constructor::App(
+            Box::new(rename_con(st, *c1)),
+            Box::new(rename_con(st, *c2)),
+        )),
         expl::Constructor::Abs(x, k, c) => {
             mk(expl::Constructor::Abs(x, k, Box::new(rename_con(st, *c))))
         }
@@ -95,19 +90,15 @@ fn rename_con(st: &St, lc: expl::LocatedConstructor) -> expl::LocatedConstructor
                 .collect();
             mk(expl::Constructor::Record(k, xcs2))
         }
-        expl::Constructor::Concat(c1, c2) => {
-            mk(expl::Constructor::Concat(
-                Box::new(rename_con(st, *c1)),
-                Box::new(rename_con(st, *c2)),
-            ))
-        }
+        expl::Constructor::Concat(c1, c2) => mk(expl::Constructor::Concat(
+            Box::new(rename_con(st, *c1)),
+            Box::new(rename_con(st, *c2)),
+        )),
         expl::Constructor::Map(k1, k2) => mk(expl::Constructor::Map(k1, k2)),
         expl::Constructor::Unit => mk(expl::Constructor::Unit),
-        expl::Constructor::Tuple(cs) => {
-            mk(expl::Constructor::Tuple(
-                cs.into_iter().map(|c| rename_con(st, c)).collect(),
-            ))
-        }
+        expl::Constructor::Tuple(cs) => mk(expl::Constructor::Tuple(
+            cs.into_iter().map(|c| rename_con(st, c)).collect(),
+        )),
         expl::Constructor::Proj(c, i) => {
             mk(expl::Constructor::Proj(Box::new(rename_con(st, *c)), i))
         }
@@ -178,12 +169,8 @@ fn rename_exp(st: &St, le: expl::LocatedExpression) -> expl::LocatedExpression {
         expl::Expression::CAbs(x, k, e) => {
             mk(expl::Expression::CAbs(x, k, Box::new(rename_exp(st, *e))))
         }
-        expl::Expression::KAbs(x, e) => {
-            mk(expl::Expression::KAbs(x, Box::new(rename_exp(st, *e))))
-        }
-        expl::Expression::KApp(e, k) => {
-            mk(expl::Expression::KApp(Box::new(rename_exp(st, *e)), k))
-        }
+        expl::Expression::KAbs(x, e) => mk(expl::Expression::KAbs(x, Box::new(rename_exp(st, *e)))),
+        expl::Expression::KApp(e, k) => mk(expl::Expression::KApp(Box::new(rename_exp(st, *e)), k)),
         expl::Expression::Record(xecs) => mk(expl::Expression::Record(
             xecs.into_iter()
                 .map(|(x, e, c)| (rename_con(st, x), rename_exp(st, e), rename_con(st, c)))
@@ -228,9 +215,7 @@ fn rename_exp(st: &St, le: expl::LocatedExpression) -> expl::LocatedExpression {
                 result: rename_con(st, meta.result),
             },
         )),
-        expl::Expression::Write(e) => {
-            mk(expl::Expression::Write(Box::new(rename_exp(st, *e))))
-        }
+        expl::Expression::Write(e) => mk(expl::Expression::Write(Box::new(rename_exp(st, *e)))),
         expl::Expression::Let(x, c, e1, e2) => mk(expl::Expression::Let(
             x,
             rename_con(st, c),
@@ -282,9 +267,7 @@ fn rename_sgn_item(st: &St, lsi: expl::LocatedSignatureItem) -> expl::LocatedSig
                 .map(|(x, n, co)| (x, n, co.map(|c| rename_con(st, c))))
                 .collect(),
         }),
-        expl::SignatureItem::Val(x, n, c) => {
-            mk(expl::SignatureItem::Val(x, n, rename_con(st, c)))
-        }
+        expl::SignatureItem::Val(x, n, c) => mk(expl::SignatureItem::Val(x, n, rename_con(st, c))),
         expl::SignatureItem::Signature(x, n, sg) => {
             mk(expl::SignatureItem::Signature(x, n, rename_sgn(st, sg)))
         }
@@ -365,9 +348,12 @@ fn rename_decl(st: &St, ld: expl::LocatedDeclaration) -> expl::LocatedDeclaratio
                 .map(|(x, n, co)| (x, n, co.map(|c| rename_con(st, c))))
                 .collect(),
         }),
-        expl::Declaration::Val(x, n, c, e) => {
-            mk(expl::Declaration::Val(x, n, rename_con(st, c), rename_exp(st, e)))
-        }
+        expl::Declaration::Val(x, n, c, e) => mk(expl::Declaration::Val(
+            x,
+            n,
+            rename_con(st, c),
+            rename_exp(st, e),
+        )),
         expl::Declaration::ValRec(vis) => mk(expl::Declaration::ValRec(
             vis.into_iter()
                 .map(|(x, n, c, e)| (x, n, rename_con(st, c), rename_exp(st, e)))
@@ -386,8 +372,16 @@ fn rename_decl(st: &St, ld: expl::LocatedDeclaration) -> expl::LocatedDeclaratio
             mk(expl::Declaration::FfiStr(x, n, rename_sgn(st, sg)))
         }
         expl::Declaration::Export(n, sg, str) => match st.lookup(n) {
-            None => mk(expl::Declaration::Export(n, rename_sgn(st, sg), rename_str(st, str))),
-            Some(n2) => mk(expl::Declaration::Export(n2, rename_sgn(st, sg), rename_str(st, str))),
+            None => mk(expl::Declaration::Export(
+                n,
+                rename_sgn(st, sg),
+                rename_str(st, str),
+            )),
+            Some(n2) => mk(expl::Declaration::Export(
+                n2,
+                rename_sgn(st, sg),
+                rename_str(st, str),
+            )),
         },
         expl::Declaration::Table {
             mod_id,
@@ -409,20 +403,26 @@ fn rename_decl(st: &St, ld: expl::LocatedDeclaration) -> expl::LocatedDeclaratio
             unique_con: rename_con(st, unique_con),
         }),
         expl::Declaration::Sequence(a, b, c) => mk(expl::Declaration::Sequence(a, b, c)),
-        expl::Declaration::View(n, x, n2, e, c) => {
-            mk(expl::Declaration::View(n, x, n2, rename_exp(st, e), rename_con(st, c)))
-        }
-        expl::Declaration::Index(e1, e2) => {
-            mk(expl::Declaration::Index(rename_exp(st, e1), rename_exp(st, e2)))
-        }
+        expl::Declaration::View(n, x, n2, e, c) => mk(expl::Declaration::View(
+            n,
+            x,
+            n2,
+            rename_exp(st, e),
+            rename_con(st, c),
+        )),
+        expl::Declaration::Index(e1, e2) => mk(expl::Declaration::Index(
+            rename_exp(st, e1),
+            rename_exp(st, e2),
+        )),
         expl::Declaration::Database(s) => mk(expl::Declaration::Database(s)),
         expl::Declaration::Cookie(n, x, n2, c) => {
             mk(expl::Declaration::Cookie(n, x, n2, rename_con(st, c)))
         }
         expl::Declaration::Style(a, b, c) => mk(expl::Declaration::Style(a, b, c)),
-        expl::Declaration::Task(e1, e2) => {
-            mk(expl::Declaration::Task(rename_exp(st, e1), rename_exp(st, e2)))
-        }
+        expl::Declaration::Task(e1, e2) => mk(expl::Declaration::Task(
+            rename_exp(st, e1),
+            rename_exp(st, e2),
+        )),
         expl::Declaration::Policy(e) => mk(expl::Declaration::Policy(rename_exp(st, e))),
         expl::Declaration::OnError(n, xs, x) => match st.lookup(n) {
             None => mk(expl::Declaration::OnError(n, xs, x)),
@@ -498,7 +498,12 @@ fn dup_decl(
             let n2 = st.bind(counter, n);
             let c2 = rename_con(st, c);
             vec![
-                mk(expl::Declaration::Constructor(x.clone(), n, k.clone(), c2.clone())),
+                mk(expl::Declaration::Constructor(
+                    x.clone(),
+                    n,
+                    k.clone(),
+                    c2.clone(),
+                )),
                 mk(expl::Declaration::Constructor(
                     x,
                     n2,
@@ -519,7 +524,11 @@ fn dup_decl(
                         .constrs
                         .iter()
                         .map(|(x, n, co)| {
-                            (x.clone(), *n, co.as_ref().map(|c| rename_con(st, c.clone())))
+                            (
+                                x.clone(),
+                                *n,
+                                co.as_ref().map(|c| rename_con(st, c.clone())),
+                            )
                         })
                         .collect(),
                 })
@@ -590,7 +599,11 @@ fn dup_decl(
             let renamed_constrs: Vec<(String, usize, Option<expl::LocatedConstructor>)> = constrs
                 .iter()
                 .map(|(x, n, co)| {
-                    (x.clone(), *n, co.as_ref().map(|c| rename_con(st, c.clone())))
+                    (
+                        x.clone(),
+                        *n,
+                        co.as_ref().map(|c| rename_con(st, c.clone())),
+                    )
                 })
                 .collect();
             let orig_decl = mk(expl::Declaration::DatatypeImp {
@@ -660,10 +673,20 @@ fn dup_decl(
         }
         expl::Declaration::ValRec(vis) => {
             // Build the renamed original
-            let renamed_vis: Vec<(String, usize, expl::LocatedConstructor, expl::LocatedExpression)> = vis
+            let renamed_vis: Vec<(
+                String,
+                usize,
+                expl::LocatedConstructor,
+                expl::LocatedExpression,
+            )> = vis
                 .iter()
                 .map(|(x, n, c, e)| {
-                    (x.clone(), *n, rename_con(st, c.clone()), rename_exp(st, e.clone()))
+                    (
+                        x.clone(),
+                        *n,
+                        rename_con(st, c.clone()),
+                        rename_exp(st, e.clone()),
+                    )
                 })
                 .collect();
             let orig_decl = mk(expl::Declaration::ValRec(renamed_vis));
@@ -704,7 +727,12 @@ fn dup_decl(
             let sg2 = rename_sgn(st, sg);
             let str2 = rename_str(st, str);
             vec![
-                mk(expl::Declaration::Structure(x.clone(), n, sg2.clone(), str2)),
+                mk(expl::Declaration::Structure(
+                    x.clone(),
+                    n,
+                    sg2.clone(),
+                    str2,
+                )),
                 mk(expl::Declaration::Structure(
                     x,
                     n2,
@@ -795,7 +823,12 @@ fn dup_decl(
         expl::Declaration::Database(_) => vec![ld],
         expl::Declaration::Cookie(n, x, name_id, c) => {
             let name_id2 = st.bind(counter, name_id);
-            let orig = mk(expl::Declaration::Cookie(n, x.clone(), name_id, rename_con(st, c)));
+            let orig = mk(expl::Declaration::Cookie(
+                n,
+                x.clone(),
+                name_id,
+                rename_con(st, c),
+            ));
             let alias = mk(expl::Declaration::Val(
                 x,
                 name_id2,
@@ -884,8 +917,10 @@ pub fn rename(
             // any DStr in the output.
             let mut formal_name_munged = formal_name.to_string();
             loop {
-                let clashes = new_ds.iter().any(|d| matches!(&d.node,
-                    expl::Declaration::Structure(x, _, _, _) if x == &formal_name_munged));
+                let clashes = new_ds.iter().any(|d| {
+                    matches!(&d.node,
+                    expl::Declaration::Structure(x, _, _, _) if x == &formal_name_munged)
+                });
                 if clashes {
                     formal_name_munged = format!("?{}", formal_name_munged);
                 } else {

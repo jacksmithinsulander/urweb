@@ -31,9 +31,7 @@ fn run() -> Result<()> {
 
     // Build server capabilities
     let capabilities = ServerCapabilities {
-        text_document_sync: Some(TextDocumentSyncCapability::Kind(
-            TextDocumentSyncKind::FULL,
-        )),
+        text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)),
         ..Default::default()
     };
 
@@ -129,12 +127,12 @@ fn publish_diagnostics(connection: &Connection, uri: &Uri, text: &str) -> Result
         version: None,
     };
 
-    connection.sender.send(Message::Notification(
-        lsp_server::Notification::new(
+    connection
+        .sender
+        .send(Message::Notification(lsp_server::Notification::new(
             lsp_types::notification::PublishDiagnostics::METHOD.to_owned(),
             params,
-        ),
-    ))?;
+        )))?;
 
     Ok(())
 }
