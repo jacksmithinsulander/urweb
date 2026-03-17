@@ -325,7 +325,11 @@ SgnItemNode: SgnItem = {
     "include" <s:Sgn> => SgnItem::Include(s),
     "constraint" <c1:Con> "~" <c2:Con> => SgnItem::Constraint(c1, c2),
     // Class without kind: `class C`  →  default kind Type
-    "class" <name:"IDENT"> => SgnItem::ClassAbs(name, Box::new(Located::dummy(Kind::Type))),
+    // class C — default kind is Type -> Type (type class of one type argument)
+    "class" <name:"IDENT"> => SgnItem::ClassAbs(name, Box::new(Located::dummy(Kind::Arrow(
+        Box::new(Located::dummy(Kind::Type)),
+        Box::new(Located::dummy(Kind::Type)),
+    )))),
     "class" <name:"IDENT"> "::" <k:Kind> => SgnItem::ClassAbs(name, Box::new(k)),
     "class" <name:"IDENT"> "::" <k:Kind> "=" <c:Con> => SgnItem::Class(name, Box::new(k), c),
     "table" <name:"IDENT"> ":" <c:Con> =>
@@ -477,26 +481,31 @@ AppCon: LocCon = {
 };
 
 AppConInner: Con = {
-    <f:AppCon> <x:AtomCon> => Con::App(Box::new(f), Box::new(x)),
-    // Module-qualified access or tuple projection: handled at AppCon level
-    // to avoid shift/reduce conflict with ModPath in AtomCon.
-    // "." IDENT/UIDENT → module qualification (extend qualifier list)
-    // "." INT → tuple projection
-    // f: LocCon — use f.node to get the Con variant, no re-wrapping
-    <f:AppCon> "." <name:"IDENT"> => {
-        match f.node.clone() {
+    <f:AppCon> <x:DotCon> => Con::App(Box::new(f), Box::new(x)),
+    <c:DotCon> => c.node,
+};
+
+// DotCon: AtomCon with optional dot-suffix (projection or module qualification).
+// All dot-access lives here so dot binds tighter than application:
+//   `p.1`   → tuple projection (Con::Proj)
+//   `M.foo` → module-qualified var (Con::Var(["M"], "foo"))
+// This ensures `f p.1 p.2` parses as `App(App(f, Proj(p,1)), Proj(p,2))`.
+DotCon: LocCon = {
+    <c:AtomCon> => c,
+    <l:@L> <f:DotCon> "." <n:"INT"> <r:@R> =>
+        Located::new(Con::Proj(Box::new(f), n as usize), Span::from_offsets("", l, r, &[])),
+    <l:@L> <f:DotCon> "." <name:"IDENT"> <r:@R> => {
+        Located::new(match f.node.clone() {
             Con::Var(mut quals, last) => { quals.push(last); Con::Var(quals, name) }
             _ => Con::Var(vec![], name)
-        }
+        }, Span::from_offsets("", l, r, &[]))
     },
-    <f:AppCon> "." <name:"UIDENT"> => {
-        match f.node.clone() {
+    <l:@L> <f:DotCon> "." <name:"UIDENT"> <r:@R> => {
+        Located::new(match f.node.clone() {
             Con::Var(mut quals, last) => { quals.push(last); Con::Var(quals, name) }
             _ => Con::Var(vec![], name)
-        }
+        }, Span::from_offsets("", l, r, &[]))
     },
-    <f:AppCon> "." <n:"INT"> => Con::Proj(Box::new(f), n as usize),
-    <c:AtomCon> => c.node,
 };
 
 AtomCon: LocCon = {
@@ -563,8 +572,15 @@ TypeRecordFieldName: String = {
 ConField: (LocCon, LocCon) = {
     <name:AtomCon> "=" <c:Con> => (name, c),
     <name:AtomCon> => {
-        // Punned: [Foo] means [Foo = Foo]
-        (name.clone(), name)
+        // Uppercase identifier without value: [Body] → (Name("Body"), unit)
+        // Lowercase: punned [nm] = [nm = nm]
+        match &name.node {
+            Con::Var(ms, x) if ms.is_empty() && x.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) => {
+                let name_con = Located::dummy(Con::Name(x.clone()));
+                (name_con, Located::dummy(Con::Unit))
+            }
+            _ => (name.clone(), name)
+        }
     },
 };
 

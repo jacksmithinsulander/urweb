@@ -701,6 +701,16 @@ pub fn elab_con(
                 let kname = Located::new(elab::Kind::Name, span.clone());
                 check_kind(ctx, env, &nc.span, &nce, &nck, &kname);
                 let (vce, vck) = elab_con(ctx, env, vc);
+                // In Ur/Web, [nm] where nm :: Name is a shorthand for [nm = ()].
+                // When the value elaborates to kind Name (due to punning), treat
+                // it as a unit value and use {Unit} as the row element kind.
+                let (vce, vck) = if matches!(vck.node, elab::Kind::Name) {
+                    let kunit = Located::new(elab::Kind::Unit, span.clone());
+                    let unit_c = Located::new(elab::Constructor::Unit, span.clone());
+                    (unit_c, kunit)
+                } else {
+                    (vce, vck)
+                };
                 check_kind(ctx, env, &vc.span, &vce, &vck, &ku);
                 fields.push((nce, vce));
             }
@@ -874,6 +884,14 @@ fn elab_con_var(
                 return (c2, k2);
             }
             VarLookup::NotBound => {
+                // In Ur/Web, uppercase identifiers that are not in scope are
+                // treated as name literals (kind Name) — e.g. field labels like
+                // `Body`, `Form`, `Table` used in row contexts.
+                if x.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) {
+                    let kname = Located::new(elab::Kind::Name, span.clone());
+                    let c = Located::new(elab::Constructor::Name(x.to_string()), span.clone());
+                    return (c, kname);
+                }
                 ctx.error(span.clone(), format!("Unbound type constructor `{}`", x));
                 return (cerror(span.clone()), kerror(span.clone()));
             }
@@ -1671,7 +1689,15 @@ fn prim_con(ctx: &mut ElabCtx, env: &Env, prim: &Prim, span: &Span) -> elab::Loc
 }
 
 fn basis_named_con(env: &Env, span: &Span, name: &str) -> elab::LocatedConstructor {
-    // Try to find Basis.name
+    // After opening Basis, look up by name directly (returns Named(id)).
+    match env.lookup_c(name) {
+        VarLookup::Named(id, _) => {
+            return Located::new(elab::Constructor::Named(id), span.clone());
+        }
+        VarLookup::Rel(_, _) => {}
+        VarLookup::NotBound => {}
+    }
+    // Fallback: resolve via ModProj from the Basis structure.
     if let Some((str_id, _)) = env.lookup_str("Basis") {
         return Located::new(
             elab::Constructor::ModProj(*str_id, vec![], name.to_string()),
@@ -1868,6 +1894,28 @@ pub fn elab_exp(
         source::Exp::Record(xes, _spread) => elab_exp_record(ctx, env, denv, xes, &span),
 
         source::Exp::Field(e1, field_con) => {
+            // If this looks like a module-qualified variable `M.x` (where e1 is
+            // Var([], M) and M is a module in scope), treat it as module projection
+            // rather than record field access.
+            if let source::Exp::Var(ref ms, ref m, _) = e1.node {
+                if ms.is_empty() {
+                    if let source::Con::Name(ref fname) = field_con.node {
+                        // Build the full module path: [M, ...field components?]
+                        // Check if M is a module in scope
+                        if env.lookup_str(m).is_some() {
+                            let path: Vec<String> = vec![m.clone()];
+                            return elab_exp_var(ctx, env, &path, fname, &span);
+                        }
+                    }
+                } else if let source::Con::Name(ref fname) = field_con.node {
+                    // ms.x — also module projection when ms is non-empty
+                    if env.lookup_str(&ms[0]).is_some() {
+                        let mut path = ms.clone();
+                        path.push(m.clone());
+                        return elab_exp_var(ctx, env, &path, fname, &span);
+                    }
+                }
+            }
             let (e1e, e1t) = elab_exp(ctx, env, denv, e1);
             let (fce, fck) = elab_con(ctx, env, field_con);
             let kname = Located::new(elab::Kind::Name, span.clone());
@@ -3548,6 +3596,20 @@ pub fn elab_file(
         env = new_env;
         denv = new_denv;
         all_decls.extend(ds);
+
+        // After elaborating `FfiStr("Basis", ...)`, automatically open Basis
+        // so that `unit`, `transaction`, `return`, etc. are in scope without
+        // qualification — matching the SML `dopen env' {str = basis_n, ...}`.
+        if let crate::source::Decl::FfiStr(name, _, _) = &decl.node {
+            if name == "Basis" {
+                let basis_span = decl.span.clone();
+                let (open_ds, open_env, open_denv) =
+                    elab_open(&mut ctx, &env, &denv, &["Basis".to_string()], &basis_span);
+                env = open_env;
+                denv = open_denv;
+                all_decls.extend(open_ds);
+            }
+        }
     }
 
     // Report all errors
