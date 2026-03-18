@@ -20,7 +20,7 @@ use crate::elaborated::environment::{
 };
 use crate::elaborated::type_operations::{
     self as type_ops, cons_eq_simple, hnorm_con, lift_con_in_con, lift_kind_in_con,
-    lift_kind_in_kind, mlift_con_in_con, reduce_con, sub_con_in_con, sub_kind_in_con,
+    lift_kind_in_kind, mlift_con_in_con, occurs_cunif, reduce_con, sub_con_in_con, sub_kind_in_con,
     sub_kind_in_kind,
 };
 use crate::error_types::{ErrorReporter, Located, Span};
@@ -588,6 +588,26 @@ pub fn elab_con(
     env: &Env,
     c: &source::LocCon,
 ) -> (elab::LocatedConstructor, elab::LocatedKind) {
+    use std::cell::Cell;
+    thread_local! {
+        static ELAB_CON_DEPTH: Cell<usize> = Cell::new(0);
+    }
+    let d = ELAB_CON_DEPTH.with(|c| { let v = c.get(); c.set(v+1); v });
+    if d > 500 {
+        ELAB_CON_DEPTH.with(|c| c.set(0));
+        eprintln!("GUARD: elab_con depth exceeded 500!");
+        panic!("elab_con: recursion depth exceeded 500");
+    }
+    let result = elab_con_inner(ctx, env, c);
+    ELAB_CON_DEPTH.with(|c| c.set(d));
+    result
+}
+
+fn elab_con_inner(
+    ctx: &mut ElabCtx,
+    env: &Env,
+    c: &source::LocCon,
+) -> (elab::LocatedConstructor, elab::LocatedKind) {
     let span = c.span.clone();
     match &c.node {
         source::Con::Annot(c1, k) => {
@@ -912,7 +932,7 @@ fn elab_con_var(
             | elab::SignatureItem::ConAbs(_, id, k) => {
                 // Project with remaining path empty since we're done
                 let c = Located::new(
-                    elab::Constructor::ModProj(str_id, ms[..ms.len()].to_vec(), x.to_string()),
+                    elab::Constructor::ModProj(str_id, ms[1..].to_vec(), x.to_string()),
                     span.clone(),
                 );
                 let (c2, k2) = elab_con_head(ctx, env, c, k);
@@ -920,7 +940,7 @@ fn elab_con_var(
             }
             elab::SignatureItem::ClassAbs(_, id, k) | elab::SignatureItem::Class(_, id, k, _) => {
                 let c = Located::new(
-                    elab::Constructor::ModProj(str_id, ms[..ms.len()].to_vec(), x.to_string()),
+                    elab::Constructor::ModProj(str_id, ms[1..].to_vec(), x.to_string()),
                     span.clone(),
                 );
                 // Class kind: k -> Type
@@ -941,6 +961,9 @@ fn elab_con_var(
 }
 
 /// Resolve a module path `[M1, M2, ...]` to `(str_id, sig_items)`.
+/// Resolve a module path like ["Basis"] or ["Foo", "Bar"].
+/// Returns (root_id, items_of_final_module) where root_id is the ID of the FIRST module.
+/// Callers building ModProj(root_id, sub_path, x) should use `ms[1..]` as sub_path.
 fn resolve_module_path(
     ctx: &mut ElabCtx,
     env: &Env,
@@ -951,7 +974,7 @@ fn resolve_module_path(
         return None;
     }
     let first = &ms[0];
-    let (mut str_id, mut sgn) = match env.lookup_str(first) {
+    let (root_id, mut sgn) = match env.lookup_str(first) {
         Some((sid, s)) => (*sid, s.clone()),
         None => {
             ctx.error(span.clone(), format!("Unbound module `{}`", first));
@@ -959,7 +982,7 @@ fn resolve_module_path(
         }
     };
 
-    // Chase remaining path components
+    // Chase remaining path components to get items of the final module
     let hsgn = hnorm_sgn(env, &sgn);
     let mut items = match &hsgn.node {
         elab::Signature::Const(sgis) => sgis.clone(),
@@ -975,8 +998,7 @@ fn resolve_module_path(
     for m in &ms[1..] {
         if let Some(sgi) = sgi_find_str(&items, m) {
             match sgi {
-                elab::SignatureItem::Structure(_, _, id, inner_sgn) => {
-                    str_id = *id;
+                elab::SignatureItem::Structure(_, _, _, inner_sgn) => {
                     sgn = inner_sgn.clone();
                     let hn = hnorm_sgn(env, &sgn);
                     items = match &hn.node {
@@ -1001,7 +1023,7 @@ fn resolve_module_path(
         }
     }
 
-    Some((str_id, items))
+    Some((root_id, items))
 }
 
 fn elab_explicitness(e: source::Explicitness) -> elab::Explicitness {
@@ -1167,7 +1189,8 @@ struct RecordSummary {
 }
 
 /// Head-normalise a constructor and decompose a row constructor into a RecordSummary.
-fn record_summary(c: elab::LocatedConstructor) -> RecordSummary {
+/// Named type aliases are unfolded via `env` so their fields are visible to the row unifier.
+fn record_summary(env: &Env, c: elab::LocatedConstructor) -> RecordSummary {
     let cn = hnorm_con(c.clone());
     match cn.node {
         elab::Constructor::Record(_, xcs) => {
@@ -1186,8 +1209,8 @@ fn record_summary(c: elab::LocatedConstructor) -> RecordSummary {
             }
         }
         elab::Constructor::Concat(c1, c2) => {
-            let mut s1 = record_summary(*c1);
-            let s2 = record_summary(*c2);
+            let mut s1 = record_summary(env, *c1);
+            let s2 = record_summary(env, *c2);
             s1.fields.extend(s2.fields);
             s1.unifs.extend(s2.unifs);
             s1.others.extend(s2.others);
@@ -1203,6 +1226,18 @@ fn record_summary(c: elab::LocatedConstructor) -> RecordSummary {
             unifs: vec![],
             others: vec![],
         },
+        // Unfold Named type aliases (e.g. `body'`) so their fields become visible.
+        elab::Constructor::Named(id) => {
+            if let Ok((_, _, Some(def))) = env.lookup_c_named(id) {
+                record_summary(env, def.clone())
+            } else {
+                RecordSummary {
+                    fields: vec![],
+                    unifs: vec![],
+                    others: vec![cn],
+                }
+            }
+        }
         _ => RecordSummary {
             fields: vec![],
             unifs: vec![],
@@ -1252,6 +1287,40 @@ fn unify_cons_inner(
             }
             return Err(CUnifyError::Incompatible(c1n, c2n));
         }
+        // Unification variable solving — must come before Named arms so that
+        // (Unif, Named) is handled here rather than falling into the Named expansion arm.
+        (
+            elab::Constructor::Unif(nl1, _, k1, _, r1),
+            elab::Constructor::Unif(nl2, _, k2, _, r2),
+        ) => {
+            if Arc::ptr_eq(r1, r2) {
+                return Ok(());
+            }
+            // Solve r1 := c2n (adjusted for nesting); occurs check to prevent circular types
+            if occurs_cunif(r1, &c2n) {
+                return Err(CUnifyError::Undetermined);
+            }
+            let adjusted = mlift_con_in_con(*nl1, c2n.clone());
+            *r1.lock().unwrap() = elab::CUnif::Known(Box::new(adjusted));
+            return Ok(());
+        }
+        (elab::Constructor::Unif(nl, _, k, _, r), _) => {
+            if occurs_cunif(r, &c2n) {
+                return Err(CUnifyError::Undetermined);
+            }
+            let adjusted = mlift_con_in_con(*nl, c2n.clone());
+            *r.lock().unwrap() = elab::CUnif::Known(Box::new(adjusted));
+            return Ok(());
+        }
+        (_, elab::Constructor::Unif(nl, _, k, _, r)) => {
+            if occurs_cunif(r, &c1n) {
+                return Err(CUnifyError::Undetermined);
+            }
+            let adjusted = mlift_con_in_con(*nl, c1n.clone());
+            *r.lock().unwrap() = elab::CUnif::Known(Box::new(adjusted));
+            return Ok(());
+        }
+
         (elab::Constructor::Named(n1), elab::Constructor::Named(n2)) => {
             if n1 == n2 {
                 return Ok(());
@@ -1285,30 +1354,6 @@ fn unify_cons_inner(
                 return unify_cons_inner(ctx, env, span, c1, &rc2, depth + 1);
             }
             return Err(CUnifyError::Incompatible(c1n, c2n));
-        }
-
-        // Unification variable solving
-        (
-            elab::Constructor::Unif(nl1, _, k1, _, r1),
-            elab::Constructor::Unif(nl2, _, k2, _, r2),
-        ) => {
-            if Arc::ptr_eq(r1, r2) {
-                return Ok(());
-            }
-            // Solve r1 := c2n (adjusted for nesting)
-            let adjusted = mlift_con_in_con(*nl1, c2n.clone());
-            *r1.lock().unwrap() = elab::CUnif::Known(Box::new(adjusted));
-            return Ok(());
-        }
-        (elab::Constructor::Unif(nl, _, k, _, r), _) => {
-            let adjusted = mlift_con_in_con(*nl, c2n.clone());
-            *r.lock().unwrap() = elab::CUnif::Known(Box::new(adjusted));
-            return Ok(());
-        }
-        (_, elab::Constructor::Unif(nl, _, k, _, r)) => {
-            let adjusted = mlift_con_in_con(*nl, c1n.clone());
-            *r.lock().unwrap() = elab::CUnif::Known(Box::new(adjusted));
-            return Ok(());
         }
 
         // Structural cases
@@ -1396,8 +1441,8 @@ fn unify_rows(
     c2: &elab::LocatedConstructor,
     depth: usize,
 ) -> Result<(), CUnifyError> {
-    let s1 = record_summary(c1.clone());
-    let s2 = record_summary(c2.clone());
+    let s1 = record_summary(env, c1.clone());
+    let s2 = record_summary(env, c2.clone());
 
     // If both are fully known (no unifs), check field by field
     if s1.unifs.is_empty() && s2.unifs.is_empty() && s1.others.is_empty() && s2.others.is_empty() {
@@ -1718,6 +1763,27 @@ pub fn elab_exp(
     denv: &disjoint::DisjointEnv,
     e: &source::LocExp,
 ) -> (elab::LocatedExpression, elab::LocatedConstructor) {
+    use std::cell::Cell;
+    thread_local! {
+        static ELAB_EXP_DEPTH: Cell<usize> = Cell::new(0);
+    }
+    let d = ELAB_EXP_DEPTH.with(|c| { let v = c.get(); c.set(v+1); v });
+    if d > 200 {
+        ELAB_EXP_DEPTH.with(|c| c.set(0));
+        eprintln!("GUARD: elab_exp depth exceeded 200!");
+        panic!("elab_exp: recursion depth exceeded 200");
+    }
+    let result = elab_exp_inner(ctx, env, denv, e);
+    ELAB_EXP_DEPTH.with(|c| c.set(d));
+    result
+}
+
+fn elab_exp_inner(
+    ctx: &mut ElabCtx,
+    env: &Env,
+    denv: &disjoint::DisjointEnv,
+    e: &source::LocExp,
+) -> (elab::LocatedExpression, elab::LocatedConstructor) {
     let span = e.span.clone();
     match &e.node {
         source::Exp::Prim(prim) => {
@@ -1738,7 +1804,7 @@ pub fn elab_exp(
             let (fe, ft) = elab_exp(ctx, env, denv, f);
             let (fe2, ft2) = elab_head(ctx, env, denv, fe, ft, &f.span);
             let ftn = hnorm_con(ft2);
-            match ftn.node {
+            match ftn.node.clone() {
                 elab::Constructor::TFun(dom, ran) => {
                     let (ae, at) = elab_exp(ctx, env, denv, arg);
                     check_con(ctx, env, &arg.span, &at, &dom);
@@ -1770,7 +1836,7 @@ pub fn elab_exp(
                         Located::new(elab::Expression::App(Box::new(fe2), Box::new(ae)), span);
                     (result, ran)
                 }
-                _ => {
+                _other => {
                     ctx.error(
                         f.span.clone(),
                         "Application to non-function type".to_string(),
@@ -2197,35 +2263,65 @@ fn elab_exp_var(
     if let Some(sgi) = sgi_find_val(&items, x) {
         if let elab::SignatureItem::Val(_, id, t) = sgi {
             let e = Located::new(
-                elab::Expression::ModProj(str_id, ms[..ms.len()].to_vec(), x.to_string()),
+                elab::Expression::ModProj(str_id, ms[1..].to_vec(), x.to_string()),
                 span.clone(),
             );
             return (e, t.clone());
         }
     }
-    // Check for constructor
-    if let Some(sgi) = sgi_find_datatype_con(&items, x) {
+    // Check for datatype constructor (e.g. Basis.None, Basis.Some)
+    if let Some((con_id, dt_id, type_params, arg_type)) = sgi_find_datatype_con(&items, x) {
         let e = Located::new(
-            elab::Expression::ModProj(str_id, ms[..ms.len()].to_vec(), x.to_string()),
+            elab::Expression::ModProj(str_id, ms[1..].to_vec(), x.to_string()),
             span.clone(),
         );
-        return (e, cerror(span.clone())); // simplified
+        let ktype = Located::new(elab::Kind::Type, span.clone());
+        let n = type_params.len();
+        let type_args: Vec<elab::LocatedConstructor> = type_params
+            .iter()
+            .map(|_| fresh_cunif(env, span.clone(), ktype.clone(), "_"))
+            .collect();
+        let dt_con = {
+            let base = Located::new(elab::Constructor::Named(dt_id), span.clone());
+            type_args.iter().fold(base, |acc, arg| {
+                Located::new(elab::Constructor::App(Box::new(acc), Box::new(arg.clone())), span.clone())
+            })
+        };
+        let con_type = match arg_type {
+            None => {
+                // Nullary constructor: type is dt_con
+                dt_con
+            }
+            Some(at_orig) => {
+                // Payload constructor: type is arg -> dt_con
+                let mut at = at_orig.clone();
+                for i in (0..n).rev() {
+                    if let Ok(result) = sub_con_in_con(0, &type_args[i], at.clone()) {
+                        at = result;
+                    }
+                }
+                Located::new(elab::Constructor::TFun(Box::new(at), Box::new(dt_con)), span.clone())
+            }
+        };
+        return (e, con_type);
     }
 
     ctx.error(span.clone(), format!("Unbound variable `{}`", x));
     (eerror(span.clone()), cerror(span.clone()))
 }
 
+/// Find a datatype constructor by name in signature items.
+/// Returns (constructor_id, datatype_id, type_params, arg_type).
 fn sgi_find_datatype_con<'a>(
     sgis: &'a [elab::LocatedSignatureItem],
     x: &str,
-) -> Option<&'a elab::SignatureItem> {
+) -> Option<(usize, usize, &'a Vec<String>, &'a Option<elab::LocatedConstructor>)> {
     for sgi in sgis {
         if let elab::SignatureItem::Datatype(dts) = &sgi.node {
             for dt in dts {
-                for (cname, _, _) in &dt.constrs {
+                for (cname, cid, arg_type) in &dt.constrs {
                     if cname == x {
-                        return Some(&sgi.node);
+                        return Some((*cid, dt.id, &dt.params, arg_type));
                     }
                 }
             }
@@ -2239,14 +2335,15 @@ fn make_con_exp(
     env: &Env,
     span: &Span,
 ) -> (elab::LocatedExpression, elab::LocatedConstructor) {
-    // Build a lambda that constructs the datatype value
     let ktype = Located::new(elab::Kind::Type, span.clone());
+    let n = info.type_params.len();
     let type_args: Vec<elab::LocatedConstructor> = info
         .type_params
         .iter()
         .map(|_| fresh_cunif(env, span.clone(), ktype.clone(), "_"))
         .collect();
 
+    // Return type: dt applied to type_args
     let dt_con = {
         let base = Located::new(elab::Constructor::Named(info.datatype_id), span.clone());
         type_args.iter().fold(base, |acc, arg| {
@@ -2257,9 +2354,26 @@ fn make_con_exp(
         })
     };
 
+    let con_type = match &info.arg_type {
+        None => {
+            // Nullary constructor: type is dt_con (e.g. option t)
+            dt_con
+        }
+        Some(at_orig) => {
+            // Constructor with payload: type is arg_type -> dt_con.
+            // Substitute type params (innermost first: Rel(0) = last param = type_args[n-1]).
+            let mut at = at_orig.clone();
+            for i in (0..n).rev() {
+                if let Ok(result) = sub_con_in_con(0, &type_args[i], at.clone()) {
+                    at = result;
+                }
+            }
+            Located::new(elab::Constructor::TFun(Box::new(at), Box::new(dt_con)), span.clone())
+        }
+    };
+
     let e = Located::new(elab::Expression::Named(info.constructor_id), span.clone());
-    // Return type is the datatype applied to type_args
-    (e, dt_con)
+    (e, con_type)
 }
 
 fn elab_exp_record(
@@ -2304,6 +2418,21 @@ fn elab_head(
     t: elab::LocatedConstructor,
     span: &Span,
 ) -> (elab::LocatedExpression, elab::LocatedConstructor) {
+    elab_head_inner(ctx, env, denv, e, t, span, 0)
+}
+
+fn elab_head_inner(
+    ctx: &mut ElabCtx,
+    env: &Env,
+    denv: &disjoint::DisjointEnv,
+    e: elab::LocatedExpression,
+    t: elab::LocatedConstructor,
+    span: &Span,
+    depth: usize,
+) -> (elab::LocatedExpression, elab::LocatedConstructor) {
+    if depth > 50 {
+        panic!("elab_head: recursion depth exceeded 50 (likely infinite loop in type)");
+    }
     let tn = hnorm_con(t.clone());
     match &tn.node {
         elab::Constructor::TKFun(x, body) => {
@@ -2313,7 +2442,7 @@ fn elab_head(
                 elab::Expression::KApp(Box::new(e), Box::new(ku)),
                 span.clone(),
             );
-            elab_head(ctx, env, denv, new_e, body_subst, span)
+            elab_head_inner(ctx, env, denv, new_e, body_subst, span, depth + 1)
         }
         elab::Constructor::TCFun(elab::Explicitness::Implicit, x, k, body) => {
             // Insert implicit constructor argument
@@ -2323,7 +2452,7 @@ fn elab_head(
                 Err(_) => cerror(span.clone()),
             };
             let new_e = Located::new(elab::Expression::CApp(Box::new(e), cu), span.clone());
-            elab_head(ctx, env, denv, new_e, body_subst, span)
+            elab_head_inner(ctx, env, denv, new_e, body_subst, span, depth + 1)
         }
         elab::Constructor::TDisjoint(c1, c2, body) => {
             // Insert disjointness witness
@@ -2343,7 +2472,7 @@ fn elab_head(
                 elab::Expression::App(Box::new(e), Box::new(witness)),
                 span.clone(),
             );
-            elab_head(ctx, env, denv, new_e, *body.clone(), span)
+            elab_head_inner(ctx, env, denv, new_e, *body.clone(), span, depth + 1)
         }
         elab::Constructor::TFun(dom, _) if env.is_class(dom) => {
             // Typeclass argument — insert implicit resolution
@@ -2362,8 +2491,42 @@ fn elab_head(
             );
             // Return type is the codomain
             match tn.node {
-                elab::Constructor::TFun(_, ran) => elab_head(ctx, env, denv, new_e, *ran, span),
+                elab::Constructor::TFun(_, ran) => elab_head_inner(ctx, env, denv, new_e, *ran, span, depth + 1),
                 _ => (new_e, t),
+            }
+        }
+        // Try to unfold named type constructors (e.g. `bodyTag boxAttrs`) using the env.
+        // This handles cases like `h1 : bodyTag boxAttrs` where bodyTag = fn attrs => ...
+        elab::Constructor::Named(id) => {
+            if let Ok((_, _, Some(def))) = env.lookup_c_named(*id) {
+                elab_head_inner(ctx, env, denv, e, def.clone(), span, depth + 1)
+            } else {
+                (e, t)
+            }
+        }
+        elab::Constructor::App(f, arg) => {
+            // Try to reduce App(Named(id), arg) by substituting Named's definition.
+            let head_def = match &f.node {
+                elab::Constructor::Named(id) => {
+                    match env.lookup_c_named(*id) {
+                        Ok((_, _, Some(def))) => Some(def.clone()),
+                        _ => None,
+                    }
+                }
+                _ => None,
+            };
+            if let Some(def) = head_def {
+                if let elab::Constructor::Abs(_, _, body) = def.node {
+                    if let Ok(result) = sub_con_in_con(0, &*arg, *body) {
+                        elab_head_inner(ctx, env, denv, e, hnorm_con(result), span, depth + 1)
+                    } else {
+                        (e, t)
+                    }
+                } else {
+                    (e, t)
+                }
+            } else {
+                (e, t)
             }
         }
         _ => (e, t),
@@ -3183,8 +3346,12 @@ fn enrich_env_from_sgi(
 ) -> Env {
     match sgi {
         elab::SignatureItem::Val(x, id, t) => env.push_e_named_as(x.clone(), *id, t.clone()),
-        elab::SignatureItem::ConAbs(x, id, k) | elab::SignatureItem::Constructor(x, id, k, _) => {
+        elab::SignatureItem::ConAbs(x, id, k) => {
             env.push_c_named_as(x.clone(), *id, k.clone(), None)
+        }
+        elab::SignatureItem::Constructor(x, id, k, def) => {
+            // Preserve the definition so that type aliases (like `type unit = {}`) can be unfolded.
+            env.push_c_named_as(x.clone(), *id, k.clone(), Some(def.clone()))
         }
         elab::SignatureItem::ClassAbs(x, id, k) | elab::SignatureItem::Class(x, id, k, _) => {
             let ktype = Located::new(elab::Kind::Type, k.span.clone());
@@ -3193,6 +3360,7 @@ fn enrich_env_from_sgi(
                 k.span.clone(),
             );
             env.push_c_named_as(x.clone(), *id, class_k, None)
+                .push_class(*id)
         }
         elab::SignatureItem::Structure(_, x, id, sgn) => {
             env.push_str_named_as(x.clone(), *id, sgn.clone())
@@ -3492,8 +3660,17 @@ fn solve_constraints(ctx: &mut ElabCtx, env: &Env) {
                 result,
             } => {
                 // Try to resolve the class instance
+                eprintln!("[DEBUG] TypeClass constraint: class={:?}, num_classes={}", hnorm_con(class.clone()).node, c_env.classes().len());
                 match resolve_class(&c_env, &class, &span) {
-                    Some(witness) => {
+                    Some((witness, matched_head)) => {
+                        eprintln!("[DEBUG] TypeClass RESOLVED: head={:?}", matched_head.node);
+                        eprintln!("[DEBUG] class before unify: {:?}", hnorm_con(class.clone()).node);
+                        // Unify the class constraint with the matched rule head.
+                        // This instantiates any type variables, e.g. solving `Unif(m) = transaction`
+                        // when the class is `monad Unif(m)` and the head is `monad transaction`.
+                        let unify_result = unify_cons(ctx, &c_env, &span, &class, &matched_head);
+                        eprintln!("[DEBUG] unify result: {:?}", unify_result);
+                        eprintln!("[DEBUG] class AFTER unify: {:?}", hnorm_con(class.clone()).node);
                         *result.lock().unwrap() = Some(witness);
                     }
                     None => {
@@ -3525,32 +3702,64 @@ fn solve_constraints(ctx: &mut ElabCtx, env: &Env) {
     }
 }
 
+/// Instantiate a rule head/hyps by substituting fresh unification variables for each quantifier.
+/// Returns (instantiated_head, instantiated_hyps).
+fn instantiate_rule(
+    env: &Env,
+    nq: usize,
+    hyps: &[elab::LocatedConstructor],
+    head: &elab::LocatedConstructor,
+    span: &Span,
+) -> (elab::LocatedConstructor, Vec<elab::LocatedConstructor>) {
+    if nq == 0 {
+        return (head.clone(), hyps.to_vec());
+    }
+    let mut inst_head = head.clone();
+    let mut inst_hyps: Vec<elab::LocatedConstructor> = hyps.to_vec();
+    let ktype = Located::new(elab::Kind::Type, span.clone());
+    // Substitute from innermost quantifier (Rel(0)) outward.
+    // Each substitution reduces all remaining de Bruijn indices by 1.
+    for _ in 0..nq {
+        let fresh = fresh_cunif(env, span.clone(), ktype.clone(), "_inst");
+        if let Ok(new_head) = sub_con_in_con(0, &fresh, inst_head.clone()) {
+            inst_head = new_head;
+        }
+        inst_hyps = inst_hyps
+            .into_iter()
+            .map(|h| sub_con_in_con(0, &fresh, h.clone()).unwrap_or(h))
+            .collect();
+    }
+    (inst_head, inst_hyps)
+}
+
 fn resolve_class(
     env: &Env,
     class: &elab::LocatedConstructor,
     span: &Span,
-) -> Option<elab::LocatedExpression> {
+) -> Option<(elab::LocatedExpression, elab::LocatedConstructor)> {
     // Try all classes in the environment
     for (cn, rules) in env.classes() {
-        let class_con = cn.to_con(span.clone());
-        // Check if class matches
         let class_n = hnorm_con(class.clone());
         // Try closed rules first
         for (nq, hyps, head, witness) in &rules.closed_rules {
-            if try_match_class(env, &class_n, head, *nq) {
+            let (inst_head, inst_hyps) = instantiate_rule(env, *nq, hyps, head, span);
+            if try_match_class(env, &class_n, &inst_head, *nq) {
                 // Check hypotheses
-                let all_hyps_satisfied = hyps.iter().all(|h| resolve_class(env, h, span).is_some());
+                let all_hyps_satisfied =
+                    inst_hyps.iter().all(|h| resolve_class(env, h, span).is_some());
                 if all_hyps_satisfied {
-                    return Some(witness.clone());
+                    return Some((witness.clone(), inst_head));
                 }
             }
         }
         // Then open rules
         for (nq, hyps, head, witness) in &rules.open_rules {
-            if try_match_class(env, &class_n, head, *nq) {
-                let all_hyps_satisfied = hyps.iter().all(|h| resolve_class(env, h, span).is_some());
+            let (inst_head, inst_hyps) = instantiate_rule(env, *nq, hyps, head, span);
+            if try_match_class(env, &class_n, &inst_head, *nq) {
+                let all_hyps_satisfied =
+                    inst_hyps.iter().all(|h| resolve_class(env, h, span).is_some());
                 if all_hyps_satisfied {
-                    return Some(witness.clone());
+                    return Some((witness.clone(), inst_head));
                 }
             }
         }

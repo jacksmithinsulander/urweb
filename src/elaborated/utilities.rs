@@ -46,47 +46,12 @@ pub fn classify_datatype(
 }
 
 // ---------------------------------------------------------------------------
-// mlift_con_in_con
-//
-// Global mutable function pointer for lifting constructor de Bruijn indices
-// through `n` binders.  Must be set before traversal of `CUnif(Known(...))`.
-// ---------------------------------------------------------------------------
-
-use std::sync::OnceLock;
-
-static MLIFT_CON_IN_CON: OnceLock<
-    Box<dyn Fn(usize, LocatedConstructor) -> LocatedConstructor + Send + Sync>,
-> = OnceLock::new();
-
-/// Registers the lift function. Call once at startup.
-///
-/// # Arguments
-///
-/// * `lift_function` - Closure that lifts constructor de Bruijn indices through `binder_count` binders.
-pub fn set_mlift_con_in_con(
-    lift_function: Box<dyn Fn(usize, LocatedConstructor) -> LocatedConstructor + Send + Sync>,
-) {
-    let _ = MLIFT_CON_IN_CON.set(lift_function);
-}
-
-/// Lifts constructor de Bruijn indices through `binder_count` binders (dispatches to registered function).
-///
-/// # Arguments
-///
-/// * `binder_count` - Number of binders to lift through.
-/// * `constructor` - The constructor to lift.
-///
-/// # Returns
-///
-/// The constructor with indices shifted. Panics if the lift function was not set.
+/// Lifts constructor de Bruijn indices through `binder_count` binders.
 pub(crate) fn mlift_con_in_con(
     binder_count: usize,
     constructor: LocatedConstructor,
 ) -> LocatedConstructor {
-    match MLIFT_CON_IN_CON.get() {
-        Some(lift_function) => lift_function(binder_count, constructor),
-        None => panic!("ElabUtil: mliftConInCon not set"),
-    }
+    crate::elaborated::type_operations::mlift_con_in_con(binder_count, constructor)
 }
 
 // ---------------------------------------------------------------------------

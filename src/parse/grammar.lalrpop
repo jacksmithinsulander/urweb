@@ -318,7 +318,7 @@ SgnItemNode: SgnItem = {
     "con" <name:"IDENT"> "::" <k:Kind> "=" <c:Con> => SgnItem::Con(name, Some(Box::new(k)), c),
     // con alias without explicit kind: `con foo = T`
     "con" <name:"IDENT"> "=" <c:Con> => SgnItem::Con(name, None, c),
-    "val" <name:"IDENT"> ":" <c:Con> => SgnItem::Val(name, c),
+    "val" <name:"IDENT"> ":" <c:SigCon> => SgnItem::Val(name, c),
     "datatype" <dts:DatatypeDecls> => SgnItem::Datatype(dts),
     "structure" <name:"UIDENT"> ":" <s:Sgn> => SgnItem::Str(name, s),
     "signature" <name:"UIDENT"> "=" <s:Sgn> => SgnItem::Sgn(name, s),
@@ -396,6 +396,22 @@ KindAnnot: LocKind = {
 
 
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Signature constructors (used in .urs val types)
+// Like Con but also allows `name ::: kind ->` and `name :: kind ->` at the top.
+// ---------------------------------------------------------------------------
+
+// Signature constructor type: like Con but also allows bare `name ::: kind ->` quantifiers.
+// Uses KindAtom (not full Kind) for the quantifier kind to avoid shift/reduce conflict with `->`
+// in kind arrows. In practice, .urs quantifiers use simple kinds: Type, {Type}, {Unit}, etc.
+SigCon: LocCon = {
+    <l:@L> <n:"IDENT"> ":::" <k:KindApp> "->" <c:SigCon> <r:@R> =>
+        Located::new(Con::TCFun(Explicitness::Implicit, n, Box::new(k), Box::new(c)), Span::from_offsets("", l, r, &[])),
+    <l:@L> <n:"IDENT"> "::" <k:KindApp> "->" <c:SigCon> <r:@R> =>
+        Located::new(Con::TCFun(Explicitness::Explicit, n, Box::new(k), Box::new(c)), Span::from_offsets("", l, r, &[])),
+    Con => <>,
+};
+
 // Constructors / types
 // ---------------------------------------------------------------------------
 
@@ -429,6 +445,7 @@ ConNode: Con = {
     // Same with ::: (Tcolonwild — "implicit, wildcard-named" in SML grammar)
     "[" <name:"IDENT"> ":::" <k:Kind> "]" "->" <c:Con> =>
         Con::TCFun(Explicitness::Implicit, name, Box::new(k), Box::new(c)),
+
 
 
     // disjointness constraint
@@ -768,14 +785,52 @@ AppExpInner: Exp = {
     <f:AppExp> <x:AtomExp> => Exp::App(Box::new(f), Box::new(x)),
     // Constructor-level application
     <f:AppExp> "[" <c:Con> "]" => Exp::CApp(Box::new(f), c),
-    // "." IDENT → field access (IDENT is always lowercase)
-    <f:AppExp> "." <name:"IDENT"> => Exp::Field(Box::new(f), Located::dummy(Con::Name(name))),
+    // "." IDENT → module member (when base is an uppercase module path) or record field access.
+    // LR always reduces App(f2, Var("M")) before seeing ".", so we must detect the module case here.
+    <f:AppExp> "." <name:"IDENT"> => {
+        let fspan = f.span.clone();
+        match f.node {
+            // Var(qs, "M").x where M starts uppercase → module member access
+            Exp::Var(mut quals, last, inf) if last.chars().next().map_or(false, |c| c.is_uppercase()) => {
+                quals.push(last);
+                Exp::Var(quals, name, inf)
+            }
+            // App(f2, Var([], "M")).x where M starts uppercase → App(f2, Var(["M"], x))
+            Exp::App(f2, xbox) => {
+                let Located { node: xnode, span: xspan } = *xbox;
+                match xnode {
+                    Exp::Var(mut q, last, inf) if q.is_empty() && last.chars().next().map_or(false, |c| c.is_uppercase()) => {
+                        q.push(last);
+                        Exp::App(f2, Box::new(Located::new(Exp::Var(q, name, inf), xspan)))
+                    }
+                    xnode => {
+                        let f_loc = Located::new(Exp::App(f2, Box::new(Located::new(xnode, xspan))), fspan);
+                        Exp::Field(Box::new(f_loc), Located::dummy(Con::Name(name)))
+                    }
+                }
+            }
+            // Otherwise: record field access
+            fnode => Exp::Field(Box::new(Located::new(fnode, fspan)), Located::dummy(Con::Name(name)))
+        }
+    },
     // "." "#" IDENT → hash field access
     <f:AppExp> "." "#" <name:"IDENT"> => Exp::Field(Box::new(f), Located::dummy(Con::Name(name))),
-    // "." UIDENT → module qualification — f: LocExp, use f.node directly
+    // "." UIDENT → module qualification
     <f:AppExp> "." <name:"UIDENT"> => {
+        let fspan = f.span.clone();
         match f.node {
             Exp::Var(mut quals, last, inf) => { quals.push(last); Exp::Var(quals, name, inf) }
+            // App(prev, Var([], "M")).N => App(prev, Var(["M"], "N"))
+            Exp::App(f2, xbox) => {
+                let Located { node: xnode, span: xspan } = *xbox;
+                match xnode {
+                    Exp::Var(mut q, last, inf) if q.is_empty() => {
+                        q.push(last);
+                        Exp::App(f2, Box::new(Located::new(Exp::Var(q, name, inf), xspan)))
+                    }
+                    xnode => Exp::Var(vec![], name, Inference::DontInfer)
+                }
+            },
             _ => Exp::Var(vec![], name, Inference::DontInfer)
         }
     },

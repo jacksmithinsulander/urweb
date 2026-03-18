@@ -223,6 +223,12 @@ pub fn run_compiler_args(args: &[String]) -> i32 {
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    let code = run_compiler_args(&args[1..]);
+    // Run in a thread with 64MB stack to handle deep elaboration recursion.
+    let code = std::thread::Builder::new()
+        .stack_size(512 * 1024 * 1024)
+        .spawn(move || run_compiler_args(&args[1..]))
+        .unwrap()
+        .join()
+        .unwrap_or(1);
     process::exit(code);
 }

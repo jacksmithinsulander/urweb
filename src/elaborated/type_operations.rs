@@ -401,7 +401,8 @@ fn sub_con_in_con_inner(
             exp,
             x,
             k,
-            Box::new(sub_con_in_con_inner(by, xn, rep, *body)?),
+            // TCFun introduces a constructor binder, so increment by and xn
+            Box::new(sub_con_in_con_inner(by + 1, xn + 1, rep, *body)?),
         ),
         Constructor::TRecord(r) => {
             Constructor::TRecord(Box::new(sub_con_in_con_inner(by, xn, rep, *r)?))
@@ -492,6 +493,32 @@ pub fn occurs(constructor: &LocatedConstructor) -> bool {
     occurs_at(0, 0, constructor)
 }
 
+/// Returns `true` if the unification variable `r` appears anywhere in `c`.
+/// Used for the occurs check when solving Unif variables.
+pub fn occurs_cunif(r: &CUnifRef, c: &LocatedConstructor) -> bool {
+    match &c.node {
+        Constructor::Unif(_, _, _, _, r2) => Arc::ptr_eq(r, r2),
+        Constructor::TFun(a, b) => occurs_cunif(r, a) || occurs_cunif(r, b),
+        Constructor::TCFun(_, _, _, body) => occurs_cunif(r, body),
+        Constructor::TRecord(rc) => occurs_cunif(r, rc),
+        Constructor::TDisjoint(a, b, c2) => {
+            occurs_cunif(r, a) || occurs_cunif(r, b) || occurs_cunif(r, c2)
+        }
+        Constructor::App(f, x) => occurs_cunif(r, f) || occurs_cunif(r, x),
+        Constructor::Abs(_, _, body) => occurs_cunif(r, body),
+        Constructor::KAbs(_, body) => occurs_cunif(r, body),
+        Constructor::KApp(c2, _) => occurs_cunif(r, c2),
+        Constructor::TKFun(_, body) => occurs_cunif(r, body),
+        Constructor::Record(_, xcs) => xcs
+            .iter()
+            .any(|(x, v)| occurs_cunif(r, x) || occurs_cunif(r, v)),
+        Constructor::Concat(a, b) => occurs_cunif(r, a) || occurs_cunif(r, b),
+        Constructor::Tuple(cs) => cs.iter().any(|ci| occurs_cunif(r, ci)),
+        Constructor::Proj(c2, _) => occurs_cunif(r, c2),
+        _ => false,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Stats counters (mirrors SML refs)
 // ---------------------------------------------------------------------------
@@ -544,6 +571,21 @@ pub fn mlift_con_in_con(
 /// We do not carry an environment here; callers that need named/modproj
 /// lookup can extend this function or layer their own normalization.
 pub fn hnorm_con(constructor: LocatedConstructor) -> LocatedConstructor {
+    use std::cell::Cell;
+    thread_local! {
+        static HNORM_DEPTH: Cell<usize> = Cell::new(0);
+    }
+    let d = HNORM_DEPTH.with(|c| { let v = c.get(); c.set(v+1); v });
+    if d > 200 {
+        HNORM_DEPTH.with(|c| c.set(0));
+        panic!("hnorm_con: infinite loop detected (depth > 200); likely circular unification variable");
+    }
+    let result = hnorm_con_inner(constructor);
+    HNORM_DEPTH.with(|c| c.set(d));
+    result
+}
+
+fn hnorm_con_inner(constructor: LocatedConstructor) -> LocatedConstructor {
     let span = constructor.span.clone();
     match constructor.node.clone() {
         // Solved unification variable: lift and continue normalizing
@@ -871,41 +913,40 @@ pub fn hnorm_con(constructor: LocatedConstructor) -> LocatedConstructor {
 /// Mirrors `reduceCon` from `elab_ops.sml`.  Named / module-projected
 /// constructor bodies are not looked up here because we have no environment;
 /// callers can extend as needed.
+/// Reduce a constructor by one head beta-reduction step.
+///
+/// Mirrors SML `reduceCon`: first head-normalizes with `hnorm_con`, then
+/// if the result is `App(Abs(...), arg)` performs one beta step and recurses.
+/// Does NOT structurally recurse into all sub-constructors (unlike a full
+/// normalizer) — that avoids infinite loops on cyclic unification variables.
 pub fn reduce_con(constructor: LocatedConstructor) -> LocatedConstructor {
-    let span = constructor.span.clone();
-    match constructor.node {
-        Constructor::TFun(a, b) => Located {
-            node: Constructor::TFun(Box::new(reduce_con(*a)), Box::new(reduce_con(*b))),
-            span,
-        },
-        Constructor::TCFun(exp, x, k, body) => Located {
-            node: Constructor::TCFun(exp, x, k, Box::new(reduce_con(*body))),
-            span,
-        },
-        Constructor::TRecord(r) => Located {
-            node: Constructor::TRecord(Box::new(reduce_con(*r))),
-            span,
-        },
-        Constructor::TDisjoint(a, b, c2) => Located {
-            node: Constructor::TDisjoint(
-                Box::new(reduce_con(*a)),
-                Box::new(reduce_con(*b)),
-                Box::new(reduce_con(*c2)),
-            ),
-            span,
-        },
-
-        // Solved unification variable: follow the chain
-        Constructor::Unif(nl, s, k, name, r) => {
-            if let Some(inner) = read_cunif(&r) {
-                reduce_con(mlift_con_in_con(nl, inner))
-            } else {
-                Located {
-                    node: Constructor::Unif(nl, s, k, name, r),
-                    span,
+    // Head-normalize first (follows Unif chains, beta/eta at the head).
+    let r = hnorm_con(constructor);
+    match r.node.clone() {
+        Constructor::App(c_prime, x) => {
+            let c_prime_norm = hnorm_con(*c_prime);
+            match c_prime_norm.node.clone() {
+                Constructor::Abs(_, _, body) => {
+                    // Beta step: (λ. body) x → body[x/0]
+                    if let Ok(subst) = sub_con_in_con(0, &*x, *body) {
+                        reduce_con(subst)
+                    } else {
+                        r
+                    }
                 }
+                _ => r,
             }
         }
+        _ => r,
+    }
+}
+
+// NOTE: reduce_con_inner is no longer used; the old full-normalizer was removed
+// because it caused infinite loops on cyclic unification variables.
+#[allow(dead_code)]
+fn reduce_con_inner_legacy(constructor: LocatedConstructor) -> LocatedConstructor {
+    let span = constructor.span.clone();
+    match constructor.node {
 
         Constructor::App(c1, c2) => {
             let c1 = reduce_con(*c1);

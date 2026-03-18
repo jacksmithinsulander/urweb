@@ -725,23 +725,36 @@ pub fn compile(urp_path: &Path, settings: &mut Settings) -> CompileResult {
 
     // In boot mode, locate lib/ur relative to the executable so that
     // basis.urs is loaded from the source tree rather than an installed copy.
-    if settings.boot_linking && job.basis_lib_dir.is_none() {
+    // Also set include/urweb so the generated C code can find urweb.h.
+    if settings.boot_linking {
         if let Ok(exe) = std::env::current_exe() {
             // exe is e.g. .../bin/urweb-rust or .../target/release/ur-compile
             // Walk up until we find a directory that contains lib/ur/basis.urs.
             let mut candidate = exe.parent().map(|p| p.to_path_buf());
-            job.basis_lib_dir = loop {
+            let found = loop {
                 match candidate {
                     None => break None,
                     Some(ref dir) => {
                         let lib_ur = dir.join("lib/ur");
                         if lib_ur.join("basis.urs").exists() {
-                            break Some(lib_ur);
+                            break Some(dir.clone());
                         }
                         candidate = dir.parent().map(|p| p.to_path_buf());
                     }
                 }
             };
+            if let Some(root) = found {
+                if job.basis_lib_dir.is_none() {
+                    job.basis_lib_dir = Some(root.join("lib/ur"));
+                }
+                // Set include path for C headers (include/urweb/urweb.h)
+                if settings.config_include.is_empty() {
+                    let inc = root.join("include/urweb");
+                    if inc.exists() {
+                        settings.config_include = inc.to_string_lossy().into_owned();
+                    }
+                }
+            }
         }
     }
 
@@ -776,20 +789,39 @@ pub fn compile(urp_path: &Path, settings: &mut Settings) -> CompileResult {
     // Phase 5: corify
     let core_file =
         corify(expl_file, settings, &mut errors).ok_or_else(|| anyhow::anyhow!("Corify failed"))?;
+    eprintln!("[DEBUG core-passes] after corify: {} decls", core_file.len());
+    {
+        use crate::core::Declaration as CD2;
+        let exports = core_file.iter().filter(|d| matches!(&d.node, CD2::Export(..))).count();
+        let vals = core_file.iter().filter(|d| matches!(&d.node, CD2::Val(..))).count();
+        let valrecs = core_file.iter().filter(|d| matches!(&d.node, CD2::ValRec(..))).count();
+        let cons = core_file.iter().filter(|d| matches!(&d.node, CD2::Constructor(..))).count();
+        eprintln!("[DEBUG core-passes]   exports={}, vals={}, valrecs={}, cons={}", exports, vals, valrecs, cons);
+    }
 
     // Core passes
     let core_file = core_untangle(core_file);
+    eprintln!("[DEBUG core-passes] after untangle: {} decls", core_file.len());
     let core_file = core_reduce_local(core_file);
+    eprintln!("[DEBUG core-passes] after reduce_local: {} decls", core_file.len());
     let core_file = core_shake(core_file);
+    eprintln!("[DEBUG core-passes] after shake: {} decls", core_file.len());
     let core_file = core_reduce(core_file, settings);
+    eprintln!("[DEBUG core-passes] after reduce: {} decls", core_file.len());
     let core_file = core_especialize(core_file);
+    eprintln!("[DEBUG core-passes] after especialize: {} decls", core_file.len());
     let core_file = core_unpoly(core_file);
+    eprintln!("[DEBUG core-passes] after unpoly: {} decls", core_file.len());
     let core_file = core_specialize(core_file);
+    eprintln!("[DEBUG core-passes] after specialize: {} decls", core_file.len());
     let core_file = core_rpcify(core_file, settings, &mut errors)
         .ok_or_else(|| anyhow::anyhow!("Rpcify failed"))?;
+    eprintln!("[DEBUG core-passes] after rpcify: {} decls", core_file.len());
     let core_file =
         core_tag(core_file, settings, &mut errors).ok_or_else(|| anyhow::anyhow!("Tag failed"))?;
+    eprintln!("[DEBUG core-passes] after tag: {} decls", core_file.len());
     let core_file = core_effectize(core_file, settings);
+    eprintln!("[DEBUG core-passes] after effectize: {} decls", core_file.len());
 
     // Core checks
     check_marshal(&core_file, settings, &mut errors);
@@ -798,20 +830,52 @@ pub fn compile(urp_path: &Path, settings: &mut Settings) -> CompileResult {
         bail!("check errors");
     }
 
+    // Debug: print core file decl types before monoize
+    eprintln!("[DEBUG pipeline] core_file has {} decls before monoize", core_file.len());
+    eprintln!("[DEBUG core] first 20 decl types:");
+    for (i, d) in core_file.iter().enumerate().take(20) {
+        use crate::core::Declaration as CD2;
+        let kind = match &d.node {
+            CD2::Constructor(n, ..) => format!("Constructor({})", n),
+            CD2::Datatype(dts) => format!("Datatype({} types)", dts.len()),
+            CD2::Val(n, id, ..) => format!("Val({}, id={})", n, id),
+            CD2::ValRec(vis) => format!("ValRec({} binds)", vis.len()),
+            CD2::Export(..) => "Export".into(),
+            CD2::Table { sql_name, .. } => format!("Table({})", sql_name),
+            CD2::Sequence(x, ..) => format!("Sequence({})", x),
+            CD2::View(x, ..) => format!("View({})", x),
+            CD2::Index(..) => "Index".into(),
+            CD2::Database(n) => format!("Database({})", n),
+            CD2::Cookie(x, ..) => format!("Cookie({})", x),
+            CD2::Style(x, ..) => format!("Style({})", x),
+            CD2::Task(..) => "Task".into(),
+            CD2::Policy(..) => "Policy".into(),
+            CD2::OnError(..) => "OnError".into(),
+        };
+        eprintln!("[DEBUG core] decl[{}] = {}", i, kind);
+    }
+
     // Monoize
     let mono_file = monoize(core_file, settings, &mut errors)
         .ok_or_else(|| anyhow::anyhow!("Monoize failed"))?;
+    eprintln!("[DEBUG pipeline] after monoize: {} decls, {} exports", mono_file.0.len(), mono_file.1.len());
 
     // Collect endpoint metadata (endpoints.sml) — side output, file unchanged.
     let (mono_file, _endpoints) = mono_endpoints(mono_file);
 
     // Mono passes
     let mono_file = mono_untangle(mono_file);
+    eprintln!("[DEBUG pipeline] after untangle: {} decls", mono_file.0.len());
     let mono_file = mono_fuse(mono_file);
+    eprintln!("[DEBUG pipeline] after fuse: {} decls", mono_file.0.len());
     let mono_file = mono_reduce(mono_file, settings);
+    eprintln!("[DEBUG pipeline] after reduce: {} decls", mono_file.0.len());
     let mono_file = mono_opt(mono_file, settings, &mut errors);
+    eprintln!("[DEBUG pipeline] after opt: {} decls", mono_file.0.len());
     let mono_file = mono_shake(mono_file);
+    eprintln!("[DEBUG pipeline] after shake: {} decls", mono_file.0.len());
     let mono_file = mono_inline(mono_file, settings);
+    eprintln!("[DEBUG pipeline] after inline: {} decls", mono_file.0.len());
 
     // Mono checks
     let mono_file = mono_script_check(mono_file, settings, &mut errors);

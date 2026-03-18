@@ -2522,6 +2522,12 @@ pub fn cjr_print(file: &crate::c_like_representation::File, settings: &Settings)
         global_initializers.join("\n")
     };
 
+    // Debug: show what declarations we have
+    eprintln!("[DEBUG cjr_print] all_ds count: {}, ps (exports) count: {}", all_ds.len(), ps.len());
+    for d in &all_ds {
+        eprintln!("[DEBUG cjr_print] decl: {:?}", std::mem::discriminant(&d.node));
+    }
+
     // Build output
     let mut out = String::new();
 
