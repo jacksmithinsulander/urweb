@@ -128,6 +128,39 @@ pub fn parse_urp(path: &Path) -> Result<Job> {
     crate::urp_parser::parse_urp(path)
 }
 
+// Debug helper for mono expressions
+fn debug_core_exp(e: &crate::core::LocatedExpression, depth: usize) -> String {
+    if depth > 6 { return "...".into(); }
+    use crate::core::Expression as CE2;
+    match &e.node {
+        CE2::Named(n) => format!("Named({})", n),
+        CE2::Rel(n) => format!("Rel({})", n),
+        CE2::Prim(p) => format!("Prim({:?})", p),
+        CE2::Abs(x, _, _, body) => format!("Abs({}, {})", x, debug_core_exp(body, depth+1)),
+        CE2::App(f, a) => format!("App({}, {})", debug_core_exp(f, depth+1), debug_core_exp(a, depth+1)),
+        CE2::Ffi(m, x) => format!("Ffi({}.{})", m, x),
+        CE2::FfiApp(m, x, _) => format!("FfiApp({}.{})", m, x),
+        CE2::CAbs(x, _, body) => format!("CAbs({}, {})", x, debug_core_exp(body, depth+1)),
+        CE2::KAbs(x, body) => format!("KAbs({}, {})", x, debug_core_exp(body, depth+1)),
+        CE2::CApp(f, _) => format!("CApp({})", debug_core_exp(f, depth+1)),
+        _ => format!("{:?}", std::mem::discriminant(&e.node)),
+    }
+}
+
+fn debug_mono_exp(e: &crate::monomorphized::LocExp, depth: usize) -> String {
+    if depth > 8 { return "...".into(); }
+    use crate::monomorphized::Exp as ME;
+    match &e.node {
+        ME::Named(n) => format!("Named({})", n),
+        ME::Rel(n) => format!("Rel({})", n),
+        ME::Prim(p) => format!("Prim({:?})", p),
+        ME::Abs(x, _, _, body) => format!("Abs({}, {})", x, debug_mono_exp(body, depth+1)),
+        ME::App(f, a) => format!("App({}, {})", debug_mono_exp(f, depth+1), debug_mono_exp(a, depth+1)),
+        ME::FfiApp(m, x, _) => format!("FfiApp({}.{})", m, x),
+        _ => format!("{:?}", std::mem::discriminant(&e.node)),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Phase 2: Parse source files
 // ---------------------------------------------------------------------------
@@ -266,10 +299,27 @@ pub fn parse_sources(job: &Job, errors: &mut ErrorReporter) -> Option<crate::sou
     }
 
     if had_errors {
-        None
-    } else {
-        Some(decls)
+        return None;
     }
+
+    // Mirror SML compiler: automatically export the last source module.
+    // The SML compiler appends `(Source.DExport final, loc)` where `final`
+    // is the last module in the source list.  This makes page-returning functions
+    // automatically exported as HTTP handlers without an explicit `export` line.
+    if let Some(last_src) = job.sources.last() {
+        let mname = module_of(last_src);
+        let export_span = crate::error_types::Span::dummy();
+        let str_node = crate::error_types::Located::new(
+            source::Str::Var(mname),
+            export_span.clone(),
+        );
+        decls.push(crate::error_types::Located::new(
+            source::Decl::Export(str_node),
+            export_span,
+        ));
+    }
+
+    Some(decls)
 }
 
 // ---------------------------------------------------------------------------
@@ -785,6 +835,12 @@ pub fn compile(urp_path: &Path, settings: &mut Settings) -> CompileResult {
     // Phase 4: explify
     let expl_file =
         explify(elab_file, &mut errors).ok_or_else(|| anyhow::anyhow!("Explify failed"))?;
+    {
+        let export_count = expl_file.iter().filter(|d| {
+            matches!(&d.node, crate::explicit::Declaration::Export(..))
+        }).count();
+        eprintln!("[DEBUG] explicit file: {} decls, {} exports", expl_file.len(), export_count);
+    }
 
     // Phase 5: corify
     let core_file =
@@ -838,7 +894,10 @@ pub fn compile(urp_path: &Path, settings: &mut Settings) -> CompileResult {
         let kind = match &d.node {
             CD2::Constructor(n, ..) => format!("Constructor({})", n),
             CD2::Datatype(dts) => format!("Datatype({} types)", dts.len()),
-            CD2::Val(n, id, ..) => format!("Val({}, id={})", n, id),
+            CD2::Val(n, id, _, e, _) => {
+                let exp_info = debug_core_exp(e, 0);
+                format!("Val({}, id={}, exp={})", n, id, exp_info)
+            }
             CD2::ValRec(vis) => format!("ValRec({} binds)", vis.len()),
             CD2::Export(..) => "Export".into(),
             CD2::Table { sql_name, .. } => format!("Table({})", sql_name),
@@ -859,6 +918,18 @@ pub fn compile(urp_path: &Path, settings: &mut Settings) -> CompileResult {
     let mono_file = monoize(core_file, settings, &mut errors)
         .ok_or_else(|| anyhow::anyhow!("Monoize failed"))?;
     eprintln!("[DEBUG pipeline] after monoize: {} decls, {} exports", mono_file.0.len(), mono_file.1.len());
+    for (i, d) in mono_file.0.iter().enumerate() {
+        use crate::monomorphized::Decl as MD;
+        let dk = match &d.node {
+            MD::Val(n, id, _, e, _) => {
+                let exp_info = debug_mono_exp(e, 0);
+                format!("Val({}, id={}, exp={})", n, id, exp_info)
+            }
+            MD::Export(_ek, src, n, ..) => format!("Export(src={}, n={})", src, n),
+            other => format!("{:?}", std::mem::discriminant(other)),
+        };
+        eprintln!("[DEBUG mono] decl[{}] = {}", i, dk);
+    }
 
     // Collect endpoint metadata (endpoints.sml) — side output, file unchanged.
     let (mono_file, _endpoints) = mono_endpoints(mono_file);
@@ -874,6 +945,18 @@ pub fn compile(urp_path: &Path, settings: &mut Settings) -> CompileResult {
     eprintln!("[DEBUG pipeline] after opt: {} decls", mono_file.0.len());
     let mono_file = mono_shake(mono_file);
     eprintln!("[DEBUG pipeline] after shake: {} decls", mono_file.0.len());
+    for (i, d) in mono_file.0.iter().enumerate().take(10) {
+        use crate::monomorphized::Decl as MD;
+        let dk = match &d.node {
+            MD::Val(n, id, ..) => format!("Val({}, id={})", n, id),
+            MD::ValRec(vs) => format!("ValRec({})", vs.len()),
+            MD::Datatype(dts) => format!("Datatype({})", dts.len()),
+            MD::Export(_ek, src, n, ..) => format!("Export(src={}, n={})", src, n),
+            MD::Table(s, ..) => format!("Table({})", s),
+            _ => format!("{:?}", std::mem::discriminant(&d.node)),
+        };
+        eprintln!("[DEBUG shake] decl[{}] = {}", i, dk);
+    }
     let mono_file = mono_inline(mono_file, settings);
     eprintln!("[DEBUG pipeline] after inline: {} decls", mono_file.0.len());
 
