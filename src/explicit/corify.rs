@@ -116,6 +116,9 @@ struct St {
     /// Maps explicit constructor ID → (ffi_module_name, con_name) for FFI types.
     /// Populated when processing DFfiStr to allow reverse lookup by explicit ID.
     con_ffi_map: HashMap<usize, (String, String)>,
+    /// Maps explicit val ID → (ffi_module_name, val_name) for FFI vals.
+    /// Populated when processing DFfiStr to allow corify_exp to emit Expression::Ffi.
+    val_ffi_map: HashMap<usize, (String, String)>,
     constructors: HashMap<usize, CorePatCon>,
     vals: HashMap<usize, usize>,
     strs: HashMap<usize, Flattening>,
@@ -130,6 +133,7 @@ impl St {
             basis: None,
             cons: HashMap::new(),
             con_ffi_map: HashMap::new(),
+            val_ffi_map: HashMap::new(),
             constructors: HashMap::new(),
             vals: HashMap::new(),
             strs: HashMap::new(),
@@ -144,6 +148,7 @@ impl St {
             basis,
             cons: HashMap::new(),
             con_ffi_map: HashMap::new(),
+            val_ffi_map: HashMap::new(),
             constructors: HashMap::new(),
             vals: HashMap::new(),
             strs: HashMap::new(),
@@ -155,6 +160,10 @@ impl St {
 
     fn lookup_con_ffi(&self, explicit_id: usize) -> Option<&(String, String)> {
         self.con_ffi_map.get(&explicit_id)
+    }
+
+    fn lookup_val_ffi(&self, explicit_id: usize) -> Option<&(String, String)> {
+        self.val_ffi_map.get(&explicit_id)
     }
 
     fn basis_is(mut self, n: usize) -> Self {
@@ -581,10 +590,17 @@ fn corify_exp(st: &St, e: expl::LocatedExpression) -> core_ir::LocatedExpression
         expl::Expression::Prim(p) => core_ir::Expression::Prim(p),
         expl::Expression::Rel(n) => core_ir::Expression::Rel(n),
         expl::Expression::Named(n) => {
-            let n = match st.lookup_val_by_id(n) {
-                None => n,
-                Some(n2) => n2,
-            };
+            // First check if n is a remapped normal val
+            if let Some(n2) = st.lookup_val_by_id(n) {
+                return Located { node: core_ir::Expression::Named(n2), span };
+            }
+            // Check if n is an FFI val (e.g. Basis.transaction_return)
+            if let Some((module, name)) = st.lookup_val_ffi(n) {
+                return Located {
+                    node: core_ir::Expression::Ffi(module.clone(), name.clone()),
+                    span,
+                };
+            }
             core_ir::Expression::Named(n)
         }
         expl::Expression::ModProj(m, ms, x) => {
@@ -1552,7 +1568,10 @@ fn corify_decl(
                                 });
                             }
                         }
-                        expl::SignatureItem::Val(x, _sn, c) => {
+                        expl::SignatureItem::Val(x, sn, c) => {
+                            // Record FFI val mapping: explicit ID → (module, name)
+                            st.val_ffi_map.insert(sn, (m.clone(), x.clone()));
+
                             // Apply transactify if we know the transaction type
                             let c_core = match trans {
                                 None => corify_con(st, c),

@@ -992,8 +992,160 @@ fn mono_basis_ffi(x: &str, loc: &Span) -> Option<LocExp> {
             ))
         }
 
+        // ---- CSS class/style constants that are empty strings in C ----
+        "null" | "noStyle" => Some(Located::new(
+            Exp::Prim(Prim::String(
+                crate::primitives::StringMode::Normal,
+                String::new(),
+            )),
+            loc.clone(),
+        )),
+
         _ => None,
     }
+}
+
+// ---------------------------------------------------------------------------
+// HTML desugaring helpers (mirror monoize.sml HTML special cases)
+// ---------------------------------------------------------------------------
+
+fn str_h(s: &str, loc: &Span) -> LocExp {
+    Located::new(
+        Exp::Prim(Prim::String(crate::primitives::StringMode::Html, s.to_string())),
+        loc.clone(),
+    )
+}
+
+fn str_n(s: &str, loc: &Span) -> LocExp {
+    Located::new(
+        Exp::Prim(Prim::String(crate::primitives::StringMode::Normal, s.to_string())),
+        loc.clone(),
+    )
+}
+
+fn make_strcat(e1: LocExp, e2: LocExp) -> LocExp {
+    let loc = e1.span.clone();
+    Located::new(Exp::Strcat(Box::new(e1), Box::new(e2)), loc)
+}
+
+/// Build `if s == "" then "" else " attr=\"" ++ s ++ "\""` as a Case expression.
+fn build_attr_case(attr: &str, val_e: LocExp, loc: &Span) -> LocExp {
+    let string_t = Located::new(Typ::Ffi("Basis".into(), "string".into()), loc.clone());
+    let empty_str = str_n("", loc);
+    let prefix = str_h(&format!(" {}=\"", attr), loc);
+    let suffix = str_h("\"", loc);
+    let rel0 = Located::new(Exp::Rel(0), loc.clone());
+    let body = make_strcat(prefix, make_strcat(rel0, suffix));
+    Located::new(
+        Exp::Case(
+            Box::new(val_e),
+            vec![
+                (
+                    Located::new(
+                        Pat::Prim(Prim::String(
+                            crate::primitives::StringMode::Normal,
+                            String::new(),
+                        )),
+                        loc.clone(),
+                    ),
+                    empty_str,
+                ),
+                (
+                    Located::new(Pat::Var("_css".into(), string_t.clone()), loc.clone()),
+                    body,
+                ),
+            ],
+            CaseMeta {
+                disc: string_t.clone(),
+                result: string_t,
+            },
+        ),
+        loc.clone(),
+    )
+}
+
+/// Peel all App layers (not CApp), collecting value args (in order of application).
+fn peel_apps_core<'a>(
+    e: &'a LocatedExpression,
+    args: &mut Vec<&'a LocatedExpression>,
+) -> &'a LocatedExpression {
+    match &e.node {
+        CE::App(f, a) => {
+            let head = peel_apps_core(f, args);
+            args.push(a);
+            head
+        }
+        _ => e,
+    }
+}
+
+/// Extract the HTML tag name from a tag-constructor expression.
+/// e.g. `App(Ffi("Basis","head"), unit)` → "head"
+///      `Ffi("Basis","head")` → "head"
+///      `FfiApp("Basis","head",_)` → "head"
+fn extract_tag_name(e: &LocatedExpression) -> Option<String> {
+    let mut dummy = vec![];
+    let base = peel_apps_core(e, &mut dummy);
+    let (head, _) = peel_capp(base);
+    match &head.node {
+        CE::Ffi(m, x) | CE::FfiApp(m, x, _) if m == "Basis" => Some(x.clone()),
+        _ => None,
+    }
+}
+
+/// Desugar `Basis.tag class dynClass style dynStyle attrs tagFn xml`
+/// into a Strcat chain building `<tag class="..." style="...">xml</tag>`.
+fn desugar_tag(
+    env: &Env,
+    fm: &mut Fm,
+    loc: &Span,
+    class_raw: &LocatedExpression,
+    style_raw: &LocatedExpression,
+    tag_fn: &LocatedExpression,
+    xml_raw: &LocatedExpression,
+) -> LocExp {
+    let tag_name = extract_tag_name(tag_fn).unwrap_or_else(|| "div".to_string());
+    let class_e = mono_exp(env, fm, class_raw);
+    let style_e = mono_exp(env, fm, style_raw);
+    let xml_e = mono_exp(env, fm, xml_raw);
+
+    // Build "<tagname" ++ class_suffix ++ style_suffix ++ ">" ++ xml ++ "</tagname>"
+    // class_suffix: if class == "" then "" else " class=\"CLASS\""
+    // style_suffix: if style == "" then "" else " style=\"STYLE\""
+    // We use Strcat-based helper that emits a C ternary via FfiApp "attrOptional",
+    // which is defined in urweb.h as an inline helper.
+    // For now, inline directly: the class/style values are empty strings for the basic demo,
+    // so strcat of "" with open-tag is a no-op.
+    let string_t = Located::new(Typ::Ffi("Basis".into(), "string".into()), loc.clone());
+    let class_attr = Located::new(
+        Exp::FfiApp(
+            "Basis".into(),
+            "attrOptional".into(),
+            vec![
+                (str_n("class", loc), string_t.clone()),
+                (class_e, string_t.clone()),
+            ],
+        ),
+        loc.clone(),
+    );
+    let style_attr = Located::new(
+        Exp::FfiApp(
+            "Basis".into(),
+            "attrOptional".into(),
+            vec![
+                (str_n("style", loc), string_t.clone()),
+                (style_e, string_t.clone()),
+            ],
+        ),
+        loc.clone(),
+    );
+
+    let open = make_strcat(
+        str_h(&format!("<{}", tag_name), loc),
+        make_strcat(class_attr, make_strcat(style_attr, str_h(">", loc))),
+    );
+    let close = str_h(&format!("</{}>", tag_name), loc);
+    make_strcat(open, make_strcat(xml_e, close))
 }
 
 /// Peel `CApp` layers: returns `(innermost_expr, type_args_innermost_first)`.
@@ -1367,6 +1519,120 @@ fn mono_basis_capp(
             ))
         }
 
+        // ECApp(EFfi("Basis", "transaction_return"), t) → fn x => fn _ => x
+        // Mirrors SML monoize.sml: transaction_return becomes pure lambda.
+        "transaction_return" => {
+            let t = last_t.map(|c| {
+                let mut dtmap = HashMap::new();
+                mono_type(env, &mut dtmap, c)
+            })?;
+            let un = Located::new(Typ::Record(Vec::new()), loc.clone());
+            // fn x: t => fn _: unit => x
+            // Inner abs: Rel(1) refers to x (depth 1 from inside inner abs)
+            let inner = Located::new(
+                Exp::Abs(
+                    "_".into(),
+                    un.clone(),
+                    t.clone(),
+                    Box::new(Located::new(Exp::Rel(1), loc.clone())),
+                ),
+                loc.clone(),
+            );
+            let ran = Located::new(Typ::Fun(Box::new(un), Box::new(t.clone())), loc.clone());
+            Some(Located::new(
+                Exp::Abs("x".into(), t, ran, Box::new(inner)),
+                loc.clone(),
+            ))
+        }
+
+        // ECApp(ECApp(EFfi("Basis", "transaction_bind"), t1), t2)
+        //   → fn m1 => fn m2 => fn _ => let r = m1 {} in (m2 r) {}
+        // Mirrors SML monoize.sml: transaction_bind becomes a pure lambda.
+        "transaction_bind" if targs.len() >= 2 => {
+            let t1 = {
+                let mut dtmap = HashMap::new();
+                mono_type(env, &mut dtmap, targs[targs.len() - 2])
+            };
+            let t2 = {
+                let mut dtmap = HashMap::new();
+                mono_type(env, &mut dtmap, targs[targs.len() - 1])
+            };
+            let un = Located::new(Typ::Record(Vec::new()), loc.clone());
+            // mt1 = unit -> t1  (the type of a transaction t1)
+            let mt1 = Located::new(
+                Typ::Fun(Box::new(un.clone()), Box::new(t1.clone())),
+                loc.clone(),
+            );
+            // mt2 = unit -> t2
+            let mt2 = Located::new(
+                Typ::Fun(Box::new(un.clone()), Box::new(t2.clone())),
+                loc.clone(),
+            );
+            // In fn _ body (depth 2 from outer):
+            //   Rel(0) = "_", Rel(1) = "m2", Rel(2) = "m1"
+            // In let body (depth 3 from outer):
+            //   Rel(0) = "r", Rel(1) = "_", Rel(2) = "m2", Rel(3) = "m1"
+            // app_m1_unit = App(Rel(2), {})   i.e. m1 {} (in fn _ body, before let)
+            let app_m1_unit = Located::new(
+                Exp::App(
+                    Box::new(Located::new(Exp::Rel(2), loc.clone())),
+                    Box::new(Located::new(Exp::Record(Vec::new()), loc.clone())),
+                ),
+                loc.clone(),
+            );
+            // (m2 r) = App(Rel(2), Rel(0))
+            let m2_r = Located::new(
+                Exp::App(
+                    Box::new(Located::new(Exp::Rel(2), loc.clone())),
+                    Box::new(Located::new(Exp::Rel(0), loc.clone())),
+                ),
+                loc.clone(),
+            );
+            // (m2 r) {} = App(m2_r, {})
+            let m2_r_unit = Located::new(
+                Exp::App(
+                    Box::new(m2_r),
+                    Box::new(Located::new(Exp::Record(Vec::new()), loc.clone())),
+                ),
+                loc.clone(),
+            );
+            // let r = m1 {} in (m2 r) {}
+            let let_r = Located::new(
+                Exp::Let("r".into(), t1.clone(), Box::new(app_m1_unit), Box::new(m2_r_unit)),
+                loc.clone(),
+            );
+            // fn _: unit => let r = m1 {} in (m2 r) {}
+            let inner_abs = Located::new(
+                Exp::Abs("_".into(), un.clone(), un.clone(), Box::new(let_r)),
+                loc.clone(),
+            );
+            // type of m2_f: t1 -> (unit -> t2)
+            let m2_t = Located::new(
+                Typ::Fun(Box::new(t1), Box::new(mt2.clone())),
+                loc.clone(),
+            );
+            // return type of the whole bind: unit -> unit (transaction unit)
+            let bind_ran = Located::new(
+                Typ::Fun(Box::new(un.clone()), Box::new(un.clone())),
+                loc.clone(),
+            );
+            // fn m2: (t1 -> mt2) => fn _ => ...
+            let m2_abs = Located::new(
+                Exp::Abs("m2".into(), m2_t.clone(), bind_ran.clone(), Box::new(inner_abs)),
+                loc.clone(),
+            );
+            // type of outer abs: mt1 -> (m2_t -> bind_ran)
+            let outer_ran = Located::new(
+                Typ::Fun(Box::new(m2_t), Box::new(bind_ran)),
+                loc.clone(),
+            );
+            // fn m1: mt1 => fn m2 => fn _ => ...
+            Some(Located::new(
+                Exp::Abs("m1".into(), mt1, outer_ran, Box::new(m2_abs)),
+                loc.clone(),
+            ))
+        }
+
         _ => None,
     }
 }
@@ -1478,10 +1744,67 @@ fn mono_exp(env: &Env, fm: &mut Fm, exp: &LocatedExpression) -> LocExp {
         }
 
         // --------------- Application / Abstraction ---------------
-        CE::App(e1, e2) => {
-            let me1 = mono_exp(env, fm, e1);
-            let me2 = mono_exp(env, fm, e2);
-            Located::new(Exp::App(Box::new(me1), Box::new(me2)), loc)
+        CE::App(_, _) => {
+            // Peel all App layers to check for HTML function patterns.
+            let mut vargs: Vec<&LocatedExpression> = vec![];
+            let fun_e = peel_apps_core(exp, &mut vargs);
+            let (head_e, _) = peel_capp(fun_e);
+            if let CE::Ffi(m, x) = &head_e.node {
+                if m == "Basis" {
+                    match x.as_str() {
+                        "join" if vargs.len() >= 4 => {
+                            // join has 2 constraint proof args + 2 xml args = 4 minimum
+                            let n = vargs.len();
+                            let xml1 = mono_exp(env, fm, vargs[n - 2]);
+                            let xml2 = mono_exp(env, fm, vargs[n - 1]);
+                            return Located::new(
+                                Exp::Strcat(Box::new(xml1), Box::new(xml2)),
+                                loc,
+                            );
+                        }
+                        "cdata" if vargs.len() >= 1 => {
+                            // cdata has 0 proof args + 1 string arg
+                            let str_e = mono_exp(env, fm, vargs[vargs.len() - 1]);
+                            let str_t = Located::new(
+                                Typ::Ffi("Basis".into(), "string".into()),
+                                loc.clone(),
+                            );
+                            return Located::new(
+                                Exp::FfiApp(
+                                    "Basis".into(),
+                                    "htmlifyString".into(),
+                                    vec![(str_e, str_t)],
+                                ),
+                                loc,
+                            );
+                        }
+                        "tag" if vargs.len() >= 10 => {
+                            // vargs: [proof0, proof1, proof2, class, dynClass, style,
+                            //         dynStyle, attrs, tagFn, xml]
+                            // Use last 7 value args (skip 3 proof args at front).
+                            let n = vargs.len();
+                            return desugar_tag(
+                                env, fm, &loc,
+                                vargs[n - 7], // class  (css_class)
+                                vargs[n - 5], // style  (css_style)
+                                vargs[n - 2], // tag function (e.g. head{})
+                                vargs[n - 1], // xml content
+                            );
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            // Normal App: recursively process both sides.
+            // Re-extract e1/e2 since we already have them in the outer match.
+            match &exp.node {
+                CE::App(e1, e2) => {
+                    let me1 = mono_exp(env, fm, e1);
+                    let me2 = mono_exp(env, fm, e2);
+                    Located::new(Exp::App(Box::new(me1), Box::new(me2)), loc)
+                }
+                _ => unreachable!("CE::App match arm"),
+            }
         }
         CE::Abs(x, dom, ran, body) => {
             let mut dtmap = HashMap::new();

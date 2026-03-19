@@ -11,6 +11,68 @@
 
 use logos::Logos;
 
+/// Process SML/Ur string escape sequences: `\n`, `\t`, `\r`, `\\`, `\"`, `\^X`, `\ddd`, `\uXXXX`.
+fn process_string_escapes(s: &str) -> Option<String> {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match chars.next()? {
+            'n' => out.push('\n'),
+            't' => out.push('\t'),
+            'r' => out.push('\r'),
+            '\\' => out.push('\\'),
+            '"' => out.push('"'),
+            '\'' => out.push('\''),
+            'a' => out.push('\x07'),
+            'b' => out.push('\x08'),
+            'f' => out.push('\x0C'),
+            'v' => out.push('\x0B'),
+            '0' => out.push('\0'),
+            '^' => {
+                // \^X — control character
+                let x = chars.next()?;
+                if x.is_ascii() {
+                    out.push(char::from_u32((x as u32).wrapping_sub(64) & 0x1F)?);
+                }
+            }
+            'd' => {
+                // \ddd — decimal escape (SML)
+                let mut digits = String::new();
+                for _ in 0..2 {
+                    if let Some(&d) = chars.peek() {
+                        if d.is_ascii_digit() { digits.push(chars.next().unwrap()); }
+                    }
+                }
+                let n: u32 = format!("d{}", digits).trim_start_matches('d').parse().ok()?;
+                out.push(char::from_u32(n)?);
+            }
+            'u' => {
+                // \uXXXX — unicode hex (SML)
+                let hex: String = (0..4).filter_map(|_| chars.next()).collect();
+                let n = u32::from_str_radix(&hex, 16).ok()?;
+                out.push(char::from_u32(n)?);
+            }
+            ' ' | '\n' | '\t' => {
+                // SML whitespace gap: skip to matching backslash
+                while let Some(&c2) = chars.peek() {
+                    if c2 == '\\' { chars.next(); break; }
+                    chars.next();
+                }
+            }
+            other => {
+                // Unrecognized — pass through
+                out.push('\\');
+                out.push(other);
+            }
+        }
+    }
+    Some(out)
+}
+
 // ---------------------------------------------------------------------------
 // Error type returned when the lexer can't match a token
 // ---------------------------------------------------------------------------
@@ -49,7 +111,7 @@ pub enum Token {
     /// Double-quoted string literal.
     #[regex(r#""([^"\\]|\\.)*""#, |lex| {
         let s = lex.slice();
-        Some(s[1..s.len()-1].to_string())
+        process_string_escapes(&s[1..s.len()-1])
     }, priority = 3)]
     String(String),
 
@@ -57,7 +119,8 @@ pub enum Token {
     #[regex(r#"#"([^"\\]|\\.)"#, |lex| {
         // slice is e.g. #"a" — extract the char after #"
         let s = lex.slice();
-        s.chars().nth(2)
+        let inner = &s[2..s.len()-1]; // strip #" and "
+        process_string_escapes(inner).and_then(|s| s.chars().next())
     }, priority = 3)]
     Char(char),
 

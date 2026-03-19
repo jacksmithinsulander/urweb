@@ -1438,15 +1438,31 @@ fn opt_exp_peephole(
         }
 
         // -----------------------------------------------------------------------
+        // EApp(EAbs(x,_,_,body), arg) → subExpInExp(0, arg, body)  (unconditional beta reduction)
+        // Mirrors SML mono_opt.sml: EApp((EAbs(_, _, _, body), _), arg) => optExp(subExpInExp 0 arg body)
+        // -----------------------------------------------------------------------
+        // -----------------------------------------------------------------------
         // EApp(EFfi("Basis","intToString"), e) → EFfiApp("Basis","intToString",[e,int_t])
         // -----------------------------------------------------------------------
-        Exp::App(fexpr, arg) => match &fexpr.node {
-            Exp::Ffi(m, f) if m == "Basis" && f == "intToString" => {
-                let t = Located::new(Typ::Ffi("Basis".into(), "int".into()), fexpr.span.clone());
-                Exp::FfiApp("Basis".into(), "intToString".into(), vec![(*arg, t)])
+        Exp::App(fexpr, arg) => {
+            // Unconditional beta reduction (like SML mono_opt): App(Abs(x, _, _, body), arg)
+            if let Exp::Abs(_, _, _, ref body) = fexpr.node {
+                let substituted = crate::monomorphized::environment::sub_exp_in_exp(
+                    0,
+                    arg.as_ref(),
+                    body.as_ref(),
+                );
+                return opt_loc_exp(lspan(substituted.node, span), settings, errors).node;
             }
-            _ => Exp::App(fexpr, arg),
-        },
+            match &fexpr.node {
+                Exp::Ffi(m, f) if m == "Basis" && f == "intToString" => {
+                    let t =
+                        Located::new(Typ::Ffi("Basis".into(), "int".into()), fexpr.span.clone());
+                    Exp::FfiApp("Basis".into(), "intToString".into(), vec![(*arg, t)])
+                }
+                _ => Exp::App(fexpr, arg),
+            }
+        }
 
         // -----------------------------------------------------------------------
         // EWrite(ECase(...)) → ECase(..., arms with EWrite applied)

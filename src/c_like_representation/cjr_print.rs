@@ -481,19 +481,17 @@ fn p_funcall(
             format!("{}(ctx, {}{})", fn_name, ae, extra_s)
         }
         _ => {
-            let mut out = String::from("({\n");
-            for (i, (e, t)) in args.iter().enumerate() {
-                let ae = p_exp(env, e, settings);
-                let at = p_typ(env, t);
-                out.push_str(&format!("{} arg{} = {};\n", at, i, ae));
-            }
-            let arg_list: Vec<String> = (0..args.len()).map(|i| format!("arg{}", i)).collect();
-            out.push_str(&fn_name);
-            out.push_str("(ctx, ");
-            out.push_str(&arg_list.join(", "));
-            out.push_str(&extra_s);
-            out.push_str(");\n})");
-            out
+            // Evaluate args and call: C11-compliant direct call.
+            // Evaluation order of function arguments is implementation-defined but
+            // cjrize should have lifted side-effectful sub-expressions to let-bindings.
+            let arg_strs: Vec<String> =
+                args.iter().map(|(e, _)| p_exp(env, e, settings)).collect();
+            format!(
+                "{}(ctx, {}{})",
+                fn_name,
+                arg_strs.join(", "),
+                extra_s
+            )
         }
     }
 }
@@ -2264,7 +2262,11 @@ fn p_page(
                 "uw_write_header(ctx, \"Content-script-type: text/javascript\\r\\n\");\n",
             );
         }
-        body.push_str("uw_write(ctx, uw_begin_xhtml);\n");
+        if settings.html5 {
+            body.push_str("uw_write(ctx, uw_begin_html5);\n");
+        } else {
+            body.push_str("uw_write(ctx, uw_begin_xhtml);\n");
+        }
         body.push_str("uw_mayReturnIndirectly(ctx);\n");
     }
 
@@ -2333,8 +2335,11 @@ fn p_page(
         }
     }
 
-    // Call the handler
-    let handler_name = format!("__uwn_{}_{}", ident(""), n);
+    // Call the handler — look up function name from env by ID
+    let handler_name = match env.lookup_e_named(n) {
+        Some((x, _)) => p_named_name(n, x),
+        None => format!("__uwn_UNBOUND_{}", n),
+    };
     let arg_list: Vec<String> = (0..url_ts.len() + if has_form_inputs { 1 } else { 0 })
         .map(|i| format!("arg{}", i))
         .collect();
@@ -2365,6 +2370,221 @@ fn p_page(
          (request[{path_len}] == 0 || request[{path_len}] == '/')) {{\n\
          {body}\
          }}\n",
+    )
+}
+
+// ---------------------------------------------------------------------------
+// DBMS-specific C code generation
+// ---------------------------------------------------------------------------
+
+/// Generate the DBMS-specific C code: uw_client_init, uw_conn typedef,
+/// uw_db_validate, uw_db_prepare, uw_db_init, uw_db_begin/commit/rollback/close.
+///
+/// Mirrors the DBMS-specific sections of `cjr_print.sml` / `cjrize.sml`.
+fn gen_dbms_c_code(
+    settings: &Settings,
+    tables: &[(String, Vec<(String, LocTyp)>)],
+    prepared_stmts: &[(String, usize)],
+) -> String {
+    let dbms = settings.dbms.as_str();
+    let dbstring = settings
+        .dbstring
+        .as_deref()
+        .unwrap_or("")
+        .replace('"', "\\\"");
+
+    match dbms {
+        "sqlite" => gen_sqlite_c_code(&dbstring, tables, prepared_stmts),
+        "mysql" => gen_mysql_c_code(&dbstring, tables, prepared_stmts),
+        _ => gen_postgres_c_code(&dbstring, tables, prepared_stmts),
+    }
+}
+
+fn gen_sqlite_c_code(
+    dbpath: &str,
+    tables: &[(String, Vec<(String, LocTyp)>)],
+    _prepared: &[(String, usize)],
+) -> String {
+    let mut out = String::new();
+
+    // sqlite3 header
+    out.push_str("#include <sqlite3.h>\n\n");
+
+    // uw_client_init: set SQLite-specific format strings
+    out.push_str(concat!(
+        "static void uw_client_init(void) {\n",
+        "    uw_sqlfmtInt = \"%lld%n\";\n",
+        "    uw_sqlfmtFloat = \"%.16g%n\";\n",
+        "    uw_Estrings = 0;\n",
+        "    uw_sql_type_annotations = 0;\n",
+        "    uw_sqlsuffixString = \"\";\n",
+        "    uw_sqlsuffixChar = \"\";\n",
+        "    uw_sqlsuffixBlob = \"\";\n",
+        "    uw_sqlfmtUint4 = \"%u%n\";\n",
+        "}\n\n",
+    ));
+
+    // uw_conn: SQLite connection wrapper
+    out.push_str(concat!(
+        "typedef struct {\n",
+        "    sqlite3 *conn;\n",
+        "} uw_conn;\n\n",
+    ));
+
+    // uw_db_validate: check schema exists
+    out.push_str("static void uw_db_validate(uw_context ctx) {\n");
+    if !tables.is_empty() {
+        out.push_str("    uw_conn *conn = uw_get_db(ctx);\n");
+        out.push_str("    sqlite3_stmt *stmt;\n");
+        out.push_str("    int res;\n");
+        for (tbl, _) in tables {
+            out.push_str(&format!(
+                "    res = sqlite3_prepare_v2(conn->conn, \"SELECT COUNT(*) FROM {tbl}\", -1, &stmt, NULL);\n",
+            ));
+            out.push_str(&format!(
+                "    if (res != SQLITE_OK) uw_error(ctx, FATAL, \"Table {tbl} does not exist in the database.\");\n",
+            ));
+            out.push_str("    sqlite3_finalize(stmt);\n");
+        }
+    }
+    out.push_str("}\n\n");
+
+    // uw_db_prepare: prepare SQL statements
+    out.push_str("static void uw_db_prepare(uw_context ctx) {\n");
+    // TODO: generate prepared statement initialization when supported
+    out.push_str("}\n\n");
+
+    // uw_db_init: open database
+    out.push_str(&format!(
+        concat!(
+            "static void uw_db_init(uw_context ctx) {{\n",
+            "    sqlite3 *sqlite;\n",
+            "    uw_conn *conn;\n",
+            "    if (sqlite3_open(\"{dbpath}\", &sqlite) != SQLITE_OK)\n",
+            "        uw_error(ctx, FATAL, \"Can't open SQLite database.\");\n",
+            "    if (sqlite3_exec(sqlite, \"PRAGMA foreign_keys = ON\", NULL, NULL, NULL) != SQLITE_OK)\n",
+            "        uw_error(ctx, FATAL, \"Can't enable foreign_keys for SQLite database.\");\n",
+            "    conn = uw_malloc(ctx, sizeof(uw_conn));\n",
+            "    conn->conn = sqlite;\n",
+            "    uw_set_db(ctx, conn);\n",
+            "    uw_db_validate(ctx);\n",
+            "    uw_db_prepare(ctx);\n",
+            "}}\n\n",
+        ),
+        dbpath = dbpath
+    ));
+
+    // uw_db_begin
+    out.push_str(concat!(
+        "static int uw_db_begin(uw_context ctx, int could_write) {\n",
+        "    uw_conn *conn = uw_get_db(ctx);\n",
+        "    char *err_msg = NULL;\n",
+        "    int res = sqlite3_exec(conn->conn, \"BEGIN\", NULL, NULL, &err_msg);\n",
+        "    if (res != SQLITE_OK) { sqlite3_free(err_msg); return 1; }\n",
+        "    return 0;\n",
+        "}\n\n",
+    ));
+
+    // uw_db_commit
+    out.push_str(concat!(
+        "static int uw_db_commit(uw_context ctx) {\n",
+        "    uw_conn *conn = uw_get_db(ctx);\n",
+        "    char *err_msg = NULL;\n",
+        "    int res = sqlite3_exec(conn->conn, \"COMMIT\", NULL, NULL, &err_msg);\n",
+        "    if (res != SQLITE_OK) { sqlite3_free(err_msg); return 1; }\n",
+        "    return 0;\n",
+        "}\n\n",
+    ));
+
+    // uw_db_rollback
+    out.push_str(concat!(
+        "static int uw_db_rollback(uw_context ctx) {\n",
+        "    uw_conn *conn = uw_get_db(ctx);\n",
+        "    char *err_msg = NULL;\n",
+        "    int res = sqlite3_exec(conn->conn, \"ROLLBACK\", NULL, NULL, &err_msg);\n",
+        "    if (res != SQLITE_OK) { sqlite3_free(err_msg); return 1; }\n",
+        "    return 0;\n",
+        "}\n\n",
+    ));
+
+    // uw_db_close
+    out.push_str(concat!(
+        "static void uw_db_close(uw_context ctx) {\n",
+        "    uw_conn *conn = uw_get_db(ctx);\n",
+        "    sqlite3_close(conn->conn);\n",
+        "}\n\n",
+    ));
+
+    out
+}
+
+fn gen_mysql_c_code(
+    _dbstring: &str,
+    _tables: &[(String, Vec<(String, LocTyp)>)],
+    _prepared: &[(String, usize)],
+) -> String {
+    // Minimal stubs for MySQL (not fully implemented)
+    concat!(
+        "static void uw_client_init(void) {}\n\n",
+        "static void uw_db_init(uw_context ctx) {}\n\n",
+        "static int uw_db_begin(uw_context ctx, int could_write) { return 0; }\n\n",
+        "static int uw_db_commit(uw_context ctx) { return 0; }\n\n",
+        "static int uw_db_rollback(uw_context ctx) { return 0; }\n\n",
+        "static void uw_db_close(uw_context ctx) {}\n\n",
+    ).to_string()
+}
+
+fn gen_postgres_c_code(
+    _dbstring: &str,
+    _tables: &[(String, Vec<(String, LocTyp)>)],
+    _prepared: &[(String, usize)],
+) -> String {
+    // Minimal stubs for PostgreSQL (not fully implemented)
+    concat!(
+        "static void uw_client_init(void) {}\n\n",
+        "static void uw_db_init(uw_context ctx) {}\n\n",
+        "static int uw_db_begin(uw_context ctx, int could_write) { return 0; }\n\n",
+        "static int uw_db_commit(uw_context ctx) { return 0; }\n\n",
+        "static int uw_db_rollback(uw_context ctx) { return 0; }\n\n",
+        "static void uw_db_close(uw_context ctx) {}\n\n",
+    ).to_string()
+}
+
+/// Generate uw_input_num: maps form input names to their indices.
+/// Returns -1 if not found.
+fn gen_input_num(ps: &[crate::c_like_representation::ExportEntry]) -> String {
+    let mut inputs: Vec<(String, usize)> = Vec::new();
+    for (ek, _, _, ts, _, _, _, _) in ps {
+        if let crate::export::ExportKind::Action(_) = ek {
+            if ts.len() >= 2 {
+                // TODO: collect actual form input names when form processing is implemented
+            }
+        }
+    }
+    if inputs.is_empty() {
+        return "static int uw_input_num(const char *name) { return -1; }\n\n".to_string();
+    }
+    let mut out = String::from("static int uw_input_num(const char *name) {\n");
+    for (name, idx) in &inputs {
+        out.push_str(&format!(
+            "    if (!strcmp(name, \"{}\")) return {};\n",
+            name, idx
+        ));
+    }
+    out.push_str("    return -1;\n}\n\n");
+    out
+}
+
+/// Generate uw_cookie_sig: HMAC signature for cookies.
+fn gen_cookie_sig() -> &'static str {
+    concat!(
+        "extern void uw_sign(const char *in, char *out);\n",
+        "extern int uw_hash_blocksize;\n",
+        "static uw_Basis_string uw_cookie_sig(uw_context ctx) {\n",
+        "    uw_Basis_string r = uw_malloc(ctx, uw_hash_blocksize);\n",
+        "    uw_sign(\"\", r);\n",
+        "    return uw_Basis_makeSigString(ctx, r);\n",
+        "}\n\n",
     )
 }
 
@@ -2522,17 +2742,28 @@ pub fn cjr_print(file: &crate::c_like_representation::File, settings: &Settings)
         global_initializers.join("\n")
     };
 
-    // Debug: show what declarations we have
-    eprintln!("[DEBUG cjr_print] all_ds count: {}, ps (exports) count: {}", all_ds.len(), ps.len());
-    for d in &all_ds {
-        eprintln!("[DEBUG cjr_print] decl: {:?}", std::mem::discriminant(&d.node));
-    }
 
     // Build output
     let mut out = String::new();
 
     // Includes
     out.push_str("#include \"urweb.h\"\n\n");
+
+    // DBMS-specific code (uw_client_init, uw_db_init, etc.)
+    out.push_str(&gen_dbms_c_code(settings, &tables, &prepared_stmts));
+
+    // uw_input_num and uw_cookie_sig
+    out.push_str(&gen_input_num(ps));
+    out.push_str(gen_cookie_sig());
+
+    // Helper: emit optional HTML attribute (C11-compliant, no GNU extensions)
+    out.push_str(concat!(
+        "static inline uw_Basis_string uw_Basis_attrOptional(\n",
+        "    struct uw_context *ctx, uw_Basis_string name, uw_Basis_string val) {\n",
+        "    if (val == NULL || val[0] == '\\0') return \"\";\n",
+        "    return uw_Basis_mstrcat(ctx, \" \", name, \"=\\\"\", val, \"\\\"\", NULL);\n",
+        "}\n\n"
+    ));
 
     // Struct and datatype definitions
     if !struct_decls.is_empty() {
@@ -2567,12 +2798,6 @@ pub fn cjr_print(file: &crate::c_like_representation::File, settings: &Settings)
         out.push('\n');
     }
 
-    // Page handlers
-    if !page_handlers.is_empty() {
-        out.push_str(&page_handlers);
-        out.push('\n');
-    }
-
     // Collect task declarations
     let mut initializer_tasks: Vec<(String, String, String)> = Vec::new();
     let mut expunger_tasks: Vec<(String, String, String)> = Vec::new();
@@ -2603,7 +2828,7 @@ pub fn cjr_print(file: &crate::c_like_representation::File, settings: &Settings)
     }
 
     // Global init function (runs global val/let declarations)
-    out.push_str("static void uw_global_custom(uw_context ctx) {\n");
+    out.push_str("void uw_global_custom(uw_context ctx) {\n");
     if !init_body.is_empty() {
         out.push_str(&init_body);
         out.push('\n');
@@ -2645,7 +2870,7 @@ pub fn cjr_print(file: &crate::c_like_representation::File, settings: &Settings)
         out.push_str(&format!("  {{ {interval}, {fn_name} }},\n"));
         let _ = body;
     }
-    out.push_str("  { 0, NULL }\n};\n\n");
+    out.push_str("  { NULL, 0 }\n};\n\n");
 
     // Emit periodic task functions
     for (interval, x1, x2, body) in &periodic_tasks {
@@ -2698,6 +2923,16 @@ pub fn cjr_print(file: &crate::c_like_representation::File, settings: &Settings)
         .count();
 
     // uw_app struct (positional fields matching urweb runtime's uw_app struct)
+    // Fields: inputs_len, timeout, url_prefix, client_init, initializer, expunger,
+    //         db_init, db_begin, db_commit, db_rollback, db_close, handle,
+    //         input_num, cookie_sig, check_url, check_mime, check_requestHeader,
+    //         check_responseHeader, check_envVar, check_meta, on_error,
+    //         periodics, time_format, is_html5, file_cache
+    let file_cache_val = settings
+        .file_cache
+        .as_deref()
+        .map(|p| format!("\"{}\"", p.replace('"', "\\\"")))
+        .unwrap_or_else(|| "NULL".to_string());
     out.push_str(&format!(
         "uw_app uw_application = {{\n\
          {input_count},\n\
@@ -2708,24 +2943,27 @@ pub fn cjr_print(file: &crate::c_like_representation::File, settings: &Settings)
          uw_expunger,\n\
          uw_db_init, uw_db_begin, uw_db_commit, uw_db_rollback, uw_db_close,\n\
          uw_handle,\n\
-         {prep_count},\n\
+         uw_input_num,\n\
+         uw_cookie_sig,\n\
          uw_check_url, uw_check_mime, uw_check_requestHeader, uw_check_responseHeader,\n\
          uw_check_envVar, uw_check_meta,\n\
          {on_error},\n\
          my_periodics,\n\
          \"{time_format}\",\n\
-         0\n\
+         {is_html5},\n\
+         {file_cache}\n\
          }};\n",
         input_count = input_count,
         timeout = settings.timeout,
         url_prefix = url_prefix.replace('"', "\\\""),
-        prep_count = prep_count,
         on_error = if on_error_id.is_some() {
             "uw_onError"
         } else {
             "NULL"
         },
         time_format = settings.time_format.replace('"', "\\\""),
+        is_html5 = if settings.html5 { 1 } else { 0 },
+        file_cache = file_cache_val,
     ));
 
     out
@@ -2943,8 +3181,9 @@ mod tests {
         let e2 = dummy(Exp::FfiApp("Basis".into(), "max".into(), args));
         let s2 = p_exp(&env, &e2, &settings);
         assert!(
-            s2.contains("uw_Basis_max") && s2.contains("arg"),
-            "2-arg FfiApp"
+            s2.contains("uw_Basis_max") && s2.contains("1LL") && s2.contains("2LL"),
+            "2-arg FfiApp, got: {}",
+            s2
         );
     }
 

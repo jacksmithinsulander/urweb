@@ -128,38 +128,6 @@ pub fn parse_urp(path: &Path) -> Result<Job> {
     crate::urp_parser::parse_urp(path)
 }
 
-// Debug helper for mono expressions
-fn debug_core_exp(e: &crate::core::LocatedExpression, depth: usize) -> String {
-    if depth > 6 { return "...".into(); }
-    use crate::core::Expression as CE2;
-    match &e.node {
-        CE2::Named(n) => format!("Named({})", n),
-        CE2::Rel(n) => format!("Rel({})", n),
-        CE2::Prim(p) => format!("Prim({:?})", p),
-        CE2::Abs(x, _, _, body) => format!("Abs({}, {})", x, debug_core_exp(body, depth+1)),
-        CE2::App(f, a) => format!("App({}, {})", debug_core_exp(f, depth+1), debug_core_exp(a, depth+1)),
-        CE2::Ffi(m, x) => format!("Ffi({}.{})", m, x),
-        CE2::FfiApp(m, x, _) => format!("FfiApp({}.{})", m, x),
-        CE2::CAbs(x, _, body) => format!("CAbs({}, {})", x, debug_core_exp(body, depth+1)),
-        CE2::KAbs(x, body) => format!("KAbs({}, {})", x, debug_core_exp(body, depth+1)),
-        CE2::CApp(f, _) => format!("CApp({})", debug_core_exp(f, depth+1)),
-        _ => format!("{:?}", std::mem::discriminant(&e.node)),
-    }
-}
-
-fn debug_mono_exp(e: &crate::monomorphized::LocExp, depth: usize) -> String {
-    if depth > 8 { return "...".into(); }
-    use crate::monomorphized::Exp as ME;
-    match &e.node {
-        ME::Named(n) => format!("Named({})", n),
-        ME::Rel(n) => format!("Rel({})", n),
-        ME::Prim(p) => format!("Prim({:?})", p),
-        ME::Abs(x, _, _, body) => format!("Abs({}, {})", x, debug_mono_exp(body, depth+1)),
-        ME::App(f, a) => format!("App({}, {})", debug_mono_exp(f, depth+1), debug_mono_exp(a, depth+1)),
-        ME::FfiApp(m, x, _) => format!("FfiApp({}.{})", m, x),
-        _ => format!("{:?}", std::mem::discriminant(&e.node)),
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Phase 2: Parse source files
@@ -732,10 +700,37 @@ pub fn cc_and_link(c_source: &str, output: &Path, job: &Job, settings: &Settings
         link_cmd.stderr(Stdio::null()).stdout(Stdio::null());
     }
     link_cmd.arg(&o_file);
+    // Protocol-specific runtime library (provides main())
     if !settings.config_lib.is_empty() {
+        let proto = if settings.protocol.is_empty() { "http" } else { settings.protocol.as_str() };
+        let proto_lib = format!("{}/liburweb_{}.a", settings.config_lib, proto);
+        if std::path::Path::new(&proto_lib).exists() {
+            link_cmd.arg(&proto_lib);
+        }
         link_cmd.arg(format!("-L{}", settings.config_lib));
     }
-    link_cmd.arg("-lurweb").arg("-lm").arg("-o").arg(output);
+    link_cmd.arg("-lurweb").arg("-lm");
+    // Link DBMS-specific library
+    match settings.dbms.as_str() {
+        "sqlite" => { link_cmd.arg("-lsqlite3"); }
+        "mysql" => { link_cmd.arg("-lmysqlclient"); }
+        _ => { link_cmd.arg("-lpq"); } // postgres
+    }
+    // BearSSL (crypto)
+    if !settings.config_bearssl_libs.is_empty() {
+        for flag in settings.config_bearssl_libs.split_whitespace() {
+            link_cmd.arg(flag);
+        }
+    }
+    // libunistring (Unicode character operations)
+    if !settings.config_libunistring_libs.is_empty() {
+        for flag in settings.config_libunistring_libs.split_whitespace() {
+            link_cmd.arg(flag);
+        }
+    }
+    // pthreads
+    link_cmd.arg("-lpthread");
+    link_cmd.arg("-o").arg(output);
     if job.debug {
         link_cmd.arg("-g");
     }
@@ -804,6 +799,32 @@ pub fn compile(urp_path: &Path, settings: &mut Settings) -> CompileResult {
                         settings.config_include = inc.to_string_lossy().into_owned();
                     }
                 }
+                // Set lib path for liburweb.a
+                if settings.config_lib.is_empty() {
+                    let lib_c = root.join("src/c");
+                    if lib_c.exists() {
+                        settings.config_lib = lib_c.to_string_lossy().into_owned();
+                    }
+                }
+                // Set BearSSL path (vendored) — use static lib directly to avoid
+                // relative-path .so being embedded in the executable.
+                if settings.config_bearssl_libs.is_empty() {
+                    let bear_a = root.join("vendor/BearSSL/build/libbearssl.a");
+                    if bear_a.exists() {
+                        settings.config_bearssl_libs =
+                            bear_a.to_string_lossy().into_owned();
+                    }
+                }
+                // Set libunistring path (homebrew or system)
+                if settings.config_libunistring_libs.is_empty() {
+                    let uni = std::path::Path::new("/opt/homebrew/lib/libunistring.a");
+                    if uni.exists() {
+                        settings.config_libunistring_libs =
+                            uni.to_string_lossy().into_owned();
+                    } else {
+                        settings.config_libunistring_libs = "-lunistring".into();
+                    }
+                }
             }
         }
     }
@@ -835,49 +856,24 @@ pub fn compile(urp_path: &Path, settings: &mut Settings) -> CompileResult {
     // Phase 4: explify
     let expl_file =
         explify(elab_file, &mut errors).ok_or_else(|| anyhow::anyhow!("Explify failed"))?;
-    {
-        let export_count = expl_file.iter().filter(|d| {
-            matches!(&d.node, crate::explicit::Declaration::Export(..))
-        }).count();
-        eprintln!("[DEBUG] explicit file: {} decls, {} exports", expl_file.len(), export_count);
-    }
 
     // Phase 5: corify
     let core_file =
         corify(expl_file, settings, &mut errors).ok_or_else(|| anyhow::anyhow!("Corify failed"))?;
-    eprintln!("[DEBUG core-passes] after corify: {} decls", core_file.len());
-    {
-        use crate::core::Declaration as CD2;
-        let exports = core_file.iter().filter(|d| matches!(&d.node, CD2::Export(..))).count();
-        let vals = core_file.iter().filter(|d| matches!(&d.node, CD2::Val(..))).count();
-        let valrecs = core_file.iter().filter(|d| matches!(&d.node, CD2::ValRec(..))).count();
-        let cons = core_file.iter().filter(|d| matches!(&d.node, CD2::Constructor(..))).count();
-        eprintln!("[DEBUG core-passes]   exports={}, vals={}, valrecs={}, cons={}", exports, vals, valrecs, cons);
-    }
 
     // Core passes
     let core_file = core_untangle(core_file);
-    eprintln!("[DEBUG core-passes] after untangle: {} decls", core_file.len());
     let core_file = core_reduce_local(core_file);
-    eprintln!("[DEBUG core-passes] after reduce_local: {} decls", core_file.len());
     let core_file = core_shake(core_file);
-    eprintln!("[DEBUG core-passes] after shake: {} decls", core_file.len());
     let core_file = core_reduce(core_file, settings);
-    eprintln!("[DEBUG core-passes] after reduce: {} decls", core_file.len());
     let core_file = core_especialize(core_file);
-    eprintln!("[DEBUG core-passes] after especialize: {} decls", core_file.len());
     let core_file = core_unpoly(core_file);
-    eprintln!("[DEBUG core-passes] after unpoly: {} decls", core_file.len());
     let core_file = core_specialize(core_file);
-    eprintln!("[DEBUG core-passes] after specialize: {} decls", core_file.len());
     let core_file = core_rpcify(core_file, settings, &mut errors)
         .ok_or_else(|| anyhow::anyhow!("Rpcify failed"))?;
-    eprintln!("[DEBUG core-passes] after rpcify: {} decls", core_file.len());
     let core_file =
         core_tag(core_file, settings, &mut errors).ok_or_else(|| anyhow::anyhow!("Tag failed"))?;
-    eprintln!("[DEBUG core-passes] after tag: {} decls", core_file.len());
     let core_file = core_effectize(core_file, settings);
-    eprintln!("[DEBUG core-passes] after effectize: {} decls", core_file.len());
 
     // Core checks
     check_marshal(&core_file, settings, &mut errors);
@@ -886,79 +882,24 @@ pub fn compile(urp_path: &Path, settings: &mut Settings) -> CompileResult {
         bail!("check errors");
     }
 
-    // Debug: print core file decl types before monoize
-    eprintln!("[DEBUG pipeline] core_file has {} decls before monoize", core_file.len());
-    eprintln!("[DEBUG core] first 20 decl types:");
-    for (i, d) in core_file.iter().enumerate().take(20) {
-        use crate::core::Declaration as CD2;
-        let kind = match &d.node {
-            CD2::Constructor(n, ..) => format!("Constructor({})", n),
-            CD2::Datatype(dts) => format!("Datatype({} types)", dts.len()),
-            CD2::Val(n, id, _, e, _) => {
-                let exp_info = debug_core_exp(e, 0);
-                format!("Val({}, id={}, exp={})", n, id, exp_info)
-            }
-            CD2::ValRec(vis) => format!("ValRec({} binds)", vis.len()),
-            CD2::Export(..) => "Export".into(),
-            CD2::Table { sql_name, .. } => format!("Table({})", sql_name),
-            CD2::Sequence(x, ..) => format!("Sequence({})", x),
-            CD2::View(x, ..) => format!("View({})", x),
-            CD2::Index(..) => "Index".into(),
-            CD2::Database(n) => format!("Database({})", n),
-            CD2::Cookie(x, ..) => format!("Cookie({})", x),
-            CD2::Style(x, ..) => format!("Style({})", x),
-            CD2::Task(..) => "Task".into(),
-            CD2::Policy(..) => "Policy".into(),
-            CD2::OnError(..) => "OnError".into(),
-        };
-        eprintln!("[DEBUG core] decl[{}] = {}", i, kind);
-    }
-
     // Monoize
     let mono_file = monoize(core_file, settings, &mut errors)
         .ok_or_else(|| anyhow::anyhow!("Monoize failed"))?;
-    eprintln!("[DEBUG pipeline] after monoize: {} decls, {} exports", mono_file.0.len(), mono_file.1.len());
-    for (i, d) in mono_file.0.iter().enumerate() {
-        use crate::monomorphized::Decl as MD;
-        let dk = match &d.node {
-            MD::Val(n, id, _, e, _) => {
-                let exp_info = debug_mono_exp(e, 0);
-                format!("Val({}, id={}, exp={})", n, id, exp_info)
-            }
-            MD::Export(_ek, src, n, ..) => format!("Export(src={}, n={})", src, n),
-            other => format!("{:?}", std::mem::discriminant(other)),
-        };
-        eprintln!("[DEBUG mono] decl[{}] = {}", i, dk);
-    }
 
     // Collect endpoint metadata (endpoints.sml) — side output, file unchanged.
     let (mono_file, _endpoints) = mono_endpoints(mono_file);
 
     // Mono passes
     let mono_file = mono_untangle(mono_file);
-    eprintln!("[DEBUG pipeline] after untangle: {} decls", mono_file.0.len());
     let mono_file = mono_fuse(mono_file);
-    eprintln!("[DEBUG pipeline] after fuse: {} decls", mono_file.0.len());
-    let mono_file = mono_reduce(mono_file, settings);
-    eprintln!("[DEBUG pipeline] after reduce: {} decls", mono_file.0.len());
+    // Run mono_opt BEFORE the first reduce, like SML's toMono_opt1 pass.
+    // This unconditionally beta-reduces App(Abs, arg) patterns (including impure args),
+    // eliminating anonymous lambdas before mono_reduce converts them to Let bindings.
     let mono_file = mono_opt(mono_file, settings, &mut errors);
-    eprintln!("[DEBUG pipeline] after opt: {} decls", mono_file.0.len());
+    let mono_file = mono_reduce(mono_file, settings);
+    let mono_file = mono_opt(mono_file, settings, &mut errors);
     let mono_file = mono_shake(mono_file);
-    eprintln!("[DEBUG pipeline] after shake: {} decls", mono_file.0.len());
-    for (i, d) in mono_file.0.iter().enumerate().take(10) {
-        use crate::monomorphized::Decl as MD;
-        let dk = match &d.node {
-            MD::Val(n, id, ..) => format!("Val({}, id={})", n, id),
-            MD::ValRec(vs) => format!("ValRec({})", vs.len()),
-            MD::Datatype(dts) => format!("Datatype({})", dts.len()),
-            MD::Export(_ek, src, n, ..) => format!("Export(src={}, n={})", src, n),
-            MD::Table(s, ..) => format!("Table({})", s),
-            _ => format!("{:?}", std::mem::discriminant(&d.node)),
-        };
-        eprintln!("[DEBUG shake] decl[{}] = {}", i, dk);
-    }
     let mono_file = mono_inline(mono_file, settings);
-    eprintln!("[DEBUG pipeline] after inline: {} decls", mono_file.0.len());
 
     // Mono checks
     let mono_file = mono_script_check(mono_file, settings, &mut errors);
@@ -1077,6 +1018,7 @@ pub fn compile_to_outputs(urp_path: &Path, settings: &mut Settings) -> Result<(S
     let (mono_file, _endpoints) = mono_endpoints(mono_file);
     let mono_file = mono_untangle(mono_file);
     let mono_file = mono_fuse(mono_file);
+    let mono_file = mono_opt(mono_file, settings, &mut errors);
     let mono_file = mono_reduce(mono_file, settings);
     let mono_file = mono_opt(mono_file, settings, &mut errors);
     let mono_file = mono_shake(mono_file);

@@ -1346,7 +1346,9 @@ fn reduce_node(env: &Env, e: Exp, span: &Span, ctx: &ReduceCtx, settings: &Setti
             if let Exp::Abs(x, t, _, body) = f.node.clone() {
                 // Beta reduction
                 let impure_arg = impure_ctx(env, &arg, ctx, settings);
-                let multi_use = !ctx.full_mode && count_free(0, &body) > 1;
+                let cf = count_free(0, &body);
+                let multi_use = !ctx.full_mode && cf > 1;
+                eprintln!("[beta] x={} impure_arg={} cf={} multi_use={} full_mode={}", x, impure_arg, cf, multi_use, ctx.full_mode);
                 if impure_arg || multi_use {
                     // Too many uses or arg is impure: use ELet instead of substitution
                     let let_e = Located::new(
@@ -1359,6 +1361,14 @@ fn reduce_node(env: &Env, e: Exp, span: &Span, ctx: &ReduceCtx, settings: &Setti
                     let subst = sub_exp_in_exp(0, &arg, &body);
                     reduce_exp(env, subst, ctx, settings).node
                 }
+            } else if let Exp::Let(x, t, e, b) = f.node.clone() {
+                // Commutation: App(Let(x, t, e, b), arg) → Let(x, t, e, App(b, lift(arg)))
+                // Mirrors SML: `EApp((ELet(x,t,e,b),loc), e') → ELet(x,t,e, EApp(b, liftExpInExp 0 e'))`
+                let lifted_arg = lift_exp_in_exp(0, &*arg);
+                let new_app = Located::new(Exp::App(b, Box::new(lifted_arg)), span.clone());
+                let new_let =
+                    Located::new(Exp::Let(x, t, e, Box::new(new_app)), span.clone());
+                reduce_exp(env, new_let, ctx, settings).node
             } else {
                 Exp::App(f, arg)
             }

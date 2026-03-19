@@ -148,6 +148,8 @@ pub struct Settings {
     pub config_sitelisp: String,
     pub config_libunistring_includes: String,
     pub config_libunistring_libs: String,
+    pub config_bearssl_ldflags: String,
+    pub config_bearssl_libs: String,
     pub config_c_compiler: String,
 
     // URL
@@ -559,6 +561,8 @@ impl Settings {
             config_sitelisp: String::new(),
             config_libunistring_includes: String::new(),
             config_libunistring_libs: String::new(),
+            config_bearssl_ldflags: String::new(),
+            config_bearssl_libs: String::new(),
             config_c_compiler: "cc".into(),
             url_prefix_full: "/".into(),
             url_prefix: "/".into(),
