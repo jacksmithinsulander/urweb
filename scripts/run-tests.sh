@@ -7,7 +7,7 @@ TESTPID="${TESTPID:-/tmp/urweb.pid}"
 srcdir="${1:-.}"
 builddir="${2:-.}"
 
-URWEB="$(cd "$builddir" && pwd)/bin/urweb"
+URWEB="${URWEB:-$(cd "$builddir" && pwd)/bin/urweb}"
 URWEB_ARGS="${URWEB_ARGS:-}"
 export URWEB URWEB_ARGS
 . "$srcdir/tests/lib.sh"

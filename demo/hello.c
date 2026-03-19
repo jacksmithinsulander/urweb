@@ -1,70 +1,16 @@
 #include "urweb.h"
 
-#include <sqlite3.h>
+static void uw_client_init(void) {}
 
-static void uw_client_init(void) {
-    uw_sqlfmtInt = "%lld%n";
-    uw_sqlfmtFloat = "%.16g%n";
-    uw_Estrings = 0;
-    uw_sql_type_annotations = 0;
-    uw_sqlsuffixString = "";
-    uw_sqlsuffixChar = "";
-    uw_sqlsuffixBlob = "";
-    uw_sqlfmtUint4 = "%u%n";
-}
+static void uw_db_init(uw_context ctx) {}
 
-typedef struct {
-    sqlite3 *conn;
-} uw_conn;
+static int uw_db_begin(uw_context ctx, int could_write) { return 0; }
 
-static void uw_db_validate(uw_context ctx) {
-}
+static int uw_db_commit(uw_context ctx) { return 0; }
 
-static void uw_db_prepare(uw_context ctx) {
-}
+static int uw_db_rollback(uw_context ctx) { return 0; }
 
-static void uw_db_init(uw_context ctx) {
-    sqlite3 *sqlite;
-    uw_conn *conn;
-    if (sqlite3_open("/tmp/urweb_rust_minimal.db", &sqlite) != SQLITE_OK)
-        uw_error(ctx, FATAL, "Can't open SQLite database.");
-    if (sqlite3_exec(sqlite, "PRAGMA foreign_keys = ON", NULL, NULL, NULL) != SQLITE_OK)
-        uw_error(ctx, FATAL, "Can't enable foreign_keys for SQLite database.");
-    conn = uw_malloc(ctx, sizeof(uw_conn));
-    conn->conn = sqlite;
-    uw_set_db(ctx, conn);
-    uw_db_validate(ctx);
-    uw_db_prepare(ctx);
-}
-
-static int uw_db_begin(uw_context ctx, int could_write) {
-    uw_conn *conn = uw_get_db(ctx);
-    char *err_msg = NULL;
-    int res = sqlite3_exec(conn->conn, "BEGIN", NULL, NULL, &err_msg);
-    if (res != SQLITE_OK) { sqlite3_free(err_msg); return 1; }
-    return 0;
-}
-
-static int uw_db_commit(uw_context ctx) {
-    uw_conn *conn = uw_get_db(ctx);
-    char *err_msg = NULL;
-    int res = sqlite3_exec(conn->conn, "COMMIT", NULL, NULL, &err_msg);
-    if (res != SQLITE_OK) { sqlite3_free(err_msg); return 1; }
-    return 0;
-}
-
-static int uw_db_rollback(uw_context ctx) {
-    uw_conn *conn = uw_get_db(ctx);
-    char *err_msg = NULL;
-    int res = sqlite3_exec(conn->conn, "ROLLBACK", NULL, NULL, &err_msg);
-    if (res != SQLITE_OK) { sqlite3_free(err_msg); return 1; }
-    return 0;
-}
-
-static void uw_db_close(uw_context ctx) {
-    uw_conn *conn = uw_get_db(ctx);
-    sqlite3_close(conn->conn);
-}
+static void uw_db_close(uw_context ctx) {}
 
 static int uw_input_num(const char *name) { return -1; }
 

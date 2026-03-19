@@ -592,7 +592,11 @@ pub fn elab_con(
     thread_local! {
         static ELAB_CON_DEPTH: Cell<usize> = Cell::new(0);
     }
-    let d = ELAB_CON_DEPTH.with(|c| { let v = c.get(); c.set(v+1); v });
+    let d = ELAB_CON_DEPTH.with(|c| {
+        let v = c.get();
+        c.set(v + 1);
+        v
+    });
     if d > 500 {
         ELAB_CON_DEPTH.with(|c| c.set(0));
         eprintln!("GUARD: elab_con depth exceeded 500!");
@@ -1767,7 +1771,11 @@ pub fn elab_exp(
     thread_local! {
         static ELAB_EXP_DEPTH: Cell<usize> = Cell::new(0);
     }
-    let d = ELAB_EXP_DEPTH.with(|c| { let v = c.get(); c.set(v+1); v });
+    let d = ELAB_EXP_DEPTH.with(|c| {
+        let v = c.get();
+        c.set(v + 1);
+        v
+    });
     if d > 200 {
         ELAB_EXP_DEPTH.with(|c| c.set(0));
         eprintln!("GUARD: elab_exp depth exceeded 200!");
@@ -2284,7 +2292,10 @@ fn elab_exp_var(
         let dt_con = {
             let base = Located::new(elab::Constructor::Named(dt_id), span.clone());
             type_args.iter().fold(base, |acc, arg| {
-                Located::new(elab::Constructor::App(Box::new(acc), Box::new(arg.clone())), span.clone())
+                Located::new(
+                    elab::Constructor::App(Box::new(acc), Box::new(arg.clone())),
+                    span.clone(),
+                )
             })
         };
         let con_type = match arg_type {
@@ -2300,7 +2311,10 @@ fn elab_exp_var(
                         at = result;
                     }
                 }
-                Located::new(elab::Constructor::TFun(Box::new(at), Box::new(dt_con)), span.clone())
+                Located::new(
+                    elab::Constructor::TFun(Box::new(at), Box::new(dt_con)),
+                    span.clone(),
+                )
             }
         };
         return (e, con_type);
@@ -2315,7 +2329,12 @@ fn elab_exp_var(
 fn sgi_find_datatype_con<'a>(
     sgis: &'a [elab::LocatedSignatureItem],
     x: &str,
-) -> Option<(usize, usize, &'a Vec<String>, &'a Option<elab::LocatedConstructor>)> {
+) -> Option<(
+    usize,
+    usize,
+    &'a Vec<String>,
+    &'a Option<elab::LocatedConstructor>,
+)> {
     for sgi in sgis {
         if let elab::SignatureItem::Datatype(dts) = &sgi.node {
             for dt in dts {
@@ -2368,7 +2387,10 @@ fn make_con_exp(
                     at = result;
                 }
             }
-            Located::new(elab::Constructor::TFun(Box::new(at), Box::new(dt_con)), span.clone())
+            Located::new(
+                elab::Constructor::TFun(Box::new(at), Box::new(dt_con)),
+                span.clone(),
+            )
         }
     };
 
@@ -2491,7 +2513,9 @@ fn elab_head_inner(
             );
             // Return type is the codomain
             match tn.node {
-                elab::Constructor::TFun(_, ran) => elab_head_inner(ctx, env, denv, new_e, *ran, span, depth + 1),
+                elab::Constructor::TFun(_, ran) => {
+                    elab_head_inner(ctx, env, denv, new_e, *ran, span, depth + 1)
+                }
                 _ => (new_e, t),
             }
         }
@@ -2507,12 +2531,10 @@ fn elab_head_inner(
         elab::Constructor::App(f, arg) => {
             // Try to reduce App(Named(id), arg) by substituting Named's definition.
             let head_def = match &f.node {
-                elab::Constructor::Named(id) => {
-                    match env.lookup_c_named(*id) {
-                        Ok((_, _, Some(def))) => Some(def.clone()),
-                        _ => None,
-                    }
-                }
+                elab::Constructor::Named(id) => match env.lookup_c_named(*id) {
+                    Ok((_, _, Some(def))) => Some(def.clone()),
+                    _ => None,
+                },
                 _ => None,
             };
             if let Some(def) = head_def {
@@ -3660,17 +3682,12 @@ fn solve_constraints(ctx: &mut ElabCtx, env: &Env) {
                 result,
             } => {
                 // Try to resolve the class instance
-                eprintln!("[DEBUG] TypeClass constraint: class={:?}, num_classes={}", hnorm_con(class.clone()).node, c_env.classes().len());
                 match resolve_class(&c_env, &class, &span) {
                     Some((witness, matched_head)) => {
-                        eprintln!("[DEBUG] TypeClass RESOLVED: head={:?}", matched_head.node);
-                        eprintln!("[DEBUG] class before unify: {:?}", hnorm_con(class.clone()).node);
                         // Unify the class constraint with the matched rule head.
                         // This instantiates any type variables, e.g. solving `Unif(m) = transaction`
                         // when the class is `monad Unif(m)` and the head is `monad transaction`.
-                        let unify_result = unify_cons(ctx, &c_env, &span, &class, &matched_head);
-                        eprintln!("[DEBUG] unify result: {:?}", unify_result);
-                        eprintln!("[DEBUG] class AFTER unify: {:?}", hnorm_con(class.clone()).node);
+                        let _ = unify_cons(ctx, &c_env, &span, &class, &matched_head);
                         *result.lock().unwrap() = Some(witness);
                     }
                     None => {
@@ -3745,8 +3762,9 @@ fn resolve_class(
             let (inst_head, inst_hyps) = instantiate_rule(env, *nq, hyps, head, span);
             if try_match_class(env, &class_n, &inst_head, *nq) {
                 // Check hypotheses
-                let all_hyps_satisfied =
-                    inst_hyps.iter().all(|h| resolve_class(env, h, span).is_some());
+                let all_hyps_satisfied = inst_hyps
+                    .iter()
+                    .all(|h| resolve_class(env, h, span).is_some());
                 if all_hyps_satisfied {
                     return Some((witness.clone(), inst_head));
                 }
@@ -3756,8 +3774,9 @@ fn resolve_class(
         for (nq, hyps, head, witness) in &rules.open_rules {
             let (inst_head, inst_hyps) = instantiate_rule(env, *nq, hyps, head, span);
             if try_match_class(env, &class_n, &inst_head, *nq) {
-                let all_hyps_satisfied =
-                    inst_hyps.iter().all(|h| resolve_class(env, h, span).is_some());
+                let all_hyps_satisfied = inst_hyps
+                    .iter()
+                    .all(|h| resolve_class(env, h, span).is_some());
                 if all_hyps_satisfied {
                     return Some((witness.clone(), inst_head));
                 }

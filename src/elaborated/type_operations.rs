@@ -575,10 +575,16 @@ pub fn hnorm_con(constructor: LocatedConstructor) -> LocatedConstructor {
     thread_local! {
         static HNORM_DEPTH: Cell<usize> = Cell::new(0);
     }
-    let d = HNORM_DEPTH.with(|c| { let v = c.get(); c.set(v+1); v });
+    let d = HNORM_DEPTH.with(|c| {
+        let v = c.get();
+        c.set(v + 1);
+        v
+    });
     if d > 200 {
         HNORM_DEPTH.with(|c| c.set(0));
-        panic!("hnorm_con: infinite loop detected (depth > 200); likely circular unification variable");
+        panic!(
+            "hnorm_con: infinite loop detected (depth > 200); likely circular unification variable"
+        );
     }
     let result = hnorm_con_inner(constructor);
     HNORM_DEPTH.with(|c| c.set(d));
@@ -947,7 +953,6 @@ pub fn reduce_con(constructor: LocatedConstructor) -> LocatedConstructor {
 fn reduce_con_inner_legacy(constructor: LocatedConstructor) -> LocatedConstructor {
     let span = constructor.span.clone();
     match constructor.node {
-
         Constructor::App(c1, c2) => {
             let c1 = reduce_con(*c1);
             let c2 = reduce_con(*c2);

@@ -592,7 +592,10 @@ fn corify_exp(st: &St, e: expl::LocatedExpression) -> core_ir::LocatedExpression
         expl::Expression::Named(n) => {
             // First check if n is a remapped normal val
             if let Some(n2) = st.lookup_val_by_id(n) {
-                return Located { node: core_ir::Expression::Named(n2), span };
+                return Located {
+                    node: core_ir::Expression::Named(n2),
+                    span,
+                };
             }
             // Check if n is an FFI val (e.g. Basis.transaction_return)
             if let Some((module, name)) = st.lookup_val_ffi(n) {
@@ -1635,18 +1638,6 @@ fn corify_decl(
                         let mut export_fns: Vec<Box<dyn Fn(&St) -> core_ir::LocatedDeclaration>> =
                             Vec::new();
 
-                        // Debug: show what's in the signature
-                        eprintln!("[DEBUG export] Processing Export, sgis count={}", sgis.len());
-                        for sgi in &sgis {
-                            match &sgi.node {
-                                expl::SignatureItem::Val(s, _, t) => {
-                                    eprintln!("[DEBUG export]   SgiVal '{}' type depth={}", s, con_depth(t));
-                                    eprintln!("[DEBUG export]     type: {}", debug_con(t, 0));
-                                }
-                                _ => eprintln!("[DEBUG export]   non-val sgi"),
-                            }
-                        }
-
                         for sgi in sgis {
                             if let expl::SignatureItem::Val(s, _, t) = sgi.node {
                                 // Check if it's a page (returns transaction xml)
@@ -2255,31 +2246,6 @@ fn transactify(
     }
 }
 
-// Debug helpers
-fn con_depth(t: &expl::LocatedConstructor) -> usize {
-    match &t.node {
-        expl::Constructor::App(f, _) => 1 + con_depth(f),
-        expl::Constructor::TFun(d, r) => 1 + con_depth(d).max(con_depth(r)),
-        expl::Constructor::TCFun(_, _, r) => 1 + con_depth(r),
-        _ => 0,
-    }
-}
-
-fn debug_con(t: &expl::LocatedConstructor, depth: usize) -> String {
-    if depth > 6 { return "...".into(); }
-    match &t.node {
-        expl::Constructor::ModProj(m, ms, s) => format!("ModProj({},{:?},{})", m, ms, s),
-        expl::Constructor::App(f, a) => format!("App({}, {})", debug_con(f, depth+1), debug_con(a, depth+1)),
-        expl::Constructor::TFun(d, r) => format!("TFun({}, {})", debug_con(d, depth+1), debug_con(r, depth+1)),
-        expl::Constructor::TCFun(x, _, r) => format!("TCFun({}, {})", x, debug_con(r, depth+1)),
-        expl::Constructor::Record(_, fields) => format!("Record[{}]", fields.iter().map(|(k,_)| debug_con(k, depth+1)).collect::<Vec<_>>().join(",")),
-        expl::Constructor::Name(s) => format!("Name({})", s),
-        expl::Constructor::Named(id) => format!("Named({})", id),
-        expl::Constructor::TRecord(inner) => format!("TRecord({})", debug_con(inner, depth+1)),
-        _ => format!("{:?}", std::mem::discriminant(&t.node)),
-    }
-}
-
 // Helper: check if an explicit type is a "page" type (returns transaction xml) and collect args.
 // Works by corifying the type to core IR and checking for Basis.transaction(Basis.xml(Html, _, _)).
 fn get_page(
@@ -2299,10 +2265,8 @@ fn get_page_inner(
     match &t.node {
         expl::Constructor::App(f, arg) => {
             let is_trans = is_basis_transaction(basis_n, f, st);
-            eprintln!("[DEBUG get_page] App: f={}, is_transaction={}", debug_con(f, 0), is_trans);
             if is_trans {
                 let is_xml = is_xml_html(basis_n, arg, st);
-                eprintln!("[DEBUG get_page] arg={}, is_xml_html={}", debug_con(arg, 0), is_xml);
                 if is_xml {
                     return Some((arg.as_ref().clone(), args));
                 }
@@ -2310,15 +2274,11 @@ fn get_page_inner(
             None
         }
         expl::Constructor::TFun(dom, ran) => {
-            eprintln!("[DEBUG get_page] TFun: recursing into ran");
             let mut new_args = args;
             new_args.push(*dom.clone());
             get_page_inner(basis_n, ran, new_args, st)
         }
-        other => {
-            eprintln!("[DEBUG get_page] no match: {:?}", std::mem::discriminant(other));
-            None
-        }
+        _ => None,
     }
 }
 
@@ -2352,7 +2312,6 @@ fn is_xml_html(basis_n: usize, t: &expl::LocatedConstructor, st: &St) -> bool {
                                 }
                                 expl::Constructor::Named(n) => {
                                     let ffi = st.lookup_con_ffi(*n);
-                                    eprintln!("[DEBUG is_xml_html] Named({}) → {:?}", n, ffi);
                                     matches!(ffi, Some((m, x)) if m == "Basis" && x == "xml")
                                 }
                                 _ => false,
@@ -2369,7 +2328,8 @@ fn is_xml_html(basis_n: usize, t: &expl::LocatedConstructor, st: &St) -> bool {
                                     }
                                     expl::Constructor::Named(n) => {
                                         // Check if it's the "html" type synonym from Basis
-                                        if matches!(st.lookup_con_ffi(*n), Some((m, x)) if m == "Basis" && x == "html") {
+                                        if matches!(st.lookup_con_ffi(*n), Some((m, x)) if m == "Basis" && x == "html")
+                                        {
                                             true
                                         } else {
                                             // Try corifying and checking for Record [Html = ...]

@@ -484,14 +484,8 @@ fn p_funcall(
             // Evaluate args and call: C11-compliant direct call.
             // Evaluation order of function arguments is implementation-defined but
             // cjrize should have lifted side-effectful sub-expressions to let-bindings.
-            let arg_strs: Vec<String> =
-                args.iter().map(|(e, _)| p_exp(env, e, settings)).collect();
-            format!(
-                "{}(ctx, {}{})",
-                fn_name,
-                arg_strs.join(", "),
-                extra_s
-            )
+            let arg_strs: Vec<String> = args.iter().map(|(e, _)| p_exp(env, e, settings)).collect();
+            format!("{}(ctx, {}{})", fn_name, arg_strs.join(", "), extra_s)
         }
     }
 }
@@ -2531,7 +2525,8 @@ fn gen_mysql_c_code(
         "static int uw_db_commit(uw_context ctx) { return 0; }\n\n",
         "static int uw_db_rollback(uw_context ctx) { return 0; }\n\n",
         "static void uw_db_close(uw_context ctx) {}\n\n",
-    ).to_string()
+    )
+    .to_string()
 }
 
 fn gen_postgres_c_code(
@@ -2547,7 +2542,8 @@ fn gen_postgres_c_code(
         "static int uw_db_commit(uw_context ctx) { return 0; }\n\n",
         "static int uw_db_rollback(uw_context ctx) { return 0; }\n\n",
         "static void uw_db_close(uw_context ctx) {}\n\n",
-    ).to_string()
+    )
+    .to_string()
 }
 
 /// Generate uw_input_num: maps form input names to their indices.
@@ -2741,7 +2737,6 @@ pub fn cjr_print(file: &crate::c_like_representation::File, settings: &Settings)
     } else {
         global_initializers.join("\n")
     };
-
 
     // Build output
     let mut out = String::new();

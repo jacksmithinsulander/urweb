@@ -145,9 +145,6 @@ rule mk_urweb_mlb
 
 build $builddir/src/urweb.mlb: mk_urweb_mlb $srcdir/src/sources $srcdir/src/prefix.mlb $srcdir/src/suffix.mlb
 
-# bin/urweb (use verbose rule so user knows MLton takes time)
-build $builddir/bin/urweb: mlton_compiler $srcdir/src/compiler.mlb | $builddir/src/config.sml $builddir/xml/entities.sml $builddir/src/urweb.mlb
-
 # C object files
 NINJAEOF
 
@@ -199,92 +196,71 @@ echo ""
 echo "build uninstall: uninstall_cmd"
 echo ""
 
-# Test (requires bin/urweb, sqlite3, curl)
-# pool = console gives direct terminal access so output appears in real time
-echo "rule test_cmd"
-echo "  command = sh $srcdir/scripts/run-tests.sh $srcdir $builddir"
-echo "  description = Run tests (demo + 21)"
+# ── FORCE: always-dirty phony, making dependents always rebuild ───────────────
+cat <<'NINJAFORCE'
+# FORCE: always dirty — any target that depends on FORCE always rebuilds.
+build FORCE: phony
+
+NINJAFORCE
+
+# ── samu / samu ml — build ML compiler (always rebuilds) ─────────────────────
+cat <<'NINJAML'
+rule ml_build_rule
+  command = sh $srcdir/scripts/mlton-with-progress.sh $MLTON -mlb-path-var 'SRC $srcdir/src' -mlb-path-var 'BUILD $srcdir/src' -output $builddir/bin/urweb $srcdir/src/compiler.mlb
+  description = Build ML compiler — bin/urweb (2-3 min)
+  pool = console
+
+build ml: ml_build_rule $srcdir/src/compiler.mlb | FORCE $builddir/src/config.sml $builddir/xml/entities.sml $builddir/src/urweb.mlb
+
+NINJAML
+
+# ── samu test — test ML compiler ─────────────────────────────────────────────
+echo "rule ml_test_rule"
+echo "  command = sh \$srcdir/scripts/run-tests.sh \$srcdir \$builddir"
+echo "  description = Run ML compiler tests"
 echo "  pool = console"
 echo ""
-echo "build test: test_cmd"
+echo "build test: ml_test_rule | ml"
 echo ""
 
-# Minimal test (demo/hello only, no full demo, ~15s)
-echo "rule test_minimal_cmd"
-echo "  command = sh $srcdir/scripts/run-tests-minimal.sh $srcdir $builddir"
-echo "  description = Run minimal test (hello)"
+# ── samu rust — build Rust compiler (always rebuilds) ────────────────────────
+echo "rule rust_build_rule"
+echo "  command = cd \$srcdir && CARGO_TARGET_DIR=\$srcdir/target cargo build --release && mkdir -p \$builddir/bin && cp \$srcdir/target/release/ur-compile \$builddir/bin/urweb-rust && chmod 755 \$builddir/bin/urweb-rust"
+echo "  description = Build Rust compiler — bin/urweb-rust"
 echo "  pool = console"
 echo ""
-echo "build test-minimal: test_minimal_cmd"
+echo "build rust: rust_build_rule | FORCE"
 echo ""
 
-# Rust compiler (bin/urweb-rust) - build from Cargo, keep both ML and Rust binaries
-echo "rule build_urweb_rust"
-echo "  command = cd \$srcdir && CARGO_TARGET_DIR=\$srcdir/target cargo build --release && mkdir -p \$builddir/bin && cp \$srcdir/target/release/urweb \$builddir/bin/urweb-rust && chmod 755 \$builddir/bin/urweb-rust"
-echo "  description = Build Rust compiler (bin/urweb-rust)"
+# ── samu rust-test — test Rust compiler (same tests as ML) ───────────────────
+echo "rule rust_test_rule"
+echo "  command = URWEB=\$builddir/bin/urweb-rust sh \$srcdir/scripts/run-tests.sh \$srcdir \$builddir"
+echo "  description = Run tests with Rust compiler (same suite as ML)"
 echo "  pool = console"
 echo ""
-echo "build \$builddir/bin/urweb-rust: build_urweb_rust \$srcdir/Cargo.toml"
+echo "build rust-test: rust_test_rule | rust"
 echo ""
 
-# Demo tests using Rust compiler
-echo "rule test_demo_rust_cmd"
-echo "  command = sh \$srcdir/scripts/run-tests-minimal-rust.sh \$srcdir \$builddir"
-echo "  description = Run demo/hello test with Rust compiler"
-echo "  pool = console"
-echo ""
-echo "build test-demo-rust: test_demo_rust_cmd | \$builddir/bin/urweb-rust"
-echo ""
-
-# Compare ML vs Rust compiler output (C + SQL)
-echo "rule compare_compilers_cmd"
+# ── samu compare — compare ML and Rust compiler output ───────────────────────
+echo "rule compare_rule"
 echo "  command = sh \$srcdir/scripts/compare-compilers.sh \$srcdir \$builddir"
-echo "  description = Compare ML and Rust compiler output (goal: identical)"
+echo "  description = Compare ML vs Rust compiler output (pretty diff)"
 echo "  pool = console"
 echo ""
-echo "build compare-compilers: compare_compilers_cmd | \$builddir/bin/urweb \$builddir/bin/urweb-rust"
+echo "build compare: compare_rule | ml rust"
 echo ""
 
-# cproc (optional C11 compiler) - requires QBE: brew install qbe
-echo "rule build_cproc"
-echo "  command = cd $srcdir/vendor/cproc && (test -f config.h || ./configure) && make"
-echo "  description = Build cproc (C11 compiler)"
-echo "  pool = console"
-echo ""
-echo "build cproc: build_cproc"
-echo ""
-
-# C compiler tests (gcc, clang, cproc) - verifies C11 compliance
-echo "rule test_cc_compilers_cmd"
-echo "  command = sh $srcdir/scripts/test-cc-compilers.sh $srcdir $builddir"
-echo "  description = Run CC compiler tests (gcc/clang/cproc)"
-echo "  pool = console"
-echo ""
-echo "build test-cc-compilers: test_cc_compilers_cmd"
-echo ""
-
-# Rust coverage (lcov, 100% line; requires cargo-llvm-cov)
-echo "rule coverage_rust_cmd"
-echo "  command = sh $srcdir/scripts/coverage-rust.sh"
-echo "  description = Rust coverage (lcov, 100% line)"
-echo "  pool = console"
-echo ""
-echo "build coverage-rust: coverage_rust_cmd"
-echo ""
+# ── Extras ────────────────────────────────────────────────────────────────────
 
 # Out-of-tree build: copy lib to builddir (no symlinks)
 if [ "$builddir" != "$srcdir" ]; then
   echo "rule copy_lib"
-  echo "  command = mkdir -p $builddir/lib/ur $builddir/lib/js && cp -r $srcdir/lib/ur/* $builddir/lib/ur/ && cp -r $srcdir/lib/js/* $builddir/lib/js/ && touch $builddir/lib/.stamp"
-  echo "  description = Copy lib to build dir (out-of-tree, no symlinks)"
+  echo "  command = mkdir -p \$builddir/lib/ur \$builddir/lib/js && cp -r \$srcdir/lib/ur/* \$builddir/lib/ur/ && cp -r \$srcdir/lib/js/* \$builddir/lib/js/ && touch \$builddir/lib/.stamp"
+  echo "  description = Copy lib to build dir (out-of-tree)"
   echo ""
-  echo "build $builddir/lib/.stamp: copy_lib"
+  echo "build \$builddir/lib/.stamp: copy_lib"
   echo ""
-  echo "build all: phony $builddir/bin/urweb $builddir/src/c/liburweb.a $builddir/src/c/liburweb_http.a $builddir/src/c/liburweb_cgi.a $builddir/src/c/liburweb_fastcgi.a $builddir/src/c/liburweb_static.a $builddir/lib/.stamp"
-else
-  echo "build all: phony $builddir/bin/urweb $builddir/src/c/liburweb.a $builddir/src/c/liburweb_http.a $builddir/src/c/liburweb_cgi.a $builddir/src/c/liburweb_fastcgi.a $builddir/src/c/liburweb_static.a"
 fi
-echo ""
-echo "default all"
-echo ""
-echo "default all"
+
+# Default: build ML compiler
+echo "default ml"

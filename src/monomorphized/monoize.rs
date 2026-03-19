@@ -1011,14 +1011,20 @@ fn mono_basis_ffi(x: &str, loc: &Span) -> Option<LocExp> {
 
 fn str_h(s: &str, loc: &Span) -> LocExp {
     Located::new(
-        Exp::Prim(Prim::String(crate::primitives::StringMode::Html, s.to_string())),
+        Exp::Prim(Prim::String(
+            crate::primitives::StringMode::Html,
+            s.to_string(),
+        )),
         loc.clone(),
     )
 }
 
 fn str_n(s: &str, loc: &Span) -> LocExp {
     Located::new(
-        Exp::Prim(Prim::String(crate::primitives::StringMode::Normal, s.to_string())),
+        Exp::Prim(Prim::String(
+            crate::primitives::StringMode::Normal,
+            s.to_string(),
+        )),
         loc.clone(),
     )
 }
@@ -1598,7 +1604,12 @@ fn mono_basis_capp(
             );
             // let r = m1 {} in (m2 r) {}
             let let_r = Located::new(
-                Exp::Let("r".into(), t1.clone(), Box::new(app_m1_unit), Box::new(m2_r_unit)),
+                Exp::Let(
+                    "r".into(),
+                    t1.clone(),
+                    Box::new(app_m1_unit),
+                    Box::new(m2_r_unit),
+                ),
                 loc.clone(),
             );
             // fn _: unit => let r = m1 {} in (m2 r) {}
@@ -1607,10 +1618,7 @@ fn mono_basis_capp(
                 loc.clone(),
             );
             // type of m2_f: t1 -> (unit -> t2)
-            let m2_t = Located::new(
-                Typ::Fun(Box::new(t1), Box::new(mt2.clone())),
-                loc.clone(),
-            );
+            let m2_t = Located::new(Typ::Fun(Box::new(t1), Box::new(mt2.clone())), loc.clone());
             // return type of the whole bind: unit -> unit (transaction unit)
             let bind_ran = Located::new(
                 Typ::Fun(Box::new(un.clone()), Box::new(un.clone())),
@@ -1618,14 +1626,16 @@ fn mono_basis_capp(
             );
             // fn m2: (t1 -> mt2) => fn _ => ...
             let m2_abs = Located::new(
-                Exp::Abs("m2".into(), m2_t.clone(), bind_ran.clone(), Box::new(inner_abs)),
+                Exp::Abs(
+                    "m2".into(),
+                    m2_t.clone(),
+                    bind_ran.clone(),
+                    Box::new(inner_abs),
+                ),
                 loc.clone(),
             );
             // type of outer abs: mt1 -> (m2_t -> bind_ran)
-            let outer_ran = Located::new(
-                Typ::Fun(Box::new(m2_t), Box::new(bind_ran)),
-                loc.clone(),
-            );
+            let outer_ran = Located::new(Typ::Fun(Box::new(m2_t), Box::new(bind_ran)), loc.clone());
             // fn m1: mt1 => fn m2 => fn _ => ...
             Some(Located::new(
                 Exp::Abs("m1".into(), mt1, outer_ran, Box::new(m2_abs)),
@@ -1757,10 +1767,7 @@ fn mono_exp(env: &Env, fm: &mut Fm, exp: &LocatedExpression) -> LocExp {
                             let n = vargs.len();
                             let xml1 = mono_exp(env, fm, vargs[n - 2]);
                             let xml2 = mono_exp(env, fm, vargs[n - 1]);
-                            return Located::new(
-                                Exp::Strcat(Box::new(xml1), Box::new(xml2)),
-                                loc,
-                            );
+                            return Located::new(Exp::Strcat(Box::new(xml1), Box::new(xml2)), loc);
                         }
                         "cdata" if vargs.len() >= 1 => {
                             // cdata has 0 proof args + 1 string arg
@@ -1784,7 +1791,9 @@ fn mono_exp(env: &Env, fm: &mut Fm, exp: &LocatedExpression) -> LocExp {
                             // Use last 7 value args (skip 3 proof args at front).
                             let n = vargs.len();
                             return desugar_tag(
-                                env, fm, &loc,
+                                env,
+                                fm,
+                                &loc,
                                 vargs[n - 7], // class  (css_class)
                                 vargs[n - 5], // style  (css_style)
                                 vargs[n - 2], // tag function (e.g. head{})

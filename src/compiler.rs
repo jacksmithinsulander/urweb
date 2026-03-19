@@ -128,6 +128,63 @@ pub fn parse_urp(path: &Path) -> Result<Job> {
     crate::urp_parser::parse_urp(path)
 }
 
+// ---------------------------------------------------------------------------
+// Boot path resolution
+// ---------------------------------------------------------------------------
+
+/// When `settings.boot_linking` is set, walk up from the current executable to
+/// find the project root (the directory containing `lib/ur/basis.urs`) and
+/// populate `job.basis_lib_dir` and the `config_*` settings.
+fn apply_boot_settings(job: &mut Job, settings: &mut Settings) {
+    if !settings.boot_linking {
+        return;
+    }
+    let exe = match std::env::current_exe() {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    let mut candidate = exe.parent().map(|p| p.to_path_buf());
+    let root = loop {
+        match candidate {
+            None => return,
+            Some(ref dir) => {
+                if dir.join("lib/ur/basis.urs").exists() {
+                    break dir.clone();
+                }
+                candidate = dir.parent().map(|p| p.to_path_buf());
+            }
+        }
+    };
+    if job.basis_lib_dir.is_none() {
+        job.basis_lib_dir = Some(root.join("lib/ur"));
+    }
+    if settings.config_include.is_empty() {
+        let inc = root.join("include/urweb");
+        if inc.exists() {
+            settings.config_include = inc.to_string_lossy().into_owned();
+        }
+    }
+    if settings.config_lib.is_empty() {
+        let lib_c = root.join("src/c");
+        if lib_c.exists() {
+            settings.config_lib = lib_c.to_string_lossy().into_owned();
+        }
+    }
+    if settings.config_bearssl_libs.is_empty() {
+        let bear_a = root.join("vendor/BearSSL/build/libbearssl.a");
+        if bear_a.exists() {
+            settings.config_bearssl_libs = bear_a.to_string_lossy().into_owned();
+        }
+    }
+    if settings.config_libunistring_libs.is_empty() {
+        let uni = std::path::Path::new("/opt/homebrew/lib/libunistring.a");
+        if uni.exists() {
+            settings.config_libunistring_libs = uni.to_string_lossy().into_owned();
+        } else {
+            settings.config_libunistring_libs = "-lunistring".into();
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Phase 2: Parse source files
@@ -277,10 +334,8 @@ pub fn parse_sources(job: &Job, errors: &mut ErrorReporter) -> Option<crate::sou
     if let Some(last_src) = job.sources.last() {
         let mname = module_of(last_src);
         let export_span = crate::error_types::Span::dummy();
-        let str_node = crate::error_types::Located::new(
-            source::Str::Var(mname),
-            export_span.clone(),
-        );
+        let str_node =
+            crate::error_types::Located::new(source::Str::Var(mname), export_span.clone());
         decls.push(crate::error_types::Located::new(
             source::Decl::Export(str_node),
             export_span,
@@ -702,7 +757,11 @@ pub fn cc_and_link(c_source: &str, output: &Path, job: &Job, settings: &Settings
     link_cmd.arg(&o_file);
     // Protocol-specific runtime library (provides main())
     if !settings.config_lib.is_empty() {
-        let proto = if settings.protocol.is_empty() { "http" } else { settings.protocol.as_str() };
+        let proto = if settings.protocol.is_empty() {
+            "http"
+        } else {
+            settings.protocol.as_str()
+        };
         let proto_lib = format!("{}/liburweb_{}.a", settings.config_lib, proto);
         if std::path::Path::new(&proto_lib).exists() {
             link_cmd.arg(&proto_lib);
@@ -712,9 +771,15 @@ pub fn cc_and_link(c_source: &str, output: &Path, job: &Job, settings: &Settings
     link_cmd.arg("-lurweb").arg("-lm");
     // Link DBMS-specific library
     match settings.dbms.as_str() {
-        "sqlite" => { link_cmd.arg("-lsqlite3"); }
-        "mysql" => { link_cmd.arg("-lmysqlclient"); }
-        _ => { link_cmd.arg("-lpq"); } // postgres
+        "sqlite" => {
+            link_cmd.arg("-lsqlite3");
+        }
+        "mysql" => {
+            link_cmd.arg("-lmysqlclient");
+        }
+        _ => {
+            link_cmd.arg("-lpq");
+        } // postgres
     }
     // BearSSL (crypto)
     if !settings.config_bearssl_libs.is_empty() {
@@ -768,66 +833,7 @@ pub fn compile(urp_path: &Path, settings: &mut Settings) -> CompileResult {
     };
     let mut job = parse_urp(urp_path)?;
 
-    // In boot mode, locate lib/ur relative to the executable so that
-    // basis.urs is loaded from the source tree rather than an installed copy.
-    // Also set include/urweb so the generated C code can find urweb.h.
-    if settings.boot_linking {
-        if let Ok(exe) = std::env::current_exe() {
-            // exe is e.g. .../bin/urweb-rust or .../target/release/ur-compile
-            // Walk up until we find a directory that contains lib/ur/basis.urs.
-            let mut candidate = exe.parent().map(|p| p.to_path_buf());
-            let found = loop {
-                match candidate {
-                    None => break None,
-                    Some(ref dir) => {
-                        let lib_ur = dir.join("lib/ur");
-                        if lib_ur.join("basis.urs").exists() {
-                            break Some(dir.clone());
-                        }
-                        candidate = dir.parent().map(|p| p.to_path_buf());
-                    }
-                }
-            };
-            if let Some(root) = found {
-                if job.basis_lib_dir.is_none() {
-                    job.basis_lib_dir = Some(root.join("lib/ur"));
-                }
-                // Set include path for C headers (include/urweb/urweb.h)
-                if settings.config_include.is_empty() {
-                    let inc = root.join("include/urweb");
-                    if inc.exists() {
-                        settings.config_include = inc.to_string_lossy().into_owned();
-                    }
-                }
-                // Set lib path for liburweb.a
-                if settings.config_lib.is_empty() {
-                    let lib_c = root.join("src/c");
-                    if lib_c.exists() {
-                        settings.config_lib = lib_c.to_string_lossy().into_owned();
-                    }
-                }
-                // Set BearSSL path (vendored) — use static lib directly to avoid
-                // relative-path .so being embedded in the executable.
-                if settings.config_bearssl_libs.is_empty() {
-                    let bear_a = root.join("vendor/BearSSL/build/libbearssl.a");
-                    if bear_a.exists() {
-                        settings.config_bearssl_libs =
-                            bear_a.to_string_lossy().into_owned();
-                    }
-                }
-                // Set libunistring path (homebrew or system)
-                if settings.config_libunistring_libs.is_empty() {
-                    let uni = std::path::Path::new("/opt/homebrew/lib/libunistring.a");
-                    if uni.exists() {
-                        settings.config_libunistring_libs =
-                            uni.to_string_lossy().into_owned();
-                    } else {
-                        settings.config_libunistring_libs = "-lunistring".into();
-                    }
-                }
-            }
-        }
-    }
+    apply_boot_settings(&mut job, settings);
 
     // Apply job settings globally
     settings.set_url_prefix(&job.prefix);
@@ -969,7 +975,8 @@ pub fn compile(urp_path: &Path, settings: &mut Settings) -> CompileResult {
 pub fn compile_to_outputs(urp_path: &Path, settings: &mut Settings) -> Result<(String, String)> {
     let mut errors = ErrorReporter::new();
 
-    let job = parse_urp(urp_path)?;
+    let mut job = parse_urp(urp_path)?;
+    apply_boot_settings(&mut job, settings);
     settings.set_url_prefix(&job.prefix);
     settings.timeout = job.timeout;
     settings.headers = job.headers.clone();

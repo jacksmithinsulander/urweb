@@ -44,10 +44,15 @@ fn process_string_escapes(s: &str) -> Option<String> {
                 let mut digits = String::new();
                 for _ in 0..2 {
                     if let Some(&d) = chars.peek() {
-                        if d.is_ascii_digit() { digits.push(chars.next().unwrap()); }
+                        if d.is_ascii_digit() {
+                            digits.push(chars.next().unwrap());
+                        }
                     }
                 }
-                let n: u32 = format!("d{}", digits).trim_start_matches('d').parse().ok()?;
+                let n: u32 = format!("d{}", digits)
+                    .trim_start_matches('d')
+                    .parse()
+                    .ok()?;
                 out.push(char::from_u32(n)?);
             }
             'u' => {
@@ -59,7 +64,10 @@ fn process_string_escapes(s: &str) -> Option<String> {
             ' ' | '\n' | '\t' => {
                 // SML whitespace gap: skip to matching backslash
                 while let Some(&c2) = chars.peek() {
-                    if c2 == '\\' { chars.next(); break; }
+                    if c2 == '\\' {
+                        chars.next();
+                        break;
+                    }
                     chars.next();
                 }
             }
