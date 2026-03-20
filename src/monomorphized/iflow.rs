@@ -410,6 +410,7 @@ struct IflowState {
     nvar: usize,
 }
 
+#[allow(dead_code)]
 impl IflowState {
     fn new() -> Self {
         IflowState {

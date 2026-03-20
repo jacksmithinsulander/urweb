@@ -1035,6 +1035,7 @@ fn make_strcat(e1: LocExp, e2: LocExp) -> LocExp {
 }
 
 /// Build `if s == "" then "" else " attr=\"" ++ s ++ "\""` as a Case expression.
+#[allow(dead_code)]
 fn build_attr_case(attr: &str, val_e: LocExp, loc: &Span) -> LocExp {
     let string_t = Located::new(Typ::Ffi("Basis".into(), "string".into()), loc.clone());
     let empty_str = str_n("", loc);
