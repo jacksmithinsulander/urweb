@@ -2,11 +2,23 @@
 //!
 //! - **open_text** / **open_binary**: read files, update most_recent_mod_time
 //! - **resolve**: resolve path relative to base
-//! - **most_recent_mod_time**: for incremental builds
+//! - **most_recent_mod_time** / **ModTime**: for incremental builds
 
 use anyhow::Context;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
+
+/// Latest modification time tracked by this module (`UNIX_EPOCH` if none yet).
+///
+/// Newtype so `Default` exists for cargo-mutants (unlike `SystemTime` itself).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ModTime(pub SystemTime);
+
+impl Default for ModTime {
+    fn default() -> Self {
+        ModTime(SystemTime::UNIX_EPOCH)
+    }
+}
 
 /// Tracks the most-recent modification time of any file opened via this module
 /// (mirrors SML's `FileIO.mostRecentModTimeRef`).
@@ -38,12 +50,14 @@ pub(crate) fn __reset_for_test() {
     UPDATE_COUNT.store(0, std::sync::atomic::Ordering::Relaxed);
 }
 
-/// Returns the most recent modification time seen, or `SystemTime::UNIX_EPOCH` if none.
-pub fn most_recent_mod_time() -> SystemTime {
-    MOST_RECENT_MOD
-        .lock()
-        .unwrap()
-        .unwrap_or(SystemTime::UNIX_EPOCH)
+/// Returns the most recent modification time seen, or `UNIX_EPOCH` if none.
+pub fn most_recent_mod_time() -> ModTime {
+    ModTime(
+        MOST_RECENT_MOD
+            .lock()
+            .unwrap()
+            .unwrap_or(SystemTime::UNIX_EPOCH),
+    )
 }
 
 /// Open a text file for reading, updating the mod-time tracker.

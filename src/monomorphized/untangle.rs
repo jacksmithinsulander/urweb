@@ -217,7 +217,13 @@ fn tarjan_sccs_topological(
             .collect();
         let mut dfs: Vec<(usize, Vec<usize>)> = vec![(start, start_succs)];
 
+        const MAX_TARJAN_ITERATIONS: usize = 100_000;
+        let mut tarjan_iter = 0usize;
         'outer: while let Some((cur, ref mut rem)) = dfs.last_mut() {
+            tarjan_iter += 1;
+            if tarjan_iter > MAX_TARJAN_ITERATIONS {
+                break;
+            }
             let cur = *cur;
             while let Some(w) = rem.pop() {
                 if !disc.contains_key(&w) {

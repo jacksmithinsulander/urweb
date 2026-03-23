@@ -90,7 +90,11 @@ pub fn capitalize(s: &str) -> String {
     let mut chars = s.chars();
     match chars.next() {
         None => String::new(),
-        Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
+        Some(c) => {
+            let mut out = c.to_uppercase().collect::<String>();
+            out.push_str(chars.as_str());
+            out
+        }
     }
 }
 
@@ -154,6 +158,14 @@ pub fn toml_get<'a>(entries: &'a [(String, String)], key: &str) -> Option<&'a st
 
 pub fn file_exists(path: &str) -> bool {
     std::path::Path::new(path).exists()
+}
+
+/// Last path segment of an `author/repo` install spec, ignoring empty `//` segments.
+pub fn package_spec_repo_leaf(spec: &str) -> &str {
+    spec.split('/')
+        .filter(|s| !s.is_empty())
+        .last()
+        .unwrap_or(spec)
 }
 
 pub fn is_file_arg(arg: &str) -> bool {
@@ -410,5 +422,11 @@ k = "hello""#;
         let files = kind_specific_created_files(ProjectKind::Library, "mylib");
         assert!(files.iter().any(|s| s.ends_with(".urs")));
         assert!(!files.iter().any(|s| s.contains("style/")));
+    }
+
+    #[test]
+    fn package_spec_repo_leaf_skips_empty_segments() {
+        assert_eq!(package_spec_repo_leaf("org/repo"), "repo");
+        assert_eq!(package_spec_repo_leaf("org//repo"), "repo");
     }
 }

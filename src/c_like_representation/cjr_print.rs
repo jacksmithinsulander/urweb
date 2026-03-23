@@ -3085,7 +3085,12 @@ pub fn cjr_print(file: &crate::c_like_representation::File, settings: &Settings)
     let mut out = String::new();
 
     // Includes
-    out.push_str("#include \"urweb.h\"\n\n");
+    out.push_str("#include \"urweb.h\"\n");
+    out.push_str("#include <stdio.h>\n");
+    out.push_str("#include <stdlib.h>\n");
+    out.push_str("#include <string.h>\n");
+    out.push_str("#include <math.h>\n");
+    out.push_str("#include <time.h>\n\n");
 
     // DBMS-specific code (uw_client_init, uw_db_init, etc.)
     out.push_str(&gen_dbms_c_code(settings, &tables, &prepared_stmts));

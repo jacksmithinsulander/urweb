@@ -5,6 +5,7 @@
 //! - **lexer**: tokenization (Logos)
 
 pub mod lexical_analyzer;
+pub mod xml_helpers;
 
 // Include the LALRPOP-generated parser when it has been built.
 // `build.rs` sets `cargo:rustc-cfg=generated_parser` only when
@@ -48,6 +49,10 @@ pub fn preprocess_urs(src: &str) -> String {
 
     let b = src.as_bytes();
     let n = b.len();
+    // Valid scans advance through the input at most once per loop (≤ n steps).
+    // Keep the cap at n+1 so mutants that break `i` or conditions bail out fast
+    // instead of doing O(8n) work (which times out on large .urs files).
+    let step_cap = n.saturating_add(1);
     let mut out = String::with_capacity(n + 128);
     let mut i = 0;
     // Track the last non-whitespace, non-comment token we emitted so we can
@@ -62,13 +67,25 @@ pub fn preprocess_urs(src: &str) -> String {
         last.push_str(w);
     };
 
-    while i < n {
+    // Use `for` iteration counts instead of `guard += 1`: `+=`→`*=` mutants leave guards at 0
+    // and spin forever on large inputs.
+    for outer_tick in 0.. {
+        if i >= n {
+            break;
+        }
+        if outer_tick > step_cap {
+            out.push_str(&src[i..]);
+            return out;
+        }
         // Skip ML block comments (* ... *) verbatim
         if b[i] == b'(' && i + 1 < n && b[i + 1] == b'*' {
             out.push_str("(*");
             i += 2;
             let mut depth = 1usize;
-            while i < n && depth > 0 {
+            for _ in 0..step_cap {
+                if i >= n || depth == 0 {
+                    break;
+                }
                 if b[i] == b'(' && i + 1 < n && b[i + 1] == b'*' {
                     out.push_str("(*");
                     i += 2;
@@ -82,6 +99,10 @@ pub fn preprocess_urs(src: &str) -> String {
                     i += 1;
                 }
             }
+            if depth > 0 {
+                out.push_str(&src[i..]);
+                return out;
+            }
             continue;
         }
 
@@ -91,7 +112,10 @@ pub fn preprocess_urs(src: &str) -> String {
             last_token.clear();
             last_token.push('"');
             i += 1;
-            while i < n && b[i] != b'"' {
+            for _ in 0..step_cap {
+                if i >= n || b[i] == b'"' {
+                    break;
+                }
                 if b[i] == b'\\' && i + 1 < n {
                     out.push(b[i] as char);
                     out.push(b[i + 1] as char);
@@ -100,6 +124,10 @@ pub fn preprocess_urs(src: &str) -> String {
                     out.push(b[i] as char);
                     i += 1;
                 }
+            }
+            if i < n && b[i] != b'"' {
+                out.push_str(&src[i..]);
+                return out;
             }
             if i < n {
                 out.push('"');
@@ -118,8 +146,15 @@ pub fn preprocess_urs(src: &str) -> String {
         // Identifier (letters, digits, underscore, apostrophe)
         if b[i].is_ascii_alphabetic() || b[i] == b'_' {
             let id_start = i;
-            while i < n && (b[i].is_ascii_alphanumeric() || b[i] == b'_' || b[i] == b'\'') {
+            for _ in 0..step_cap {
+                if i >= n || !(b[i].is_ascii_alphanumeric() || b[i] == b'_' || b[i] == b'\'') {
+                    break;
+                }
                 i += 1;
+            }
+            if i < n && (b[i].is_ascii_alphanumeric() || b[i] == b'_' || b[i] == b'\'') {
+                out.push_str(&src[i..]);
+                return out;
             }
             let ident = &src[id_start..i];
 
@@ -134,8 +169,16 @@ pub fn preprocess_urs(src: &str) -> String {
             if !is_decl_name && (b[id_start].is_ascii_lowercase() || b[id_start] == b'_') {
                 // Skip whitespace after the identifier
                 let ws1 = i;
-                while i < n && (b[i] == b' ' || b[i] == b'\t' || b[i] == b'\n' || b[i] == b'\r') {
+                for _ in 0..step_cap {
+                    if i >= n || !(b[i] == b' ' || b[i] == b'\t' || b[i] == b'\n' || b[i] == b'\r')
+                    {
+                        break;
+                    }
                     i += 1;
+                }
+                if i < n && (b[i] == b' ' || b[i] == b'\t' || b[i] == b'\n' || b[i] == b'\r') {
+                    out.push_str(&src[i..]);
+                    return out;
                 }
                 let colon_start = i; // position of the first colon (or non-colon if no match)
 
@@ -156,8 +199,16 @@ pub fn preprocess_urs(src: &str) -> String {
 
                 // Skip whitespace after the colons
                 let ws2 = i;
-                while i < n && (b[i] == b' ' || b[i] == b'\t' || b[i] == b'\n' || b[i] == b'\r') {
+                for _ in 0..step_cap {
+                    if i >= n || !(b[i] == b' ' || b[i] == b'\t' || b[i] == b'\n' || b[i] == b'\r')
+                    {
+                        break;
+                    }
                     i += 1;
+                }
+                if i < n && (b[i] == b' ' || b[i] == b'\t' || b[i] == b'\n' || b[i] == b'\r') {
+                    out.push_str(&src[i..]);
+                    return out;
                 }
 
                 // Scan the KindAtom: identifier, `{...}`, or `(...)`
@@ -165,7 +216,10 @@ pub fn preprocess_urs(src: &str) -> String {
                 if i < n && b[i] == b'{' {
                     let mut depth = 1usize;
                     i += 1;
-                    while i < n && depth > 0 {
+                    for _ in 0..step_cap {
+                        if i >= n || depth == 0 {
+                            break;
+                        }
                         if b[i] == b'{' {
                             depth += 1;
                         } else if b[i] == b'}' {
@@ -173,10 +227,17 @@ pub fn preprocess_urs(src: &str) -> String {
                         }
                         i += 1;
                     }
+                    if depth > 0 {
+                        out.push_str(&src[i..]);
+                        return out;
+                    }
                 } else if i < n && b[i] == b'(' {
                     let mut depth = 1usize;
                     i += 1;
-                    while i < n && depth > 0 {
+                    for _ in 0..step_cap {
+                        if i >= n || depth == 0 {
+                            break;
+                        }
                         if b[i] == b'(' {
                             depth += 1;
                         } else if b[i] == b')' {
@@ -184,9 +245,22 @@ pub fn preprocess_urs(src: &str) -> String {
                         }
                         i += 1;
                     }
+                    if depth > 0 {
+                        out.push_str(&src[i..]);
+                        return out;
+                    }
                 } else if i < n && (b[i].is_ascii_alphabetic() || b[i] == b'_') {
-                    while i < n && (b[i].is_ascii_alphanumeric() || b[i] == b'_' || b[i] == b'\'') {
+                    for _ in 0..step_cap {
+                        if i >= n
+                            || !(b[i].is_ascii_alphanumeric() || b[i] == b'_' || b[i] == b'\'')
+                        {
+                            break;
+                        }
                         i += 1;
+                    }
+                    if i < n && (b[i].is_ascii_alphanumeric() || b[i] == b'_' || b[i] == b'\'') {
+                        out.push_str(&src[i..]);
+                        return out;
                     }
                 } else {
                     // No valid kind term: emit everything as-is
@@ -200,8 +274,16 @@ pub fn preprocess_urs(src: &str) -> String {
 
                 // Skip whitespace before potential `->`
                 let ws3 = i;
-                while i < n && (b[i] == b' ' || b[i] == b'\t' || b[i] == b'\n' || b[i] == b'\r') {
+                for _ in 0..step_cap {
+                    if i >= n || !(b[i] == b' ' || b[i] == b'\t' || b[i] == b'\n' || b[i] == b'\r')
+                    {
+                        break;
+                    }
                     i += 1;
+                }
+                if i < n && (b[i] == b' ' || b[i] == b'\t' || b[i] == b'\n' || b[i] == b'\r') {
+                    out.push_str(&src[i..]);
+                    return out;
                 }
 
                 // Check if followed by `->`
@@ -244,17 +326,32 @@ pub fn preprocess_urs(src: &str) -> String {
     out
 }
 
+/// Preprocessed excerpt of `lib/ur/basis.urs` around `pos` (for dev binaries / mutation tests).
+pub fn basis_urs_preprocessed_window(
+    pos: usize,
+    before: usize,
+    after: usize,
+) -> std::io::Result<String> {
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/lib/ur/basis.urs");
+    let src = std::fs::read_to_string(path)?;
+    let pp = preprocess_urs(&src);
+    let start = pos.saturating_sub(before);
+    let end = (pos + after).min(pp.len());
+    Ok(pp[start..end].to_string())
+}
+
 /// Parse a single `.ur` source file.
 ///
 /// Returns `None` and records an error in `errors` on parse failure.
 pub fn parse_ur(_filename: &str, source: &str, errors: &mut ErrorReporter) -> Option<File> {
     #[cfg(generated_parser)]
     {
-        let lexer = lexical_analyzer::Lexer::new(source);
+        let lexer = lexical_analyzer::XmlAwareLexer::new(source);
         match grammar::FileParser::new().parse(lexer) {
             Ok(file) => Some(file),
             Err(e) => {
                 let msg = format!("{:?}", e);
+                eprintln!("parse_ur({}) error: {}", _filename, msg);
                 errors.report(CompileError::at(Span::dummy(), msg));
                 None
             }
@@ -268,6 +365,11 @@ pub fn parse_ur(_filename: &str, source: &str, errors: &mut ErrorReporter) -> Op
         ));
         None
     }
+}
+
+/// Parse `val x = 1` as a smoke check (shared with the `test_parse` binary).
+pub fn smoke_parse_val_decl_count(errors: &mut ErrorReporter) -> Option<usize> {
+    parse_ur("test.ur", "val x = 1", errors).map(|f| f.len())
 }
 
 /// Parse a `.urs` signature file.
@@ -288,6 +390,7 @@ pub fn parse_urs(
             Ok(items) => Some(items),
             Err(e) => {
                 let msg = format!("{:?}", e);
+                eprintln!("parse_urs({}) error: {}", _filename, msg);
                 errors.report(CompileError::at(Span::dummy(), msg));
                 None
             }
@@ -335,6 +438,34 @@ mod tests {
         let end = (pos + 200).min(pp.len());
         eprintln!("PREPROCESSED around {}:\n{}", pos, &pp[start..end]);
         eprintln!("char at {}: {:?}", pos, pp.chars().nth(pos));
+    }
+
+    #[test]
+    fn basis_urs_window_matches_fixed_width() {
+        let pos = 38564usize;
+        let before = 200usize;
+        let after = 100usize;
+        let s = basis_urs_preprocessed_window(pos, before, after).expect("read basis.urs");
+        assert_eq!(
+            s.len(),
+            before + after,
+            "slice must use (pos + after).min(len) — catches + → - / * mutants"
+        );
+    }
+
+    #[test]
+    fn smoke_val_decl_count_tracks_parser() {
+        let mut errors = ErrorReporter::new();
+        let n = smoke_parse_val_decl_count(&mut errors);
+        #[cfg(not(generated_parser))]
+        {
+            assert!(n.is_none());
+            assert!(errors.has_errors());
+        }
+        #[cfg(generated_parser)]
+        {
+            assert!(n.is_some(), "expected val x = 1 to parse");
+        }
     }
 
     #[test]

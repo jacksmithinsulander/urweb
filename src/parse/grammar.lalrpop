@@ -8,6 +8,7 @@
 
 use crate::error_types::{Located, Span};
 use crate::source::*;
+use crate::parse::xml_helpers::{XmlAttr, capitalize_attr, xml_empty_cdata};
 
 grammar;
 
@@ -434,10 +435,6 @@ ConNode: Con = {
     // function type
     <c1:AppCon> "->" <c2:Con> => Con::TFun(Box::new(c1), Box::new(c2)),
 
-    // constructor-level function type (explicit)
-    "(" <name:"IDENT"> "::" <k:Kind> ")" "->" <c:Con> =>
-        Con::TCFun(Explicitness::Explicit, name, Box::new(k), Box::new(c)),
-
     // constructor-level function type (implicit) — kind annotation required
     // to avoid ambiguity with "[" FieldName "]" row literal
     "[" <name:"IDENT"> "::" <k:Kind> "]" "->" <c:Con> =>
@@ -471,7 +468,8 @@ ConNode: Con = {
     <c1:AppCon> "++" <c2:Con> => Con::Concat(Box::new(c1), Box::new(c2)),
 
     // kind-annotated wildcard: `_ :: K`  (e.g. in `fn x : (_ :: Type) =>`)
-    "_" "::" <k:Kind> => Con::Wild(Box::new(k)),
+    // Use KindApp (not Kind) to avoid consuming "->" as a kind arrow.
+    "_" "::" <k:KindApp> => Con::Wild(Box::new(k)),
 
     <c:AppCon> => c.node,
 };
@@ -862,12 +860,282 @@ AtomExpNode: Exp = {
     "(" <e:Exp> ")" => e.node,
     "_" => Exp::Wild,
     "___" => Exp::Hole,
+    // XML outer wrapper: <xml> content </xml>
+    // The lexer produces BeginTag("xml") from Regular mode, enters Xml mode,
+    // then EndTag("xml") exits back to Regular mode.
+    <l:@L> "BEGIN_TAG" <xml:XmlOpt> "END_TAG" <r:@R> => xml.node,
+    // <xml/>  — empty XML fragment
+    <l:@L> "XML_BEGIN_END" <r:@R> => {
+        let pos = Span::from_offsets("", l, r, &[]);
+        xml_empty_cdata(pos).node
+    },
 };
 
 // Non-empty comma-separated list of expression fields
 ExpFieldList: Vec<(LocCon, LocExp)> = {
     <f:ExpField> => vec![f],
     <fs:ExpFieldList> "," <f:ExpField> => { let mut v = fs; v.push(f); v },
+};
+
+// ---------------------------------------------------------------------------
+// XML rules
+// ---------------------------------------------------------------------------
+
+// Optional XML content.  Empty → cdata "".
+XmlOpt: LocExp = {
+    <xml:Xml> => xml,
+    <l:@L> <r:@R> => xml_empty_cdata(Span::from_offsets("", l, r, &[])),
+};
+
+// One or more XML items, right-associated via Basis.join.
+Xml: LocExp = {
+    <l:@L> <a:XmlOne> <b:Xml> <r:@R> => {
+        let pos = Span::from_offsets("", l, r, &[]);
+        Located::new(
+            Exp::App(
+                Box::new(Located::new(
+                    Exp::App(
+                        Box::new(Located::new(
+                            Exp::Var(vec!["Basis".into()], "join".into(), Inference::Infer),
+                            pos.clone(),
+                        )),
+                        Box::new(a),
+                    ),
+                    pos.clone(),
+                )),
+                Box::new(b),
+            ),
+            pos,
+        )
+    },
+    <a:XmlOne> => a,
+};
+
+// A single XML item: text, expression splice, or a tag.
+XmlOne: LocExp = {
+    // Text content → Basis.cdata (Html text)
+    <l:@L> <s:"NOTAGS"> <r:@R> => {
+        let pos = Span::from_offsets("", l, r, &[]);
+        Located::new(
+            Exp::App(
+                Box::new(Located::new(
+                    Exp::Var(vec!["Basis".into()], "cdata".into(), Inference::Infer),
+                    pos.clone(),
+                )),
+                Box::new(Located::new(
+                    Exp::Prim(crate::primitives::Prim::String(
+                        crate::primitives::StringMode::Html, s,
+                    )),
+                    pos.clone(),
+                )),
+            ),
+            pos,
+        )
+    },
+    // { exp } — expression splice: the expression provides an XML value
+    "{" <e:NonSeqExp> "}" => e,
+    // { [exp] } — text splice: Top.txt exp
+    <l:@L> "{" "[" <e:NonSeqExp> "]" "}" <r:@R> => {
+        let pos = Span::from_offsets("", l, r, &[]);
+        Located::new(
+            Exp::App(
+                Box::new(Located::new(
+                    Exp::Var(vec!["Top".into()], "txt".into(), Inference::Infer),
+                    pos.clone(),
+                )),
+                Box::new(e),
+            ),
+            pos,
+        )
+    },
+    // Self-closing tag: <head attrs/>
+    <l:@L> <tag:XmlTagExpr> "/" ">" <r:@R> => {
+        let pos = Span::from_offsets("", l, r, &[]);
+        let cdata = xml_empty_cdata(pos.clone());
+        Located::new(Exp::App(Box::new(tag), Box::new(cdata)), pos)
+    },
+    // Full tag: <head attrs> xmlOpt </endtag>
+    <l:@L> <tag:XmlTagExpr> ">" <xml:XmlOpt> "END_TAG" <r:@R> => {
+        let pos = Span::from_offsets("", l, r, &[]);
+        Located::new(Exp::App(Box::new(tag), Box::new(xml)), pos)
+    },
+};
+
+// XmlTagExpr: the tag desugared to a curried expression (waiting for content).
+// Produced from TagHead (the name + optional con-apps) plus Attrs.
+//
+// Default desugaring (non-special tags):
+//   Basis.tag class dynClass style dynStyle {attrs_record} (head_exp {})
+//
+// Special tags:
+//   form     → Basis.form key_opt class_opt
+//   subform/subforms → head_exp
+//   entry    → Basis.entry
+XmlTagExpr: LocExp = {
+    <l:@L> <head:TagHead> <attrs:XmlAttrs> <r:@R> => {
+        let pos = Span::from_offsets("", l, r, &[]);
+        let (name, head_exp) = head;
+        let (cls, dcls, sty, dsty, attr_pairs) = attrs;
+
+        // Helper to wrap in Some(e)
+        let some_wrap = |e: LocExp, p: Span| -> LocExp {
+            Located::new(
+                Exp::App(
+                    Box::new(Located::new(
+                        Exp::Var(vec!["Basis".into()], "Some".into(), Inference::Infer),
+                        p.clone(),
+                    )),
+                    Box::new(e),
+                ),
+                p,
+            )
+        };
+        let none_exp = |p: Span| -> LocExp {
+            Located::new(
+                Exp::Var(vec!["Basis".into()], "None".into(), Inference::Infer),
+                p,
+            )
+        };
+
+        if name == "form" {
+            // Basis.form key_opt class_opt
+            let key_exp = none_exp(pos.clone()); // simplified: no id extraction
+            let cls_exp = match cls {
+                None => none_exp(pos.clone()),
+                Some(ce) => some_wrap(ce, pos.clone()),
+            };
+            let e = Located::new(
+                Exp::Var(vec!["Basis".into()], "form".into(), Inference::Infer),
+                pos.clone(),
+            );
+            let e = Located::new(Exp::App(Box::new(e), Box::new(key_exp)), pos.clone());
+            Located::new(Exp::App(Box::new(e), Box::new(cls_exp)), pos)
+        } else if name == "subform" || name == "subforms" {
+            // head_exp applied to {} (the content will then be applied)
+            let empty_rec = Located::new(Exp::Record(vec![], false), pos.clone());
+            Located::new(Exp::App(Box::new(head_exp), Box::new(empty_rec)), pos)
+        } else if name == "entry" {
+            Located::new(
+                Exp::Var(vec!["Basis".into()], "entry".into(), Inference::Infer),
+                pos,
+            )
+        } else {
+            // Default: Basis.tag class dynClass style dynStyle {attrs} (head {})
+            let basis_tag = Located::new(
+                Exp::Var(vec!["Basis".into()], "tag".into(), Inference::Infer),
+                pos.clone(),
+            );
+            let class_exp = match cls {
+                None => Located::new(
+                    Exp::Var(vec!["Basis".into()], "null".into(), Inference::Infer),
+                    pos.clone(),
+                ),
+                Some(ce) => ce,
+            };
+            let e = Located::new(Exp::App(Box::new(basis_tag), Box::new(class_exp)), pos.clone());
+            let dcls_exp = match dcls {
+                None => none_exp(pos.clone()),
+                Some(ce) => some_wrap(ce, pos.clone()),
+            };
+            let e = Located::new(Exp::App(Box::new(e), Box::new(dcls_exp)), pos.clone());
+            let sty_exp = match sty {
+                None => Located::new(
+                    Exp::Var(vec!["Basis".into()], "noStyle".into(), Inference::Infer),
+                    pos.clone(),
+                ),
+                Some(se) => se,
+            };
+            let e = Located::new(Exp::App(Box::new(e), Box::new(sty_exp)), pos.clone());
+            let dsty_exp = match dsty {
+                None => none_exp(pos.clone()),
+                Some(se) => some_wrap(se, pos.clone()),
+            };
+            let e = Located::new(Exp::App(Box::new(e), Box::new(dsty_exp)), pos.clone());
+            // Attributes record
+            let attrs_rec = Located::new(Exp::Record(attr_pairs, false), pos.clone());
+            let e = Located::new(Exp::App(Box::new(e), Box::new(attrs_rec)), pos.clone());
+            // Apply head to {}
+            let empty_rec = Located::new(Exp::Record(vec![], false), pos.clone());
+            let head_applied = Located::new(Exp::App(Box::new(head_exp), Box::new(empty_rec)), pos.clone());
+            Located::new(Exp::App(Box::new(e), Box::new(head_applied)), pos)
+        }
+    },
+};
+
+// Tag head: (name, exp) where exp starts as EVar(name) and may be extended
+// with ECApp(exp, con) for each {con} suffix.
+TagHead: (String, LocExp) = {
+    <l:@L> <name:"BEGIN_TAG"> <r:@R> => {
+        let pos = Span::from_offsets("", l, r, &[]);
+        let exp = Located::new(Exp::Var(vec![], name.clone(), Inference::Infer), pos);
+        (name, exp)
+    },
+    <l:@L> <head:TagHead> "{" <c:Con> "}" <r:@R> => {
+        let (name, head_exp) = head;
+        let pos = Span::from_offsets("", l, r, &[]);
+        let new_exp = Located::new(Exp::CApp(Box::new(head_exp), c), pos);
+        (name, new_exp)
+    },
+};
+
+// Accumulated XML attributes: parse zero or more attrs right-to-left.
+XmlAttrs: (Option<LocExp>, Option<LocExp>, Option<LocExp>, Option<LocExp>, Vec<(LocCon, LocExp)>) = {
+    => (None, None, None, None, vec![]),
+    <a:XmlAttr> <rest:XmlAttrs> => {
+        let (mut cls, mut dcls, mut sty, mut dsty, mut av) = rest;
+        match a {
+            XmlAttr::Class(e)    => cls  = Some(e),
+            XmlAttr::DynClass(e) => dcls = Some(e),
+            XmlAttr::Style(e)    => sty  = Some(e),
+            XmlAttr::DynStyle(e) => dsty = Some(e),
+            XmlAttr::Normal(k, v) => av.insert(0, (k, v)),
+        }
+        (cls, dcls, sty, dsty, av)
+    },
+};
+
+// A single XML attribute.
+XmlAttr: XmlAttr = {
+    // name = value
+    <name:"SYMBOL"> "=" <v:AttrV> => {
+        match name.as_str() {
+            "class"    => XmlAttr::Class(v),
+            "dynClass" => XmlAttr::DynClass(v),
+            "style"    => XmlAttr::Style(v),
+            "dynStyle" => XmlAttr::DynStyle(v),
+            _ => {
+                let cap = capitalize_attr(&name);
+                XmlAttr::Normal(Located::dummy(Con::Name(cap)), v)
+            }
+        }
+    },
+    // bare name (boolean attribute → True)
+    <l:@L> <name:"SYMBOL"> <r:@R> => {
+        let pos = Span::from_offsets("", l, r, &[]);
+        let cap = capitalize_attr(&name);
+        let true_exp = Located::new(
+            Exp::Var(vec!["Basis".into()], "True".into(), Inference::Infer),
+            pos,
+        );
+        XmlAttr::Normal(Located::dummy(Con::Name(cap)), true_exp)
+    },
+};
+
+// Attribute value.
+AttrV: LocExp = {
+    <l:@L> <n:"INT"> <r:@R> => Located::new(
+        Exp::Prim(crate::primitives::Prim::Int(n)),
+        Span::from_offsets("", l, r, &[]),
+    ),
+    <l:@L> <f:"FLOAT"> <r:@R> => Located::new(
+        Exp::Prim(crate::primitives::Prim::Float(f)),
+        Span::from_offsets("", l, r, &[]),
+    ),
+    <l:@L> <s:"STRING"> <r:@R> => Located::new(
+        Exp::Prim(crate::primitives::Prim::String(crate::primitives::StringMode::Normal, s)),
+        Span::from_offsets("", l, r, &[]),
+    ),
+    "{" <e:NonSeqExp> "}" => e,
 };
 
 ExpField: (LocCon, LocExp) = {

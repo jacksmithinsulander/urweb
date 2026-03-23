@@ -4,11 +4,7 @@ use std::process;
 use ur::cli_common;
 
 fn install_package(spec: &str) -> i32 {
-    let repo_name = spec
-        .split('/')
-        .filter(|s| !s.is_empty())
-        .last()
-        .unwrap_or(spec);
+    let repo_name = cli_common::package_spec_repo_leaf(spec);
 
     if !cli_common::file_exists("ur.toml") {
         eprintln!("error: ur.toml not found; run from project directory");

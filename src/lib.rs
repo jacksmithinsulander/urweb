@@ -16,6 +16,9 @@
 //!
 //! See `ARCHITECTURE.md` for a detailed module reference.
 
+/// Stack size (bytes) for the `ur-compile` worker thread (deep elaboration).
+pub const COMPILE_THREAD_STACK_BYTES: usize = 512 * 1024 * 1024;
+
 /// CJR AST — C-like IR, final stage before C emission.
 pub mod c_like_representation;
 /// Shared CLI helpers and templates.
@@ -26,6 +29,8 @@ pub mod compiler;
 pub mod core;
 /// Datatype representation kind (Enum, Option, Default).
 pub mod datatype_kind;
+/// Demo mode: build a combined demo application from a demo directory.
+pub mod demo;
 /// Elaborated AST — after type inference, with unification variables.
 pub mod elaborated;
 /// Errors, spans, and source locations.

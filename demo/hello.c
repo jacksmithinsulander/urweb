@@ -1,16 +1,102 @@
 #include "urweb.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <math.h>
+#include <time.h>
 
-static void uw_client_init(void) {}
+#include <sqlite3.h>
 
-static void uw_db_init(uw_context ctx) {}
+static void uw_client_init(void) {
+uw_sqlfmtInt = "%lld%n";
+uw_sqlfmtFloat = "%.16g%n";
+uw_Estrings = 0;
+uw_sql_type_annotations = 0;
+uw_sqlsuffixString = "";
+uw_sqlsuffixChar = "";
+uw_sqlsuffixBlob = "";
+uw_sqlfmtUint4 = "%u%n";
+}
 
-static int uw_db_begin(uw_context ctx, int could_write) { return 0; }
+typedef struct {
+sqlite3 *conn;
+} uw_conn;
 
-static int uw_db_commit(uw_context ctx) { return 0; }
+static void uw_db_validate(uw_context ctx) {
+}
 
-static int uw_db_rollback(uw_context ctx) { return 0; }
+static void uw_db_prepare(uw_context ctx) { }
 
-static void uw_db_close(uw_context ctx) {}
+static void uw_db_init(uw_context ctx) {
+sqlite3 *sqlite;
+sqlite3_stmt *stmt;
+uw_conn *conn;
+
+if (sqlite3_open("/tmp/test.db", &sqlite) != SQLITE_OK) uw_error(ctx, FATAL, "Can't open SQLite database.");
+
+if (sqlite3_exec(sqlite, "PRAGMA foreign_keys = ON", NULL, NULL, NULL) != SQLITE_OK)
+uw_error(ctx, FATAL, "Can't enable foreign_keys for SQLite database");
+
+if (uw_database_max < SIZE_MAX) {
+char buf[100];
+
+sprintf(buf, "PRAGMA max_page_count = %llu", (unsigned long long)(uw_database_max / 1024));
+
+if (sqlite3_prepare_v2(sqlite, buf, -1, &stmt, NULL) != SQLITE_OK) {
+sqlite3_close(sqlite);
+uw_error(ctx, FATAL, "Can't prepare max_page_count query for SQLite database");
+}
+
+if (sqlite3_step(stmt) != SQLITE_ROW) {
+sqlite3_finalize(stmt);
+sqlite3_close(sqlite);
+uw_error(ctx, FATAL, "Can't set max_page_count parameter for SQLite database");
+}
+
+sqlite3_finalize(stmt);
+}
+
+conn = calloc(1, sizeof(uw_conn));
+conn->conn = sqlite;
+uw_set_db(ctx, conn);
+uw_db_validate(ctx);
+uw_db_prepare(ctx);
+}
+
+static void uw_db_close(uw_context ctx) {
+uw_conn *conn = uw_get_db(ctx);
+sqlite3_close(conn->conn);
+}
+
+static int uw_db_begin(uw_context ctx, int could_write) {
+uw_conn *conn = uw_get_db(ctx);
+
+if (sqlite3_exec(conn->conn, "BEGIN", NULL, NULL, NULL) == SQLITE_OK)
+return 0;
+else {
+fprintf(stderr, "Begin error: %s<br />", sqlite3_errmsg(conn->conn));
+return 1;
+}
+}
+static int uw_db_commit(uw_context ctx) {
+uw_conn *conn = uw_get_db(ctx);
+if (sqlite3_exec(conn->conn, "COMMIT", NULL, NULL, NULL) == SQLITE_OK)
+return 0;
+else {
+fprintf(stderr, "Commit error: %s<br />", sqlite3_errmsg(conn->conn));
+return 1;
+}
+}
+
+static int uw_db_rollback(uw_context ctx) {
+uw_conn *conn = uw_get_db(ctx);
+if (sqlite3_exec(conn->conn, "ROLLBACK", NULL, NULL, NULL) == SQLITE_OK)
+return 0;
+else {
+fprintf(stderr, "Rollback error: %s<br />", sqlite3_errmsg(conn->conn));
+return 1;
+}
+}
 
 static int uw_input_num(const char *name) { return -1; }
 
@@ -35,12 +121,15 @@ static uw_unit __uwn_wrap_main_802(uw_context ctx, uw_unit __uwr_x0_0, uw_unit _
 return(((uw_write(ctx, "\n<head"), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "class", "")), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "style", "")), 0), ((uw_write(ctx, ">\n<title"), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "class", "")), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "style", "")), 0), ((uw_write(ctx, ">Hello world!</title>\n</head>\n<body"), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "class", "")), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "style", "")), 0), ((uw_write(ctx, ">\n<h1"), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "class", "")), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "style", "")), 0), (uw_write(ctx, ">Hello world!</h1>\n</body>\n"), 0))))))))))))));
 }
 
-void uw_global_custom(uw_context ctx) {
+static void uw_setup_limits(void) {
+}
+
+void uw_global_custom(void) {
+uw_setup_limits();
 }
 
 static void uw_initializer(uw_context ctx) {
 uw_begin_initializing(ctx);
-uw_global_custom(ctx);
 uw_end_initializing(ctx);
 }
 

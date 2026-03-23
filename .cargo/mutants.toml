@@ -3,7 +3,3 @@
 #
 # No exclusions: every mutant must be caught or kill the tests.
 # Run: cargo mutants
-#
-# Faster builds (no debug symbols); faster tests with -j
-# No minimum_test_timeout: fixed-point loops are bounded so mutants cannot hang.
-profile = "mutants"

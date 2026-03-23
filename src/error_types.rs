@@ -33,6 +33,12 @@ pub struct Span {
     pub last: Pos,
 }
 
+impl Default for Span {
+    fn default() -> Self {
+        Span::dummy()
+    }
+}
+
 impl Span {
     pub fn dummy() -> Self {
         Span {
@@ -101,6 +107,12 @@ impl<T> Located<T> {
     }
 }
 
+impl<T: Default> Default for Located<T> {
+    fn default() -> Self {
+        Located::dummy(T::default())
+    }
+}
+
 /// Compile-time error with optional span information.
 #[derive(Debug, Error)]
 pub enum CompileError {
@@ -118,6 +130,12 @@ pub enum CompileError {
 
     #[error(transparent)]
     Io(#[from] std::io::Error),
+}
+
+impl Default for CompileError {
+    fn default() -> Self {
+        CompileError::Plain(String::new())
+    }
 }
 
 impl CompileError {

@@ -46,6 +46,8 @@ pub fn run_compiler_args(args: &[String]) -> i32 {
     let mut _dump_source = false;
     let mut _do_iflow = false;
     let mut _partial_build: Option<String> = None;
+    let mut demo_prefix: Option<String> = None;
+    let mut demo_guided = false;
 
     let mut args_iter = args.iter();
     while let Some(arg) = args_iter.next() {
@@ -174,6 +176,18 @@ pub fn run_compiler_args(args: &[String]) -> i32 {
                     }
                 }
             }
+            "demo" => {
+                if let Some(p) = opt_val.or_else(|| args_iter.next().cloned()) {
+                    demo_prefix = Some(p);
+                    demo_guided = false;
+                }
+            }
+            "guided-demo" => {
+                if let Some(p) = opt_val.or_else(|| args_iter.next().cloned()) {
+                    demo_prefix = Some(p);
+                    demo_guided = true;
+                }
+            }
             // Ignored flags (SML compiler compat)
             "noEmacs" => {}
             "partialBuild" => {
@@ -203,6 +217,25 @@ pub fn run_compiler_args(args: &[String]) -> i32 {
         }
     }
 
+    // Demo mode: -demo <prefix> <dirname>
+    if let Some(prefix) = demo_prefix {
+        let dirname = match project_file {
+            Some(p) => p,
+            None => {
+                eprintln!("error: -demo requires a directory argument");
+                return 1;
+            }
+        };
+        match ur::demo::make(&prefix, &dirname, &mut settings, demo_guided) {
+            Ok(true) => return 0,
+            Ok(false) => return 1,
+            Err(e) => {
+                eprintln!("{}", e);
+                return 1;
+            }
+        }
+    }
+
     let project = match project_file {
         Some(p) => p,
         None => {
@@ -212,7 +245,7 @@ pub fn run_compiler_args(args: &[String]) -> i32 {
     };
 
     let urp_path = std::path::Path::new(&project);
-    match ur::compiler::compile(urp_path, &mut settings) {
+    match ur::compiler::compile(urp_path, &mut settings).into_result() {
         Ok(_exe) => 0,
         Err(e) => {
             eprintln!("{}", e);
@@ -225,7 +258,7 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     // Run in a thread with 64MB stack to handle deep elaboration recursion.
     let code = std::thread::Builder::new()
-        .stack_size(512 * 1024 * 1024)
+        .stack_size(ur::COMPILE_THREAD_STACK_BYTES)
         .spawn(move || run_compiler_args(&args[1..]))
         .unwrap()
         .join()

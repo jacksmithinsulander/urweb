@@ -439,6 +439,725 @@ impl<'input> Iterator for Lexer<'input> {
     }
 }
 
+// ---------------------------------------------------------------------------
+// XML-aware multi-mode lexer
+// ---------------------------------------------------------------------------
+//
+// This replaces the simple Logos-based Lexer for parsing `.ur` files,
+// adding support for the XML/XMLTAG modes required by Ur/Web's XML syntax.
+//
+// Mode stack:
+//   Regular  — normal Ur/Web code
+//   Xml      — inside `<xml>...</xml>` content
+//   XmlTag   — inside a tag's attribute list `<p class="foo">`
+//
+// Brace-level tracking: when `{` is seen in Xml or XmlTag mode the lexer
+// pushes the current mode onto `brace_stack` and enters Regular mode.
+// When `}` is encountered in Regular mode with a non-empty brace_stack,
+// the brace depth is decremented; if it reaches zero the previous mode is
+// restored.
+
+#[derive(Clone, Debug, PartialEq)]
+enum LexMode {
+    Regular,
+    Xml,
+    XmlTag,
+}
+
+pub struct XmlAwareLexer<'a> {
+    src: &'a [u8],
+    pos: usize,
+    mode: LexMode,
+    /// Stack of (return_mode, brace_depth) pushed by `{` in XML/XmlTag modes.
+    brace_stack: Vec<(LexMode, usize)>,
+    /// String-mode return: set to Some(mode) when entering a string from XmlTag.
+    string_return: Option<LexMode>,
+    /// Buffered tokens produced in one scan step (for multi-token XML escapes).
+    pending: std::collections::VecDeque<(usize, Token, usize)>,
+    /// Nesting depth of `<xml>` tags seen inside Xml mode.
+    /// 0 means the current `</xml>` closes the outer wrapper (switch back to Regular).
+    xml_nesting: i32,
+    /// True when the most-recent BeginTag in Xml mode was "xml" and we haven't
+    /// yet seen the corresponding `>` or `/>` in XmlTag mode.
+    pending_xml_open: bool,
+}
+
+impl<'a> XmlAwareLexer<'a> {
+    pub fn new(src: &'a str) -> Self {
+        XmlAwareLexer {
+            src: src.as_bytes(),
+            pos: 0,
+            mode: LexMode::Regular,
+            brace_stack: Vec::new(),
+            string_return: None,
+            pending: std::collections::VecDeque::new(),
+            xml_nesting: 0,
+            pending_xml_open: false,
+        }
+    }
+
+    fn peek(&self) -> Option<u8> {
+        self.src.get(self.pos).copied()
+    }
+
+    fn peek2(&self) -> Option<u8> {
+        self.src.get(self.pos + 1).copied()
+    }
+
+    fn at(&self, offset: usize) -> Option<u8> {
+        self.src.get(self.pos + offset).copied()
+    }
+
+    fn advance(&mut self) -> u8 {
+        let b = self.src[self.pos];
+        self.pos += 1;
+        b
+    }
+
+    fn skip_ml_comment(&mut self) {
+        // Already consumed `(*`; consume until matching `*)`, supporting nesting.
+        let mut depth = 1usize;
+        while self.pos < self.src.len() {
+            if self.pos + 1 < self.src.len()
+                && self.src[self.pos] == b'('
+                && self.src[self.pos + 1] == b'*'
+            {
+                depth += 1;
+                self.pos += 2;
+            } else if self.pos + 1 < self.src.len()
+                && self.src[self.pos] == b'*'
+                && self.src[self.pos + 1] == b')'
+            {
+                depth -= 1;
+                self.pos += 2;
+                if depth == 0 {
+                    return;
+                }
+            } else {
+                self.pos += 1;
+            }
+        }
+    }
+
+    fn skip_xml_comment(&mut self) {
+        // Already consumed `<!--`; consume until `-->`.
+        while self.pos + 2 < self.src.len() {
+            if &self.src[self.pos..self.pos + 3] == b"-->" {
+                self.pos += 3;
+                return;
+            }
+            self.pos += 1;
+        }
+        self.pos = self.src.len();
+    }
+
+    fn scan_xml_id(&self, start: usize) -> usize {
+        // xmlid = [A-Za-z][A-Za-z0-9_-]*
+        let mut p = start;
+        if p < self.src.len() && self.src[p].is_ascii_alphabetic() {
+            p += 1;
+            while p < self.src.len() {
+                let b = self.src[p];
+                if b.is_ascii_alphanumeric() || b == b'_' || b == b'-' {
+                    p += 1;
+                } else {
+                    break;
+                }
+            }
+        }
+        p
+    }
+
+    fn scan_regular_string(&mut self, quote: u8, start: usize) -> LexResult {
+        // Consume string body up to matching unescaped `quote`.
+        let mut s = String::new();
+        loop {
+            if self.pos >= self.src.len() {
+                return Err(LexError::new("Unterminated string literal"));
+            }
+            let b = self.src[self.pos];
+            if b == b'\\' {
+                self.pos += 1;
+                if self.pos >= self.src.len() {
+                    return Err(LexError::new("Unterminated escape in string"));
+                }
+                let esc = self.src[self.pos];
+                self.pos += 1;
+                match esc {
+                    b'n' => s.push('\n'),
+                    b't' => s.push('\t'),
+                    b'r' => s.push('\r'),
+                    b'\\' => s.push('\\'),
+                    b'"' => s.push('"'),
+                    b'\'' => s.push('\''),
+                    b'a' => s.push('\x07'),
+                    b'b' => s.push('\x08'),
+                    b'f' => s.push('\x0C'),
+                    b'v' => s.push('\x0B'),
+                    b'0' => s.push('\0'),
+                    _ => {
+                        s.push('\\');
+                        s.push(esc as char);
+                    }
+                }
+            } else if b == quote {
+                self.pos += 1;
+                let end = self.pos;
+                // If inside XmlTag, restore XmlTag mode after string
+                if let Some(ret) = self.string_return.take() {
+                    self.mode = ret;
+                }
+                return Ok((start, Token::String(s), end));
+            } else {
+                s.push(b as char);
+                self.pos += 1;
+            }
+        }
+    }
+
+    fn next_regular(&mut self) -> Option<LexResult> {
+        loop {
+            if self.pos >= self.src.len() {
+                return None;
+            }
+            let start = self.pos;
+            let b = self.src[self.pos];
+
+            // Skip whitespace
+            if b == b' ' || b == b'\t' || b == b'\r' || b == b'\n' {
+                self.pos += 1;
+                continue;
+            }
+
+            // ML comment `(*...*)` with nesting
+            if b == b'(' && self.at(1) == Some(b'*') {
+                self.pos += 2;
+                self.skip_ml_comment();
+                continue;
+            }
+
+            // String: "..." or '...' (the latter is also valid in Ur/Web)
+            if b == b'"' || b == b'\'' {
+                self.pos += 1;
+                return Some(self.scan_regular_string(b, start));
+            }
+
+            // Char literal `#"x"`
+            if b == b'#' && self.at(1) == Some(b'"') {
+                self.pos += 2;
+                if self.pos >= self.src.len() {
+                    return Some(Err(LexError::new("Unterminated char literal")));
+                }
+                let ch = self.src[self.pos] as char;
+                self.pos += 1;
+                if self.pos < self.src.len() && self.src[self.pos] == b'"' {
+                    self.pos += 1;
+                }
+                return Some(Ok((start, Token::Char(ch), self.pos)));
+            }
+
+            // `<` — may be XML start or comparison operator
+            if b == b'<' {
+                // Try `<xmlid/>` first (INITIAL XML self-closing)
+                let id_start = self.pos + 1;
+                let id_end = self.scan_xml_id(id_start);
+                if id_end > id_start {
+                    let rest = id_end;
+                    // `<xmlid/>`?
+                    if self.at(rest - self.pos) == Some(b'/')
+                        && self.at(rest - self.pos + 1) == Some(b'>')
+                    {
+                        let name = std::str::from_utf8(&self.src[id_start..id_end])
+                            .unwrap_or("")
+                            .to_string();
+                        self.pos = id_end + 2; // skip `/>`
+                        return Some(Ok((start, Token::XmlBeginEnd, self.pos)));
+                    }
+                    // `<xmlid>`?
+                    if self.at(rest - self.pos) == Some(b'>') {
+                        let name = std::str::from_utf8(&self.src[id_start..id_end])
+                            .unwrap_or("")
+                            .to_string();
+                        self.pos = id_end + 1; // skip `>`
+                                               // Enter XML mode; reset xml nesting counter
+                        self.mode = LexMode::Xml;
+                        self.xml_nesting = 0;
+                        return Some(Ok((start, Token::BeginTag(name), self.pos)));
+                    }
+                }
+                // Not XML: fall through to regular `<` handling
+            }
+
+            // Multi-char operators (longest first)
+            let tok = self.try_multi_char_op();
+            if let Some(t) = tok {
+                return Some(Ok((start, t, self.pos)));
+            }
+
+            // `{` and `}` with brace-level tracking
+            if b == b'{' {
+                self.pos += 1;
+                // If we're in a brace-stack context, increment depth
+                if let Some((_, depth)) = self.brace_stack.last_mut() {
+                    *depth += 1;
+                }
+                return Some(Ok((start, Token::Lbrace, self.pos)));
+            }
+            if b == b'}' {
+                self.pos += 1;
+                if let Some((ret_mode, depth)) = self.brace_stack.last_mut() {
+                    if *depth == 1 {
+                        let ret = ret_mode.clone();
+                        self.brace_stack.pop();
+                        self.mode = ret;
+                    } else {
+                        *depth -= 1;
+                    }
+                }
+                return Some(Ok((start, Token::Rbrace, self.pos)));
+            }
+
+            // `(` with brace-level tracking (for XML-escaped `(` like in `tag (con)`)
+            if b == b'(' {
+                if self.at(1) == Some(b')') {
+                    self.pos += 2;
+                    return Some(Ok((start, Token::Unit, self.pos)));
+                }
+                self.pos += 1;
+                if let Some((_, depth)) = self.brace_stack.last_mut() {
+                    *depth += 1;
+                }
+                return Some(Ok((start, Token::Lparen, self.pos)));
+            }
+            if b == b')' {
+                self.pos += 1;
+                if let Some((ret_mode, depth)) = self.brace_stack.last_mut() {
+                    if *depth == 1 {
+                        let ret = ret_mode.clone();
+                        self.brace_stack.pop();
+                        self.mode = ret;
+                    } else {
+                        *depth -= 1;
+                    }
+                }
+                return Some(Ok((start, Token::Rparen, self.pos)));
+            }
+
+            // Numeric literals
+            if b.is_ascii_digit() || (b == b'-' && self.at(1).map_or(false, |c| c.is_ascii_digit()))
+            {
+                return Some(self.scan_number(start));
+            }
+
+            // Identifiers and keywords
+            if b.is_ascii_alphabetic() || b == b'_' {
+                return Some(self.scan_ident(start));
+            }
+
+            // Single-char punctuation
+            self.pos += 1;
+            let tok = match b {
+                b'[' => Token::Lbrack,
+                b']' => Token::Rbrack,
+                b'^' => Token::Caret,
+                b'=' => Token::Eq,
+                b'>' => Token::Gt,
+                b',' => Token::Comma,
+                b':' => Token::Colon,
+                b'.' => Token::Dot,
+                b'$' => Token::Dollar,
+                b'#' => Token::Hash,
+                b'_' => Token::Under,
+                b'~' => Token::Twiddle,
+                b'|' => Token::Bar,
+                b'*' => Token::Star,
+                b';' => Token::Semi,
+                b'!' => Token::Bang,
+                b'+' => Token::Plus,
+                b'-' => Token::Minus,
+                b'/' => Token::Divide,
+                b'%' => Token::Mod,
+                b'@' => Token::At,
+                b'<' => Token::Lt,
+                b'`' => {
+                    // Backtick path
+                    let path_start = self.pos;
+                    while self.pos < self.src.len() && self.src[self.pos] != b'`' {
+                        self.pos += 1;
+                    }
+                    let path = std::str::from_utf8(&self.src[path_start..self.pos])
+                        .unwrap_or("")
+                        .to_string();
+                    if self.pos < self.src.len() {
+                        self.pos += 1;
+                    } // skip closing `
+                    return Some(Ok((start, Token::BacktickPath(path), self.pos)));
+                }
+                other => {
+                    return Some(Err(LexError::new(format!(
+                        "Unexpected character '{}' (0x{:02x}) at offset {}",
+                        other as char, other, start
+                    ))));
+                }
+            };
+            return Some(Ok((start, tok, self.pos)));
+        }
+    }
+
+    fn try_multi_char_op(&mut self) -> Option<Token> {
+        let s = &self.src[self.pos..];
+        let (tok, len) = match s {
+            // 4-char
+            [b':', b':', b':', b':', ..] => (Token::Dcolonwild, 4),
+            [b'_', b'_', b'_', ..] => (Token::Underunderunder, 3),
+            [b'=', b'=', b'>', ..] => (Token::Dkarrow, 3),
+            [b'.', b'.', b'.', ..] => (Token::Dotdotdot, 3),
+            [b'-', b'-', b'-', ..] => (Token::Minusminusminus, 3),
+            [b'-', b'-', b'>', ..] => (Token::Karrow, 3),
+            [b':', b':', b':', ..] => (Token::Tcolonwild, 3),
+            // 2-char
+            [b'<', b'>', ..] => (Token::Ne, 2),
+            [b'<', b'-', ..] => (Token::Larrow, 2),
+            [b'-', b'>', ..] => (Token::Arrow, 2),
+            [b'=', b'>', ..] => (Token::Darrow, 2),
+            [b'+', b'+', ..] => (Token::Plusplus, 2),
+            [b'-', b'-', ..] => (Token::Minusminus, 2),
+            [b':', b':', ..] => (Token::Dcolon, 2),
+            [b'_', b'_', ..] => (Token::Underunder, 2),
+            [b'|', b'>', ..] => (Token::Fwdapp, 2),
+            [b'<', b'|', ..] => (Token::Revapp, 2),
+            [b'<', b'=', ..] => (Token::Le, 2),
+            [b'>', b'=', ..] => (Token::Ge, 2),
+            _ => return None,
+        };
+        self.pos += len;
+        Some(tok)
+    }
+
+    fn scan_number(&mut self, start: usize) -> LexResult {
+        let neg = self.src[self.pos] == b'-';
+        if neg {
+            self.pos += 1;
+        }
+        let int_start = self.pos;
+        while self.pos < self.src.len() && self.src[self.pos].is_ascii_digit() {
+            self.pos += 1;
+        }
+        // Float?
+        if self.pos < self.src.len() && self.src[self.pos] == b'.' {
+            let after_dot = self.pos + 1;
+            if after_dot < self.src.len() && self.src[after_dot].is_ascii_digit() {
+                self.pos += 1;
+                while self.pos < self.src.len() && self.src[self.pos].is_ascii_digit() {
+                    self.pos += 1;
+                }
+                let s = std::str::from_utf8(&self.src[start..self.pos]).unwrap_or("0");
+                let v: f64 = s.parse().unwrap_or(0.0);
+                return Ok((start, Token::Float(v), self.pos));
+            }
+        }
+        let s = std::str::from_utf8(&self.src[start..self.pos]).unwrap_or("0");
+        let v: i64 = s.parse().unwrap_or(0);
+        Ok((start, Token::Int(v), self.pos))
+    }
+
+    fn scan_ident(&mut self, start: usize) -> LexResult {
+        while self.pos < self.src.len() {
+            let b = self.src[self.pos];
+            if b.is_ascii_alphanumeric() || b == b'_' || b == b'\'' {
+                self.pos += 1;
+            } else {
+                break;
+            }
+        }
+        let word = std::str::from_utf8(&self.src[start..self.pos]).unwrap_or("_");
+        let tok = match word {
+            "and" => Token::And,
+            "andalso" => Token::Andalso,
+            "case" => Token::Case,
+            "class" => Token::Class,
+            "con" => Token::Con,
+            "constraint" => Token::Constraint,
+            "constraints" => Token::Constraints,
+            "cookie" => Token::Cookie,
+            "datatype" => Token::Datatype,
+            "else" => Token::Else,
+            "end" => Token::End,
+            "export" => Token::Export,
+            "false" => Token::False,
+            "ffi" => Token::Ffi,
+            "fn" => Token::Fn,
+            "fun" => Token::Fun,
+            "functor" => Token::Functor,
+            "if" => Token::If,
+            "in" => Token::In,
+            "include" => Token::Include,
+            "let" => Token::Let,
+            "map" => Token::Map,
+            "of" => Token::Of,
+            "open" => Token::Open,
+            "orelse" => Token::Orelse,
+            "policy" => Token::Policy,
+            "rec" => Token::Rec,
+            "sequence" => Token::Sequence,
+            "sig" => Token::Sig,
+            "signature" => Token::Signature,
+            "struct" => Token::Struct,
+            "structure" => Token::Structure,
+            "style" => Token::Style,
+            "table" => Token::Table,
+            "task" => Token::Task,
+            "then" => Token::Then,
+            "true" => Token::True,
+            "type" => Token::Type,
+            "val" => Token::Val,
+            "view" => Token::View,
+            "where" => Token::Where,
+            "Name" => Token::Name,
+            "Type" => Token::KindType,
+            "Unit" => Token::KindUnit,
+            w if w.chars().next().map_or(false, |c| c.is_uppercase()) => {
+                Token::UpperIdent(w.to_string())
+            }
+            w => Token::Ident(w.to_string()),
+        };
+        Ok((start, tok, self.pos))
+    }
+
+    fn next_xml(&mut self) -> Option<LexResult> {
+        loop {
+            if self.pos >= self.src.len() {
+                return None;
+            }
+            let start = self.pos;
+
+            // ML comment `(*...*)` — skip
+            if self.pos + 1 < self.src.len()
+                && self.src[self.pos] == b'('
+                && self.src[self.pos + 1] == b'*'
+            {
+                self.pos += 2;
+                self.skip_ml_comment();
+                continue;
+            }
+
+            // XML comment `<!--...-->` — skip
+            if self.pos + 3 < self.src.len() && &self.src[self.pos..self.pos + 4] == b"<!--" {
+                self.pos += 4;
+                self.skip_xml_comment();
+                continue;
+            }
+
+            let b = self.src[self.pos];
+
+            // Newline → NOTAGS("\n")
+            if b == b'\n' {
+                self.pos += 1;
+                return Some(Ok((start, Token::Notags("\n".to_string()), self.pos)));
+            }
+
+            // `</xmlid>` → EndTag
+            if b == b'<' && self.at(1) == Some(b'/') {
+                let id_start = self.pos + 2;
+                let id_end = self.scan_xml_id(id_start);
+                if id_end > id_start && self.at(id_end - self.pos) == Some(b'>') {
+                    let name = std::str::from_utf8(&self.src[id_start..id_end])
+                        .unwrap_or("")
+                        .to_string();
+                    self.pos = id_end + 1;
+                    // If closing </xml> at depth 0, return to Regular mode
+                    if name == "xml" {
+                        if self.xml_nesting > 0 {
+                            self.xml_nesting -= 1;
+                        } else {
+                            self.mode = LexMode::Regular;
+                        }
+                    }
+                    return Some(Ok((start, Token::EndTag(name), self.pos)));
+                }
+            }
+
+            // `<xmlid` → BeginTag, switch to XmlTag
+            if b == b'<' {
+                let id_start = self.pos + 1;
+                let id_end = self.scan_xml_id(id_start);
+                if id_end > id_start {
+                    let name = std::str::from_utf8(&self.src[id_start..id_end])
+                        .unwrap_or("")
+                        .to_string();
+                    self.pos = id_end;
+                    self.mode = LexMode::XmlTag;
+                    // Track nested <xml> tags so we know when </xml> exits to Regular
+                    if name == "xml" {
+                        self.pending_xml_open = true;
+                    }
+                    return Some(Ok((start, Token::BeginTag(name), self.pos)));
+                }
+                // bare `<` — treat as NOTAGS
+                self.pos += 1;
+                return Some(Ok((start, Token::Notags("<".to_string()), self.pos)));
+            }
+
+            // `{` → Lbrace, push XML return, switch to Regular
+            if b == b'{' {
+                self.pos += 1;
+                self.brace_stack.push((LexMode::Xml, 1));
+                self.mode = LexMode::Regular;
+                return Some(Ok((start, Token::Lbrace, self.pos)));
+            }
+
+            // `(` — check if start of comment or just literal text
+            if b == b'(' {
+                self.pos += 1;
+                return Some(Ok((start, Token::Notags("(".to_string()), self.pos)));
+            }
+
+            // Text content (everything except `<`, `{`, `\n`, `(`)
+            let text_start = self.pos;
+            while self.pos < self.src.len() {
+                let c = self.src[self.pos];
+                if c == b'<' || c == b'{' || c == b'\n' || c == b'(' {
+                    break;
+                }
+                self.pos += 1;
+            }
+            if self.pos > text_start {
+                let text = std::str::from_utf8(&self.src[text_start..self.pos])
+                    .unwrap_or("")
+                    .to_string();
+                return Some(Ok((text_start, Token::Notags(text), self.pos)));
+            }
+
+            // Unexpected character
+            self.pos += 1;
+            return Some(Err(LexError::new(format!(
+                "Illegal XML character '{}' at offset {}",
+                b as char, start
+            ))));
+        }
+    }
+
+    fn next_xmltag(&mut self) -> Option<LexResult> {
+        loop {
+            if self.pos >= self.src.len() {
+                return None;
+            }
+            let start = self.pos;
+            let b = self.src[self.pos];
+
+            // Skip whitespace
+            if b == b' ' || b == b'\t' || b == b'\r' || b == b'\n' {
+                self.pos += 1;
+                continue;
+            }
+
+            // ML comment
+            if b == b'(' && self.at(1) == Some(b'*') {
+                self.pos += 2;
+                self.skip_ml_comment();
+                continue;
+            }
+
+            // `>` → Gt, switch back to Xml mode
+            if b == b'>' {
+                self.pos += 1;
+                self.mode = LexMode::Xml;
+                // If this `>` closes a `<xml ...>` tag, increment nesting depth
+                if self.pending_xml_open {
+                    self.xml_nesting += 1;
+                    self.pending_xml_open = false;
+                }
+                return Some(Ok((start, Token::Gt, self.pos)));
+            }
+
+            // `/` → Divide (used for `/>` self-closing); clears pending_xml_open
+            if b == b'/' {
+                self.pos += 1;
+                // Self-closing <xml/>: don't increment nesting
+                self.pending_xml_open = false;
+                return Some(Ok((start, Token::Divide, self.pos)));
+            }
+
+            // String literal → produce String token, return to XmlTag after
+            if b == b'"' || b == b'\'' {
+                self.pos += 1;
+                self.string_return = Some(LexMode::XmlTag);
+                return Some(self.scan_regular_string(b, start));
+            }
+
+            // `{` → push XmlTag return, switch to Regular
+            if b == b'{' {
+                self.pos += 1;
+                self.brace_stack.push((LexMode::XmlTag, 1));
+                self.mode = LexMode::Regular;
+                return Some(Ok((start, Token::Lbrace, self.pos)));
+            }
+
+            // `(` → push XmlTag return, switch to Regular
+            if b == b'(' {
+                if self.at(1) == Some(b')') {
+                    // `()` — unit
+                    self.pos += 2;
+                    self.brace_stack.push((LexMode::XmlTag, 1));
+                    self.mode = LexMode::Regular;
+                    return Some(Ok((start, Token::Unit, self.pos)));
+                }
+                self.pos += 1;
+                self.brace_stack.push((LexMode::XmlTag, 1));
+                self.mode = LexMode::Regular;
+                return Some(Ok((start, Token::Lparen, self.pos)));
+            }
+
+            // `=` → Eq
+            if b == b'=' {
+                self.pos += 1;
+                return Some(Ok((start, Token::Eq, self.pos)));
+            }
+
+            // Integer or float
+            if b.is_ascii_digit() {
+                return Some(self.scan_number(start));
+            }
+
+            // xmlid → Csymbol (attribute name)
+            if b.is_ascii_alphabetic() || b == b'_' {
+                let end = self.scan_xml_id(start);
+                self.pos = end;
+                let name = std::str::from_utf8(&self.src[start..end])
+                    .unwrap_or("")
+                    .to_string();
+                return Some(Ok((start, Token::Csymbol(name), self.pos)));
+            }
+
+            // Other characters
+            self.pos += 1;
+            return Some(Err(LexError::new(format!(
+                "Illegal XML tag character '{}' at offset {}",
+                b as char, start
+            ))));
+        }
+    }
+}
+
+impl<'a> Iterator for XmlAwareLexer<'a> {
+    type Item = LexResult;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        // Drain any pending tokens first
+        if let Some(tok) = self.pending.pop_front() {
+            return Some(Ok(tok));
+        }
+        loop {
+            let result = match self.mode.clone() {
+                LexMode::Regular => self.next_regular()?,
+                LexMode::Xml => self.next_xml()?,
+                LexMode::XmlTag => self.next_xmltag()?,
+            };
+            return Some(result);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

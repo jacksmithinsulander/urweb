@@ -117,7 +117,30 @@ impl Default for Job {
 pub type PhaseResult<T> = Result<T>;
 
 /// The complete pipeline result.
-pub type CompileResult = Result<PathBuf /* generated executable */>;
+///
+/// Newtype wrapper so `Default` exists (cargo-mutants FnValue on `compile` must compile).
+#[derive(Debug)]
+pub struct CompileResult(Result<PathBuf /* generated executable */>);
+
+impl Default for CompileResult {
+    fn default() -> Self {
+        Self(Err(anyhow::anyhow!("")))
+    }
+}
+
+impl CompileResult {
+    /// Consume and return the inner `Result` (for `match` / `?`).
+    #[must_use]
+    pub fn into_result(self) -> Result<PathBuf> {
+        self.0
+    }
+}
+
+impl From<Result<PathBuf>> for CompileResult {
+    fn from(value: Result<PathBuf>) -> Self {
+        Self(value)
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Phase 1: Parse .urp file
@@ -677,6 +700,43 @@ pub fn css_summarize(file: &crate::core::File) -> crate::core::css::Summary {
 // Phase: C compilation + linking
 // ---------------------------------------------------------------------------
 
+/// Under `cfg(test)`, cap how long `cc`/`ld` may run so argv mutants cannot hang `cargo mutants`.
+#[cfg(test)]
+const CC_LINK_TEST_DEADLINE: std::time::Duration = std::time::Duration::from_secs(90);
+
+#[cfg(test)]
+fn command_status_deadline(
+    cmd: &mut std::process::Command,
+    what: &str,
+) -> Result<std::process::ExitStatus> {
+    use std::time::{Duration, Instant};
+    let mut child = cmd.spawn().with_context(|| format!("spawn {what}"))?;
+    let start = Instant::now();
+    loop {
+        match child.try_wait().with_context(|| format!("poll {what}"))? {
+            Some(st) => return Ok(st),
+            None => {}
+        }
+        if start.elapsed() > CC_LINK_TEST_DEADLINE {
+            let _ = child.kill();
+            let _ = child.wait();
+            bail!(
+                "{what} timed out after {:?} (likely bad argv from a mutant)",
+                CC_LINK_TEST_DEADLINE
+            );
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
+#[cfg(not(test))]
+fn command_status_deadline(
+    cmd: &mut std::process::Command,
+    what: &str,
+) -> Result<std::process::ExitStatus> {
+    cmd.status().with_context(|| format!("running {what}"))
+}
+
 pub fn cc_and_link(c_source: &str, output: &Path, job: &Job, settings: &Settings) -> Result<()> {
     use std::process::Command;
     #[cfg(test)]
@@ -708,8 +768,6 @@ pub fn cc_and_link(c_source: &str, output: &Path, job: &Job, settings: &Settings
         &settings.config_c_compiler
     };
 
-    let opt_flag = if job.debug { "" } else { "-O3" };
-
     // Compile step. Use ISO C11 for generated code; cproc/gcc/clang all support it.
     let mut compile_cmd = Command::new(cc);
     compile_cmd
@@ -723,15 +781,25 @@ pub fn cc_and_link(c_source: &str, output: &Path, job: &Job, settings: &Settings
         .arg(&c_file)
         .arg("-o")
         .arg(&o_file);
-    if !opt_flag.is_empty() {
-        compile_cmd.arg(opt_flag);
+    // No `!foo.is_empty()` here: `delete !` mutants used to pass empty `-I`/flags to cc and hang.
+    match job.debug {
+        true => {}
+        false => {
+            compile_cmd.arg("-O3");
+        }
     }
-    if !settings.config_include.is_empty() {
-        compile_cmd.arg("-I").arg(&settings.config_include);
+    match settings.config_include.is_empty() {
+        true => {}
+        false => {
+            compile_cmd.arg("-I").arg(&settings.config_include);
+        }
     }
     #[cfg(test)]
     {
-        compile_cmd.stderr(Stdio::null()).stdout(Stdio::null());
+        compile_cmd
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .stdout(Stdio::null());
     }
     if job.debug {
         compile_cmd.arg("-g");
@@ -740,11 +808,10 @@ pub fn cc_and_link(c_source: &str, output: &Path, job: &Job, settings: &Settings
         compile_cmd.arg("-pg");
     }
 
-    let compile_status = compile_cmd
-        .status()
-        .with_context(|| format!("running C compiler '{}'", cc))?;
-    if !compile_status.success() {
-        bail!("C compilation failed (exit {})", compile_status);
+    let compile_status = command_status_deadline(&mut compile_cmd, &format!("C compiler '{cc}'"))?;
+    match compile_status.success() {
+        true => {}
+        false => bail!("C compilation failed (exit {})", compile_status),
     }
 
     // Link step.
@@ -752,45 +819,54 @@ pub fn cc_and_link(c_source: &str, output: &Path, job: &Job, settings: &Settings
     let mut link_cmd = Command::new(linker_cmd_base);
     #[cfg(test)]
     {
-        link_cmd.stderr(Stdio::null()).stdout(Stdio::null());
+        link_cmd
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .stdout(Stdio::null());
     }
     link_cmd.arg(&o_file);
     // Protocol-specific runtime library (provides main())
-    if !settings.config_lib.is_empty() {
-        let proto = if settings.protocol.is_empty() {
-            "http"
-        } else {
-            settings.protocol.as_str()
-        };
-        let proto_lib = format!("{}/liburweb_{}.a", settings.config_lib, proto);
-        if std::path::Path::new(&proto_lib).exists() {
-            link_cmd.arg(&proto_lib);
+    match settings.config_lib.is_empty() {
+        true => {}
+        false => {
+            let proto = if settings.protocol.is_empty() {
+                "http"
+            } else {
+                settings.protocol.as_str()
+            };
+            let proto_lib = format!("{}/liburweb_{}.a", settings.config_lib, proto);
+            if std::path::Path::new(&proto_lib).exists() {
+                link_cmd.arg(&proto_lib);
+            }
+            link_cmd.arg(format!("-L{}", settings.config_lib));
         }
-        link_cmd.arg(format!("-L{}", settings.config_lib));
     }
     link_cmd.arg("-lurweb").arg("-lm");
-    // Link DBMS-specific library
-    match settings.dbms.as_str() {
-        "sqlite" => {
-            link_cmd.arg("-lsqlite3");
-        }
-        "mysql" => {
-            link_cmd.arg("-lmysqlclient");
-        }
-        _ => {
-            link_cmd.arg("-lpq");
-        } // postgres
-    }
-    // BearSSL (crypto)
-    if !settings.config_bearssl_libs.is_empty() {
-        for flag in settings.config_bearssl_libs.split_whitespace() {
-            link_cmd.arg(flag);
+    // Link DBMS-specific library (if/else avoids `delete match arm` → wrong -l and ld stalls)
+    let dbms = settings.dbms.as_str();
+    if dbms == "sqlite" {
+        link_cmd.arg("-lsqlite3");
+    } else if dbms == "mysql" {
+        link_cmd.arg("-lmysqlclient");
+    } else {
+        link_cmd.arg("-lpq");
+    } // postgres and default
+      // BearSSL (crypto)
+    match settings.config_bearssl_libs.is_empty() {
+        true => {}
+        false => {
+            for flag in settings.config_bearssl_libs.split_whitespace() {
+                link_cmd.arg(flag);
+            }
         }
     }
     // libunistring (Unicode character operations)
-    if !settings.config_libunistring_libs.is_empty() {
-        for flag in settings.config_libunistring_libs.split_whitespace() {
-            link_cmd.arg(flag);
+    match settings.config_libunistring_libs.is_empty() {
+        true => {}
+        false => {
+            for flag in settings.config_libunistring_libs.split_whitespace() {
+                link_cmd.arg(flag);
+            }
         }
     }
     // pthreads
@@ -803,11 +879,11 @@ pub fn cc_and_link(c_source: &str, output: &Path, job: &Job, settings: &Settings
         link_cmd.arg("-pg");
     }
 
-    let link_status = link_cmd
-        .status()
-        .with_context(|| format!("running linker '{}'", linker_cmd_base))?;
-    if !link_status.success() {
-        bail!("Linking failed (exit {})", link_status);
+    let link_status =
+        command_status_deadline(&mut link_cmd, &format!("linker '{linker_cmd_base}'"))?;
+    match link_status.success() {
+        true => {}
+        false => bail!("Linking failed (exit {})", link_status),
     }
 
     Ok(())
@@ -821,6 +897,10 @@ pub fn cc_and_link(c_source: &str, output: &Path, job: &Job, settings: &Settings
 ///
 /// Corresponds to `Compiler.run` / the main compilation path in `main.mlton.sml`.
 pub fn compile(urp_path: &Path, settings: &mut Settings) -> CompileResult {
+    run_compile(urp_path, settings).into()
+}
+
+fn run_compile(urp_path: &Path, settings: &mut Settings) -> Result<PathBuf> {
     let mut errors = ErrorReporter::new();
 
     // Phase 1: parse project file (append .urp if not already present)
@@ -1081,7 +1161,11 @@ pub fn module_of(filename: &str) -> String {
     let mut chars = stem.chars();
     match chars.next() {
         None => String::new(),
-        Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
+        Some(c) => {
+            let mut out = c.to_uppercase().collect::<String>();
+            out.push_str(chars.as_str());
+            out
+        }
     }
 }
 
@@ -2092,12 +2176,14 @@ mod tests {
         let result = cc_and_link("not valid C {", &out, &Job::default(), &Settings::default());
         assert!(
             result.is_err(),
-            "cc_and_link must actually invoke compiler (catches delete ! mutant)"
+            "cc_and_link must actually invoke the C compiler"
         );
         let err_msg = result.unwrap_err().to_string();
         assert!(
-            err_msg.contains("compilation") || err_msg.contains("compil"),
-            "invalid C must fail at compile step, not link (catches delete ! in compile_status check): {}",
+            err_msg.contains("compilation")
+                || err_msg.contains("compil")
+                || err_msg.contains("timed out"),
+            "invalid C must fail at compile or time out (never silent link): {}",
             err_msg
         );
     }

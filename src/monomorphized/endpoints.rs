@@ -12,8 +12,9 @@ use crate::monomorphized::{Decl, File};
 // Types
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum HttpMethod {
+    #[default]
     Get,
     Post,
 }
@@ -27,7 +28,7 @@ impl HttpMethod {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct Endpoint {
     pub method: HttpMethod,
     pub url: String,
