@@ -19,6 +19,17 @@ mod grammar {
 use crate::error_types::{CompileError, ErrorReporter, Span};
 use crate::source::{File, LocSgnItem};
 
+/// Decrement linear fuel; when exhausted, append the rest of `src` and return (stops Θ(n²) mutants).
+macro_rules! preprocess_urs_burn {
+    ($fuel:expr, $out:expr, $src:expr, $i:expr) => {{
+        if $fuel == 0 {
+            $out.push_str(&$src[$i..]);
+            return $out;
+        }
+        $fuel -= 1;
+    }};
+}
+
 /// Pre-process a `.urs` source string to convert bare implicit constructor
 /// quantifiers into bracketed form that the LR(1) grammar can parse without
 /// conflicts.
@@ -53,6 +64,8 @@ pub fn preprocess_urs(src: &str) -> String {
     // Keep the cap at n+1 so mutants that break `i` or conditions bail out fast
     // instead of doing O(8n) work (which times out on large .urs files).
     let step_cap = n.saturating_add(1);
+    // Cap total inner-loop iterations across the whole pass (well-formed input uses O(n)).
+    let mut fuel = n.saturating_mul(64).saturating_add(4096);
     let mut out = String::with_capacity(n + 128);
     let mut i = 0;
     // Track the last non-whitespace, non-comment token we emitted so we can
@@ -67,22 +80,20 @@ pub fn preprocess_urs(src: &str) -> String {
         last.push_str(w);
     };
 
-    // Use `for` iteration counts instead of `guard += 1`: `+=`→`*=` mutants leave guards at 0
-    // and spin forever on large inputs.
-    for outer_tick in 0.. {
+    // Bounded outer driver: `for _ in 0..` with `tick > cap` is fragile (`>` → `>=` / `==` mutants).
+    // A fixed `take(step_cap + 1)`-style range always terminates.
+    for _ in 0..step_cap.saturating_add(1) {
         if i >= n {
             break;
         }
-        if outer_tick > step_cap {
-            out.push_str(&src[i..]);
-            return out;
-        }
+        preprocess_urs_burn!(fuel, out, src, i);
         // Skip ML block comments (* ... *) verbatim
         if b[i] == b'(' && i + 1 < n && b[i + 1] == b'*' {
             out.push_str("(*");
             i += 2;
             let mut depth = 1usize;
             for _ in 0..step_cap {
+                preprocess_urs_burn!(fuel, out, src, i);
                 if i >= n || depth == 0 {
                     break;
                 }
@@ -113,6 +124,7 @@ pub fn preprocess_urs(src: &str) -> String {
             last_token.push('"');
             i += 1;
             for _ in 0..step_cap {
+                preprocess_urs_burn!(fuel, out, src, i);
                 if i >= n || b[i] == b'"' {
                     break;
                 }
@@ -147,6 +159,7 @@ pub fn preprocess_urs(src: &str) -> String {
         if b[i].is_ascii_alphabetic() || b[i] == b'_' {
             let id_start = i;
             for _ in 0..step_cap {
+                preprocess_urs_burn!(fuel, out, src, i);
                 if i >= n || !(b[i].is_ascii_alphanumeric() || b[i] == b'_' || b[i] == b'\'') {
                     break;
                 }
@@ -170,6 +183,7 @@ pub fn preprocess_urs(src: &str) -> String {
                 // Skip whitespace after the identifier
                 let ws1 = i;
                 for _ in 0..step_cap {
+                    preprocess_urs_burn!(fuel, out, src, i);
                     if i >= n || !(b[i] == b' ' || b[i] == b'\t' || b[i] == b'\n' || b[i] == b'\r')
                     {
                         break;
@@ -200,6 +214,7 @@ pub fn preprocess_urs(src: &str) -> String {
                 // Skip whitespace after the colons
                 let ws2 = i;
                 for _ in 0..step_cap {
+                    preprocess_urs_burn!(fuel, out, src, i);
                     if i >= n || !(b[i] == b' ' || b[i] == b'\t' || b[i] == b'\n' || b[i] == b'\r')
                     {
                         break;
@@ -217,6 +232,7 @@ pub fn preprocess_urs(src: &str) -> String {
                     let mut depth = 1usize;
                     i += 1;
                     for _ in 0..step_cap {
+                        preprocess_urs_burn!(fuel, out, src, i);
                         if i >= n || depth == 0 {
                             break;
                         }
@@ -235,6 +251,7 @@ pub fn preprocess_urs(src: &str) -> String {
                     let mut depth = 1usize;
                     i += 1;
                     for _ in 0..step_cap {
+                        preprocess_urs_burn!(fuel, out, src, i);
                         if i >= n || depth == 0 {
                             break;
                         }
@@ -251,6 +268,7 @@ pub fn preprocess_urs(src: &str) -> String {
                     }
                 } else if i < n && (b[i].is_ascii_alphabetic() || b[i] == b'_') {
                     for _ in 0..step_cap {
+                        preprocess_urs_burn!(fuel, out, src, i);
                         if i >= n
                             || !(b[i].is_ascii_alphanumeric() || b[i] == b'_' || b[i] == b'\'')
                         {
@@ -275,6 +293,7 @@ pub fn preprocess_urs(src: &str) -> String {
                 // Skip whitespace before potential `->`
                 let ws3 = i;
                 for _ in 0..step_cap {
+                    preprocess_urs_burn!(fuel, out, src, i);
                     if i >= n || !(b[i] == b' ' || b[i] == b'\t' || b[i] == b'\n' || b[i] == b'\r')
                     {
                         break;
@@ -323,6 +342,9 @@ pub fn preprocess_urs(src: &str) -> String {
         i += 1;
     }
 
+    if i < n {
+        out.push_str(&src[i..]);
+    }
     out
 }
 
@@ -359,7 +381,7 @@ pub fn parse_ur(_filename: &str, source: &str, errors: &mut ErrorReporter) -> Op
     }
     #[cfg(not(generated_parser))]
     {
-        let _ = (filename, source);
+        let _ = (_filename, source);
         errors.report(CompileError::Plain(
             "parse_ur: parser not available — rebuild with URWEB_GEN_PARSER=1".into(),
         ));
@@ -398,7 +420,7 @@ pub fn parse_urs(
     }
     #[cfg(not(generated_parser))]
     {
-        let _ = (filename, source);
+        let _ = (_filename, source);
         errors.report(CompileError::Plain(
             "parse_urs: parser not available — rebuild with URWEB_GEN_PARSER=1".into(),
         ));
@@ -421,8 +443,8 @@ mod tests {
         }
         #[cfg(generated_parser)]
         {
-            // With the real parser a trivial declaration should parse.
-            let _ = result;
+            let file = result.expect("val x = 1 should parse");
+            assert_eq!(file.len(), 1, "single top-level val decl");
         }
     }
 
@@ -464,7 +486,25 @@ mod tests {
         }
         #[cfg(generated_parser)]
         {
-            assert!(n.is_some(), "expected val x = 1 to parse");
+            assert_eq!(n, Some(1), "smoke parse must count exactly one decl");
+        }
+    }
+
+    #[test]
+    fn parse_ur_two_vals_requires_two_decls() {
+        let mut errors = ErrorReporter::new();
+        let n = parse_ur("t.ur", "val a = 1\nval b = 2", &mut errors).map(|f| f.len());
+        #[cfg(generated_parser)]
+        {
+            assert_eq!(
+                n,
+                Some(2),
+                "catches smoke_parse_val_decl_count -> Some(1) style mutants"
+            );
+        }
+        #[cfg(not(generated_parser))]
+        {
+            assert!(n.is_none());
         }
     }
 
@@ -479,7 +519,11 @@ mod tests {
         }
         #[cfg(generated_parser)]
         {
-            let _ = result;
+            let items = result.expect("val x : int should parse as a signature");
+            assert!(
+                !items.is_empty(),
+                "catches parse_urs -> Some(vec![]) mutants"
+            );
         }
     }
 }

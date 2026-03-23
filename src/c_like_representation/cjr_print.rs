@@ -3,6 +3,8 @@
 //! Translates a CJR `File` into a C source string.
 //! Mirrors `cjr_print.sml`.
 
+#[cfg(test)]
+use std::cell::Cell;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 
@@ -49,6 +51,35 @@ fn collect_url_handler_protos() -> Vec<String> {
 fn collect_url_handler_defs() -> Vec<String> {
     URL_HANDLER_DEFS.with(|s| s.borrow().clone())
 }
+
+#[cfg(test)]
+thread_local! {
+    /// Caps recursive work during `cargo test` / mutation so runaway mutants panic instead of timing out.
+    /// Default budget so unit tests can call `p_exp` / `p_typ` without going through `cjr_print`.
+    static CJR_PRINT_TICKS: Cell<usize> = Cell::new(8_000_000);
+}
+
+#[cfg(test)]
+fn cjr_test_reset_print_ticks() {
+    CJR_PRINT_TICKS.with(|c| c.set(8_000_000));
+}
+
+#[cfg(test)]
+fn cjr_test_tick() {
+    CJR_PRINT_TICKS.with(|c| {
+        let n = c.get();
+        if n == 0 {
+            panic!(
+                "cjr_print: test tick budget exhausted (likely infinite recursion from a mutation)"
+            );
+        }
+        c.set(n - 1);
+    });
+}
+
+#[cfg(not(test))]
+#[inline]
+fn cjr_test_tick() {}
 
 // ---------------------------------------------------------------------------
 // CjrEnv — compilation environment
@@ -221,6 +252,7 @@ fn is_unboxable(t: &LocTyp) -> bool {
 // ---------------------------------------------------------------------------
 
 pub fn p_typ(env: &CjrEnv, t: &LocTyp) -> String {
+    cjr_test_tick();
     match &t.node {
         Typ::Fun(_, _) => "<FUNCTION>".to_string(),
         Typ::Record(0) => "uw_unit".to_string(),
@@ -334,6 +366,7 @@ fn pat_con_info(env: &CjrEnv, pc: &PatCon) -> (String, String, String) {
 // ---------------------------------------------------------------------------
 
 fn p_pat_match(env: &CjrEnv, disc: &str, pat: &LocPat) -> String {
+    cjr_test_tick();
     match &pat.node {
         Pat::Var(_, _) => "1".to_string(),
         Pat::Prim(p) => match p {
@@ -413,6 +446,7 @@ fn get_pc_arg_typ(env: &CjrEnv, pc: &PatCon) -> Option<LocTyp> {
 // ---------------------------------------------------------------------------
 
 fn p_pat_bind(env: &mut CjrEnv, disc: &str, pat: &LocPat) -> String {
+    cjr_test_tick();
     match &pat.node {
         Pat::Var(x, t) => {
             let idx = env.count_e_rels();
@@ -495,6 +529,7 @@ fn p_funcall(
 // ---------------------------------------------------------------------------
 
 pub fn p_exp(env: &CjrEnv, e: &LocExp, settings: &Settings) -> String {
+    cjr_test_tick();
     match &e.node {
         Exp::Prim(p) => p.to_c_literal(),
 
@@ -879,6 +914,7 @@ fn sql_type_in(t: &LocTyp) -> crate::settings::SqlType {
 
 /// Generate C code to convert a C value to a Postgres parameter string.
 fn p_ensql(t: &crate::settings::SqlType, expr: &str) -> String {
+    cjr_test_tick();
     use crate::settings::SqlType;
     match t {
         SqlType::Int => format!("uw_Basis_attrifyInt(ctx, {})", expr),
@@ -910,6 +946,7 @@ fn p_getcol(
     wont_leak_strings: bool,
     loc_str: &str,
 ) -> String {
+    cjr_test_tick();
     use crate::settings::SqlType;
 
     fn p_unsql(t: &SqlType, e: &str, e_len: &str, wont_leak_strings: bool) -> String {
@@ -972,6 +1009,7 @@ fn p_getcol(
 
 /// Generate C code to declare and fill Postgres prepared-statement parameters.
 fn make_params(inputs: &[(String, crate::settings::SqlType)]) -> String {
+    cjr_test_tick();
     use crate::settings::SqlType;
     let mut out = String::new();
 
@@ -1025,6 +1063,7 @@ fn query_common(
     outputs: &[(String, crate::settings::SqlType)],
     do_cols: &str,
 ) -> String {
+    cjr_test_tick();
     let bumped_len = if outputs.is_empty() { 1 } else { outputs.len() };
     format!(
         "int n, i;\n\
@@ -1072,6 +1111,7 @@ fn make_do_cols(
     wont_leak_strings: bool,
     loc_str: &str,
 ) -> String {
+    cjr_test_tick();
     let mut out = format!(
         "struct __uws_{rn} __uwr_r_{dep};\n\
          {st} __uwr_acc_{dep1} = acc;\n\n",
@@ -1102,6 +1142,7 @@ fn get_pargs(
     env: &CjrEnv,
     settings: &Settings,
 ) -> Vec<(String, crate::settings::SqlType)> {
+    cjr_test_tick();
     use crate::settings::SqlType;
     match &e.node {
         Exp::Prim(crate::primitives::Prim::String(_, _)) => vec![],
@@ -1196,6 +1237,7 @@ fn get_pargs(
 // ---------------------------------------------------------------------------
 
 fn p_exp_query(env: &CjrEnv, qm: &QueryMeta, settings: &Settings) -> String {
+    cjr_test_tick();
     let state_t = p_typ(env, &qm.state);
     let initial_s = p_exp(env, &qm.initial, settings);
     let query_s = p_exp(env, &qm.query, settings);
@@ -1310,6 +1352,7 @@ fn p_exp_query(env: &CjrEnv, qm: &QueryMeta, settings: &Settings) -> String {
 }
 
 fn p_exp_dml(env: &CjrEnv, dm: &DmlMeta, settings: &Settings) -> String {
+    cjr_test_tick();
     let dml_s = p_exp(env, &dm.dml, settings);
     let loc_str = "dml";
 
@@ -1451,6 +1494,7 @@ fn p_exp_dml(env: &CjrEnv, dm: &DmlMeta, settings: &Settings) -> String {
 // ---------------------------------------------------------------------------
 
 fn flatten_strcat(e1: &LocExp, e2: &LocExp) -> Vec<LocExp> {
+    cjr_test_tick();
     let mut parts = Vec::new();
     collect_strcat_parts(e1, &mut parts);
     collect_strcat_parts(e2, &mut parts);
@@ -1458,6 +1502,7 @@ fn flatten_strcat(e1: &LocExp, e2: &LocExp) -> Vec<LocExp> {
 }
 
 fn collect_strcat_parts(e: &LocExp, parts: &mut Vec<LocExp>) {
+    cjr_test_tick();
     if let Exp::FfiApp(m, x, args) = &e.node {
         if m == "Basis" && x == "strcat" {
             if let [(e1, _), (e2, _)] = args.as_slice() {
@@ -1505,6 +1550,7 @@ fn p_fun(
     e: &LocExp,
     settings: &Settings,
 ) -> String {
+    cjr_test_tick();
     let ran_s = p_typ(env, ran);
     let fn_name = format!("__uwn_{}_{}", ident(fx), n);
 
@@ -1570,6 +1616,7 @@ fn p_decl(
     settings: &Settings,
     global_initializers: &mut Vec<String>,
 ) -> String {
+    cjr_test_tick();
     match &d.node {
         Decl::Struct(n, xts) => {
             if xts.is_empty() {
@@ -1667,6 +1714,7 @@ fn p_decl(
 }
 
 fn p_datatype_decl(env: &CjrEnv, dt: &DatatypeDecl) -> String {
+    cjr_test_tick();
     match dt.kind {
         DatatypeKind::Enum => {
             let enum_name = format!("__uwe_{}_{}", ident(&dt.name), dt.id);
@@ -1745,6 +1793,7 @@ fn do_em_enum(
     x: &str,
     i: usize,
 ) -> String {
+    cjr_test_tick();
     match xncs {
         [] => format!(
             "(uw_error(ctx, FATAL, \"Error unurlifying datatype {x}\"), \
@@ -1775,6 +1824,7 @@ fn do_em_default(
     env: &CjrEnv,
     from_client: bool,
 ) -> String {
+    cjr_test_tick();
     match xncs {
         [] => format!("(uw_error(ctx, FATAL, \"Error unurlifying datatype {x}\"), NULL)"),
         [(x_, n, to), rest @ ..] => {
@@ -1809,6 +1859,7 @@ fn do_em_default(
 /// Generate C code to parse a URL-encoded value of type `t` from a `char **request` pointer.
 /// When called from the inline context (not a helper function), `request` is a `char *` local.
 fn unurlify_req(request: &str, t: &LocTyp, env: &CjrEnv, from_client: bool) -> String {
+    cjr_test_tick();
     match &t.node {
         Typ::Ffi(m, name) if m == "Basis" && name == "unit" => {
             format!("uw_Basis_unurlifyUnit(ctx, {})", de_star(request))
@@ -1995,6 +2046,7 @@ fn unurlify(t: &LocTyp, env: &CjrEnv, from_client: bool) -> String {
 
 /// Generate C statements to urlify-write a value `it<level>` of type `t`.
 fn urlify_stmts(level: usize, t: &LocTyp, env: &CjrEnv) -> String {
+    cjr_test_tick();
     match &t.node {
         Typ::Ffi(m, name) if m == "Basis" && name == "unit" => {
             "uw_Basis_urlifyString_w(ctx, \"\");\n".to_string()
@@ -2144,6 +2196,7 @@ fn urlify_enum_stmts(
     x: &str,
     i: usize,
 ) -> String {
+    cjr_test_tick();
     match xncs {
         [] => format!("uw_error(ctx, FATAL, \"Error urlifying datatype {x}\");\n"),
         [(x_, n, _), rest @ ..] => {
@@ -2165,6 +2218,7 @@ fn urlify_default_stmts(
     i: usize,
     env: &CjrEnv,
 ) -> String {
+    cjr_test_tick();
     match xncs {
         [] => format!("uw_error(ctx, FATAL, \"Error urlifying datatype {x} (%d)\", it0->data);\n"),
         [(x_, n, to), rest @ ..] => {
@@ -2198,6 +2252,7 @@ fn p_page(
     env: &CjrEnv,
     settings: &Settings,
 ) -> String {
+    cjr_test_tick();
     // Strip the url_prefix from the path (already included in the path from cjrize)
     let path_c = path.replace('"', "\\\"").replace('\n', "\\n");
     let path_len = path.len();
@@ -2380,6 +2435,7 @@ fn gen_dbms_c_code(
     tables: &[(String, Vec<(String, LocTyp)>)],
     prepared_stmts: &[(String, usize)],
 ) -> String {
+    cjr_test_tick();
     let dbms = settings.dbms.as_str();
     let dbstring = settings
         .dbstring
@@ -2933,6 +2989,8 @@ fn gen_cookie_sig() -> &'static str {
 
 /// Generate a C source file from a CJR file.
 pub fn cjr_print(file: &crate::c_like_representation::File, settings: &Settings) -> String {
+    #[cfg(test)]
+    cjr_test_reset_print_ticks();
     let (ds, ps) = file;
 
     // Separate enum datatypes from other declarations (emit enums first)

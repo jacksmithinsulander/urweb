@@ -467,10 +467,6 @@ ConNode: Con = {
     // concatenation
     <c1:AppCon> "++" <c2:Con> => Con::Concat(Box::new(c1), Box::new(c2)),
 
-    // kind-annotated wildcard: `_ :: K`  (e.g. in `fn x : (_ :: Type) =>`)
-    // Use KindApp (not Kind) to avoid consuming "->" as a kind arrow.
-    "_" "::" <k:KindApp> => Con::Wild(Box::new(k)),
-
     <c:AppCon> => c.node,
 };
 
@@ -529,6 +525,10 @@ AtomCon: LocCon = {
 
 AtomConNode: Con = {
     "()" => Con::Unit,
+    // kind-annotated wildcard: `_ :: K`  (e.g. in `(_ :: Type)`)
+    // Must precede plain `_` so that with lookahead `::` we shift instead of reduce.
+    // Use KindApp (not Kind) to avoid consuming "->" as a kind arrow.
+    "_" "::" <k:KindApp> => Con::Wild(Box::new(k)),
     "_"  => Con::Wild(Box::new(Located::dummy(Kind::Wild))),
     // `$C` — record type from row constructor (syntactic sugar for TRecord(C))
     "$" <c:AtomCon> => Con::TRecord(Box::new(c)),

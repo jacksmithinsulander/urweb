@@ -298,6 +298,10 @@ fn unravel_fun(
     loc: &Span,
     args: &mut Vec<(String, LocTyp)>,
 ) -> (LocTyp, mono::LocExp) {
+    const MAX_UNRAVEL: usize = 65_536;
+    if args.len() >= MAX_UNRAVEL {
+        return (cjr_t, e);
+    }
     match cjr_t.node.clone() {
         Typ::Fun(dom, ran) => match e.node {
             mono::Exp::Abs(ax, _, _, body) => {
@@ -365,18 +369,24 @@ fn cify_exp(e: &mono::LocExp, sm: &mut Sm, errors: &mut ErrorReporter) -> LocExp
             fn collect_args<'a>(
                 e: &'a mono::LocExp,
                 args: &mut Vec<mono::LocExp>,
+                budget: &mut usize,
             ) -> &'a mono::LocExp {
+                if *budget == 0 {
+                    return e;
+                }
+                *budget -= 1;
                 match &e.node {
                     mono::Exp::App(f, arg) => {
-                        let f = collect_args(f, args);
+                        let f = collect_args(f, args, budget);
                         args.push(*arg.clone());
                         f
                     }
                     _ => e,
                 }
             }
+            let mut spine_budget = 65_536usize;
             let mut args = vec![*e2.clone()];
-            let f_ref = collect_args(e1, &mut args);
+            let f_ref = collect_args(e1, &mut args, &mut spine_budget);
             // args is collected in order [e2_of_outermost, e2_of_next, ...]
             // but collect_args recurses on e1 and pushes e2 last, so args is [innermost_arg, ..., e2]
             // Actually: collect_args(App(App(f, a), b), args=[b]) recurses on App(f,a), pushes a → args=[b, a], returns f
