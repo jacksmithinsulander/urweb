@@ -98,18 +98,19 @@ impl<T> Located<T> {
             span: Span::dummy(),
         }
     }
-
-    pub fn map<U, F: FnOnce(T) -> U>(self, f: F) -> Located<U> {
-        Located {
-            node: f(self.node),
-            span: self.span,
-        }
-    }
 }
 
-impl<T: Default> Default for Located<T> {
+/// Never call this in real code: it always panics.
+///
+/// It exists so `Located<T>` implements [`Default`] for **every** `T`, which keeps
+/// `cargo mutants` substitutions like “replace body with `Default::default()`”
+/// type-correct for generic methods such as [`Located::dummy`].
+/// Those mutants are then caught by tests when they run.
+impl<T> Default for Located<T> {
     fn default() -> Self {
-        Located::dummy(T::default())
+        panic!(
+            "Located<T>::default() is not supported; use Located::new(node, span) or Located::dummy(node)"
+        )
     }
 }
 
@@ -277,9 +278,9 @@ mod tests {
     }
 
     #[test]
-    fn located_map() {
+    fn located_map_node_preserves_span() {
         let l: Located<i32> = Located::dummy(42);
-        let l2 = l.map(|n| n + 1);
+        let l2 = Located::new(l.node + 1, l.span.clone());
         assert_eq!(l2.node, 43);
     }
 

@@ -393,6 +393,12 @@ pub enum Token {
     Csymbol(String),
 
     // -----------------------------------------------------------------------
+    // Compound token: `_` followed by `::` (with optional whitespace).
+    // Emitted by XmlAwareLexer to avoid LALR state-merge ambiguity.
+    // -----------------------------------------------------------------------
+    WildAnnot,
+
+    // -----------------------------------------------------------------------
     // End of file (injected by the lexer iterator)
     // -----------------------------------------------------------------------
     Eof,
@@ -871,6 +877,21 @@ impl<'a> XmlAwareLexer<'a> {
             }
         }
         let word = std::str::from_utf8(&self.src[start..self.pos]).unwrap_or("_");
+        // Emit WildAnnot when `_` (exactly) is immediately followed by `::` (not `:::`)
+        if word == "_" {
+            let mut peek = self.pos;
+            while peek < self.src.len() && matches!(self.src[peek], b' ' | b'\t' | b'\r' | b'\n') {
+                peek += 1;
+            }
+            if peek + 1 < self.src.len()
+                && self.src[peek] == b':'
+                && self.src[peek + 1] == b':'
+                && self.src.get(peek + 2).copied() != Some(b':')
+            {
+                self.pos = peek + 2;
+                return Ok((start, Token::WildAnnot, self.pos));
+            }
+        }
         let tok = match word {
             "and" => Token::And,
             "andalso" => Token::Andalso,

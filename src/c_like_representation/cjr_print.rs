@@ -33,6 +33,7 @@ thread_local! {
 }
 
 fn reset_url_handlers() {
+    cjr_test_tick();
     UNURLIFY_SEEN.with(|s| s.borrow_mut().clear());
     URLIFY_SEEN.with(|s| s.borrow_mut().clear());
     URL_HANDLER_PROTOS.with(|s| s.borrow_mut().clear());
@@ -40,15 +41,18 @@ fn reset_url_handlers() {
 }
 
 fn add_url_handler(proto: String, def: String) {
+    cjr_test_tick();
     URL_HANDLER_PROTOS.with(|s| s.borrow_mut().push(proto));
     URL_HANDLER_DEFS.with(|s| s.borrow_mut().push(def));
 }
 
 fn collect_url_handler_protos() -> Vec<String> {
+    cjr_test_tick();
     URL_HANDLER_PROTOS.with(|s| s.borrow().clone())
 }
 
 fn collect_url_handler_defs() -> Vec<String> {
+    cjr_test_tick();
     URL_HANDLER_DEFS.with(|s| s.borrow().clone())
 }
 
@@ -102,6 +106,7 @@ pub struct CjrEnv {
 
 impl CjrEnv {
     pub fn new() -> Self {
+        cjr_test_tick();
         let mut env = CjrEnv {
             rels: Vec::new(),
             named: HashMap::new(),
@@ -115,23 +120,28 @@ impl CjrEnv {
     }
 
     pub fn push_e_rel(&mut self, x: &str, t: LocTyp) {
+        cjr_test_tick();
         self.rels.push((x.to_string(), t));
     }
 
     pub fn lookup_e_rel(&self, n: usize) -> Option<&(String, LocTyp)> {
+        cjr_test_tick();
         let idx = self.rels.len().checked_sub(n + 1)?;
         self.rels.get(idx)
     }
 
     pub fn count_e_rels(&self) -> usize {
+        cjr_test_tick();
         self.rels.len()
     }
 
     pub fn push_e_named(&mut self, x: &str, n: usize, t: LocTyp) {
+        cjr_test_tick();
         self.named.insert(n, (x.to_string(), t));
     }
 
     pub fn lookup_e_named(&self, n: usize) -> Option<&(String, LocTyp)> {
+        cjr_test_tick();
         self.named.get(&n)
     }
 
@@ -141,6 +151,7 @@ impl CjrEnv {
         n: usize,
         constrs: &[(String, usize, Option<LocTyp>)],
     ) {
+        cjr_test_tick();
         self.datatypes.insert(n, (x.to_string(), constrs.to_vec()));
         for (cx, cn, ct) in constrs {
             self.constructors.insert(*cn, (cx.clone(), ct.clone(), n));
@@ -151,23 +162,28 @@ impl CjrEnv {
         &self,
         n: usize,
     ) -> Option<&(String, Vec<(String, usize, Option<LocTyp>)>)> {
+        cjr_test_tick();
         self.datatypes.get(&n)
     }
 
     pub fn lookup_constructor(&self, n: usize) -> Option<&(String, Option<LocTyp>, usize)> {
+        cjr_test_tick();
         self.constructors.get(&n)
     }
 
     pub fn push_struct(&mut self, n: usize, xts: Vec<(String, LocTyp)>) {
+        cjr_test_tick();
         self.structs.insert(n, xts);
     }
 
     pub fn lookup_struct(&self, n: usize) -> Option<&Vec<(String, LocTyp)>> {
+        cjr_test_tick();
         self.structs.get(&n)
     }
 
     /// Update the environment by processing a declaration's bindings.
     pub fn decl_binds(&mut self, d: &LocDecl) {
+        cjr_test_tick();
         match &d.node {
             Decl::Struct(n, xts) => {
                 self.push_struct(*n, xts.clone());
@@ -222,6 +238,7 @@ fn ident(s: &str) -> String {
 }
 
 fn p_rel_name(env: &CjrEnv, n: usize) -> String {
+    cjr_test_tick();
     match env.lookup_e_rel(n) {
         Some((x, _)) => {
             let idx = env.count_e_rels().saturating_sub(n + 1);
@@ -232,6 +249,7 @@ fn p_rel_name(env: &CjrEnv, n: usize) -> String {
 }
 
 fn p_named_name(n: usize, x: &str) -> String {
+    cjr_test_tick();
     format!("__uwn_{}_{}", ident(x), n)
 }
 
@@ -297,6 +315,7 @@ pub fn p_typ(env: &CjrEnv, t: &LocTyp) -> String {
 // ---------------------------------------------------------------------------
 
 fn p_pat_con(env: &CjrEnv, pc: &PatCon) -> String {
+    cjr_test_tick();
     match pc {
         PatCon::Var(n) => match env.lookup_constructor(*n) {
             Some((x, _, _)) => format!("__uwc_{}_{}", ident(x), n),
@@ -318,6 +337,7 @@ fn p_pat_con(env: &CjrEnv, pc: &PatCon) -> String {
 
 /// Constructor name used for data field access: "uw_{name}"
 fn con_field_name(env: &CjrEnv, pc: &PatCon) -> String {
+    cjr_test_tick();
     match pc {
         PatCon::Var(n) => match env.lookup_constructor(*n) {
             Some((x, _, _)) => format!("uw_{}", ident(x)),
@@ -329,6 +349,7 @@ fn con_field_name(env: &CjrEnv, pc: &PatCon) -> String {
 
 /// Info about a Default constructor: (struct_type_name, enum_const_name, data_field_name)
 fn pat_con_info(env: &CjrEnv, pc: &PatCon) -> (String, String, String) {
+    cjr_test_tick();
     match pc {
         PatCon::Var(n) => match env.lookup_constructor(*n) {
             Some((x, _, dn)) => {
@@ -435,6 +456,7 @@ fn p_pat_match(env: &CjrEnv, disc: &str, pat: &LocPat) -> String {
 
 /// Get the argument type of a constructor (for Option/unboxable decisions).
 fn get_pc_arg_typ(env: &CjrEnv, pc: &PatCon) -> Option<LocTyp> {
+    cjr_test_tick();
     match pc {
         PatCon::Var(n) => env.lookup_constructor(*n).and_then(|(_, t, _)| t.clone()),
         PatCon::Ffi { arg, .. } => arg.clone(),
@@ -503,6 +525,7 @@ fn p_funcall(
     extra: Option<&str>,
     settings: &Settings,
 ) -> String {
+    cjr_test_tick();
     let fn_name = format!("uw_{}_{}", ident(m), ident(x));
     let extra_s = match extra {
         None => String::new(),
@@ -891,6 +914,7 @@ pub fn p_exp(env: &CjrEnv, e: &LocExp, settings: &Settings) -> String {
 
 /// Convert a CJR type to a SqlType (for column reading/writing).
 fn sql_type_in(t: &LocTyp) -> crate::settings::SqlType {
+    cjr_test_tick();
     use crate::settings::SqlType;
     match &t.node {
         Typ::Ffi(m, s) if m == "Basis" => match s.as_str() {
@@ -950,6 +974,7 @@ fn p_getcol(
     use crate::settings::SqlType;
 
     fn p_unsql(t: &SqlType, e: &str, e_len: &str, wont_leak_strings: bool) -> String {
+        cjr_test_tick();
         match t {
             SqlType::Int => format!("uw_Basis_stringToInt_error(ctx, {})", e),
             SqlType::Float => format!("uw_Basis_stringToFloat_error(ctx, {})", e),
@@ -1520,11 +1545,13 @@ fn collect_strcat_parts(e: &LocExp, parts: &mut Vec<LocExp>) {
 // ---------------------------------------------------------------------------
 
 fn collect_arg_types(t: &LocTyp, n: usize) -> Vec<LocTyp> {
+    cjr_test_tick();
     const MAX_ARGS: usize = 256; // sanity limit; real functions have far fewer
     let n = n.min(MAX_ARGS);
     let mut result = Vec::new();
     let mut cur = t.clone();
     while result.len() < n {
+        cjr_test_tick();
         match cur.node.clone() {
             Typ::Fun(dom, ran) => {
                 result.push(*dom);
@@ -1595,6 +1622,7 @@ fn p_fun(
 // ---------------------------------------------------------------------------
 
 fn p_proto(env: &CjrEnv, fx: &str, n: usize, args: &[(String, LocTyp)], ran: &LocTyp) -> String {
+    cjr_test_tick();
     let ran_s = p_typ(env, ran);
     let fn_name = format!("__uwn_{}_{}", ident(fx), n);
     let arg_types: Vec<String> = args.iter().map(|(_, t)| p_typ(env, t)).collect();
@@ -2037,6 +2065,7 @@ fn unurlify_req(request: &str, t: &LocTyp, env: &CjrEnv, from_client: bool) -> S
 
 /// Wrapper: parse from a `char *request` local (not a `char **`).
 fn unurlify(t: &LocTyp, env: &CjrEnv, from_client: bool) -> String {
+    cjr_test_tick();
     unurlify_req("request", t, env, from_client)
 }
 
@@ -2455,6 +2484,7 @@ fn gen_sqlite_c_code(
     tables: &[(String, Vec<(String, LocTyp)>)],
     prepared: &[(String, usize)],
 ) -> String {
+    cjr_test_tick();
     let mut out = String::new();
 
     // sqlite3 header
@@ -2621,6 +2651,7 @@ fn gen_mysql_c_code(
     _tables: &[(String, Vec<(String, LocTyp)>)],
     prepared: &[(String, usize)],
 ) -> String {
+    cjr_test_tick();
     // Parse dbstring: space-separated key=value tokens
     let mut host: Option<String> = None;
     let mut user: Option<String> = None;
@@ -2802,6 +2833,7 @@ fn gen_postgres_c_code(
     _tables: &[(String, Vec<(String, LocTyp)>)],
     prepared: &[(String, usize)],
 ) -> String {
+    cjr_test_tick();
     let mut out = String::new();
 
     out.push_str("#include <libpq-fe.h>\n\n");
@@ -2948,6 +2980,7 @@ fn gen_postgres_c_code(
 /// Generate uw_input_num: maps form input names to their indices.
 /// Returns -1 if not found.
 fn gen_input_num(ps: &[crate::c_like_representation::ExportEntry]) -> String {
+    cjr_test_tick();
     let inputs: Vec<(String, usize)> = Vec::new();
     for (ek, _, _, ts, _, _, _, _) in ps {
         if let crate::export::ExportKind::Action(_) = ek {
@@ -2972,6 +3005,7 @@ fn gen_input_num(ps: &[crate::c_like_representation::ExportEntry]) -> String {
 
 /// Generate uw_cookie_sig: HMAC signature for cookies.
 fn gen_cookie_sig() -> &'static str {
+    cjr_test_tick();
     concat!(
         "extern void uw_sign(const char *in, char *out);\n",
         "extern int uw_hash_blocksize;\n",

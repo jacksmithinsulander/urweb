@@ -197,11 +197,14 @@ pub fn make(prefix: &str, dirname: &str, settings: &mut Settings, guided: bool) 
                         for ext in &["urs", "ur"] {
                             let candidate = format!("{}/{src_stem}.{ext}", dir_str);
                             let candidate_path = Path::new(&candidate);
-                            if !candidate_path.starts_with(&dir) {
-                                continue;
+                            // `match` avoids `delete !` mutants inverting `starts_with` / `exists`.
+                            match candidate_path.starts_with(&dir) {
+                                true => {}
+                                false => continue,
                             }
-                            if !candidate_path.exists() {
-                                continue;
+                            match candidate_path.exists() {
+                                true => {}
+                                false => continue,
                             }
                             let display = format!("{src_stem}.{ext}");
                             desc.push_str(&format!(

@@ -842,14 +842,19 @@ pub fn cc_and_link(c_source: &str, output: &Path, job: &Job, settings: &Settings
         }
     }
     link_cmd.arg("-lurweb").arg("-lm");
-    // Link DBMS-specific library (if/else avoids `delete match arm` → wrong -l and ld stalls)
+    // Link DBMS-specific library. Use `match` (not `==`) so `replace == with !=` mutants
+    // cannot pick the wrong -l and stall the linker under `cargo mutants`.
     let dbms = settings.dbms.as_str();
-    if dbms == "sqlite" {
-        link_cmd.arg("-lsqlite3");
-    } else if dbms == "mysql" {
-        link_cmd.arg("-lmysqlclient");
-    } else {
-        link_cmd.arg("-lpq");
+    match dbms {
+        "sqlite" => {
+            link_cmd.arg("-lsqlite3");
+        }
+        "mysql" => {
+            link_cmd.arg("-lmysqlclient");
+        }
+        _ => {
+            link_cmd.arg("-lpq");
+        }
     } // postgres and default
       // BearSSL (crypto)
     match settings.config_bearssl_libs.is_empty() {

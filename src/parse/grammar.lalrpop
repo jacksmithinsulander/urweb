@@ -107,6 +107,7 @@ extern {
         "___" => crate::parse::lexical_analyzer::Token::Underunderunder,
         "__"  => crate::parse::lexical_analyzer::Token::Underunder,
         "_"   => crate::parse::lexical_analyzer::Token::Under,
+        "WILDANNOT" => crate::parse::lexical_analyzer::Token::WildAnnot,
         "~"   => crate::parse::lexical_analyzer::Token::Twiddle,
         "|"   => crate::parse::lexical_analyzer::Token::Bar,
         "*"   => crate::parse::lexical_analyzer::Token::Star,
@@ -457,9 +458,11 @@ ConNode: Con = {
         Con::KAbs(name, rest),
     "fn" <name:"IDENT"> <k:KindAnnot?> <rest:ConFnRest> =>
         Con::Abs(name, k.map(Box::new), rest),
-    // wildcard constructor lambda: `fn _ => c`
-    "fn" "_" <k:KindAnnot?> <rest:ConFnRest> =>
-        Con::Abs("_".into(), k.map(Box::new), rest),
+    // wildcard constructor lambda: `fn _ => c` or `fn _ :: K => c`
+    "fn" "WILDANNOT" <k:Kind> <rest:ConFnRest> =>
+        Con::Abs("_".into(), Some(Box::new(k)), rest),
+    "fn" "_" <rest:ConFnRest> =>
+        Con::Abs("_".into(), None, rest),
     // parenthesized kind-annotated constructor lambda: `fn (nm :: K) rest`
     "fn" "(" <name:"IDENT"> "::" <k:Kind> ")" <rest:ConFnRest> =>
         Con::Abs(name, Some(Box::new(k)), rest),
@@ -481,8 +484,10 @@ ConFnRest: Box<LocCon> = {
         Box::new(Located::new(Con::KAbs(name, rest), Span::from_offsets("", l, r, &[]))),
     <l:@L> <name:"IDENT"> <k:KindAnnot?> <rest:ConFnRest> <r:@R> =>
         Box::new(Located::new(Con::Abs(name, k.map(Box::new), rest), Span::from_offsets("", l, r, &[]))),
-    <l:@L> "_" <k:KindAnnot?> <rest:ConFnRest> <r:@R> =>
-        Box::new(Located::new(Con::Abs("_".into(), k.map(Box::new), rest), Span::from_offsets("", l, r, &[]))),
+    <l:@L> "WILDANNOT" <k:Kind> <rest:ConFnRest> <r:@R> =>
+        Box::new(Located::new(Con::Abs("_".into(), Some(Box::new(k)), rest), Span::from_offsets("", l, r, &[]))),
+    <l:@L> "_" <rest:ConFnRest> <r:@R> =>
+        Box::new(Located::new(Con::Abs("_".into(), None, rest), Span::from_offsets("", l, r, &[]))),
     <l:@L> "(" <name:"IDENT"> "::" <k:Kind> ")" <rest:ConFnRest> <r:@R> =>
         Box::new(Located::new(Con::Abs(name, Some(Box::new(k)), rest), Span::from_offsets("", l, r, &[]))),
 };
@@ -525,10 +530,6 @@ AtomCon: LocCon = {
 
 AtomConNode: Con = {
     "()" => Con::Unit,
-    // kind-annotated wildcard: `_ :: K`  (e.g. in `(_ :: Type)`)
-    // Must precede plain `_` so that with lookahead `::` we shift instead of reduce.
-    // Use KindApp (not Kind) to avoid consuming "->" as a kind arrow.
-    "_" "::" <k:KindApp> => Con::Wild(Box::new(k)),
     "_"  => Con::Wild(Box::new(Located::dummy(Kind::Wild))),
     // `$C` — record type from row constructor (syntactic sugar for TRecord(C))
     "$" <c:AtomCon> => Con::TRecord(Box::new(c)),
@@ -554,9 +555,25 @@ AtomConNode: Con = {
     "[" "]" => Con::Record(vec![]),
     // Non-empty row literal
     "[" <fields:ConFieldList> "]" => Con::Record(fields),
-    "(" <c:Con> ")" => c.node,
-    "(" <cs:ConList2> ")" => Con::Tuple(cs),
-    "(" <c:Con> ":" <k:Kind> ")" => Con::Annot(Box::new(c), Box::new(k)),
+    // Parenthesised constructors — use ConInParen to isolate the `_ ::` case
+    // from the general `_` reduction state (avoids LALR state merge dropping
+    // the `::` shift).
+    "(" <c:ConInParen> ")" => c,
+};
+
+// Constructor content inside parentheses.
+// Using a dedicated non-terminal ensures that the LR state "after `(` then `_`"
+// has a distinct core from the general "after `_`" state, so the `_ :: KindApp`
+// shift is not dropped by LALR state merging.
+ConInParen: Con = {
+    // kind-annotated wildcard: `(_ :: K)`
+    "WILDANNOT" <k:Kind> => Con::Wild(Box::new(k)),
+    // annotated constructor: `(C : K)`
+    <c:Con> ":" <k:Kind> => Con::Annot(Box::new(c), Box::new(k)),
+    // tuple: `(C, D, ...)`
+    <cs:ConList2> => Con::Tuple(cs),
+    // plain parenthesised constructor: `(C)`
+    <c:Con> => c.node,
 };
 
 ConList2: Vec<LocCon> = {

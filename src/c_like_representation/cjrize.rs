@@ -13,6 +13,9 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+#[cfg(test)]
+use std::cell::Cell;
+
 use crate::c_like_representation::{
     self as cjr, CaseMeta, DatatypeDecl, Decl, DmlMeta, Exp, LocDecl, LocExp, LocPat, LocTyp, Pat,
     PatCon, QueryMeta, Task, Typ,
@@ -22,6 +25,34 @@ use crate::error_types::{ErrorReporter, Located, Span};
 use crate::export::ExportKind;
 use crate::monomorphized::{self as mono, DbMode, Sidedness};
 use crate::primitives::{Prim, StringMode};
+
+#[cfg(test)]
+thread_local! {
+    /// Caps work during `cargo test` / mutation so runaway mutants panic instead of timing out.
+    static CJRIZE_TICKS: Cell<usize> = Cell::new(8_000_000);
+}
+
+#[cfg(test)]
+fn cjrize_test_reset_ticks() {
+    CJRIZE_TICKS.with(|c| c.set(8_000_000));
+}
+
+#[cfg(test)]
+fn cjrize_test_tick() {
+    CJRIZE_TICKS.with(|c| {
+        let n = c.get();
+        if n == 0 {
+            panic!(
+                "cjrize: test tick budget exhausted (likely infinite recursion from a mutation)"
+            );
+        }
+        c.set(n - 1);
+    });
+}
+
+#[cfg(not(test))]
+#[inline]
+fn cjrize_test_tick() {}
 
 // ---------------------------------------------------------------------------
 // Structural equality on Mono types (for Sm lookup)
@@ -88,7 +119,9 @@ impl Sm {
         xts_mono: &[(String, mono::LocTyp)],
         xts_cjr: Vec<(String, LocTyp)>,
     ) -> usize {
+        cjrize_test_tick();
         for (key, id) in &self.normal {
+            cjrize_test_tick();
             if record_fields_eq(key, xts_mono) {
                 return *id;
             }
@@ -102,7 +135,9 @@ impl Sm {
 
     /// Look up or create a struct id for a list node with the given element type.
     fn find_list(&mut self, elem_mono: &mono::LocTyp, elem_cjr: &LocTyp) -> usize {
+        cjrize_test_tick();
         for (key, id) in &self.lists {
+            cjrize_test_tick();
             if typ_eq(&key.node, &elem_mono.node) {
                 return *id;
             }
@@ -146,6 +181,7 @@ fn cify_typ_dtmap(
     sm: &mut Sm,
     dtmap: &mut HashMap<usize, cjr::DatatypeRef>,
 ) -> LocTyp {
+    cjrize_test_tick();
     let loc = t.span.clone();
     match &t.node {
         mono::Typ::Fun(dom, ran) => {
@@ -237,6 +273,7 @@ fn cify_pat_con(pc: &mono::PatCon, sm: &mut Sm) -> PatCon {
 }
 
 fn cify_pat(p: &mono::LocPat, sm: &mut Sm) -> LocPat {
+    cjrize_test_tick();
     let loc = p.span.clone();
     match &p.node {
         mono::Pat::Var(x, t) => Located::new(Pat::Var(x.clone(), cify_typ(t, sm)), loc),
@@ -280,6 +317,7 @@ fn type_has_signal(t: &mono::Typ) -> bool {
 
 /// Lift all Rel(n >= depth) by 1 in a Mono expression.
 fn lift_mono_exp(depth: usize, e: mono::LocExp) -> mono::LocExp {
+    cjrize_test_tick();
     crate::monomorphized::utilities::exp::map(e, &|t| t, &|node| match node {
         mono::Exp::Rel(n) if n >= depth => mono::Exp::Rel(n + 1),
         other => other,
@@ -298,6 +336,7 @@ fn unravel_fun(
     loc: &Span,
     args: &mut Vec<(String, LocTyp)>,
 ) -> (LocTyp, mono::LocExp) {
+    cjrize_test_tick();
     const MAX_UNRAVEL: usize = 65_536;
     if args.len() >= MAX_UNRAVEL {
         return (cjr_t, e);
@@ -338,6 +377,7 @@ fn dummy_exp(loc: &Span) -> LocExp {
 }
 
 fn cify_exp(e: &mono::LocExp, sm: &mut Sm, errors: &mut ErrorReporter) -> LocExp {
+    cjrize_test_tick();
     let loc = e.span.clone();
     match &e.node {
         mono::Exp::Prim(p) => Located::new(Exp::Prim(p.clone()), loc),
@@ -371,6 +411,7 @@ fn cify_exp(e: &mono::LocExp, sm: &mut Sm, errors: &mut ErrorReporter) -> LocExp
                 args: &mut Vec<mono::LocExp>,
                 budget: &mut usize,
             ) -> &'a mono::LocExp {
+                cjrize_test_tick();
                 if *budget == 0 {
                     return e;
                 }
@@ -673,6 +714,7 @@ fn cify_exp(e: &mono::LocExp, sm: &mut Sm, errors: &mut ErrorReporter) -> LocExp
 ///
 /// Mirrors the `flatten` function in `cjrize.sml`.
 fn flatten_constraint(e: &mono::LocExp, errors: &mut ErrorReporter) -> Vec<(String, String)> {
+    cjrize_test_tick();
     match &e.node {
         mono::Exp::Record(xets) if xets.is_empty() => vec![],
         mono::Exp::Record(xets) if xets.len() == 1 => {
@@ -708,6 +750,7 @@ fn flatten_constraint(e: &mono::LocExp, errors: &mut ErrorReporter) -> Vec<(Stri
 
 /// Stub body for signal/script-typed declarations.
 fn stub_body(t: &mono::LocTyp, loc: &Span) -> mono::LocExp {
+    cjrize_test_tick();
     match &t.node {
         mono::Typ::Fun(dom, ran) => {
             let body = stub_body(ran, loc);
@@ -728,6 +771,7 @@ fn cify_decl(
     Option<LocDecl>,
     Option<(ExportKind, String, usize, Vec<LocTyp>, LocTyp, bool)>,
 ) {
+    cjrize_test_tick();
     let loc = d.span.clone();
     match &d.node {
         mono::Decl::Datatype(dts) => {
@@ -996,6 +1040,8 @@ fn cify_decl(
 ///
 /// Mirrors `Cjrize.cjrize`.
 pub fn cjrize(file: mono::File, errors: &mut ErrorReporter) -> Option<cjr::File> {
+    #[cfg(test)]
+    cjrize_test_reset_ticks();
     let (mono_decls, mono_ps) = file;
     let mut sm = Sm::new();
     // dsf = "front" declarations: struct defs, type forward decls, datatypes
