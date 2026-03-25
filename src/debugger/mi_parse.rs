@@ -108,6 +108,13 @@ pub fn classify_mi_line(line: &str) -> Option<MiRecord<'_>> {
     None
 }
 
+/// Resolved `line` / `addr` from a `-break-insert` `^done` payload (incl. nested `bkpt={...}`).
+pub fn mi_break_insert_line_addr(payload: &str) -> (Option<u32>, Option<&str>) {
+    let line = mi_get_str(payload, "line").and_then(|s| s.parse().ok());
+    let addr = mi_get_str(payload, "addr");
+    (line, addr)
+}
+
 /// Find `key="value"` with simple quoted value (no escapes).
 pub fn mi_get_str<'a>(payload: &'a str, key: &str) -> Option<&'a str> {
     let needle = format!("{key}=\"");
@@ -170,6 +177,63 @@ pub fn mi_extract_var_children(children_payload: &str) -> Vec<String> {
         } else {
             break;
         }
+    }
+    v
+}
+
+/// Paths from `-file-list-exec-source-files` (`files=[{file="...",fullname="..."},...]`).
+pub fn mi_extract_exec_source_file_paths(payload: &str) -> Vec<String> {
+    let mut v = Vec::new();
+    let mut rest = payload;
+    while let Some(pos) = rest.find("{file=\"") {
+        let inner = &rest[pos..];
+        if let Some(end) = brace_close_index(inner) {
+            let blob = &inner[..=end];
+            let path = mi_get_str(blob, "fullname")
+                .or_else(|| mi_get_str(blob, "file"))
+                .unwrap_or("")
+                .to_string();
+            if !path.is_empty() {
+                v.push(path);
+            }
+            rest = &inner[end + 1..];
+        } else {
+            break;
+        }
+    }
+    v
+}
+
+/// `(id, path)` from `-file-list-shared-libraries` / `shared-libraries=[...]` (path = `target-name`).
+pub fn mi_extract_shared_libraries(payload: &str) -> Vec<(String, String)> {
+    let mut v = Vec::new();
+    let mut rest = payload;
+    let mut seq = 0u32;
+    while let Some(pos) = rest.find("target-name=\"") {
+        seq += 1;
+        let path_start = pos + "target-name=\"".len();
+        let Some(path_end_rel) = rest[path_start..].find('"') else {
+            break;
+        };
+        let path_end = path_start + path_end_rel;
+        let path = rest[path_start..path_end].to_string();
+        let before = &rest[..pos];
+        let id = before
+            .rfind("id=\"")
+            .and_then(|i| {
+                let s = &before[i + 4..];
+                let e = s.find('"')?;
+                Some(s[..e].to_string())
+            })
+            .unwrap_or_else(|| seq.to_string());
+        if !path.is_empty() {
+            v.push((id, path));
+        }
+        rest = if path_end + 1 < rest.len() {
+            &rest[path_end + 1..]
+        } else {
+            break;
+        };
     }
     v
 }
@@ -265,5 +329,29 @@ mod tests {
         let ch = mi_extract_var_children(s);
         assert_eq!(ch.len(), 2);
         assert!(ch[0].contains("exp=\"x\""));
+    }
+
+    #[test]
+    fn extract_exec_source_files() {
+        let p = r#"files=[{file="a.c",fullname="/tmp/a.c"},{file="b.c",fullname="/tmp/b.c"}]"#;
+        let paths = mi_extract_exec_source_file_paths(p);
+        assert_eq!(paths, vec!["/tmp/a.c", "/tmp/b.c"]);
+    }
+
+    #[test]
+    fn extract_shared_libs() {
+        let p = r#"shared-libraries=[{id="1",target-name="/lib/a.so",symbols-loaded="1"},{id="2",target-name="/lib/b.so",symbols-loaded="1"}]"#;
+        let m = mi_extract_shared_libraries(p);
+        assert_eq!(m.len(), 2);
+        assert_eq!(m[0].1, "/lib/a.so");
+        assert_eq!(m[1].0, "2");
+    }
+
+    #[test]
+    fn break_insert_line_addr() {
+        let p = r#"bkpt={number="1",type="breakpoint",line="42",addr="0x401000",file="a.c"}"#;
+        let (l, a) = mi_break_insert_line_addr(p);
+        assert_eq!(l, Some(42));
+        assert_eq!(a, Some("0x401000"));
     }
 }

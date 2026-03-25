@@ -9,8 +9,7 @@ use anyhow::Result;
 use lsp_server::{Connection, Message, Response};
 use lsp_types::{
     notification::{DidChangeTextDocument, DidOpenTextDocument, Initialized, Notification as _},
-    Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams, DidOpenTextDocumentParams,
-    Position, PublishDiagnosticsParams, Range, ServerCapabilities, ServerInfo,
+    DidChangeTextDocumentParams, DidOpenTextDocumentParams, ServerCapabilities, ServerInfo,
     TextDocumentSyncCapability, TextDocumentSyncKind, Uri,
 };
 
@@ -80,7 +79,7 @@ fn run() -> Result<()> {
                         let uri = p.text_document.uri;
                         let text = p.text_document.text;
                         docs.insert(uri.clone(), text.clone());
-                        publish_diagnostics(&connection, &uri, &text)?;
+                        ur::lsp_support::publish_parse_diagnostics(&connection, &uri, &text)?;
                     }
                 } else if method == DidChangeTextDocument::METHOD {
                     if let Ok(p) =
@@ -90,7 +89,7 @@ fn run() -> Result<()> {
                             let uri = p.text_document.uri;
                             let text = change.text;
                             docs.insert(uri.clone(), text.clone());
-                            publish_diagnostics(&connection, &uri, &text)?;
+                            ur::lsp_support::publish_parse_diagnostics(&connection, &uri, &text)?;
                         }
                     }
                 } else if method == Initialized::METHOD {
@@ -103,65 +102,4 @@ fn run() -> Result<()> {
 
     let _ = io_threads.join();
     Ok(())
-}
-
-/// Parse `text` as an Ur/Web source file and publish any parse errors as
-/// LSP diagnostics for `uri`.
-fn publish_diagnostics(connection: &Connection, uri: &Uri, text: &str) -> Result<()> {
-    let file_name = uri.as_str();
-    let mut errors = ur::error_types::ErrorReporter::new();
-
-    // Parse the document — this records parse errors into `errors`.
-    let _ = ur::parse::parse_ur(file_name, text, &mut errors);
-
-    let diagnostics: Vec<Diagnostic> = errors
-        .errors
-        .iter()
-        .map(|e| error_to_diagnostic(e))
-        .collect();
-
-    let params = PublishDiagnosticsParams {
-        uri: uri.clone(),
-        diagnostics,
-        version: None,
-    };
-
-    connection
-        .sender
-        .send(Message::Notification(lsp_server::Notification::new(
-            lsp_types::notification::PublishDiagnostics::METHOD.to_owned(),
-            params,
-        )))?;
-
-    Ok(())
-}
-
-/// Convert a `CompileError` to an LSP `Diagnostic`.
-fn error_to_diagnostic(e: &ur::error_types::CompileError) -> Diagnostic {
-    let range = match e.span() {
-        Some(span) => {
-            // LSP lines/cols are 0-based
-            let start_line = span.first.line.saturating_sub(1);
-            let start_col = span.first.col;
-            let end_line = span.last.line.saturating_sub(1);
-            let end_col = span.last.col;
-            Range::new(
-                Position::new(start_line, start_col),
-                Position::new(end_line, end_col),
-            )
-        }
-        None => Range::new(Position::new(0, 0), Position::new(0, 0)),
-    };
-
-    Diagnostic {
-        range,
-        severity: Some(DiagnosticSeverity::ERROR),
-        code: None,
-        code_description: None,
-        source: Some("ur-lsp".into()),
-        message: e.to_string(),
-        related_information: None,
-        tags: None,
-        data: None,
-    }
 }

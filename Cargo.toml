@@ -51,7 +51,6 @@ logos     = "0.14"
 lalrpop-util = { version = "0.20", features = ["lexer"] }
 thiserror = "2"
 anyhow    = "1"
-indexmap  = "=2.6.0"
 toml      = "0.8"
 lsp-server = "0.7"
 lsp-types = "0.97"

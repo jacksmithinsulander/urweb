@@ -11,13 +11,9 @@ fn print_usage(_settings: &Settings) {
         .next()
         .unwrap_or_else(|| "ur-compile".into());
     println!("usage:");
-    println!("  ur new <project-name>");
-    println!("  ur new --lib <project-name>");
-    println!("  ur build");
-    println!("  ur fmt [options] [files...]");
-    println!("  ur install author/repo");
-    println!("  ur daemon [stop|start]");
-    println!("  ur [flag ...] project-name");
+    for line in cli_common::UR_ORCHESTRATOR_USAGE_LINES {
+        println!("{}", line);
+    }
     println!("Standard options: -h, --help; -V, --version; -o, --output=FILE");
     println!("Supported flags include:");
     println!("  -h, -help, --help    print this overview");
@@ -33,7 +29,7 @@ fn print_usage(_settings: &Settings) {
     println!("  -verbose             verbose output");
     println!("  -iflow               run information-flow analysis");
     println!("  -limit <class> <n>   set resource limit");
-    println!("  -startLspServer      start LSP server");
+    println!("  -startLspServer      run ur-lsp (Language Server Protocol on stdio)");
     println!("  -moduleOf <file>     print module name of <file>");
 }
 
@@ -196,8 +192,7 @@ pub fn run_compiler_args(args: &[String]) -> i32 {
                 }
             }
             "startLspServer" => {
-                eprintln!("note: LSP server not yet implemented");
-                return 0;
+                return cli_common::exec_peer_bin("ur-lsp", &[]);
             }
             "path" => {
                 let _ = args_iter.next();

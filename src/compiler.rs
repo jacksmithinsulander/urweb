@@ -767,6 +767,11 @@ fn command_status_deadline(
     cmd.status().with_context(|| format!("running {what}"))
 }
 
+/// Compile and link generated C into `output`.
+///
+/// When `job.debug` is true (Ur project `debug` directive or `ur-compile -debug`), the compile and
+/// link commands include **`-g`** so the executable carries debug info (typically DWARF) for
+/// GDB, LLDB, and the `ur-debugger` DAP adapter.
 pub fn cc_and_link(c_source: &str, output: &Path, job: &Job, settings: &Settings) -> Result<()> {
     use std::process::Command;
     #[cfg(test)]
@@ -1190,7 +1195,22 @@ pub fn module_of(filename: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
     use std::sync::atomic::Ordering;
+
+    /// Save the current directory, then `chdir` into `dir`.
+    ///
+    /// If `current_dir` fails (e.g. sandbox or deleted cwd), reset to [`std::env::temp_dir`] first
+    /// so tests do not panic on `ENOENT`.
+    fn pushd_for_parse_test(dir: &Path) -> PathBuf {
+        let prev = std::env::current_dir().unwrap_or_else(|_| {
+            let t = std::env::temp_dir();
+            std::env::set_current_dir(&t).expect("chdir to temp_dir");
+            t
+        });
+        std::env::set_current_dir(dir).expect("chdir to test project directory");
+        prev
+    }
 
     fn minimal_mono_file() -> crate::monomorphized::File {
         (
@@ -1287,10 +1307,9 @@ mod tests {
         std::fs::write(dir.path().join("x.ur"), "val x = 1").unwrap();
         let job = parse_urp(&urp_path).unwrap();
         let mut errors = ErrorReporter::new();
-        let cwd = std::env::current_dir().unwrap();
-        std::env::set_current_dir(dir.path()).unwrap();
+        let prev = pushd_for_parse_test(dir.path());
         let result = parse_sources(&job, &mut errors);
-        std::env::set_current_dir(&cwd).unwrap();
+        std::env::set_current_dir(&prev).expect("restore cwd");
         assert!(
             result.is_some(),
             "parse_sources must return Some (catches replace with None)"
@@ -1322,10 +1341,9 @@ mod tests {
         std::fs::write(dir.path().join("x.urs"), "val x : int").unwrap();
         let job = parse_urp(&urp_path).unwrap();
         let mut errors = ErrorReporter::new();
-        let cwd = std::env::current_dir().unwrap();
-        std::env::set_current_dir(dir.path()).unwrap();
+        let prev = pushd_for_parse_test(dir.path());
         let result = parse_sources(&job, &mut errors);
-        std::env::set_current_dir(&cwd).unwrap();
+        std::env::set_current_dir(&prev).expect("restore cwd");
         let source_file = result.unwrap_or_else(|| {
             panic!("parse_sources: {:?}", errors);
         });
@@ -1352,10 +1370,9 @@ mod tests {
         std::fs::write(dir.path().join("x.ur"), "val x = 1").unwrap();
         let mut settings = Settings::default();
         settings.dbms = "sqlite".to_string();
-        let cwd = std::env::current_dir().unwrap();
-        std::env::set_current_dir(dir.path()).unwrap();
+        let prev = pushd_for_parse_test(dir.path());
         let result = compile_to_outputs(&urp_path, &mut settings);
-        std::env::set_current_dir(&cwd).unwrap();
+        std::env::set_current_dir(&prev).expect("restore cwd");
         let (c_code, _sql_ddl) = result.expect("compile_to_outputs must succeed");
         assert!(
             c_code.contains("#include"),
@@ -2310,10 +2327,9 @@ mod tests {
         std::fs::write(dir.path().join("x.ur"), "val x = 1").unwrap();
         let job = parse_urp(&urp_path).unwrap();
         let mut errors = ErrorReporter::new();
-        let cwd = std::env::current_dir().unwrap();
-        std::env::set_current_dir(dir.path()).unwrap();
+        let prev = pushd_for_parse_test(dir.path());
         let result = parse_sources(&job, &mut errors);
-        std::env::set_current_dir(&cwd).unwrap();
+        std::env::set_current_dir(&prev).expect("restore cwd");
         let source_file = result.expect("parse_sources");
         let ffi_decl = source_file.iter().find(|d| {
             matches!(

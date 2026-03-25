@@ -45,29 +45,18 @@ fn fmt_command(args: &[String]) -> i32 {
     }
 
     if files.is_empty() {
-        if !cli_common::file_exists("ur.toml") {
-            eprintln!("error: ur.toml not found; run from project directory or specify files");
-            return 1;
-        }
-        let toml_content = match std::fs::read_to_string("ur.toml") {
-            Ok(s) => s,
-            Err(e) => {
-                eprintln!("error: {}", e);
-                return 1;
-            }
-        };
-        let cfg = match cli_common::parse_ur_toml_strict(&toml_content) {
+        let cfg = match cli_common::load_ur_manifest_cwd_for_fmt_discovery() {
             Ok(c) => c,
             Err(e) => {
-                eprintln!("error: ur.toml: {}", e);
+                eprintln!("{}", e);
                 return 1;
             }
         };
-        let entry = cfg.build.entry.as_str();
-        if entry.is_empty() {
-            eprintln!("error: ur.toml: [build] entry is required");
+        if let Err(e) = cli_common::require_manifest_entry(&cfg) {
+            eprintln!("{}", e);
             return 1;
         }
+        let entry = cfg.build.entry.as_str();
         let urp_path = format!("{}.urp", entry);
         if !cli_common::file_exists(&urp_path) {
             eprintln!("error: project .urp not found: {}", urp_path);

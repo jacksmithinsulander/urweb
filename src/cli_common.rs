@@ -1,6 +1,94 @@
 //! Shared CLI helpers and templates used by ur and sub-binaries.
+//!
+//! ## Binary conventions (`ur-*` drivers)
+//!
+//! - **Help text**: The orchestrator (`ur`) and `ur-compile` print command overview lines to **stdout**.
+//!   `ur-debugger` prints usage to **stderr** (terminal UX).
+//! - **Unknown flags**: `ur-compile` errors on unknown `-` flags; **ur-fmt** logs a **warning**
+//!   and continues (lenient for forward compatibility).
+//! - **Exit codes**: `0` success; `1` for failures unless documented otherwise (e.g. **ur-lsp** exits `0` on
+//!   clean editor disconnect when [`crate::lsp_support::disconnect_error_exits_clean`] matches).
+//! - **Error handling in `main`**: Long-running protocol tools (**ur-lsp**, **ur-debugger**) use
+//!   [`anyhow::Result`] in their `run()`; thin dispatch binaries typically return **`i32`** and use
+//!   `eprintln!` for user-facing errors.
 
 use serde::Deserialize;
+
+/// Relative path to the project manifest (strict TOML).
+pub const UR_MANIFEST_FILE: &str = "ur.toml";
+
+const UR_MANIFEST_MISSING_ORCHESTRATOR: &str = "ur.toml not found in current directory\n\
+Run 'ur new <name>' to create a project, then 'cd <name> && ur build'";
+
+const UR_MANIFEST_MISSING_FMT: &str =
+    "error: ur.toml not found; run from project directory or specify files";
+
+/// Lines printed under `usage:` for the `ur` orchestrator (`ur new`, `ur build`, …).
+pub const UR_ORCHESTRATOR_USAGE_LINES: &[&str] = &[
+    "  ur new <project-name>",
+    "  ur new --lib <project-name>",
+    "  ur build",
+    "  ur fmt [options] [files...]",
+    "  ur install author/repo",
+    "  ur daemon [stop|start]",
+    "  ur lsp",
+    "  ur debugger [ur-debugger-args...]",
+    "  ur [flag ...] project-name",
+];
+
+/// Load and strictly parse [`UR_MANIFEST_FILE`] from the current directory (e.g. `ur build`).
+pub fn load_ur_manifest_cwd() -> Result<UrTomlStrict, String> {
+    load_ur_manifest_cwd_inner(UR_MANIFEST_MISSING_ORCHESTRATOR)
+}
+
+/// Same as [`load_ur_manifest_cwd`], but when discovering files for **ur-fmt** with no explicit paths.
+pub fn load_ur_manifest_cwd_for_fmt_discovery() -> Result<UrTomlStrict, String> {
+    load_ur_manifest_cwd_inner(UR_MANIFEST_MISSING_FMT)
+}
+
+fn load_ur_manifest_cwd_inner(missing_msg: &str) -> Result<UrTomlStrict, String> {
+    if !file_exists(UR_MANIFEST_FILE) {
+        return Err(missing_msg.to_string());
+    }
+    let toml_content = std::fs::read_to_string(UR_MANIFEST_FILE)
+        .map_err(|e| format!("error reading ur.toml: {}", e))?;
+    parse_ur_toml_strict(&toml_content).map_err(|e| format!("error: ur.toml: {}", e))
+}
+
+/// Require a non-empty `[build] entry` (shared by **`ur build`** and default **ur-fmt** discovery).
+pub fn require_manifest_entry(cfg: &UrTomlStrict) -> Result<(), String> {
+    if cfg.build.entry.is_empty() {
+        Err("error: ur.toml: [build] entry is required".into())
+    } else {
+        Ok(())
+    }
+}
+
+/// **`ur-install`**: require `ur.toml` in cwd (no parse).
+pub fn ensure_ur_toml_present_for_install() -> Result<(), String> {
+    if !file_exists(UR_MANIFEST_FILE) {
+        Err("error: ur.toml not found; run from project directory".into())
+    } else {
+        Ok(())
+    }
+}
+
+/// Run a peer binary from `PATH`; returns its exit code, or `1` if the executable was not found.
+pub fn exec_peer_bin(exe: &str, args: &[String]) -> i32 {
+    match std::process::Command::new(exe).args(args).status() {
+        Ok(s) => {
+            if s.success() {
+                0
+            } else {
+                s.code().unwrap_or(1)
+            }
+        }
+        Err(_) => {
+            eprintln!("error: {} not found in PATH", exe);
+            1
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Project scaffolding templates
@@ -531,5 +619,59 @@ k = "hello""#;
     fn package_spec_repo_leaf_skips_empty_segments() {
         assert_eq!(package_spec_repo_leaf("org/repo"), "repo");
         assert_eq!(package_spec_repo_leaf("org//repo"), "repo");
+    }
+
+    #[test]
+    fn load_ur_manifest_cwd_ok_and_entry() {
+        let _guard = lock_for_compile(&CWD_LOCK, "cli_common manifest load");
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = std::env::current_dir().unwrap();
+        std::env::set_current_dir(dir.path()).unwrap();
+        std::fs::write(
+            UR_MANIFEST_FILE,
+            r#"[package]
+kind = "app"
+[build]
+entry = "demo"
+"#,
+        )
+        .unwrap();
+        let cfg = load_ur_manifest_cwd().unwrap();
+        assert_eq!(cfg.build.entry, "demo");
+        assert!(require_manifest_entry(&cfg).is_ok());
+        std::fs::write(
+            UR_MANIFEST_FILE,
+            r#"[package]
+kind = "app"
+[build]
+entry = ""
+"#,
+        )
+        .unwrap();
+        let cfg_empty = load_ur_manifest_cwd().unwrap();
+        assert!(require_manifest_entry(&cfg_empty).is_err());
+        std::env::set_current_dir(&cwd).unwrap();
+    }
+
+    #[test]
+    fn ensure_ur_toml_present_for_install_checks_file() {
+        let _guard = lock_for_compile(&CWD_LOCK, "cli_common install manifest");
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = std::env::current_dir().unwrap();
+        std::env::set_current_dir(dir.path()).unwrap();
+        assert!(super::ensure_ur_toml_present_for_install().is_err());
+        std::fs::write(
+            UR_MANIFEST_FILE,
+            "[package]\nkind=\"app\"\n[build]\nentry=\"x\"\n",
+        )
+        .unwrap();
+        assert!(super::ensure_ur_toml_present_for_install().is_ok());
+        std::env::set_current_dir(&cwd).unwrap();
+    }
+
+    #[test]
+    fn exec_peer_bin_missing_prints_path_error() {
+        let code = exec_peer_bin("/nonexistent-peer-binary-ur-test", &[]);
+        assert_eq!(code, 1);
     }
 }

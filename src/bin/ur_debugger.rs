@@ -1,16 +1,18 @@
 //! ur-debugger — DAP over stdio (GDB/MI) plus `gdb` terminal helpers.
 //!
-//! Build Ur/Web with `ur-compile -debug` so the executable contains DWARF. Until the C backend
-//! emits `#line` for `.ur` files, set breakpoints on generated `.c` paths (or paths in DWARF).
+//! Build Ur/Web with **`ur-compile -debug`** (or a `debug` line in the `.urp`) so `cc_and_link`
+//! passes **`-g`** and the executable contains debug symbols (DWARF). The C backend emits **`#line`**
+//! back to `.ur` where spans exist, so breakpoints can target Ur sources when DWARF lists them.
 //!
 //! ## Editor usage
 //! Point the debug adapter at `ur-debugger` with argument `--dap` (stdout must be JSON-RPC only).
 //!
 //! Implemented DAP (subset): `initialize`, `launch`, `attach`, `configurationDone`, `setBreakpoints`,
-//! `continue` / `next` / `stepIn` / `stepOut`, `pause`, `evaluate`, `setVariable`, `disassemble`,
-//! `threads`, `stackTrace`, `scopes`, `variables`, `disconnect`, `terminate`, `shutdown`; `stopped`
-//! + `terminated` on process exit; `entry` stop reason when `stopAtEntry` is set.
-//! With `ur-compile -debug`, C includes `#line` back to `.ur` where spans are present (per decl).
+//! `breakpointLocations`, `setExceptionBreakpoints` (signal / C++ catch filters), `setDataBreakpoints`,
+//! `setInstructionBreakpoints`, `setFunctionBreakpoints`, `continue` / `next` / `stepIn` / `stepOut`, `pause`,
+//! `evaluate`, `setVariable`, `disassemble`, `loadedSources`, `source`, `exceptionInfo`, `modules`, `threads`,
+//! `stackTrace`, `scopes`, `variables`, `disconnect`, `terminate`, `shutdown`; `stopped` + `terminated` on exit;
+//! `entry` when `stopAtEntry` is set; **`loadedSource`** when new files show up in the inferior after stops.
 
 use anyhow::{Context, Result};
 
@@ -46,13 +48,16 @@ fn run(args: Vec<String>) -> Result<()> {
 fn print_usage() {
     eprintln!(
         "\
-ur-debugger — native debugger (Debug Adapter Protocol + GDB)
+ur-debugger — native debugger (DAP + GDB/MI or lldb-mi)
 
 Modes:
-  --dap              Run as a DAP server on stdio (for VS Code, Zed, Neovim, Emacs dap-mode)
-  --gdb -- [args]    Start GDB in MI3 mode: gdb -q --interpreter=mi3 [args]
+  --dap              DAP server on stdio (VS Code, Zed, Neovim, Emacs dap-mode, …)
+  --gdb -- [args]    Passthrough: gdb -q --interpreter=mi3 [args]
   --tty [--run] PROG [ARG ...]
-                     Exec interactive GDB: gdb -q [--ex run] --args PROG [ARG ...]
+                     Interactive GDB: gdb -q [--ex run] --args PROG [ARG ...]
+
+Launch JSON (DAP): use gdbPath / miDebuggerPath; set MIMode to \"gdb\" (default) or \"lldb\"
+for lldb-mi. Build the app with ur-compile -debug so the binary is compiled with -g.
 
 Examples:
   ur-debugger --dap

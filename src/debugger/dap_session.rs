@@ -1,20 +1,27 @@
 //! DAP request handling wired to [`super::gdb_session::GdbSession`].
 
-use std::collections::HashMap;
-use std::io::{stdin, stdout, StdinLock, Write};
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::fs;
+use std::io::stdin;
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 
 use anyhow::{anyhow, Context, Result};
 use serde_json::{json, Map, Value};
 
 use super::dap_framing::{bump_seq, read_dap_message, write_dap_message};
+use super::dap_shared::{DapState, LoadedSourceNotifier};
 use super::gdb_session::{GdbSession, WatchAccess};
-use super::mi_parse::{mi_extract_asm_insns, mi_extract_frames, mi_extract_var_children, mi_get_str};
+use super::mi_parse::{
+    mi_extract_asm_insns, mi_extract_exec_source_file_paths, mi_extract_frames,
+    mi_extract_shared_libraries, mi_extract_var_children, mi_get_str,
+};
 
 const FRAME_FACTOR: i64 = 100_000;
 /// DAP `variablesReference` for expandable locals / MI var-objects (distinct from stack frame ids).
 const VAR_REF_BASE: i64 = 50_000_000;
 
+#[derive(Clone)]
 struct LaunchConfig {
     program: String,
     args: Vec<String>,
@@ -44,7 +51,7 @@ enum VarRefKind {
 }
 
 struct Server {
-    seq: i64,
+    dap: Arc<Mutex<DapState>>,
     launch: Option<LaunchConfig>,
     gdb: Option<GdbSession>,
     /// Source path (client) → GDB breakpoint numbers to delete on refresh
@@ -61,12 +68,30 @@ struct Server {
     /// `variablesReference` (≥ [`VAR_REF_BASE`]) → MI var-object state.
     var_refs: HashMap<i64, VarRefKind>,
     next_var_ref: i64,
+    /// `setExceptionBreakpoints` before launch (`filter` ids).
+    pending_exception_filters: Vec<String>,
+    /// GDB numbers for `-catch-signal` / `-catch-throw` / `all`.
+    catchpoint_nums: Vec<String>,
+    /// Latest signal stop (for `exceptionInfo`).
+    last_exception_description: Option<String>,
+    last_exception_thread_id: Option<i64>,
+    /// Paths already announced via `loadedSource` (shared with MI `=library-loaded` hook).
+    known_loaded_sources: Arc<Mutex<HashSet<String>>>,
+    /// `(canonical path, requested line)` → GDB-resolved `(line, addr)` for `breakpointLocations`.
+    bp_loc_cache: HashMap<(String, u32), (u32, Option<String>)>,
+    bp_loc_cache_order: VecDeque<(String, u32)>,
+    /// GDB breakpoint numbers for `setInstructionBreakpoints` (`-break-insert *addr`).
+    instruction_bp_nums: Vec<String>,
+    /// Instruction addresses / DAP `instructionReference` strings before launch.
+    pending_instruction_bps: Vec<String>,
 }
 
 impl Server {
-    fn new() -> Self {
+    const BP_LOC_CACHE_MAX: usize = 4096;
+
+    fn new(dap: Arc<Mutex<DapState>>, known_loaded_sources: Arc<Mutex<HashSet<String>>>) -> Self {
         Self {
-            seq: 0,
+            dap,
             launch: None,
             gdb: None,
             bkpt_by_source: HashMap::new(),
@@ -77,7 +102,188 @@ impl Server {
             watchpoint_nums: Vec::new(),
             var_refs: HashMap::new(),
             next_var_ref: VAR_REF_BASE,
+            pending_exception_filters: Vec::new(),
+            catchpoint_nums: Vec::new(),
+            last_exception_description: None,
+            last_exception_thread_id: None,
+            known_loaded_sources,
+            bp_loc_cache: HashMap::new(),
+            bp_loc_cache_order: VecDeque::new(),
+            instruction_bp_nums: Vec::new(),
+            pending_instruction_bps: Vec::new(),
         }
+    }
+
+    fn bp_loc_cache_insert(&mut self, key: (String, u32), val: (u32, Option<String>)) {
+        if self.bp_loc_cache.len() >= Self::BP_LOC_CACHE_MAX {
+            if let Some(old) = self.bp_loc_cache_order.pop_front() {
+                self.bp_loc_cache.remove(&old);
+            }
+        }
+        if self.bp_loc_cache.insert(key.clone(), val).is_none() {
+            self.bp_loc_cache_order.push_back(key);
+        }
+    }
+
+    fn sync_loaded_sources(&mut self) -> Result<()> {
+        let gdb = match self.gdb.as_mut() {
+            Some(g) => g,
+            None => return Ok(()),
+        };
+        let pl = gdb.file_list_exec_source_files().unwrap_or_default();
+        let paths = mi_extract_exec_source_file_paths(&pl);
+        let mut new_paths = Vec::new();
+        {
+            let mut known = self.known_loaded_sources.lock().unwrap();
+            for p in paths {
+                if known.insert(p.clone()) {
+                    new_paths.push(p);
+                }
+            }
+        }
+        for p in new_paths {
+            let mut st = self.dap.lock().unwrap();
+            let body = json!({
+                "reason": "new",
+                "source": { "name": p, "path": p },
+            });
+            let msg = json!({
+                "seq": bump_seq(&mut st.seq),
+                "type": "event",
+                "event": "loadedSource",
+                "body": body,
+            });
+            write_dap_message(&mut st.out, &msg)?;
+        }
+        Ok(())
+    }
+
+    fn apply_instruction_breakpoints(
+        &mut self,
+        gdb: &mut GdbSession,
+        addrs: &[String],
+    ) -> Result<()> {
+        for n in std::mem::take(&mut self.instruction_bp_nums) {
+            gdb.break_delete(&n).ok();
+        }
+        for a in addrs {
+            if a.is_empty() {
+                continue;
+            }
+            if let Ok(Some(n)) = gdb.break_insert_at_address(a) {
+                self.instruction_bp_nums.push(n);
+            }
+        }
+        Ok(())
+    }
+
+    /// Probes use one `-break-insert` per line; teardown is a single CLI `delete` (plus optional cache hits).
+    const BREAKPOINT_LOC_PROBE_MAX: u32 = 128;
+
+    /// GDB-backed locations when a session and `Source.path` exist; otherwise heuristic lines.
+    fn breakpoint_locations_for_args(&mut self, args: &Value) -> Vec<Value> {
+        let path = args
+            .get("source")
+            .and_then(|s| s.get("path"))
+            .and_then(|p| p.as_str())
+            .unwrap_or("");
+        let line = args.get("line").and_then(|x| x.as_u64()).unwrap_or(1) as u32;
+        let end_line = args
+            .get("endLine")
+            .and_then(|x| x.as_u64())
+            .map(|n| n as u32)
+            .unwrap_or(line);
+        let start = line.min(end_line);
+        let end = line.max(end_line);
+        let heuristic = || {
+            (start..=end)
+                .map(|ln| json!({ "line": ln, "column": 1 }))
+                .collect::<Vec<_>>()
+        };
+
+        if path.is_empty() {
+            return heuristic();
+        }
+        if end.saturating_sub(start).saturating_add(1) > Self::BREAKPOINT_LOC_PROBE_MAX {
+            return heuristic();
+        }
+        let canon = Path::new(path)
+            .canonicalize()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|_| path.to_string());
+
+        let mut gdb = match self.gdb.take() {
+            Some(g) => g,
+            None => return heuristic(),
+        };
+
+        let mut out = Vec::new();
+        let mut pending_delete: Vec<String> = Vec::new();
+        for ln in start..=end {
+            let key = (canon.clone(), ln);
+            if let Some(&(bound, ref addr)) = self.bp_loc_cache.get(&key) {
+                let mut m = Map::new();
+                m.insert("line".into(), json!(bound));
+                m.insert("column".into(), json!(1));
+                if let Some(a) = addr {
+                    m.insert("instructionReference".into(), json!(a));
+                }
+                out.push(Value::Object(m));
+                continue;
+            }
+            match gdb.break_insert_probe_leave(&canon, ln) {
+                Ok(Some((num, bound, addr))) => {
+                    pending_delete.push(num);
+                    let addr_for_cache = addr.clone();
+                    self.bp_loc_cache_insert(key, (bound, addr_for_cache));
+                    let mut m = Map::new();
+                    m.insert("line".into(), json!(bound));
+                    m.insert("column".into(), json!(1));
+                    if let Some(a) = addr {
+                        m.insert("instructionReference".into(), json!(a));
+                    }
+                    out.push(Value::Object(m));
+                }
+                Ok(None) | Err(_) => {
+                    out.push(json!({ "line": ln, "column": 1 }));
+                }
+            }
+        }
+        let _ = gdb.break_delete_console_nums(&pending_delete);
+        self.gdb = Some(gdb);
+        out
+    }
+
+    fn apply_exception_filters(&mut self, gdb: &mut GdbSession, enabled: &[String]) -> Result<()> {
+        for n in &self.catchpoint_nums {
+            gdb.break_delete(n).ok();
+        }
+        self.catchpoint_nums.clear();
+        for f in enabled {
+            match f.as_str() {
+                "fatal-signals" => {
+                    for sig in [
+                        "SIGSEGV", "SIGABRT", "SIGBUS", "SIGILL", "SIGFPE", "SIGTRAP",
+                    ] {
+                        if let Ok(Some(num)) = gdb.catch_signal(sig) {
+                            self.catchpoint_nums.push(num);
+                        }
+                    }
+                }
+                "all-signals" => {
+                    if let Ok(Some(num)) = gdb.catch_signal_all() {
+                        self.catchpoint_nums.push(num);
+                    }
+                }
+                "cpp-throw" => {
+                    if let Ok(Some(num)) = gdb.catch_cpp_throw() {
+                        self.catchpoint_nums.push(num);
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(())
     }
 
     fn alloc_var_ref(&mut self, kind: VarRefKind) -> i64 {
@@ -87,18 +293,18 @@ impl Server {
         id
     }
 
-    fn resolve_pending_var_obj(
-        &mut self,
-        gdb: &mut GdbSession,
-        ref_id: i64,
-    ) -> Result<VarRefKind> {
+    fn resolve_pending_var_obj(&mut self, gdb: &mut GdbSession, ref_id: i64) -> Result<VarRefKind> {
         let kind = self
             .var_refs
             .get(&ref_id)
             .cloned()
             .ok_or_else(|| anyhow!("stale variables reference"))?;
         match kind {
-            VarRefKind::PendingLocal { thread, frame, expr } => {
+            VarRefKind::PendingLocal {
+                thread,
+                frame,
+                expr,
+            } => {
                 let pl = gdb.var_create(thread, frame, &expr)?;
                 let vname = mi_get_str(&pl, "name")
                     .ok_or_else(|| anyhow!("-var-create failed"))?
@@ -115,11 +321,7 @@ impl Server {
         }
     }
 
-    fn variables_for_var_ref(
-        &mut self,
-        gdb: &mut GdbSession,
-        ref_id: i64,
-    ) -> Result<Vec<Value>> {
+    fn variables_for_var_ref(&mut self, gdb: &mut GdbSession, ref_id: i64) -> Result<Vec<Value>> {
         let resolved = self.resolve_pending_var_obj(gdb, ref_id)?;
         let VarRefKind::VarObj {
             thread,
@@ -131,10 +333,7 @@ impl Server {
         };
         gdb.thread_select(thread).ok();
         let pl = gdb.var_list_children(&varobj)?;
-        let blob_sec = pl
-            .find("children=[")
-            .map(|i| &pl[i..])
-            .unwrap_or(&pl);
+        let blob_sec = pl.find("children=[").map(|i| &pl[i..]).unwrap_or(&pl);
         let mut out = Vec::new();
         for c in mi_extract_var_children(blob_sec) {
             let exp = mi_get_str(&c, "exp").unwrap_or("");
@@ -182,10 +381,7 @@ impl Server {
         };
         gdb.thread_select(thread).ok();
         let pl = gdb.var_list_children(&varobj)?;
-        let blob_sec = pl
-            .find("children=[")
-            .map(|i| &pl[i..])
-            .unwrap_or(&pl);
+        let blob_sec = pl.find("children=[").map(|i| &pl[i..]).unwrap_or(&pl);
         for c in mi_extract_var_children(blob_sec) {
             let exp = mi_get_str(&c, "exp").unwrap_or("");
             let vo = mi_get_str(&c, "name").unwrap_or("");
@@ -199,15 +395,15 @@ impl Server {
 
     fn send_response(
         &mut self,
-        out: &mut impl Write,
         request_id: &Value,
         command: &str,
         success: bool,
         body: Option<Value>,
         message: Option<&str>,
     ) -> Result<()> {
+        let mut st = self.dap.lock().unwrap();
         let mut m = Map::new();
-        m.insert("seq".into(), json!(bump_seq(&mut self.seq)));
+        m.insert("seq".into(), json!(bump_seq(&mut st.seq)));
         m.insert("type".into(), json!("response"));
         m.insert("request_seq".into(), request_id.clone());
         m.insert("success".into(), json!(success));
@@ -220,22 +416,23 @@ impl Server {
                 m.insert("message".into(), json!(msg));
             }
         }
-        write_dap_message(out, &Value::Object(m))?;
+        write_dap_message(&mut st.out, &Value::Object(m))?;
         Ok(())
     }
 
-    fn send_event(&mut self, out: &mut impl Write, event: &str, body: Value) -> Result<()> {
+    fn send_event(&mut self, event: &str, body: Value) -> Result<()> {
+        let mut st = self.dap.lock().unwrap();
         let msg = json!({
-            "seq": bump_seq(&mut self.seq),
+            "seq": bump_seq(&mut st.seq),
             "type": "event",
             "event": event,
             "body": body,
         });
-        write_dap_message(out, &msg)?;
+        write_dap_message(&mut st.out, &msg)?;
         Ok(())
     }
 
-    fn stopped_event(&mut self, out: &mut impl Write, payload: &str) -> Result<()> {
+    fn stopped_event(&mut self, payload: &str) -> Result<()> {
         let reason_gdb = mi_get_str(payload, "reason");
         let tid = mi_get_str(payload, "thread-id")
             .and_then(|s| s.parse::<i64>().ok())
@@ -252,15 +449,21 @@ impl Server {
             dap_reason = "entry";
             self.expect_entry_stop = false;
         }
-        self.send_event(
-            out,
-            "stopped",
-            json!({
-                "reason": dap_reason,
-                "threadId": tid,
-                "allThreadsStopped": true,
-            }),
-        )?;
+        let mut stopped_body = Map::new();
+        stopped_body.insert("reason".into(), json!(dap_reason));
+        stopped_body.insert("threadId".into(), json!(tid));
+        stopped_body.insert("allThreadsStopped".into(), json!(true));
+        if reason_gdb == Some("signal-received") {
+            let sig = mi_get_str(payload, "signal-name").unwrap_or("unknown");
+            let desc = format!("Signal {sig}");
+            stopped_body.insert("description".into(), json!(desc));
+            self.last_exception_description = Some(format!("Delivered signal {sig}"));
+            self.last_exception_thread_id = Some(tid);
+        } else {
+            self.last_exception_description = None;
+            self.last_exception_thread_id = None;
+        }
+        self.send_event("stopped", Value::Object(stopped_body))?;
         if matches!(
             reason_gdb,
             Some("exited-normally") | Some("exited-signalled")
@@ -271,15 +474,16 @@ impl Server {
                     i64::from_str_radix(s, 16).ok().or_else(|| s.parse().ok())
                 })
                 .unwrap_or(0);
-            self.send_event(out, "terminated", json!({ "exitCode": code }))?;
+            self.send_event("terminated", json!({ "exitCode": code }))?;
         }
         Ok(())
     }
 
-    fn finish_launch(&mut self, out: &mut impl Write) -> Result<()> {
+    fn finish_launch(&mut self) -> Result<()> {
+        self.known_loaded_sources.lock().unwrap().clear();
         let cfg = self
             .launch
-            .as_ref()
+            .clone()
             .ok_or_else(|| anyhow!("no launch/attach request before configurationDone"))?;
         let mut exe = cfg.gdb_path.clone();
         let mm = cfg.mi_mode.to_ascii_lowercase();
@@ -290,8 +494,15 @@ impl Server {
         } else if exe.is_empty() {
             exe = "gdb".to_string();
         }
-        let mut gdb = GdbSession::spawn(&exe, &mm).context("spawn debugger (GDB or lldb-mi)")?;
-        let _ = gdb.set_mi_async(false);
+        let notifier = Arc::new(LoadedSourceNotifier {
+            dap: self.dap.clone(),
+            known_paths: self.known_loaded_sources.clone(),
+        });
+        let mut gdb = GdbSession::spawn(&exe, &mm, Some(notifier))
+            .context("spawn debugger (GDB or lldb-mi)")?;
+        let _ = gdb.mi_simple("-gdb-set confirm off");
+        let lldb_async = mm == "lldb" || mm == "lldb-mi" || mm == "lldbmi";
+        let _ = gdb.set_mi_async(!lldb_async);
         if let Some(pid) = cfg.attach_pid {
             gdb.target_attach(pid).context("attach")?;
         } else {
@@ -350,17 +561,28 @@ impl Server {
             }
         }
 
+        let exc_filters = std::mem::take(&mut self.pending_exception_filters);
+        self.apply_exception_filters(&mut gdb, &exc_filters)?;
+
+        let iaddrs = std::mem::take(&mut self.pending_instruction_bps);
+        self.apply_instruction_breakpoints(&mut gdb, &iaddrs)?;
+
         self.gdb = Some(gdb);
-        let gdb = self.gdb.as_mut().unwrap();
 
         if cfg.attach_pid.is_none() {
             self.expect_entry_stop = cfg.stop_at_entry;
-            let stop = gdb.exec_run(&cfg.args).context("run inferior")?;
-            self.stopped_event(out, &stop)?;
+            let stop = {
+                let g = self.gdb.as_mut().unwrap();
+                g.exec_run(&cfg.args).context("run inferior")?
+            };
+            self.stopped_event(&stop)?;
+            self.sync_loaded_sources()?;
         } else {
-            let pl = gdb.mi_simple("-thread-info").unwrap_or_default();
+            let pl = {
+                let g = self.gdb.as_mut().unwrap();
+                g.mi_simple("-thread-info").unwrap_or_default()
+            };
             self.send_event(
-                out,
                 "stopped",
                 json!({
                     "reason": "pause",
@@ -368,6 +590,7 @@ impl Server {
                     "allThreadsStopped": true,
                 }),
             )?;
+            self.sync_loaded_sources()?;
         }
         Ok(())
     }
@@ -430,13 +653,7 @@ impl Server {
         Ok(out_bp)
     }
 
-    fn handle(
-        &mut self,
-        command: &str,
-        args: &Value,
-        req_id: &Value,
-        out: &mut impl Write,
-    ) -> Result<bool> {
+    fn handle(&mut self, command: &str, args: &Value, req_id: &Value) -> Result<bool> {
         match command {
             "initialize" => {
                 let caps = json!({
@@ -447,11 +664,34 @@ impl Server {
                         "supportsEvaluateForHovers": true,
                         "supportsSetVariable": true,
                         "supportsDisassembleRequest": true,
-                        "exceptionBreakpointFilters": [],
+                        "supportsDataBreakpoints": true,
+                        "supportsLoadedSourcesRequest": true,
+                        "supportsExceptionInfoRequest": true,
+                        "supportsSourceRequest": true,
+                        "supportsBreakpointLocationsRequest": true,
+                        "supportsInstructionBreakpoints": true,
+                        "supportsModulesRequest": true,
+                        "exceptionBreakpointFilters": [
+                            {
+                                "filter": "fatal-signals",
+                                "label": "Fatal signals (SIGSEGV, SIGABRT, …)",
+                                "default": false,
+                            },
+                            {
+                                "filter": "all-signals",
+                                "label": "Any signal (-catch-signal all)",
+                                "default": false,
+                            },
+                            {
+                                "filter": "cpp-throw",
+                                "label": "C++ exceptions (-catch-throw)",
+                                "default": false,
+                            },
+                        ],
                     }
                 });
-                self.send_response(out, req_id, command, true, Some(caps), None)?;
-                self.send_event(out, "initialized", json!({}))?;
+                self.send_response(req_id, command, true, Some(caps), None)?;
+                self.send_event("initialized", json!({}))?;
                 Ok(true)
             }
             "launch" | "attach" => {
@@ -512,7 +752,6 @@ impl Server {
                 }
                 if command == "attach" && lc.attach_pid.is_none() {
                     self.send_response(
-                        out,
                         req_id,
                         command,
                         false,
@@ -523,7 +762,6 @@ impl Server {
                 }
                 if command == "launch" && lc.program.is_empty() {
                     self.send_response(
-                        out,
                         req_id,
                         command,
                         false,
@@ -533,13 +771,13 @@ impl Server {
                     return Ok(true);
                 }
                 self.launch = Some(lc);
-                self.send_response(out, req_id, command, true, None, None)?;
+                self.send_response(req_id, command, true, None, None)?;
                 Ok(true)
             }
             "configurationDone" => {
-                self.send_response(out, req_id, command, true, None, None)?;
+                self.send_response(req_id, command, true, None, None)?;
                 if self.launch.is_some() && self.gdb.is_none() {
-                    self.finish_launch(out)?;
+                    self.finish_launch()?;
                 }
                 Ok(true)
             }
@@ -566,7 +804,6 @@ impl Server {
                     self.apply_breakpoints(source_path, &lines)?
                 };
                 self.send_response(
-                    out,
                     req_id,
                     command,
                     true,
@@ -575,9 +812,43 @@ impl Server {
                 )?;
                 Ok(true)
             }
-            "setExceptionBreakpoints" | "setFunctionBreakpoints" => {
+            "breakpointLocations" => {
+                let breakpoints = self.breakpoint_locations_for_args(args);
                 self.send_response(
-                    out,
+                    req_id,
+                    command,
+                    true,
+                    Some(json!({ "breakpoints": breakpoints })),
+                    None,
+                )?;
+                Ok(true)
+            }
+            "setExceptionBreakpoints" => {
+                let filters: Vec<String> = args
+                    .get("filters")
+                    .and_then(|x| x.as_array())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|v| v.as_str().map(String::from))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if self.gdb.is_none() {
+                    self.pending_exception_filters = filters;
+                } else {
+                    let mut gdb = self
+                        .gdb
+                        .take()
+                        .ok_or_else(|| anyhow!("setExceptionBreakpoints: gdb session missing"))?;
+                    let apply = self.apply_exception_filters(&mut gdb, &filters);
+                    self.gdb = Some(gdb);
+                    apply?;
+                }
+                self.send_response(req_id, command, true, None, None)?;
+                Ok(true)
+            }
+            "setFunctionBreakpoints" => {
+                self.send_response(
                     req_id,
                     command,
                     true,
@@ -626,7 +897,6 @@ impl Server {
                         })
                         .collect();
                     self.send_response(
-                        out,
                         req_id,
                         command,
                         true,
@@ -661,7 +931,71 @@ impl Server {
                     })
                     .collect();
                 self.send_response(
-                    out,
+                    req_id,
+                    command,
+                    true,
+                    Some(json!({ "breakpoints": bp })),
+                    None,
+                )?;
+                Ok(true)
+            }
+            "setInstructionBreakpoints" => {
+                let addrs: Vec<String> = args
+                    .get("breakpoints")
+                    .and_then(|b| b.as_array())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|bp| {
+                                bp.get("instructionReference")
+                                    .or_else(|| bp.get("instructionreference"))
+                                    .and_then(|x| x.as_str())
+                                    .map(|s| s.trim().to_string())
+                                    .filter(|s| !s.is_empty())
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if self.gdb.is_none() {
+                    let bp: Vec<Value> = addrs
+                        .iter()
+                        .enumerate()
+                        .map(|(i, r)| {
+                            json!({
+                                "id": (i as i64) + 1,
+                                "instructionReference": r,
+                                "verified": false,
+                            })
+                        })
+                        .collect();
+                    self.pending_instruction_bps = addrs;
+                    self.send_response(
+                        req_id,
+                        command,
+                        true,
+                        Some(json!({ "breakpoints": bp })),
+                        None,
+                    )?;
+                    return Ok(true);
+                }
+                let mut gdb = self
+                    .gdb
+                    .take()
+                    .ok_or_else(|| anyhow!("setInstructionBreakpoints: gdb session missing"))?;
+                let apply = self.apply_instruction_breakpoints(&mut gdb, &addrs);
+                self.gdb = Some(gdb);
+                apply?;
+                let bp: Vec<Value> = addrs
+                    .iter()
+                    .enumerate()
+                    .map(|(i, r)| {
+                        json!({
+                            "id": (i as i64) + 1,
+                            "instructionReference": r,
+                            "verified": true,
+                        })
+                    })
+                    .collect();
+                self.send_response(
                     req_id,
                     command,
                     true,
@@ -671,16 +1005,19 @@ impl Server {
                 Ok(true)
             }
             "pause" => {
-                let gdb = self
-                    .gdb
-                    .as_mut()
-                    .ok_or_else(|| anyhow!("pause before launch"))?;
-                if let Some(t) = args.get("threadId").and_then(|x| x.as_u64()) {
-                    gdb.thread_select(t).ok();
-                }
-                let stop = gdb.exec_interrupt()?;
-                self.send_response(out, req_id, command, true, None, None)?;
-                self.stopped_event(out, &stop)?;
+                let stop = {
+                    let gdb = self
+                        .gdb
+                        .as_mut()
+                        .ok_or_else(|| anyhow!("pause before launch"))?;
+                    if let Some(t) = args.get("threadId").and_then(|x| x.as_u64()) {
+                        gdb.thread_select(t).ok();
+                    }
+                    gdb.exec_interrupt()?
+                };
+                self.send_response(req_id, command, true, None, None)?;
+                self.stopped_event(&stop)?;
+                self.sync_loaded_sources()?;
                 Ok(true)
             }
             "evaluate" => {
@@ -696,9 +1033,7 @@ impl Server {
                 let thread = args
                     .get("threadId")
                     .and_then(|x| x.as_u64())
-                    .or_else(|| {
-                        frame_id.map(|fid| (fid.div_euclid(FRAME_FACTOR)).max(1) as u64)
-                    })
+                    .or_else(|| frame_id.map(|fid| (fid.div_euclid(FRAME_FACTOR)).max(1) as u64))
                     .unwrap_or(1);
                 let frame = frame_id
                     .map(|fid| fid.rem_euclid(FRAME_FACTOR) as u32)
@@ -708,7 +1043,6 @@ impl Server {
                     .unwrap_or_default();
                 let value = mi_get_str(&pl, "value").unwrap_or("").to_string();
                 self.send_response(
-                    out,
                     req_id,
                     command,
                     true,
@@ -721,56 +1055,67 @@ impl Server {
                 Ok(true)
             }
             "continue" => {
-                let gdb = self
-                    .gdb
-                    .as_mut()
-                    .ok_or_else(|| anyhow!("continue before launch"))?;
-                if let Some(t) = args.get("threadId").and_then(|x| x.as_u64()) {
-                    gdb.thread_select(t).ok();
-                }
-                let stop = gdb.exec_continue()?;
+                let stop = {
+                    let gdb = self
+                        .gdb
+                        .as_mut()
+                        .ok_or_else(|| anyhow!("continue before launch"))?;
+                    if let Some(t) = args.get("threadId").and_then(|x| x.as_u64()) {
+                        gdb.thread_select(t).ok();
+                    }
+                    gdb.exec_continue()?
+                };
                 self.send_response(
-                    out,
                     req_id,
                     command,
                     true,
                     Some(json!({ "allThreadsContinued": true })),
                     None,
                 )?;
-                self.stopped_event(out, &stop)?;
+                self.stopped_event(&stop)?;
+                self.sync_loaded_sources()?;
                 Ok(true)
             }
             "next" => {
-                let gdb = self
-                    .gdb
-                    .as_mut()
-                    .ok_or_else(|| anyhow!("next before launch"))?;
-                thread_id_select(gdb, args);
-                let stop = gdb.exec_next()?;
-                self.send_response(out, req_id, command, true, None, None)?;
-                self.stopped_event(out, &stop)?;
+                let stop = {
+                    let gdb = self
+                        .gdb
+                        .as_mut()
+                        .ok_or_else(|| anyhow!("next before launch"))?;
+                    thread_id_select(gdb, args);
+                    gdb.exec_next()?
+                };
+                self.send_response(req_id, command, true, None, None)?;
+                self.stopped_event(&stop)?;
+                self.sync_loaded_sources()?;
                 Ok(true)
             }
             "stepIn" => {
-                let gdb = self
-                    .gdb
-                    .as_mut()
-                    .ok_or_else(|| anyhow!("stepIn before launch"))?;
-                thread_id_select(gdb, args);
-                let stop = gdb.exec_step()?;
-                self.send_response(out, req_id, command, true, None, None)?;
-                self.stopped_event(out, &stop)?;
+                let stop = {
+                    let gdb = self
+                        .gdb
+                        .as_mut()
+                        .ok_or_else(|| anyhow!("stepIn before launch"))?;
+                    thread_id_select(gdb, args);
+                    gdb.exec_step()?
+                };
+                self.send_response(req_id, command, true, None, None)?;
+                self.stopped_event(&stop)?;
+                self.sync_loaded_sources()?;
                 Ok(true)
             }
             "stepOut" => {
-                let gdb = self
-                    .gdb
-                    .as_mut()
-                    .ok_or_else(|| anyhow!("stepOut before launch"))?;
-                thread_id_select(gdb, args);
-                let stop = gdb.exec_finish()?;
-                self.send_response(out, req_id, command, true, None, None)?;
-                self.stopped_event(out, &stop)?;
+                let stop = {
+                    let gdb = self
+                        .gdb
+                        .as_mut()
+                        .ok_or_else(|| anyhow!("stepOut before launch"))?;
+                    thread_id_select(gdb, args);
+                    gdb.exec_finish()?
+                };
+                self.send_response(req_id, command, true, None, None)?;
+                self.stopped_event(&stop)?;
+                self.sync_loaded_sources()?;
                 Ok(true)
             }
             "threads" => {
@@ -791,7 +1136,6 @@ impl Server {
                     threads.push(json!({ "id": 1, "name": "Thread 1" }));
                 }
                 self.send_response(
-                    out,
                     req_id,
                     command,
                     true,
@@ -841,7 +1185,6 @@ impl Server {
                     stack_frames.push(Value::Object(sf));
                 }
                 self.send_response(
-                    out,
                     req_id,
                     command,
                     true,
@@ -859,7 +1202,6 @@ impl Server {
                     "expensive": false,
                 })];
                 self.send_response(
-                    out,
                     req_id,
                     command,
                     true,
@@ -869,13 +1211,13 @@ impl Server {
                 Ok(true)
             }
             "variables" => {
-                let gdb = self
+                let mut gdb = self
                     .gdb
-                    .as_mut()
+                    .take()
                     .ok_or_else(|| anyhow!("variables before launch"))?;
                 let ref_id = args.get("variablesReference").map(ref_as_i64).unwrap_or(0);
                 let vars = if ref_id >= VAR_REF_BASE {
-                    self.variables_for_var_ref(gdb, ref_id)?
+                    self.variables_for_var_ref(&mut gdb, ref_id)?
                 } else {
                     let thread = (ref_id / FRAME_FACTOR).max(1) as u64;
                     let frame = (ref_id % FRAME_FACTOR) as u32;
@@ -883,8 +1225,8 @@ impl Server {
                     let pl = gdb.stack_list_vars_all(thread, frame).unwrap_or_default();
                     build_stack_scope_variables(&pl, thread, frame, self)
                 };
+                self.gdb = Some(gdb);
                 self.send_response(
-                    out,
                     req_id,
                     command,
                     true,
@@ -894,26 +1236,137 @@ impl Server {
                 Ok(true)
             }
             "setVariable" => {
-                let gdb = self
+                let mut gdb = self
                     .gdb
-                    .as_mut()
+                    .take()
                     .ok_or_else(|| anyhow!("setVariable before launch"))?;
                 let ref_id = args.get("variablesReference").map(ref_as_i64).unwrap_or(0);
                 let name = args.get("name").and_then(|x| x.as_str()).unwrap_or("");
                 let value = args.get("value").and_then(|x| x.as_str()).unwrap_or("");
                 if ref_id >= VAR_REF_BASE {
-                    self.set_variable_in_var_tree(gdb, ref_id, name, value)?;
+                    self.set_variable_in_var_tree(&mut gdb, ref_id, name, value)?;
                 } else {
                     let thread = ref_id.div_euclid(FRAME_FACTOR).max(1) as u64;
                     let frame = ref_id.rem_euclid(FRAME_FACTOR) as u32;
                     gdb.set_variable(thread, frame, name, value)?;
                 }
+                self.gdb = Some(gdb);
+                self.send_response(req_id, command, true, Some(json!({ "value": value })), None)?;
+                Ok(true)
+            }
+            "loadedSources" => {
+                let gdb = self
+                    .gdb
+                    .as_mut()
+                    .ok_or_else(|| anyhow!("loadedSources before launch"))?;
+                let pl = gdb.file_list_exec_source_files().unwrap_or_default();
+                let paths = mi_extract_exec_source_file_paths(&pl);
+                let sources: Vec<Value> = paths
+                    .into_iter()
+                    .map(|p| json!({ "name": p, "path": p }))
+                    .collect();
                 self.send_response(
-                    out,
                     req_id,
                     command,
                     true,
-                    Some(json!({ "value": value })),
+                    Some(json!({ "sources": sources })),
+                    None,
+                )?;
+                Ok(true)
+            }
+            "modules" => {
+                let gdb = self
+                    .gdb
+                    .as_mut()
+                    .ok_or_else(|| anyhow!("modules before launch"))?;
+                let pl = gdb.file_list_shared_libraries().unwrap_or_default();
+                let mut rows = mi_extract_shared_libraries(&pl);
+                if let Some(lc) = self.launch.as_ref() {
+                    let exe = lc.program.trim();
+                    if !exe.is_empty() {
+                        let canon = Path::new(exe)
+                            .canonicalize()
+                            .map(|p| p.to_string_lossy().into_owned())
+                            .unwrap_or_else(|_| exe.to_string());
+                        if !rows.iter().any(|(_, p)| p == &canon) {
+                            rows.insert(0, ("executable".to_string(), canon));
+                        }
+                    }
+                }
+                let modules: Vec<Value> = rows
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, (_id, p))| {
+                        let name = Path::new(&p)
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or(p.as_str());
+                        json!({
+                            "id": (i as i64) + 1,
+                            "name": name,
+                            "path": p,
+                            "isOptimized": false,
+                        })
+                    })
+                    .collect();
+                self.send_response(
+                    req_id,
+                    command,
+                    true,
+                    Some(json!({ "modules": modules })),
+                    None,
+                )?;
+                Ok(true)
+            }
+            "source" => {
+                let path = args
+                    .get("source")
+                    .and_then(|s| s.get("path"))
+                    .and_then(|p| p.as_str())
+                    .unwrap_or("");
+                if path.is_empty() {
+                    self.send_response(
+                        req_id,
+                        command,
+                        false,
+                        None,
+                        Some("source requires Source.path (sourceReference not supported)"),
+                    )?;
+                    return Ok(true);
+                }
+                let content = fs::read_to_string(path).map_err(|e| anyhow!("{e}"))?;
+                self.send_response(
+                    req_id,
+                    command,
+                    true,
+                    Some(json!({
+                        "content": content,
+                        "mimeType": "text/plain",
+                    })),
+                    None,
+                )?;
+                Ok(true)
+            }
+            "exceptionInfo" => {
+                let req_tid = args.get("threadId").map(ref_as_i64);
+                let desc = match (req_tid, self.last_exception_thread_id) {
+                    (Some(t), Some(lt)) if t != lt => {
+                        "No signal details for this thread.".to_string()
+                    }
+                    _ => self
+                        .last_exception_description
+                        .clone()
+                        .unwrap_or_else(|| "No exception or signal information.".to_string()),
+                };
+                self.send_response(
+                    req_id,
+                    command,
+                    true,
+                    Some(json!({
+                        "exceptionId": "signal",
+                        "description": desc,
+                        "breakMode": "always",
+                    })),
                     None,
                 )?;
                 Ok(true)
@@ -934,12 +1387,17 @@ impl Server {
                     .get("instructionOffset")
                     .and_then(|x| x.as_i64())
                     .unwrap_or(0);
-                let count = args.get("instructionCount").and_then(|x| x.as_u64()).unwrap_or(48);
+                let count = args
+                    .get("instructionCount")
+                    .and_then(|x| x.as_u64())
+                    .unwrap_or(48);
                 let start_i = (start as i128).saturating_add(offset as i128).max(0) as u64;
                 let end_i = start_i.saturating_add(count.saturating_mul(32));
                 let start_s = format!("{start_i:#x}");
                 let end_s = format!("{end_i:#x}");
-                let pl = gdb.data_disassemble_range(&start_s, &end_s).unwrap_or_default();
+                let pl = gdb
+                    .data_disassemble_range(&start_s, &end_s)
+                    .unwrap_or_default();
                 let blob = pl.find("asm_insns=[").map(|i| &pl[i..]).unwrap_or(&pl);
                 let rows = mi_extract_asm_insns(blob);
                 let mut instructions: Vec<Value> = Vec::new();
@@ -950,7 +1408,6 @@ impl Server {
                     instructions.push(Value::Object(m));
                 }
                 self.send_response(
-                    out,
                     req_id,
                     command,
                     true,
@@ -967,18 +1424,25 @@ impl Server {
                         }
                     }
                     self.next_var_ref = VAR_REF_BASE;
+                    for n in std::mem::take(&mut self.catchpoint_nums) {
+                        gdb.break_delete(&n).ok();
+                    }
+                    for n in std::mem::take(&mut self.instruction_bp_nums) {
+                        gdb.break_delete(&n).ok();
+                    }
+                    self.known_loaded_sources.lock().unwrap().clear();
                     gdb.gdb_exit().ok();
                     gdb.kill().ok();
                 }
-                self.send_response(out, req_id, command, true, None, None)?;
+                self.send_response(req_id, command, true, None, None)?;
                 Ok(false)
             }
             "shutdown" => {
-                self.send_response(out, req_id, command, true, None, None)?;
+                self.send_response(req_id, command, true, None, None)?;
                 Ok(false)
             }
             _ => {
-                self.send_response(out, req_id, command, true, None, None)?;
+                self.send_response(req_id, command, true, None, None)?;
                 Ok(true)
             }
         }
@@ -993,12 +1457,7 @@ fn dap_access_to_watch(s: &str) -> WatchAccess {
     }
 }
 
-fn build_stack_scope_variables(
-    pl: &str,
-    thread: u64,
-    frame: u32,
-    srv: &mut Server,
-) -> Vec<Value> {
+fn build_stack_scope_variables(pl: &str, thread: u64, frame: u32, srv: &mut Server) -> Vec<Value> {
     let mut out = Vec::new();
     let needle = "variables=[";
     let rest = match pl.find(needle) {
@@ -1093,14 +1552,18 @@ fn brace_close_from_open(s: &str) -> Option<usize> {
 }
 
 pub fn run_dap_stdio() -> Result<()> {
+    let dap = Arc::new(Mutex::new(DapState {
+        seq: 0,
+        out: std::io::stdout(),
+    }));
+    let known = Arc::new(Mutex::new(HashSet::new()));
+    let mut srv = Server::new(dap, known);
     let mut stdin = stdin().lock();
-    let mut out = stdout();
-    let mut srv = Server::new();
-    run_dap_loop(&mut srv, &mut stdin, &mut out)?;
+    run_dap_loop(&mut srv, &mut stdin)?;
     Ok(())
 }
 
-fn run_dap_loop(srv: &mut Server, stdin: &mut StdinLock<'_>, out: &mut impl Write) -> Result<()> {
+fn run_dap_loop(srv: &mut Server, stdin: &mut impl std::io::BufRead) -> Result<()> {
     loop {
         let msg = match read_dap_message(stdin)? {
             None => break,
@@ -1113,7 +1576,7 @@ fn run_dap_loop(srv: &mut Server, stdin: &mut StdinLock<'_>, out: &mut impl Writ
         let command = msg.get("command").and_then(|c| c.as_str()).unwrap_or("");
         let req_id = msg.get("id").cloned().unwrap_or(Value::Null);
         let args = msg.get("arguments").cloned().unwrap_or(Value::Null);
-        let continue_loop = srv.handle(command, &args, &req_id, out)?;
+        let continue_loop = srv.handle(command, &args, &req_id)?;
         if !continue_loop {
             break;
         }
@@ -1127,15 +1590,29 @@ fn run_dap_loop(srv: &mut Server, stdin: &mut StdinLock<'_>, out: &mut impl Writ
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
 
     #[test]
     fn parses_stack_vars_and_child_refs() {
         let pl = r#"variables=[{name="x",value="42",type="int"},{name="s",value="{}",type="S",numchild="2"}]"#;
-        let mut srv = Server::new();
+        let dap = Arc::new(Mutex::new(DapState {
+            seq: 0,
+            out: std::io::stdout(),
+        }));
+        let known = Arc::new(Mutex::new(HashSet::new()));
+        let mut srv = Server::new(dap, known);
         let v = build_stack_scope_variables(pl, 1, 0, &mut srv);
         assert_eq!(v.len(), 2);
-        assert_eq!(v[0].get("variablesReference").and_then(|x| x.as_i64()), Some(0));
-        assert!(v[1].get("variablesReference").and_then(|x| x.as_i64()).unwrap() >= super::VAR_REF_BASE);
+        assert_eq!(
+            v[0].get("variablesReference").and_then(|x| x.as_i64()),
+            Some(0)
+        );
+        assert!(
+            v[1].get("variablesReference")
+                .and_then(|x| x.as_i64())
+                .unwrap()
+                >= super::VAR_REF_BASE
+        );
     }
 
     #[test]

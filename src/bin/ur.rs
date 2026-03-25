@@ -4,29 +4,17 @@ use std::process;
 use ur::cli_common;
 
 fn build_project() -> i32 {
-    let toml_path = "ur.toml";
-    if !cli_common::file_exists(toml_path) {
-        eprintln!(
-            "error: ur.toml not found in current directory\n\
-Run 'ur new <name>' to create a project, then 'cd <name> && ur build'"
-        );
-        return 1;
-    }
-
-    let toml_content = match std::fs::read_to_string(toml_path) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("error reading ur.toml: {}", e);
-            return 1;
-        }
-    };
-    let cfg = match cli_common::parse_ur_toml_strict(&toml_content) {
+    let cfg = match cli_common::load_ur_manifest_cwd() {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("error: ur.toml: {}", e);
+            eprintln!("{}", e);
             return 1;
         }
     };
+    if let Err(e) = cli_common::require_manifest_entry(&cfg) {
+        eprintln!("{}", e);
+        return 1;
+    }
 
     let kind = cfg.package.kind.as_str();
     let entry = cfg.build.entry.as_str();
@@ -36,11 +24,6 @@ Run 'ur new <name>' to create a project, then 'cd <name> && ur build'"
     let boot = cfg.build.boot;
     let scss = cfg.style.as_ref().and_then(|s| s.scss.as_deref());
     let css = cfg.style.as_ref().and_then(|s| s.css.as_deref());
-
-    if entry.is_empty() {
-        eprintln!("error: ur.toml: [build] entry is required");
-        return 1;
-    }
 
     // Compile SCSS → CSS if configured
     if let (Some(scss_path), Some(css_path)) = (scss, css) {
@@ -96,35 +79,14 @@ Run 'ur new <name>' to create a project, then 'cd <name> && ur build'"
         ]);
     }
 
-    let status = std::process::Command::new("ur-compile")
-        .args(&args)
-        .status();
-    match status {
-        Ok(s) => {
-            if s.success() {
-                0
-            } else {
-                s.code().unwrap_or(1)
-            }
-        }
-        Err(_) => {
-            eprintln!("error: ur-compile not found in PATH");
-            1
-        }
-    }
+    cli_common::exec_peer_bin("ur-compile", &args)
 }
 
 fn print_usage() {
     println!("usage:");
-    println!("  ur new <project-name>");
-    println!("  ur new --lib <project-name>");
-    println!("  ur build");
-    println!("  ur fmt [options] [files...]");
-    println!("  ur install author/repo");
-    println!("  ur daemon [stop|start]");
-    println!("  ur lsp");
-    println!("  ur debugger [ur-debugger-args...]");
-    println!("  ur [flag ...] project-name");
+    for line in cli_common::UR_ORCHESTRATOR_USAGE_LINES {
+        println!("{}", line);
+    }
     println!();
     println!("Run 'ur -help' for compiler flag help (via ur-compile).");
 }
@@ -142,90 +104,29 @@ fn dispatch(args: &[String]) -> i32 {
         }
         Some("new") => {
             let rest: Vec<String> = args[1..].to_vec();
-            let status = std::process::Command::new("ur-new").args(&rest).status();
-            match status {
-                Ok(s) => s.code().unwrap_or(1),
-                Err(_) => {
-                    eprintln!("error: ur-new not found in PATH");
-                    1
-                }
-            }
+            cli_common::exec_peer_bin("ur-new", &rest)
         }
         Some("build") => build_project(),
         Some("install") => {
             let rest: Vec<String> = args[1..].to_vec();
-            let status = std::process::Command::new("ur-install")
-                .args(&rest)
-                .status();
-            match status {
-                Ok(s) => {
-                    if s.success() {
-                        0
-                    } else {
-                        s.code().unwrap_or(1)
-                    }
-                }
-                Err(_) => {
-                    eprintln!("error: ur-install not found in PATH");
-                    1
-                }
-            }
+            cli_common::exec_peer_bin("ur-install", &rest)
         }
         Some("fmt") => {
             let rest: Vec<String> = args[1..].to_vec();
-            let status = std::process::Command::new("ur-fmt").args(&rest).status();
-            match status {
-                Ok(s) => s.code().unwrap_or(1),
-                Err(_) => {
-                    eprintln!("error: ur-fmt not found in PATH");
-                    1
-                }
-            }
+            cli_common::exec_peer_bin("ur-fmt", &rest)
         }
         Some("daemon") => {
             let rest: Vec<String> = args[1..].to_vec();
-            let status = std::process::Command::new("ur-daemon").args(&rest).status();
-            match status {
-                Ok(s) => s.code().unwrap_or(1),
-                Err(_) => {
-                    eprintln!("error: ur-daemon not found in PATH");
-                    1
-                }
-            }
+            cli_common::exec_peer_bin("ur-daemon", &rest)
         }
-        Some("lsp") => {
-            let status = std::process::Command::new("ur-lsp").status();
-            match status {
-                Ok(s) => s.code().unwrap_or(1),
-                Err(_) => {
-                    eprintln!("error: ur-lsp not found in PATH");
-                    1
-                }
-            }
-        }
+        Some("lsp") => cli_common::exec_peer_bin("ur-lsp", &[]),
         Some("debugger") => {
             let rest: Vec<String> = args[1..].to_vec();
-            let status = std::process::Command::new("ur-debugger")
-                .args(&rest)
-                .status();
-            match status {
-                Ok(s) => s.code().unwrap_or(1),
-                Err(_) => {
-                    eprintln!("error: ur-debugger not found in PATH");
-                    1
-                }
-            }
+            cli_common::exec_peer_bin("ur-debugger", &rest)
         }
         Some(_) => {
-            // Compiler invocation: pass all args to ur-compile
-            let status = std::process::Command::new("ur-compile").args(args).status();
-            match status {
-                Ok(s) => s.code().unwrap_or(1),
-                Err(_) => {
-                    eprintln!("error: ur-compile not found in PATH");
-                    1
-                }
-            }
+            let forwarded: Vec<String> = args.to_vec();
+            cli_common::exec_peer_bin("ur-compile", &forwarded)
         }
     }
 }

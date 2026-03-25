@@ -1,24 +1,39 @@
 //! Spawn GDB in MI3 mode and exchange commands.
 
+use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 
 use anyhow::{anyhow, Context, Result};
 
-use super::mi_parse::{classify_mi_line, mi_get_str, MiRecord, MiResultClass};
+use super::dap_shared::LoadedSourceNotifier;
+use super::mi_parse::{
+    classify_mi_line, mi_break_insert_line_addr, mi_get_str, MiRecord, MiResultClass,
+};
+
+enum GdbLine {
+    Line(String),
+    Eof,
+}
 
 pub struct GdbSession {
     child: Child,
     stdin: ChildStdin,
-    reader: BufReader<std::process::ChildStdout>,
+    lines: Arc<Mutex<VecDeque<GdbLine>>>,
+    line_cv: Arc<Condvar>,
     next_token: u64,
 }
 
 impl GdbSession {
     /// Run GDB (`--interpreter=mi3`) or LLDB via **lldb-mi** (`--interpreter=mi2`).
     /// Launch `MIMode`: `gdb` (default) or `lldb` / `lldb-mi`.
-    pub fn spawn(exe: &str, mi_mode: &str) -> Result<Self> {
+    pub fn spawn(
+        exe: &str,
+        mi_mode: &str,
+        loaded_notifier: Option<Arc<LoadedSourceNotifier>>,
+    ) -> Result<Self> {
         let mm = mi_mode.to_ascii_lowercase();
         let lldb = mm == "lldb" || mm == "lldb-mi" || mm == "lldbmi";
         let mut child = Command::new(exe);
@@ -46,21 +61,60 @@ impl GdbSession {
                 line.clear();
             }
         });
-        let reader = BufReader::new(stdout);
+        let lines = Arc::new(Mutex::new(VecDeque::new()));
+        let line_cv = Arc::new(Condvar::new());
+        let lines_reader = lines.clone();
+        let line_cv_reader = line_cv.clone();
+        thread::spawn(move || {
+            let mut br = BufReader::new(stdout);
+            let mut line = String::new();
+            while br.read_line(&mut line).unwrap_or(0) > 0 {
+                let s = line.trim_end_matches(['\r', '\n']).to_string();
+                line.clear();
+                if s.is_empty() {
+                    continue;
+                }
+                if let Some(ref n) = loaded_notifier {
+                    let _ = n.on_mi_line(&s);
+                }
+                let mut q = lines_reader.lock().unwrap();
+                q.push_back(GdbLine::Line(s));
+                drop(q);
+                line_cv_reader.notify_one();
+            }
+            let mut q = lines_reader.lock().unwrap();
+            q.push_back(GdbLine::Eof);
+            drop(q);
+            line_cv_reader.notify_all();
+        });
         Ok(Self {
             child,
             stdin,
-            reader,
+            lines,
+            line_cv,
             next_token: 1,
         })
     }
 
     fn read_line_raw(&mut self) -> Result<String> {
-        let mut line = String::new();
-        if self.reader.read_line(&mut line)? == 0 {
-            return Err(anyhow!("unexpected EOF from GDB stdout"));
+        let mut guard = self.lines.lock().unwrap();
+        loop {
+            match guard.pop_front() {
+                Some(GdbLine::Line(l)) => {
+                    if l.is_empty() {
+                        continue;
+                    }
+                    return Ok(l);
+                }
+                Some(GdbLine::Eof) => return Err(anyhow!("GDB stdout closed")),
+                None => {
+                    guard = self
+                        .line_cv
+                        .wait(guard)
+                        .map_err(|_| anyhow!("GDB line queue mutex poisoned"))?;
+                }
+            }
         }
-        Ok(line)
     }
 
     fn send_cmd(&mut self, cmd: &str) -> Result<u64> {
@@ -191,6 +245,43 @@ impl GdbSession {
         }
     }
 
+    /// Insert `file:line`, read GDB-resolved line and `addr`. Leaves the breakpoint installed; caller must delete.
+    pub fn break_insert_probe_leave(
+        &mut self,
+        file: &str,
+        line: u32,
+    ) -> Result<Option<(String, u32, Option<String>)>> {
+        let loc = format!("{}:{}", file, line);
+        let pl = match self
+            .mi_simple(&format!("-break-insert -f {}", shell_escape(&loc)))
+            .or_else(|_| self.mi_simple(&format!("-break-insert {}", shell_escape(&loc))))
+        {
+            Ok(p) => p,
+            Err(_) => return Ok(None),
+        };
+        let Some(num) = extract_bkpt_number(&pl) else {
+            return Ok(None);
+        };
+        let (bound_line, addr) = mi_break_insert_line_addr(&pl);
+        let bound = bound_line.unwrap_or(line);
+        let addr = addr.map(String::from);
+        Ok(Some((num, bound, addr)))
+    }
+
+    /// One CLI `delete` for many breakpoint numbers (faster than N × `-break-delete`).
+    pub fn break_delete_console_nums(&mut self, nums: &[String]) -> Result<()> {
+        if nums.is_empty() {
+            return Ok(());
+        }
+        let list = nums.join(" ");
+        let cmd = format!("delete {list}");
+        let _ = self.mi_simple(&format!(
+            "-interpreter-exec console {}",
+            mi_double_quote(&cmd)
+        ))?;
+        Ok(())
+    }
+
     pub fn break_delete(&mut self, num: &str) -> Result<()> {
         let _ = self.mi_simple(&format!("-break-delete {num}"));
         Ok(())
@@ -203,11 +294,53 @@ impl GdbSession {
             WatchAccess::Read => "-r ",
             WatchAccess::ReadWrite => "-a ",
         };
-        let pl = self.mi_simple(&format!(
-            "-break-watch {flag}{}",
-            shell_escape(expr)
-        ))?;
+        let pl = self.mi_simple(&format!("-break-watch {flag}{}", shell_escape(expr)))?;
         Ok(extract_bkpt_number(&pl))
+    }
+
+    /// Stop when the inferior receives the given signal (`-catch-signal`). Requires GDB (not all lldb-mi builds).
+    pub fn catch_signal(&mut self, sig: &str) -> Result<Option<String>> {
+        let pl = self.mi_simple(&format!("-catch-signal {}", shell_escape(sig)))?;
+        Ok(extract_bkpt_number(&pl))
+    }
+
+    /// Stop on any signal delivery (`-catch-signal all`).
+    pub fn catch_signal_all(&mut self) -> Result<Option<String>> {
+        let pl = self.mi_simple("-catch-signal all")?;
+        Ok(extract_bkpt_number(&pl))
+    }
+
+    /// C++ exception throw (`-catch-throw` / `__cxa_throw` breakpoint).
+    pub fn catch_cpp_throw(&mut self) -> Result<Option<String>> {
+        let pl = self
+            .mi_simple("-catch-throw")
+            .or_else(|_| self.mi_simple("-break-insert -f __cxa_throw"))?;
+        Ok(extract_bkpt_number(&pl))
+    }
+
+    /// Source files mapped in the inferior (for DAP `loadedSources`).
+    pub fn file_list_exec_source_files(&mut self) -> Result<String> {
+        self.mi_simple("-file-list-exec-source-files")
+    }
+
+    /// Break at instruction address (DAP `instructionReference`). MI: `-break-insert *ADDR`.
+    pub fn break_insert_at_address(
+        &mut self,
+        instruction_reference: &str,
+    ) -> Result<Option<String>> {
+        let s = instruction_reference.trim();
+        if s.is_empty() {
+            return Ok(None);
+        }
+        let pl = self.mi_simple(&format!("-break-insert *{s}"))?;
+        Ok(extract_bkpt_number(&pl))
+    }
+
+    /// Shared libraries in the inferior (DAP `modules`).
+    /// Tries standard MI, then alternate spellings some lldb-mi builds accept.
+    pub fn file_list_shared_libraries(&mut self) -> Result<String> {
+        self.mi_simple("-file-list-shared-libraries")
+            .or_else(|_| self.mi_simple("-file-list-shared-library"))
     }
 
     pub fn exec_run(&mut self, args: &[String]) -> Result<String> {
@@ -289,20 +422,9 @@ impl GdbSession {
     }
 
     /// Assign to a variable in the current stack frame (DAP `setVariable`).
-    pub fn set_variable(
-        &mut self,
-        thread: u64,
-        frame: u32,
-        name: &str,
-        value: &str,
-    ) -> Result<()> {
-        if !name
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '_')
-        {
-            return Err(anyhow!(
-                "setVariable name must be a simple C identifier"
-            ));
+    pub fn set_variable(&mut self, thread: u64, frame: u32, name: &str, value: &str) -> Result<()> {
+        if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+            return Err(anyhow!("setVariable name must be a simple C identifier"));
         }
         self.thread_select(thread)?;
         self.mi_simple(&format!("-stack-select-frame {frame}"))?;
@@ -314,9 +436,7 @@ impl GdbSession {
 
     /// Disassemble a byte range `[start, end)` (GDB `-data-disassemble`, mode 0 = assembly only).
     pub fn data_disassemble_range(&mut self, start: &str, end: &str) -> Result<String> {
-        self.mi_simple(&format!(
-            "-data-disassemble -s {start} -e {end} -- 0"
-        ))
+        self.mi_simple(&format!("-data-disassemble -s {start} -e {end} -- 0"))
     }
 
     pub fn thread_select(&mut self, id: u64) -> Result<()> {
@@ -332,10 +452,6 @@ impl GdbSession {
     ) -> Result<String> {
         self.thread_select(thread)?;
         self.mi_simple(&format!("-stack-list-frames {} {}", low_frame, high_frame))
-    }
-
-    pub fn stack_list_vars(&mut self, thread: u64, frame: u32) -> Result<String> {
-        self.stack_list_vars_all(thread, frame)
     }
 
     /// Locals with `numchild` / types (for DAP variable expansion).
@@ -355,9 +471,7 @@ impl GdbSession {
     }
 
     pub fn var_list_children(&mut self, varobj: &str) -> Result<String> {
-        self.mi_simple(&format!(
-            "-var-list-children --all-values {varobj}"
-        ))
+        self.mi_simple(&format!("-var-list-children --all-values {varobj}"))
     }
 
     pub fn var_assign(&mut self, varobj: &str, value_expr: &str) -> Result<String> {

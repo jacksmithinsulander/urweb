@@ -759,7 +759,6 @@ name = "ur"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "indexmap",
  "lalrpop",
  "lalrpop-util",
  "logos",
