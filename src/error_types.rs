@@ -147,6 +147,17 @@ impl CompileError {
         }
     }
 
+    /// Error at `span` with an extra “hint:” line (handholding / Elm-style).
+    pub fn at_with_hint(span: Span, message: impl Into<String>, hint: impl Into<String>) -> Self {
+        let hint_s = hint.into();
+        let msg = if hint_s.is_empty() {
+            message.into()
+        } else {
+            format!("{}\n  hint: {}", message.into(), hint_s)
+        };
+        CompileError::AtSpan { span, message: msg }
+    }
+
     pub fn span(&self) -> Option<&Span> {
         match self {
             CompileError::AtSpan { span, .. }
@@ -175,6 +186,16 @@ impl ErrorReporter {
 
     pub fn report_at(&mut self, span: Span, message: impl Into<String>) {
         self.report(CompileError::at(span, message));
+    }
+
+    /// Report at `span` with a second-line hint.
+    pub fn report_at_with_hint(
+        &mut self,
+        span: Span,
+        message: impl Into<String>,
+        hint: impl Into<String>,
+    ) {
+        self.report(CompileError::at_with_hint(span, message, hint));
     }
 
     pub fn has_errors(&self) -> bool {
@@ -291,6 +312,17 @@ mod tests {
         assert!(r.has_errors());
         r.reset();
         assert!(!r.has_errors());
+    }
+
+    #[test]
+    fn compile_error_at_with_hint_concatenates_hint_line() {
+        let span = Span::dummy();
+        let e = CompileError::at_with_hint(span.clone(), "bad", "try removing the duplicate");
+        let s = e.to_string();
+        assert!(s.contains("bad"));
+        assert!(s.contains("hint:"));
+        assert!(s.contains("duplicate"));
+        assert_eq!(e.span(), Some(&span));
     }
 
     #[test]

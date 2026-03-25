@@ -9,6 +9,12 @@ use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
+/// Wall-clock bound waiting for `textDocument/publishDiagnostics` (CI / loaded hosts).
+const LSP_PUBLISH_DIAG_DEADLINE: Duration = Duration::from_secs(10);
+const LSP_RECV_POLL: Duration = Duration::from_millis(200);
+
+const SMOKE_DOC_URI: &str = "file:///tmp/ur-lsp-smoke.ur";
+
 fn cargo_bin(name: &str) -> PathBuf {
     let underscored = name.replace('-', "_");
     let key = format!("CARGO_BIN_EXE_{underscored}");
@@ -60,6 +66,23 @@ fn read_one_message<R: Read>(reader: &mut R) -> Option<Vec<u8>> {
     let mut body = vec![0u8; n];
     reader.read_exact(&mut body).ok()?;
     Some(body)
+}
+
+/// `Some(diagnostics)` only when this JSON-RPC body is `publishDiagnostics` for `expected_uri`.
+fn diagnostics_for_uri(body: &[u8], expected_uri: &str) -> Option<Vec<Value>> {
+    let v: Value = serde_json::from_slice(body).ok()?;
+    if v.get("method").and_then(|m| m.as_str()) != Some("textDocument/publishDiagnostics") {
+        return None;
+    }
+    let params = v.get("params")?;
+    let uri = params.get("uri").and_then(|u| u.as_str())?;
+    if uri != expected_uri {
+        return None;
+    }
+    params
+        .get("diagnostics")
+        .and_then(|d| d.as_array())
+        .cloned()
 }
 
 #[test]
@@ -115,7 +138,7 @@ fn ur_lsp_initialize_reports_text_document_sync() {
             "method": "textDocument/didOpen",
             "params": {
                 "textDocument": {
-                    "uri": "file:///tmp/ur-lsp-smoke.ur",
+                    "uri": SMOKE_DOC_URI,
                     "languageId": "ur",
                     "version": 1,
                     "text": "fun main () = )))\n"
@@ -134,40 +157,30 @@ fn ur_lsp_initialize_reports_text_document_sync() {
         }
     });
 
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + LSP_PUBLISH_DIAG_DEADLINE;
     let mut saw_diagnostic = false;
     while Instant::now() < deadline && !saw_diagnostic {
         let wait = deadline.saturating_duration_since(Instant::now());
         if wait.is_zero() {
             break;
         }
-        match rx.recv_timeout(wait.min(Duration::from_millis(200))) {
+        match rx.recv_timeout(wait.min(LSP_RECV_POLL)) {
             Ok(body) => {
-                let v: Value = match serde_json::from_slice(&body) {
-                    Ok(x) => x,
-                    Err(_) => continue,
+                let diags = match diagnostics_for_uri(&body, SMOKE_DOC_URI) {
+                    Some(d) => d,
+                    None => continue,
                 };
-                if v.get("method").and_then(|m| m.as_str())
-                    == Some("textDocument/publishDiagnostics")
-                {
-                    let diags = v
-                        .get("params")
-                        .and_then(|p| p.get("diagnostics"))
-                        .and_then(|d| d.as_array())
-                        .cloned()
-                        .unwrap_or_default();
-                    if !diags.is_empty() {
-                        let dmsg = diags[0]
-                            .get("message")
-                            .and_then(|m| m.as_str())
-                            .unwrap_or("");
-                        assert!(
-                            !dmsg.is_empty(),
-                            "diagnostic should carry parse error text, got {diags:?}"
-                        );
-                        saw_diagnostic = true;
-                        break;
-                    }
+                if !diags.is_empty() {
+                    let dmsg = diags[0]
+                        .get("message")
+                        .and_then(|m| m.as_str())
+                        .unwrap_or("");
+                    assert!(
+                        !dmsg.is_empty(),
+                        "diagnostic should carry parse error text, got {diags:?}"
+                    );
+                    saw_diagnostic = true;
+                    break;
                 }
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
@@ -183,6 +196,139 @@ fn ur_lsp_initialize_reports_text_document_sync() {
     assert!(
         saw_diagnostic,
         "expected non-empty publishDiagnostics for invalid Ur source"
+    );
+}
+
+#[test]
+fn ur_lsp_did_change_replaces_text_and_clears_diagnostics() {
+    let mut child = Command::new(cargo_bin("ur-lsp"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn ur-lsp");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let mut stdout = child.stdout.take().expect("stdout");
+
+    write_msg(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "processId": null,
+                "capabilities": {},
+                "clientInfo": {"name": "ur-lsp-test", "version": "0"}
+            }
+        }),
+    );
+    let _ = read_one_message(&mut stdout).expect("initialize response");
+
+    write_msg(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "initialized",
+            "params": {}
+        }),
+    );
+
+    let uri = "file:///tmp/ur-lsp-change.ur";
+    write_msg(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "ur",
+                    "version": 1,
+                    "text": "fun main () = )))\n"
+                }
+            }
+        }),
+    );
+
+    let (tx, rx) = mpsc::channel::<Vec<u8>>();
+    let reader = thread::spawn(move || {
+        let mut stdout = stdout;
+        while let Some(body) = read_one_message(&mut stdout) {
+            if tx.send(body).is_err() {
+                break;
+            }
+        }
+    });
+
+    let deadline = Instant::now() + LSP_PUBLISH_DIAG_DEADLINE;
+    let mut saw_bad = false;
+    while Instant::now() < deadline && !saw_bad {
+        let wait = deadline.saturating_duration_since(Instant::now());
+        if wait.is_zero() {
+            break;
+        }
+        match rx.recv_timeout(wait.min(LSP_RECV_POLL)) {
+            Ok(body) => {
+                let diags = match diagnostics_for_uri(&body, uri) {
+                    Some(d) => d,
+                    None => continue,
+                };
+                if !diags.is_empty() {
+                    saw_bad = true;
+                    break;
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+    assert!(saw_bad, "expected diagnostics for invalid Ur after didOpen");
+
+    write_msg(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didChange",
+            "params": {
+                "textDocument": {"uri": uri, "version": 2},
+                "contentChanges": [{"text": "val x = 1\n"}]
+            }
+        }),
+    );
+
+    let deadline2 = Instant::now() + LSP_PUBLISH_DIAG_DEADLINE;
+    let mut saw_clear = false;
+    while Instant::now() < deadline2 && !saw_clear {
+        let wait = deadline2.saturating_duration_since(Instant::now());
+        if wait.is_zero() {
+            break;
+        }
+        match rx.recv_timeout(wait.min(LSP_RECV_POLL)) {
+            Ok(body) => {
+                let diags = match diagnostics_for_uri(&body, uri) {
+                    Some(d) => d,
+                    None => continue,
+                };
+                if diags.is_empty() {
+                    saw_clear = true;
+                    break;
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+
+    let _ = child.kill();
+    let _ = child.wait();
+    drop(rx);
+    let _ = reader.join();
+
+    assert!(
+        saw_clear,
+        "didChange should re-parse and publish empty diagnostics for valid source (catches delete DidChange arm)"
     );
 }
 

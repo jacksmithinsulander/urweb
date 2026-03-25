@@ -6,6 +6,10 @@
 //! ## Compilation Pipeline
 //!
 //! 1. **Parse** (`parse`, `source`) — Lex and parse `.ur`/`.urs` files into surface syntax.
+//!    Parsing is intentionally **strict**: LALRPOP must not emit conflicted tables;
+//!    invalid tokens and broken parser invariants surface as errors rather than
+//!    silent fixes. See [`parse::expr_langsec`] for the operator/application reference
+//!    recognizer aligned with that discipline.
 //! 2. **Elaborate** (`elaborated`) — Type inference, unification, resolve modules.
 //! 3. **Explify** (`explicit`) — Make implicit arguments explicit, resolve modules.
 //! 4. **Core** (`core`) — Simplify to Core AST (named bindings only).
@@ -25,6 +29,8 @@ pub mod c_like_representation;
 pub mod cli_common;
 /// Pipeline orchestration — wires all compilation phases.
 pub mod compiler;
+/// Shared compiler diagnostics (locks, ICE messages).
+pub mod compiler_diagnostics;
 /// Core AST — simplified IR before monomorphization.
 pub mod core;
 /// Datatype representation kind (Enum, Option, Default).
@@ -41,6 +47,8 @@ pub mod explicit;
 pub mod export;
 /// File I/O and path resolution.
 pub mod file_io;
+/// Helpers for the `ur-lsp` binary (disconnect detection, etc.).
+pub mod lsp_support;
 /// Mono AST — monomorphised IR for code generation.
 pub mod monomorphized;
 /// Parser (lexer + LALRPOP grammar).

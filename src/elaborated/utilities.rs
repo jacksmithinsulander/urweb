@@ -141,7 +141,10 @@ pub mod kind {
             // Unification variable: if solved, recurse into the solution.
             Kind::Unif(span_inner, state, reference) => {
                 let known_kind = {
-                    let guard = reference.lock().unwrap();
+                    let guard = crate::compiler_diagnostics::lock_for_compile(
+                        reference.as_ref(),
+                        "elaborated utilities unification cell",
+                    );
                     match &*guard {
                         KUnif::Known(known) => Some(*known.clone()),
                         KUnif::Unknown => None,
@@ -154,7 +157,10 @@ pub mod kind {
             }
             Kind::TupleUnif(span_inner, kind_index_pairs, reference) => {
                 let known_kind = {
-                    let guard = reference.lock().unwrap();
+                    let guard = crate::compiler_diagnostics::lock_for_compile(
+                        reference.as_ref(),
+                        "elaborated utilities unification cell",
+                    );
                     match &*guard {
                         KUnif::Known(known) => Some(*known.clone()),
                         KUnif::Unknown => None,
@@ -234,7 +240,10 @@ pub mod kind {
             }
             Kind::Unif(_, _, reference) => {
                 let known_kind = {
-                    let guard = reference.lock().unwrap();
+                    let guard = crate::compiler_diagnostics::lock_for_compile(
+                        reference.as_ref(),
+                        "elaborated utilities unification cell",
+                    );
                     match &*guard {
                         KUnif::Known(known) => Some(*known.clone()),
                         KUnif::Unknown => None,
@@ -249,7 +258,10 @@ pub mod kind {
             }
             Kind::TupleUnif(_, kind_index_pairs, reference) => {
                 let known_kind = {
-                    let guard = reference.lock().unwrap();
+                    let guard = crate::compiler_diagnostics::lock_for_compile(
+                        reference.as_ref(),
+                        "elaborated utilities unification cell",
+                    );
                     match &*guard {
                         KUnif::Known(known) => Some(*known.clone()),
                         KUnif::Unknown => None,
@@ -293,7 +305,10 @@ pub mod kind {
             Kind::Fun(_, body) => exists(body, predicate),
             Kind::Unif(_, _, reference) => {
                 let known_kind = {
-                    let guard = reference.lock().unwrap();
+                    let guard = crate::compiler_diagnostics::lock_for_compile(
+                        reference.as_ref(),
+                        "elaborated utilities unification cell",
+                    );
                     match &*guard {
                         KUnif::Known(known) => Some(*known.clone()),
                         KUnif::Unknown => None,
@@ -306,7 +321,10 @@ pub mod kind {
             }
             Kind::TupleUnif(_, kind_index_pairs, reference) => {
                 let known_kind = {
-                    let guard = reference.lock().unwrap();
+                    let guard = crate::compiler_diagnostics::lock_for_compile(
+                        reference.as_ref(),
+                        "elaborated utilities unification cell",
+                    );
                     match &*guard {
                         KUnif::Known(known) => Some(*known.clone()),
                         KUnif::Unknown => None,
@@ -581,7 +599,10 @@ pub mod con {
             // Solved unification variable: lift indices and recurse.
             Constructor::Unif(binder_count, span_inner, kind_state, state, reference) => {
                 let known_constructor = {
-                    let guard = reference.lock().unwrap();
+                    let guard = crate::compiler_diagnostics::lock_for_compile(
+                        reference.as_ref(),
+                        "elaborated utilities unification cell",
+                    );
                     match &*guard {
                         CUnif::Known(known) => Some(*known.clone()),
                         CUnif::Unknown => None,
@@ -796,7 +817,10 @@ pub mod con {
             }
             Constructor::Unif(binder_count, _, _, _, reference) => {
                 let known_constructor = {
-                    let guard = reference.lock().unwrap();
+                    let guard = crate::compiler_diagnostics::lock_for_compile(
+                        reference.as_ref(),
+                        "elaborated utilities unification cell",
+                    );
                     match &*guard {
                         CUnif::Known(known) => Some(*known.clone()),
                         CUnif::Unknown => None,
@@ -891,7 +915,10 @@ pub mod con {
             }),
             Constructor::Unif(binder_count, _, _, _, reference) => {
                 let known_constructor = {
-                    let guard = reference.lock().unwrap();
+                    let guard = crate::compiler_diagnostics::lock_for_compile(
+                        reference.as_ref(),
+                        "elaborated utilities unification cell",
+                    );
                     match &*guard {
                         CUnif::Known(known) => Some(*known.clone()),
                         CUnif::Unknown => None,
@@ -997,7 +1024,10 @@ pub mod exp {
 
             Expression::Unif(reference) => {
                 let known_expression = {
-                    let guard = reference.lock().unwrap();
+                    let guard = crate::compiler_diagnostics::lock_for_compile(
+                        reference.as_ref(),
+                        "elaborated utilities unification cell",
+                    );
                     guard.clone()
                 };
                 match known_expression {
@@ -1588,7 +1618,10 @@ pub mod exp {
 
             Expression::Unif(reference) => {
                 let known_expression = {
-                    let guard = reference.lock().unwrap();
+                    let guard = crate::compiler_diagnostics::lock_for_compile(
+                        reference.as_ref(),
+                        "elaborated utilities unification cell",
+                    );
                     guard.clone()
                 };
                 match known_expression {
@@ -2102,7 +2135,10 @@ pub mod exp {
 
             Expression::Unif(reference) => {
                 let known_expression = {
-                    let guard = reference.lock().unwrap();
+                    let guard = crate::compiler_diagnostics::lock_for_compile(
+                        reference.as_ref(),
+                        "elaborated utilities unification cell",
+                    );
                     guard.clone()
                 };
                 match known_expression {

@@ -606,7 +606,11 @@ fn contains_unif_decl(d: &LocatedDeclaration) -> bool {
 fn contains_unif_exp(e: &crate::elaborated::LocatedExpression) -> bool {
     use crate::elaborated::Expression;
     match &e.node {
-        Expression::Unif(r) => r.lock().unwrap().is_none(),
+        Expression::Unif(r) => crate::compiler_diagnostics::lock_for_compile(
+            r.as_ref(),
+            "module database unification cell",
+        )
+        .is_none(),
         Expression::App(f, x) => contains_unif_exp(f) || contains_unif_exp(x),
         Expression::Abs(_, _, _, body) => contains_unif_exp(body),
         Expression::CApp(f, _) => contains_unif_exp(f),

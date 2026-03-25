@@ -297,7 +297,10 @@ fn mono_type(
                         })
                         .collect();
                     let kind = classify_datatype_mono(&constrs);
-                    *r.lock().unwrap() = DatatypeDef { kind, constrs };
+                    *crate::compiler_diagnostics::lock_for_compile(
+                        r.as_ref(),
+                        "monoize datatype unification cell",
+                    ) = DatatypeDef { kind, constrs };
                 }
             }
             Located::new(Typ::Datatype(*n, r), loc)
@@ -609,21 +612,21 @@ fn mono_pat(env: &Env, dtmap: &mut HashMap<usize, DatatypeRef>, pat: &LocatedPat
                         // list None pattern → PNone(listify t)
                         let inner_t = mono_type(env, dtmap, &targs[0]);
                         let lt = listify(inner_t, &loc);
-                        if po.is_none() {
-                            Located::new(Pat::None(lt), loc)
-                        } else {
-                            let p = mono_pat(env, dtmap, po.as_ref().unwrap());
+                        if let Some(p) = po {
+                            let p = mono_pat(env, dtmap, p);
                             Located::new(Pat::Some(lt, Box::new(p)), loc)
+                        } else {
+                            Located::new(Pat::None(lt), loc)
                         }
                     }
                     _ => {
                         // Option pattern
                         let t = mono_type(env, dtmap, &targs[0]);
-                        if po.is_none() {
-                            Located::new(Pat::None(t), loc)
-                        } else {
-                            let p = mono_pat(env, dtmap, po.as_ref().unwrap());
+                        if let Some(p) = po {
+                            let p = mono_pat(env, dtmap, p);
                             Located::new(Pat::Some(t, Box::new(p)), loc)
+                        } else {
+                            Located::new(Pat::None(t), loc)
                         }
                     }
                 }
@@ -1708,11 +1711,12 @@ fn mono_exp(env: &Env, fm: &mut Fm, exp: &LocatedExpression) -> LocExp {
                         let mut dtmap = HashMap::new();
                         let inner_t = mono_type(env, &mut dtmap, &targs[0]);
                         let lt = listify(inner_t, &loc);
-                        if opt_e.is_none() {
-                            Located::new(Exp::None(lt), loc)
-                        } else {
-                            let e = mono_exp(env, fm, opt_e.as_ref().unwrap());
-                            Located::new(Exp::Some(lt, Box::new(e)), loc)
+                        match opt_e {
+                            None => Located::new(Exp::None(lt), loc),
+                            Some(e) => {
+                                let e = mono_exp(env, fm, e);
+                                Located::new(Exp::Some(lt, Box::new(e)), loc)
+                            }
                         }
                     }
                     (_, None) => {

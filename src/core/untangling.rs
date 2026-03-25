@@ -308,7 +308,7 @@ fn non_recursive_singleton(
     if scc.len() != 1 {
         return None;
     }
-    let single_id = *scc.iter().next().unwrap();
+    let single_id = *scc.iter().next()?;
     let empty_set = BTreeSet::new();
     let self_deps = dependency_map.get(&single_id).unwrap_or(&empty_set);
     if self_deps.contains(&single_id) {

@@ -746,7 +746,16 @@ pub fn tag(file: File, error_reporter: &mut impl FnMut(&Span, &str)) -> File {
         result.extend(new_export_decls);
 
         // Update env with decl bindings
-        env = env.decl_binds(result.last().unwrap());
+        let Some(last_decl) = result.last() else {
+            panic!(
+                "{}",
+                crate::compiler_diagnostics::internal_compiler_error(
+                    "export_tagging",
+                    "declaration list was empty while updating the environment after a project declaration",
+                )
+            );
+        };
+        env = env.decl_binds(last_decl);
     }
 
     result

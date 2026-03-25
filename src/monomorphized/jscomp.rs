@@ -126,10 +126,34 @@ fn str_lit(span: &Span, s: &str) -> LocExp {
 fn strcat_exp(span: &Span, es: Vec<LocExp>) -> LocExp {
     match es.len() {
         0 => str_lit(span, ""),
-        1 => es.into_iter().next().unwrap(),
+        1 => match es.into_iter().next() {
+            Some(e) => e,
+            None => {
+                eprintln!(
+                    "{}",
+                    crate::compiler_diagnostics::internal_compiler_error(
+                        "jscomp::strcat_exp",
+                        "length was 1 but iterator was empty",
+                    )
+                );
+                str_lit(span, "")
+            }
+        },
         _ => {
             let mut iter = es.into_iter().rev();
-            let mut acc = iter.next().unwrap();
+            let mut acc = match iter.next() {
+                Some(e) => e,
+                None => {
+                    eprintln!(
+                        "{}",
+                        crate::compiler_diagnostics::internal_compiler_error(
+                            "jscomp::strcat_exp",
+                            "non-empty strcat list had empty iterator",
+                        )
+                    );
+                    return str_lit(span, "");
+                }
+            };
             for e in iter {
                 acc = Located::new(Exp::Strcat(Box::new(e), Box::new(acc)), span.clone());
             }
@@ -204,7 +228,10 @@ fn is_nullable(t: &LocTyp) -> bool {
         Typ::Option(_) => true,
         Typ::List(_) => true,
         Typ::Datatype(_, arc) => {
-            let def = arc.lock().unwrap();
+            let def = crate::compiler_diagnostics::lock_for_compile(
+                arc.as_ref(),
+                "jscomp shared definition table",
+            );
             def.kind == DatatypeKind::Option
         }
         Typ::Record(fields) => fields.is_empty(),
@@ -503,7 +530,10 @@ fn quote_exp(
             let n_prime = st.alloc_name();
             st.injectors.insert(*n, n_prime);
 
-            let def = arc.lock().unwrap();
+            let def = crate::compiler_diagnostics::lock_for_compile(
+                arc.as_ref(),
+                "jscomp shared definition table",
+            );
             let dk = def.kind;
             let cs = def.constrs.clone();
             drop(def);
@@ -640,7 +670,10 @@ fn unurlify_exp(span: &Span, t: &LocTyp, st: &mut State, settings: &Settings) ->
             let n_prime = st.alloc_name();
             st.decoders.insert(*n, n_prime);
 
-            let def = arc.lock().unwrap();
+            let def = crate::compiler_diagnostics::lock_for_compile(
+                arc.as_ref(),
+                "jscomp shared definition table",
+            );
             let dk = def.kind;
             let cs = def.constrs.clone();
             drop(def);
@@ -1606,7 +1639,7 @@ fn seek_field(
                     some_ts,
                     found_javascript,
                 )?;
-                let last_x = xs.last().unwrap();
+                let last_x = xs.last().ok_or_else(|| CantEmbed(str_typ(s)))?;
                 let inner_c = {
                     // Build the base.fields_except_last expression
                     let mut e = base.clone();
@@ -1681,7 +1714,7 @@ fn seek_field(
         }
         _ => {
             // Default: generic field access
-            let last_x = xs.last().unwrap();
+            let last_x = xs.last().ok_or_else(|| CantEmbed(str_typ(s)))?;
             // Build the base expression (everything except the outermost field)
             let inner_c = if xs.len() == 1 {
                 js_e(

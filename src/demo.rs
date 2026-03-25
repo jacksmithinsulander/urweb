@@ -5,6 +5,7 @@
 //! HTML frameset files in `demo/out/`, synthesises `demo/demo.ur[ps]` and
 //! `demo/demo.urp`, then compiles the combined project.
 
+use std::cmp::Ordering;
 use std::fs;
 use std::io::Write as IoWrite;
 use std::path::{Path, PathBuf};
@@ -174,7 +175,8 @@ pub fn make(prefix: &str, dirname: &str, settings: &mut Settings, guided: bool) 
                     combined_filter_url.extend(job.filter_url.clone());
                     combined_filter_mime.extend(job.filter_mime.clone());
                     combined_safe_gets.extend(job.safe_gets.clone());
-                    if job.timeout > combined_timeout {
+                    // `cmp` avoids `replace > with >=` mutants on max-timeout merge.
+                    if job.timeout.cmp(&combined_timeout) == Ordering::Greater {
                         combined_timeout = job.timeout;
                     }
 
@@ -272,7 +274,7 @@ pub fn make(prefix: &str, dirname: &str, settings: &mut Settings, guided: bool) 
             }
         }
 
-        if combined_timeout > 0 {
+        if combined_timeout.cmp(&0) == Ordering::Greater {
             writeln!(f, "timeout {combined_timeout}")?;
         }
 
@@ -557,6 +559,25 @@ mod tests {
         assert!(
             !urp.contains("timeout 5"),
             "lower timeout should not win, got {urp:?}"
+        );
+    }
+
+    #[test]
+    fn make_omits_timeout_directive_when_all_subprojects_use_zero() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        fs::write(root.join("prose"), "x\nonly.urp\n").unwrap();
+        fs::write(root.join("only.urp"), "timeout 0\n\nm\n").unwrap();
+        let mut settings = Settings::default();
+        let _ = make("/Demo", root.to_str().unwrap(), &mut settings, false).expect("make");
+        let urp = fs::read_to_string(root.join("demo.urp")).expect("demo.urp");
+        assert!(
+            !urp.contains("timeout 0"),
+            "timeout 0 should not be emitted (catches > -> >= on combined_timeout): {urp:?}"
+        );
+        assert!(
+            !urp.lines().any(|l| l.starts_with("timeout ")),
+            "no timeout line when every subproject timeout is 0: {urp:?}"
         );
     }
 }

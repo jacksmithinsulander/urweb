@@ -238,10 +238,11 @@ fn check_property(s: &str) -> bool {
     if s.is_empty() {
         return false;
     }
-    let first = s.chars().next().unwrap();
+    let Some(first) = s.chars().next() else {
+        return false;
+    };
     let rest_ok = s.chars().all(nmchar);
-    rest_ok
-        && (nmstart(first) || (s.len() > 1 && first == '-' && nmstart(s.chars().nth(1).unwrap())))
+    rest_ok && (nmstart(first) || (first == '-' && s.chars().nth(1).is_some_and(|c| nmstart(c))))
 }
 
 // ---------------------------------------------------------------------------
@@ -426,10 +427,10 @@ fn un_as_exp(e: &LocExp) -> Option<Exp> {
     let ps = parts(e)?;
     match ps.len() {
         0 => None,
-        1 => Some(ps.into_iter().next().unwrap().node),
+        1 => ps.into_iter().next().map(|e| e.node),
         _ => {
             let mut iter = ps.into_iter().rev();
-            let first = iter.next().unwrap();
+            let first = iter.next()?;
             let result = iter.fold(first, |acc, p| {
                 let span = p.span.clone();
                 Located::new(Exp::Strcat(Box::new(p), Box::new(acc)), span)

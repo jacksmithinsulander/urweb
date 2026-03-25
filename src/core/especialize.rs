@@ -910,7 +910,16 @@ fn rewrite_exp(
                 .map(|x| rewrite_exp(env, x, known, st))
                 .collect();
 
-            let fi = st.funcs.get(&f).cloned().unwrap();
+            let Some(fi) = st.funcs.get(&f).cloned() else {
+                eprintln!(
+                    "{}",
+                    crate::compiler_diagnostics::internal_compiler_error(
+                        "especialize::rewrite_exp",
+                        "missing specialization metadata for a function that was just in the cache",
+                    )
+                );
+                return rewrite_exp_default(env, e, known, st);
+            };
             let const_args = fi.const_args;
             let typ = fi.typ.clone();
 
@@ -945,7 +954,11 @@ fn rewrite_exp(
 
             // Check memoization cache.
             let dummy = Span::dummy();
-            if let Some(&f_prime) = st.funcs.get(&f).unwrap().args.get(&key) {
+            if let Some(&f_prime) = st
+                .funcs
+                .get(&f)
+                .and_then(|fi_cache| fi_cache.args.get(&key))
+            {
                 // Reuse existing specialization.
                 let mut result = Located::new(Expression::Named(f_prime), dummy.clone());
                 // Apply free vars in decreasing order (foldr on sorted set).
@@ -986,10 +999,9 @@ fn rewrite_exp(
             let tag = fi.tag.clone();
 
             let sub_result = sub_body(body, typ_fi, &fxs_prime);
-            if sub_result.is_none() {
+            let Some((mut new_body, mut new_typ)) = sub_result else {
                 return rewrite_exp_default(env, e, known, st);
-            }
-            let (mut new_body, mut new_typ) = sub_result.unwrap();
+            };
 
             // Wrap in lambdas for the captured free variables (foldl → increasing order).
             for &n in &fvs_sorted {

@@ -126,6 +126,8 @@ pub enum SgnItem {
     Constraint(LocCon, LocCon),
     ClassAbs(String, Box<LocKind>),
     Class(String, Box<LocKind>, LocCon),
+    /// Functor in a signature: `functor Name(Arg : Sgn) : Sgn`
+    Functor(String, String, Box<LocSgn>, Box<LocSgn>),
 }
 
 pub type LocSgnItem = Located<SgnItem>;
@@ -199,6 +201,11 @@ pub enum Exp {
     Case(Box<LocExp>, Vec<(LocPat, LocExp)>),
 
     Let(Vec<LocEDecl>, Box<LocExp>),
+
+    /// Binary infix operator: `e1 op e2`
+    /// The operator is the textual name ("+", "-", "*", "/", "%", "^",
+    /// "=", "<>", "<", ">", "<=", ">=", "::")
+    Infix(String, Box<LocExp>, Box<LocExp>),
 }
 
 pub type LocExp = Located<Exp>;
@@ -263,6 +270,8 @@ pub enum Decl {
     Policy(LocExp),
     OnError(String, Vec<String>, String),
     Ffi(String, Vec<FfiMode>, LocCon),
+    /// Open with a functor application: `open Foo.Make(struct...end)`
+    OpenStr(LocStr),
 }
 
 pub type LocDecl = Located<Decl>;

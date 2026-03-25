@@ -45,7 +45,10 @@ fn explify_kind(k: elab::LocatedKind) -> expl::LocatedKind {
         ),
         elab::Kind::Error => panic!("explifyKind: KError at {}", span),
         elab::Kind::Unif(unif_span, _, unif_ref) => {
-            let guard = unif_ref.lock().unwrap();
+            let guard = crate::compiler_diagnostics::lock_for_compile(
+                unif_ref.as_ref(),
+                "explify unification cell",
+            );
             match &*guard {
                 elab::KUnif::Known(known) => {
                     let k = *known.clone();
@@ -56,7 +59,10 @@ fn explify_kind(k: elab::LocatedKind) -> expl::LocatedKind {
             }
         }
         elab::Kind::TupleUnif(unif_span, _, unif_ref) => {
-            let guard = unif_ref.lock().unwrap();
+            let guard = crate::compiler_diagnostics::lock_for_compile(
+                unif_ref.as_ref(),
+                "explify unification cell",
+            );
             match &*guard {
                 elab::KUnif::Known(known) => {
                     let k = *known.clone();
@@ -143,7 +149,10 @@ fn explify_con(c: elab::LocatedConstructor) -> expl::LocatedConstructor {
         }
         elab::Constructor::Error => panic!("explifyCon: CError at {}", span),
         elab::Constructor::Unif(nl, _, _, _, unif_ref) => {
-            let guard = unif_ref.lock().unwrap();
+            let guard = crate::compiler_diagnostics::lock_for_compile(
+                unif_ref.as_ref(),
+                "explify unification cell",
+            );
             match &*guard {
                 elab::CUnif::Known(known) => {
                     let c = *known.clone();
@@ -301,7 +310,10 @@ fn explify_exp(e: elab::LocatedExpression) -> expl::LocatedExpression {
         ),
         elab::Expression::Error => panic!("explifyExp: EError at {}", span),
         elab::Expression::Unif(unif_ref) => {
-            let guard = unif_ref.lock().unwrap();
+            let guard = crate::compiler_diagnostics::lock_for_compile(
+                unif_ref.as_ref(),
+                "explify unification cell",
+            );
             match &*guard {
                 Some(e) => {
                     let e = e.clone();

@@ -307,8 +307,17 @@ fn rewrite_exp(
     };
 
     if is_rpc {
-        let trans = trans.unwrap();
-        return new_rpc(trans, fm, tfuncs, state, error_reporter, &span);
+        return match trans {
+            Some(trans) => new_rpc(trans, fm, tfuncs, state, error_reporter, &span),
+            None => {
+                error_reporter(
+                    &span,
+                    "Internal compiler error: rpc/tryRpc application is missing the translation expression.\n\
+                     This is unexpected — if you can reproduce it with a small program, please report a bug.",
+                );
+                e
+            }
+        };
     }
 
     // Recurse into sub-expressions

@@ -11,6 +11,7 @@ use std::collections::{HashMap, HashSet};
 use crate::c_like_representation::{
     DatatypeDecl, Decl, DmlMeta, Exp, LocDecl, LocExp, LocPat, LocTyp, Pat, PatCon, QueryMeta, Typ,
 };
+use crate::compiler_diagnostics::lock_for_compile;
 use crate::datatype_kind::DatatypeKind;
 use crate::export::ExportKind;
 use crate::monomorphized::{DbMode, Sidedness};
@@ -281,7 +282,7 @@ pub fn p_typ(env: &CjrEnv, t: &LocTyp) -> String {
         },
         Typ::Datatype(DatatypeKind::Option, _n, xncs) => {
             // Find the constructor with an argument
-            let xncs_locked = xncs.lock().unwrap();
+            let xncs_locked = lock_for_compile(xncs.as_ref(), "CJR print Option constructors");
             let arg_typ = xncs_locked.iter().find_map(|(_, _, ot)| ot.as_ref());
             match arg_typ {
                 None => "void*".to_string(),
@@ -1937,7 +1938,13 @@ fn unurlify_req(request: &str, t: &LocTyp, env: &CjrEnv, from_client: bool) -> S
             let (x, xncs) = env
                 .lookup_datatype(*i)
                 .map(|(x, v)| (x.clone(), v.clone()))
-                .unwrap_or_else(|| ("?".into(), xncs_ref.lock().unwrap().clone()));
+                .unwrap_or_else(|| {
+                    (
+                        "?".into(),
+                        lock_for_compile(xncs_ref.as_ref(), "CJR print datatype constructors")
+                            .clone(),
+                    )
+                });
             let inner = do_em_enum(request, &xncs, &x, *i);
             format!("({request}[0] == '/' ? ++{request} : {request},\n{inner})")
         }
@@ -1950,7 +1957,13 @@ fn unurlify_req(request: &str, t: &LocTyp, env: &CjrEnv, from_client: bool) -> S
                 let (x, xncs) = env
                     .lookup_datatype(*i)
                     .map(|(x, v)| (x.clone(), v.clone()))
-                    .unwrap_or_else(|| ("?".into(), xncs_ref.lock().unwrap().clone()));
+                    .unwrap_or_else(|| {
+                        (
+                            "?".into(),
+                            lock_for_compile(xncs_ref.as_ref(), "CJR print datatype constructors")
+                                .clone(),
+                        )
+                    });
                 let (no_arg, has_arg, t_inner) = match xncs.as_slice() {
                     [(a, _, None), (b, _, Some(t))] => (a.clone(), b.clone(), t.clone()),
                     [(b, _, Some(t)), (a, _, None)] => (a.clone(), b.clone(), t.clone()),
@@ -1998,7 +2011,13 @@ fn unurlify_req(request: &str, t: &LocTyp, env: &CjrEnv, from_client: bool) -> S
                 let (x, xncs) = env
                     .lookup_datatype(*i)
                     .map(|(x, v)| (x.clone(), v.clone()))
-                    .unwrap_or_else(|| ("?".into(), xncs_ref.lock().unwrap().clone()));
+                    .unwrap_or_else(|| {
+                        (
+                            "?".into(),
+                            lock_for_compile(xncs_ref.as_ref(), "CJR print datatype constructors")
+                                .clone(),
+                        )
+                    });
                 let x_ident = ident(&x);
                 let t_name = format!("struct __uwd_{x_ident}_{i}");
                 let body = do_em_default(&xncs, &x, *i, env, from_client);
@@ -2113,7 +2132,13 @@ fn urlify_stmts(level: usize, t: &LocTyp, env: &CjrEnv) -> String {
             let (x, xncs) = env
                 .lookup_datatype(*i)
                 .map(|(x, v)| (x.clone(), v.clone()))
-                .unwrap_or_else(|| ("?".into(), xncs_ref.lock().unwrap().clone()));
+                .unwrap_or_else(|| {
+                    (
+                        "?".into(),
+                        lock_for_compile(xncs_ref.as_ref(), "CJR print datatype constructors")
+                            .clone(),
+                    )
+                });
             urlify_enum_stmts(level, &xncs, &x, *i)
         }
         Typ::Datatype(DatatypeKind::Option, i, xncs_ref) => {
@@ -2123,7 +2148,13 @@ fn urlify_stmts(level: usize, t: &LocTyp, env: &CjrEnv) -> String {
                 let (x, xncs) = env
                     .lookup_datatype(*i)
                     .map(|(x, v)| (x.clone(), v.clone()))
-                    .unwrap_or_else(|| ("?".into(), xncs_ref.lock().unwrap().clone()));
+                    .unwrap_or_else(|| {
+                        (
+                            "?".into(),
+                            lock_for_compile(xncs_ref.as_ref(), "CJR print datatype constructors")
+                                .clone(),
+                        )
+                    });
                 let (no_arg, has_arg, t_inner) = match xncs.as_slice() {
                     [(a, _, None), (b, _, Some(t))] => (a.clone(), b.clone(), t.clone()),
                     [(b, _, Some(t)), (a, _, None)] => (a.clone(), b.clone(), t.clone()),
@@ -2162,7 +2193,13 @@ fn urlify_stmts(level: usize, t: &LocTyp, env: &CjrEnv) -> String {
                 let (x, xncs) = env
                     .lookup_datatype(*i)
                     .map(|(x, v)| (x.clone(), v.clone()))
-                    .unwrap_or_else(|| ("?".into(), xncs_ref.lock().unwrap().clone()));
+                    .unwrap_or_else(|| {
+                        (
+                            "?".into(),
+                            lock_for_compile(xncs_ref.as_ref(), "CJR print datatype constructors")
+                                .clone(),
+                        )
+                    });
                 let x_ident = ident(&x);
                 let t_name = format!("struct __uwd_{x_ident}_{i}");
                 let body = urlify_default_stmts(&xncs, &x, *i, env);

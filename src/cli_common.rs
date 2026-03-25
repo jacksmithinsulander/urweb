@@ -1,5 +1,7 @@
 //! Shared CLI helpers and templates used by ur and sub-binaries.
 
+use serde::Deserialize;
+
 // ---------------------------------------------------------------------------
 // Project scaffolding templates
 // ---------------------------------------------------------------------------
@@ -113,6 +115,58 @@ pub fn kind_specific_created_files(kind: ProjectKind, name: &str) -> Vec<String>
 // ---------------------------------------------------------------------------
 // TOML
 // ---------------------------------------------------------------------------
+
+/// Project manifest with **closed** tables: extra keys are rejected (LangSec-style trust boundary).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UrTomlStrict {
+    pub package: UrTomlPackageStrict,
+    pub build: UrTomlBuildStrict,
+    #[serde(default)]
+    pub style: Option<UrTomlStyleStrict>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UrTomlPackageStrict {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default = "default_pkg_kind")]
+    pub kind: String,
+}
+
+fn default_pkg_kind() -> String {
+    "app".into()
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UrTomlBuildStrict {
+    pub entry: String,
+    #[serde(default = "default_build_db")]
+    pub db: String,
+    #[serde(default)]
+    pub ccompiler: String,
+    #[serde(default)]
+    pub boot: bool,
+}
+
+fn default_build_db() -> String {
+    "sqlite".into()
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UrTomlStyleStrict {
+    #[serde(default)]
+    pub scss: Option<String>,
+    #[serde(default)]
+    pub css: Option<String>,
+}
+
+pub fn parse_ur_toml_strict(content: &str) -> Result<UrTomlStrict, String> {
+    toml::from_str(content).map_err(|e| format!("{e}"))
+}
 
 pub fn parse_toml(content: &str) -> Vec<(String, String)> {
     let mut section = String::new();
@@ -250,6 +304,54 @@ mod tests {
     #[test]
     fn validate_name_hyphen_invalid() {
         assert!(validate_project_name("my-app").is_err());
+    }
+
+    #[test]
+    fn ur_toml_strict_accepts_new_project_shape() {
+        let content = r#"[package]
+name = "demo"
+kind = "app"
+
+[build]
+entry = "demo"
+db = "sqlite"
+ccompiler = "gcc"
+boot = false
+
+[style]
+scss = "style/scss/main.scss"
+css = "style/css/main.css"
+"#;
+        let cfg = parse_ur_toml_strict(content).expect("valid ur.toml");
+        assert_eq!(cfg.package.kind, "app");
+        assert_eq!(cfg.build.entry, "demo");
+        assert!(cfg.style.is_some());
+    }
+
+    #[test]
+    fn ur_toml_strict_accepts_library_template_shape() {
+        let content = r#"[package]
+name = "mylib"
+kind = "lib"
+
+[build]
+entry = "mylib"
+boot = false
+"#;
+        assert!(parse_ur_toml_strict(content).is_ok());
+    }
+
+    #[test]
+    fn ur_toml_strict_rejects_unknown_table_fields() {
+        let content = r#"[package]
+name = "x"
+kind = "app"
+wat = true
+
+[build]
+entry = "m"
+"#;
+        assert!(parse_ur_toml_strict(content).is_err());
     }
 
     #[test]

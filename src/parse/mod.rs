@@ -3,14 +3,39 @@
 //! - **parse_ur**: parse `.ur` files into `source::File`
 //! - **parse_urs**: parse `.urs` signature files
 //! - **lexer**: tokenization (Logos)
+//!
+//! ## Strict recognition (LangSec-oriented)
+//!
+//! - **CFG gate**: This crate's `build.rs` runs LALRPOP on every build; shift/reduce and
+//!   reduce/reduce conflicts **fail the build** — the surface language is not treated
+//!   as “best effort” at table generation time.
+//! - **Lexer**: invalid or unterminated literals yield [`lexical_analyzer::LexError`];
+//!   there is no silent recovery into a token stream.
+//! - **Expression spine**: [`expr_langsec`] defines the reference recognizer for the
+//!   comparison → arithmetic → juxtaposition tier; grammar actions that fold AST
+//!   nodes use explicit [`Result`] paths (e.g. fallible `=>?`) where an invariant
+//!   could be broken instead of panicking in the parser.
+//!
+//! ## Preprocess ∘ parse (composed surface language)
+//!
+//! The **accepted** `.ur` text is not only `L(grammar)` on raw bytes; it is the
+//! preimage of that grammar under a **specified** preprocessor chain:
+//!
+//! 1. **`.ur`**: `rewrite_datatype_constructors` → `rewrite_sgn_where` → `rewrite_case_expressions`,
+//!    then [`parse_ur`](parse_ur) runs [`XmlAwareLexer`](lexical_analyzer::XmlAwareLexer) + `FileParser`.
+//! 2. **`.urs`**: [`preprocess_urs`](preprocess_urs) (fuel-bounded), then lexer + `SgnItemsParser`.
+//!
+//! These rewrites are **total** string transducers on UTF-8 (invalid surrogate-edge cases are
+//! ordinary char iteration). [`preprocess_urs`](preprocess_urs) can truncate with the remainder
+//! appended if fuel exhausts — documented in its body. Integration tests in `tests/langsec_preprocess.rs`
+//! pin representative rewrite + parse behavior.
 
+pub mod expr_langsec;
+pub mod grammar_helpers;
 pub mod lexical_analyzer;
 pub mod xml_helpers;
 
-// Include the LALRPOP-generated parser when it has been built.
-// `build.rs` sets `cargo:rustc-cfg=generated_parser` only when
-// URWEB_GEN_PARSER=1 was passed.  Without that flag the grammar is not
-// regenerated and the stubs below are used instead.
+// `build.rs` always runs LALRPOP and sets `cargo:rustc-cfg=generated_parser` on success.
 #[cfg(generated_parser)]
 mod grammar {
     include!(concat!(env!("OUT_DIR"), "/parse/grammar.rs"));
@@ -83,6 +108,646 @@ macro_rules! pp_urs_depth_nonzero {
     }};
 }
 
+fn pp_kw_cont(c: u8) -> bool {
+    matches!(
+        c,
+        b'_' | b'\'' | b'0'..=b'9' | b'a'..=b'z' | b'A'..=b'Z'
+    )
+}
+
+fn is_case_keyword(b: &[u8], i: usize) -> bool {
+    if i + 4 > b.len() || &b[i..i + 4] != b"case" {
+        return false;
+    }
+    if i > 0 && pp_kw_cont(b[i - 1]) {
+        return false;
+    }
+    if i + 4 < b.len() && pp_kw_cont(b[i + 4]) {
+        return false;
+    }
+    true
+}
+
+fn is_of_keyword(b: &[u8], i: usize) -> bool {
+    if i + 2 > b.len() || &b[i..i + 2] != b"of" {
+        return false;
+    }
+    if i > 0 && pp_kw_cont(b[i - 1]) {
+        return false;
+    }
+    if i + 2 < b.len() && pp_kw_cont(b[i + 2]) {
+        return false;
+    }
+    true
+}
+
+fn skip_ml_comment_bytes(b: &[u8], mut i: usize, n: usize) -> usize {
+    let mut depth = 1usize;
+    while i < n && depth > 0 {
+        if i + 1 < n && b[i] == b'(' && b[i + 1] == b'*' {
+            i += 2;
+            depth += 1;
+        } else if i + 1 < n && b[i] == b'*' && b[i + 1] == b')' {
+            i += 2;
+            depth -= 1;
+        } else {
+            i += 1;
+        }
+    }
+    i
+}
+
+fn skip_string_bytes(b: &[u8], mut i: usize, n: usize) -> usize {
+    while i < n {
+        if b[i] == b'"' {
+            return i + 1;
+        }
+        if b[i] == b'\\' && i + 1 < n {
+            i += 2;
+        } else {
+            i += 1;
+        }
+    }
+    n
+}
+
+/// Byte index just after the `of` in `case` ⟨scrutinee⟩ `of`, or `None` if unterminated.
+fn scan_case_of_end(b: &[u8], mut i: usize, n: usize) -> Option<usize> {
+    let mut depth = 0i32;
+    while i < n {
+        if i + 1 < n && b[i] == b'(' && b[i + 1] == b'*' {
+            i = skip_ml_comment_bytes(b, i + 2, n);
+            continue;
+        }
+        if b[i] == b'"' {
+            i = skip_string_bytes(b, i + 1, n);
+            continue;
+        }
+        if depth == 0 && is_of_keyword(b, i) {
+            return Some(i + 2);
+        }
+        match b.get(i).copied() {
+            Some(b'(' | b'[' | b'{') => {
+                depth += 1;
+                i += 1;
+            }
+            Some(b')' | b']' | b'}') => {
+                depth = (depth - 1).max(0);
+                i += 1;
+            }
+            Some(_) => i += 1,
+            None => break,
+        }
+    }
+    None
+}
+
+fn arm_sep_at(b: &[u8], i: usize, n: usize) -> bool {
+    if i + 8 > n || &b[i..i + 8] != b"arm_sep" {
+        return false;
+    }
+    match b.get(i + 8).copied() {
+        None => true,
+        Some(c) => !pp_kw_cont(c),
+    }
+}
+
+fn case_end_at(b: &[u8], i: usize, n: usize) -> bool {
+    if i + 8 > n || &b[i..i + 8] != b"case_end" {
+        return false;
+    }
+    match b.get(i + 8).copied() {
+        None => true,
+        Some(c) => !pp_kw_cont(c),
+    }
+}
+
+fn case_bar_at(b: &[u8], i: usize, n: usize) -> bool {
+    if i + 8 > n || &b[i..i + 8] != b"case_bar" {
+        return false;
+    }
+    match b.get(i + 8).copied() {
+        None => true,
+        Some(c) => !pp_kw_cont(c),
+    }
+}
+
+fn emit_ws_comments_prefix(out: &mut String, input: &str, b: &[u8], i: &mut usize, n: usize) {
+    while *i < n {
+        if pp_urs_is_ws!(b[*i]) {
+            out.push(b[*i] as char);
+            *i += 1;
+            continue;
+        }
+        if *i + 1 < n && b[*i] == b'(' && b[*i + 1] == b'*' {
+            let start = *i;
+            *i = skip_ml_comment_bytes(b, *i + 2, n);
+            out.push_str(&input[start..*i]);
+            continue;
+        }
+        if b[*i] == b'"' {
+            let start = *i;
+            *i = skip_string_bytes(b, *i + 1, n);
+            out.push_str(&input[start..*i]);
+            continue;
+        }
+        break;
+    }
+}
+
+/// Pass-through scan (legacy hook): `case`/`of` arm rewriting is done in
+/// `rewrite_case_arm_separators` to match `urweb.grm` `barOpt branch branchs` — no forced
+/// `arm_sep` after every `of`.
+pub fn rewrite_case_leading_bars(input: &str) -> String {
+    input.to_string()
+}
+
+/// After each `case … of | …`, replace subsequent arm-separator `|` at arm-body depth 0 with
+/// `arm_sep` (see `grammar.lalrpop` `CaseArmSep`). Pattern scan stops at the first `=>` at
+/// paren depth 0; bodies treat `(* … *)` and `"…"` like the leading-bar pass.  Patterns with
+/// top-level `|` (or-pats) can confuse this pass — parenthesize if needed.
+pub fn rewrite_case_arm_separators(input: &str) -> String {
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum BodyStop {
+        NextArm,
+        CaseDone,
+    }
+
+    fn copy_ml_comment(out: &mut String, input: &str, b: &[u8], mut i: usize, n: usize) -> usize {
+        let start = i;
+        i = skip_ml_comment_bytes(b, i + 2, n);
+        out.push_str(&input[start..i]);
+        i
+    }
+
+    fn copy_string(out: &mut String, input: &str, b: &[u8], mut i: usize, n: usize) -> usize {
+        let start = i;
+        i = skip_string_bytes(b, i + 1, n);
+        out.push_str(&input[start..i]);
+        i
+    }
+
+    /// Copy [i..] to `out` until `=>` at `depth==0`, return index after `=>`.
+    fn scan_pat_to_arrow(
+        out: &mut String,
+        input: &str,
+        b: &[u8],
+        mut i: usize,
+        n: usize,
+    ) -> Option<usize> {
+        let mut depth = 0i32;
+        while i < n {
+            if i + 1 < n && b[i] == b'(' && b[i + 1] == b'*' {
+                i = copy_ml_comment(out, input, b, i, n);
+                continue;
+            }
+            if b[i] == b'"' {
+                i = copy_string(out, input, b, i, n);
+                continue;
+            }
+            if depth == 0 && i + 1 < n && b[i] == b'=' && b[i + 1] == b'>' {
+                out.push_str("=>");
+                return Some(i + 2);
+            }
+            match b[i] {
+                b'(' | b'[' | b'{' => {
+                    out.push(b[i] as char);
+                    depth += 1;
+                    i += 1;
+                }
+                b')' | b']' | b'}' => {
+                    out.push(b[i] as char);
+                    depth = (depth - 1).max(0);
+                    i += 1;
+                }
+                _ => {
+                    let ch = input[i..].chars().next()?;
+                    out.push(ch);
+                    i += ch.len_utf8();
+                }
+            }
+        }
+        None
+    }
+
+    /// Copy body until `arm_sep` / `|` (NextArm) or `;` / `)` / `}` at depth 0 (CaseDone). Does not consume stop char.
+    fn scan_body(
+        out: &mut String,
+        input: &str,
+        b: &[u8],
+        mut i: usize,
+        n: usize,
+    ) -> Option<(usize, BodyStop)> {
+        let mut depth = 0i32;
+        while i < n {
+            if i + 1 < n && b[i] == b'(' && b[i + 1] == b'*' {
+                i = copy_ml_comment(out, input, b, i, n);
+                continue;
+            }
+            if b[i] == b'"' {
+                i = copy_string(out, input, b, i, n);
+                continue;
+            }
+            if depth == 0 && arm_sep_at(b, i, n) {
+                return Some((i, BodyStop::NextArm));
+            }
+            if depth == 0 && case_end_at(b, i, n) {
+                return Some((i, BodyStop::CaseDone));
+            }
+            if depth == 0 && b[i] == b'|' {
+                return Some((i, BodyStop::NextArm));
+            }
+            if depth == 0 && matches!(b[i], b';' | b')' | b'}') {
+                return Some((i, BodyStop::CaseDone));
+            }
+            match b[i] {
+                b'(' | b'[' | b'{' => {
+                    out.push(b[i] as char);
+                    depth += 1;
+                    i += 1;
+                }
+                b')' | b']' | b'}' => {
+                    out.push(b[i] as char);
+                    depth = (depth - 1).max(0);
+                    i += 1;
+                }
+                _ => {
+                    let ch = input[i..].chars().next()?;
+                    out.push(ch);
+                    i += ch.len_utf8();
+                }
+            }
+        }
+        Some((i, BodyStop::CaseDone))
+    }
+
+    let b = input.as_bytes();
+    let n = b.len();
+    let mut out = String::with_capacity(n.saturating_add(32));
+    let mut i = 0usize;
+    let cap = n.saturating_add(1);
+    for _ in 0..cap {
+        if i >= n {
+            break;
+        }
+        if i + 1 < n && b[i] == b'(' && b[i + 1] == b'*' {
+            let start = i;
+            i = skip_ml_comment_bytes(b, i + 2, n);
+            out.push_str(&input[start..i]);
+            continue;
+        }
+        if b[i] == b'"' {
+            let start = i;
+            i = skip_string_bytes(b, i + 1, n);
+            out.push_str(&input[start..i]);
+            continue;
+        }
+        if is_case_keyword(b, i) {
+            let after_case = i + 4;
+            if let Some(after_of) = scan_case_of_end(b, after_case, n) {
+                out.push_str(&input[i..after_of]);
+                let mut j = after_of;
+                emit_ws_comments_prefix(&mut out, input, b, &mut j, n);
+                // `urweb.grm` `barOpt`: optional leading `|` — `case_bar`, never `arm_sep`.
+                if case_bar_at(b, j, n) {
+                    out.push_str(&input[j..j + 8]);
+                    j += 8;
+                } else if arm_sep_at(b, j, n) {
+                    out.push_str(" case_bar ");
+                    j += 8;
+                } else if b.get(j) == Some(&b'|') {
+                    out.push_str(" case_bar ");
+                    j += 1;
+                }
+                emit_ws_comments_prefix(&mut out, input, b, &mut j, n);
+                loop {
+                    let Some(after_arrow) = scan_pat_to_arrow(&mut out, input, b, j, n) else {
+                        out.push_str(&input[j..]);
+                        return out;
+                    };
+                    j = after_arrow;
+                    let Some((stop_i, stop)) = scan_body(&mut out, input, b, j, n) else {
+                        out.push_str(&input[j..]);
+                        return out;
+                    };
+                    j = stop_i;
+                    match stop {
+                        BodyStop::CaseDone => {
+                            if case_end_at(b, j, n) {
+                                out.push_str(&input[j..j + 8]);
+                                i = j + 8;
+                            } else {
+                                out.push_str(" case_end ");
+                                i = j;
+                            }
+                            break;
+                        }
+                        BodyStop::NextArm => {
+                            if arm_sep_at(b, j, n) {
+                                out.push_str(&input[j..j + 8]);
+                                j += 8;
+                                emit_ws_comments_prefix(&mut out, input, b, &mut j, n);
+                                continue;
+                            }
+                            if b.get(j) == Some(&b'|') {
+                                out.push_str(" arm_sep ");
+                                j += 1;
+                                emit_ws_comments_prefix(&mut out, input, b, &mut j, n);
+                                continue;
+                            }
+                            out.push_str(&input[j..]);
+                            return out;
+                        }
+                    }
+                }
+                continue;
+            }
+        }
+        let Some(ch) = input[i..].chars().next() else {
+            break;
+        };
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    out
+}
+
+pub fn rewrite_case_expressions(src: &str) -> String {
+    rewrite_case_arm_separators(&rewrite_case_leading_bars(src))
+}
+
+fn pp_kw_word_at(b: &[u8], i: usize, n: usize, word: &[u8]) -> bool {
+    if i + word.len() > n || &b[i..i + word.len()] != word {
+        return false;
+    }
+    if i > 0 && pp_kw_cont(b[i - 1]) {
+        return false;
+    }
+    let after = i + word.len();
+    if after < n && pp_kw_cont(b[after]) {
+        return false;
+    }
+    true
+}
+
+/// After `datatype` … `=`, rewrite constructor-list `|` and payload `of` to magic tokens so the
+/// grammar need not share `|` / `of` with patterns and other constructs (LangSec / LALR).
+/// Rewrite keyword `where` for signatures: `sgn_where` at paren depth 0, `sgn_subwhere` when
+/// nested in `(...)`, so LR(1) can separate top-level vs inner `Sgn` boundaries.
+pub fn rewrite_sgn_where(input: &str) -> String {
+    let b = input.as_bytes();
+    let n = b.len();
+    let mut out = String::with_capacity(n.saturating_add(16));
+    let mut i = 0usize;
+    let mut paren_depth = 0i32;
+    let cap = n.saturating_add(1);
+    for _ in 0..cap {
+        if i >= n {
+            break;
+        }
+        if i + 1 < n && b[i] == b'(' && b[i + 1] == b'*' {
+            let start = i;
+            i = skip_ml_comment_bytes(b, i + 2, n);
+            out.push_str(&input[start..i]);
+            continue;
+        }
+        if b[i] == b'"' {
+            let start = i;
+            i = skip_string_bytes(b, i + 1, n);
+            out.push_str(&input[start..i]);
+            continue;
+        }
+        if b[i] == b'(' {
+            paren_depth += 1;
+            out.push('(');
+            i += 1;
+            continue;
+        }
+        if b[i] == b')' {
+            paren_depth = (paren_depth - 1).max(0);
+            out.push(')');
+            i += 1;
+            continue;
+        }
+        if pp_kw_word_at(b, i, n, b"where") {
+            if paren_depth == 0 {
+                out.push_str("sgn_where");
+            } else {
+                out.push_str("sgn_subwhere");
+            }
+            i += 5;
+            continue;
+        }
+        let Some(ch) = input[i..].chars().next() else {
+            break;
+        };
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    out
+}
+
+pub fn rewrite_datatype_constructors(input: &str) -> String {
+    fn find_dtype_equals(input: &str, b: &[u8], mut i: usize, n: usize) -> Option<usize> {
+        let mut depth = 0i32;
+        while i < n {
+            if i + 1 < n && b[i] == b'(' && b[i + 1] == b'*' {
+                i = skip_ml_comment_bytes(b, i + 2, n);
+                continue;
+            }
+            if b[i] == b'"' {
+                i = skip_string_bytes(b, i + 1, n);
+                continue;
+            }
+            match b[i] {
+                b'(' | b'[' | b'{' => {
+                    depth += 1;
+                    i += 1;
+                }
+                b')' | b']' | b'}' => {
+                    depth = (depth - 1).max(0);
+                    i += 1;
+                }
+                b'=' if depth == 0 => return Some(i),
+                _ => {
+                    let w = match input.get(i..).and_then(|s| s.chars().next()) {
+                        Some(c) => c.len_utf8(),
+                        None => return None,
+                    };
+                    i += w;
+                }
+            }
+        }
+        None
+    }
+
+    fn rewrite_dt_body(out: &mut String, input: &str, b: &[u8], mut i: usize, n: usize) -> usize {
+        let mut depth = 0i32;
+        let mut after_uident = false;
+        while i < n {
+            if i + 1 < n && b[i] == b'(' && b[i + 1] == b'*' {
+                let start = i;
+                i = skip_ml_comment_bytes(b, i + 2, n);
+                out.push_str(&input[start..i]);
+                continue;
+            }
+            if b[i] == b'"' {
+                let start = i;
+                i = skip_string_bytes(b, i + 1, n);
+                out.push_str(&input[start..i]);
+                continue;
+            }
+            if depth == 0 && pp_kw_word_at(b, i, n, b"and") {
+                if after_uident {
+                    out.push_str(" dt_con0 ");
+                }
+                out.push_str(" dt_done ");
+                return i;
+            }
+            if depth == 0 && b[i] == b';' {
+                if after_uident {
+                    out.push_str(" dt_con0 ");
+                }
+                out.push_str(" dt_done ");
+                return i;
+            }
+            // Stop at a new top-level declaration keyword — happens in `.urs` files
+            // where each declaration is separate (not joined by `and`).
+            if depth == 0 {
+                for kw in &[
+                    b"datatype" as &[u8],
+                    b"con",
+                    b"val",
+                    b"fun",
+                    b"type",
+                    b"class",
+                    b"structure",
+                    b"signature",
+                    b"open",
+                    b"constraint",
+                    b"table",
+                    b"sequence",
+                    b"view",
+                    b"cookie",
+                    b"style",
+                    b"task",
+                    b"policy",
+                    b"include",
+                ] {
+                    if pp_kw_word_at(b, i, n, kw) {
+                        if after_uident {
+                            out.push_str(" dt_con0 ");
+                        }
+                        out.push_str(" dt_done ");
+                        return i;
+                    }
+                }
+            }
+            if depth == 0 && b[i] == b'|' {
+                if after_uident {
+                    out.push_str(" dt_con0 ");
+                }
+                out.push_str(" dt_bar ");
+                i += 1;
+                after_uident = false;
+                continue;
+            }
+            if depth == 0 && after_uident && pp_kw_word_at(b, i, n, b"of") {
+                out.push_str(" dtype_of ");
+                i += 2;
+                after_uident = false;
+                continue;
+            }
+            if depth == 0 && b[i].is_ascii_uppercase() {
+                let start = i;
+                i += 1;
+                while i < n && (b[i].is_ascii_alphanumeric() || b[i] == b'_' || b[i] == b'\'') {
+                    i += 1;
+                }
+                out.push_str(&input[start..i]);
+                after_uident = true;
+                continue;
+            }
+            // Whitespace between an UIDENT and `|` / `of` must NOT reset after_uident,
+            // otherwise `Foo | Bar` fails to emit `dt_con0` before `dt_bar`.
+            if b[i].is_ascii_whitespace() {
+                out.push(b[i] as char);
+                i += 1;
+                continue;
+            }
+            after_uident = false;
+            match b[i] {
+                b'(' | b'[' | b'{' => {
+                    out.push(b[i] as char);
+                    depth += 1;
+                    i += 1;
+                }
+                b')' | b']' | b'}' => {
+                    out.push(b[i] as char);
+                    depth = (depth - 1).max(0);
+                    i += 1;
+                }
+                _ => {
+                    let Some(ch) = input[i..].chars().next() else {
+                        break;
+                    };
+                    out.push(ch);
+                    i += ch.len_utf8();
+                }
+            }
+        }
+        if depth == 0 {
+            if after_uident {
+                out.push_str(" dt_con0 ");
+            }
+            out.push_str(" dt_done ");
+        }
+        i
+    }
+
+    let b = input.as_bytes();
+    let n = b.len();
+    let mut out = String::with_capacity(n.saturating_add(64));
+    let mut i = 0usize;
+    let cap = n.saturating_add(1);
+    for _ in 0..cap {
+        if i >= n {
+            break;
+        }
+        if i + 1 < n && b[i] == b'(' && b[i + 1] == b'*' {
+            let start = i;
+            i = skip_ml_comment_bytes(b, i + 2, n);
+            out.push_str(&input[start..i]);
+            continue;
+        }
+        if b[i] == b'"' {
+            let start = i;
+            i = skip_string_bytes(b, i + 1, n);
+            out.push_str(&input[start..i]);
+            continue;
+        }
+        if pp_kw_word_at(b, i, n, b"datatype") {
+            let start = i;
+            i += b"datatype".len();
+            if let Some(eq) = find_dtype_equals(input, b, i, n) {
+                out.push_str(&input[start..eq]);
+                out.push('=');
+                i = eq + 1;
+                i = rewrite_dt_body(&mut out, input, b, i, n);
+                continue;
+            }
+            out.push_str(&input[start..i]);
+            continue;
+        }
+        let Some(ch) = input[i..].chars().next() else {
+            break;
+        };
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    out
+}
+
 /// Pre-process a `.urs` source string to convert bare implicit constructor
 /// quantifiers into bracketed form that the LR(1) grammar can parse without
 /// conflicts.
@@ -98,7 +763,176 @@ macro_rules! pp_urs_depth_nonzero {
 /// The transformation is only applied when the `IDENT ::` pattern appears
 /// INSIDE a type expression, not as the subject of a declaration keyword
 /// (`con`, `class`, `type`, `structure`, `signature`, `datatype`).
+///
+/// ## Signature `LTYPE` / `CON` alignment (`urweb.lex`)
+/// The reference lexer maps `type` → `LTYPE` and `con` → `CON`. Bare abstract
+/// `type t` and default `class c` lines would require optional-empty LR slices
+/// next to `=` / `::` continuations. We rewrite **simple** lines (no `=`, no `::`)
+/// so the CFG stays single-recognizer strict:
+/// - `type t` → `con t :: Type`
+/// - `class c` → `class c :: Type -> Type` (default kind, matching `SgiClassAbs`)
+///
+/// ## Signature `con` / `class` kind definitions (`sgn_def_con`)
+/// After `:: Kind`, the grammar expects a dedicated keyword `sgn_def_con` before the
+/// defining `Con` so `=` is not overloaded and no ε competes with the RHS. Source
+/// files still write ordinary `=`; we rewrite the first defining `=` after `::` on
+/// `con` / `class` lines to `sgn_def_con`.
+fn rewrite_sig_type_class_abstract_lines(input: &str) -> String {
+    fn ident_head(rest: &str) -> Option<(String, &str)> {
+        let mut it = rest.chars();
+        let c0 = it.next()?;
+        if !(c0.is_ascii_alphabetic() || c0 == '_') {
+            return None;
+        }
+        let mut id = c0.to_string();
+        for c in it.by_ref() {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '\'' {
+                id.push(c);
+            } else {
+                break;
+            }
+        }
+        let consumed = id.len();
+        Some((id, &rest[consumed..]))
+    }
+
+    /// First single `=` in `s` that is not part of `==`, `=>`, `<=`, `>=`, `!=`, or `:=`.
+    /// Replaced by `sgn_def_con` (see `rewrite_con_class_kind_def_eq`).
+    fn find_defining_single_eq(s: &str) -> Option<usize> {
+        let b = s.as_bytes();
+        let mut i = 0usize;
+        while i < b.len() {
+            if b[i] != b'=' {
+                i += 1;
+                continue;
+            }
+            if i + 1 < b.len() && b[i + 1] == b'=' {
+                i += 2;
+                continue;
+            }
+            if i + 1 < b.len() && b[i + 1] == b'>' {
+                i += 2;
+                continue;
+            }
+            if i > 0 && b[i - 1] == b'<' {
+                i += 1;
+                continue;
+            }
+            if i > 0 && b[i - 1] == b'>' {
+                i += 1;
+                continue;
+            }
+            if i > 0 && b[i - 1] == b'!' {
+                i += 1;
+                continue;
+            }
+            if i > 0 && b[i - 1] == b':' {
+                i += 1;
+                continue;
+            }
+            return Some(i);
+        }
+        None
+    }
+
+    /// `con nm :: K` / `class nm :: K` without a defining RHS: insert `sgn_abs` before `::`
+    /// so abstract and `sgn_def_con` definitions use disjoint grammar prefixes.
+    /// Also handles lines prefixed by `dt_done ` from `rewrite_datatype_constructors`.
+    fn rewrite_con_class_sgn_abs(trimmed: &str) -> Option<String> {
+        if trimmed.contains("sgn_def_con") || trimmed.contains("sgn_abs") {
+            return None;
+        }
+        // Strip dt_done prefix that rewrite_datatype_constructors may have prepended
+        let (keep_prefix, s) = if let Some(r) = trimmed.strip_prefix("dt_done") {
+            let r = r.trim_start();
+            (&trimmed[..trimmed.len() - r.len()], r)
+        } else {
+            ("", trimmed)
+        };
+        if !(s.starts_with("con ") || s.starts_with("class ")) {
+            return None;
+        }
+        if !s.contains("::") {
+            return None;
+        }
+        let (kw, rest) = if let Some(r) = s.strip_prefix("con ") {
+            ("con ", r)
+        } else if let Some(r) = s.strip_prefix("class ") {
+            ("class ", r)
+        } else {
+            return None;
+        };
+        let (id, after_id) = ident_head(rest)?;
+        let after_ws = after_id.trim_start();
+        if !after_ws.starts_with("::") {
+            return None;
+        }
+        Some(format!("{keep_prefix}{kw}{id} sgn_abs {after_ws}"))
+    }
+
+    fn rewrite_con_class_kind_def_eq(trimmed: &str) -> Option<String> {
+        if trimmed.contains("sgn_def_con") {
+            return None;
+        }
+        if !(trimmed.starts_with("con ") || trimmed.starts_with("class ")) {
+            return None;
+        }
+        let dc = trimmed.find("::")?;
+        let after_colons = trimmed.get(dc + 2..)?;
+        let eq_rel = find_defining_single_eq(after_colons)?;
+        let abs = dc + 2 + eq_rel;
+        let mut s = String::with_capacity(trimmed.len() + 1);
+        s.push_str(&trimmed[..abs]);
+        s.push_str(" sgn_def_con ");
+        s.push_str(trimmed.get(abs + 1..).unwrap_or(""));
+        Some(s)
+    }
+
+    let mut out = String::with_capacity(input.len().saturating_add(256));
+    let lines: Vec<&str> = input.lines().collect();
+    for (i, line) in lines.iter().enumerate() {
+        if i > 0 {
+            out.push('\n');
+        }
+        let trimmed = line.trim_start();
+        let indent_len = line.len().saturating_sub(trimmed.len());
+        let indent = &line[..indent_len];
+
+        let mut new_trimmed = trimmed.to_string();
+        if !new_trimmed.contains('=') && !new_trimmed.contains("::") {
+            if let Some(rest) = new_trimmed.strip_prefix("type ") {
+                if let Some((id, after)) = ident_head(rest) {
+                    let after_trim = after.trim_start();
+                    if after_trim.is_empty() || after_trim.starts_with("(*") {
+                        new_trimmed = format!("con {id} :: Type{after}");
+                    }
+                }
+            } else if let Some(rest) = new_trimmed.strip_prefix("class ") {
+                if let Some((id, after)) = ident_head(rest) {
+                    let after_trim = after.trim_start();
+                    if after_trim.is_empty() || after_trim.starts_with("(*") {
+                        new_trimmed = format!("class {id} :: Type -> Type{after}");
+                    }
+                }
+            }
+        }
+        if let Some(nt) = rewrite_con_class_kind_def_eq(&new_trimmed) {
+            new_trimmed = nt;
+        }
+        if let Some(nt) = rewrite_con_class_sgn_abs(&new_trimmed) {
+            new_trimmed = nt;
+        }
+        out.push_str(indent);
+        out.push_str(&new_trimmed);
+    }
+    if input.ends_with('\n') && !lines.is_empty() {
+        out.push('\n');
+    }
+    out
+}
+
 pub fn preprocess_urs(src: &str) -> String {
+    let src = rewrite_case_expressions(&rewrite_sgn_where(&rewrite_datatype_constructors(src)));
     // Declaration-header keywords after which `IDENT ::` means a kind
     // annotation (not an implicit quantifier) and must NOT be bracketed.
     const DECL_KEYWORDS: &[&str] = &[
@@ -290,7 +1124,20 @@ pub fn preprocess_urs(src: &str) -> String {
                 last_token.clear();
                 last_token.push_str(ident);
 
-                if is_decl_name {
+                // Preprocessor pseudo-tokens must never be wrapped in [...].
+                let is_pseudo_token = matches!(
+                    ident,
+                    "sgn_where"
+                        | "sgn_subwhere"
+                        | "arm_sep"
+                        | "case_bar"
+                        | "case_end"
+                        | "dt_con0"
+                        | "dt_bar"
+                        | "dt_done"
+                        | "dtype_of"
+                );
+                if is_decl_name || is_pseudo_token {
                 } else {
                     let mut allow_quant = false;
                     if b[id_start].is_ascii_lowercase() {
@@ -589,7 +1436,9 @@ pub fn basis_urs_preprocessed_window(
 pub fn parse_ur(_filename: &str, source: &str, errors: &mut ErrorReporter) -> Option<File> {
     #[cfg(generated_parser)]
     {
-        let lexer = lexical_analyzer::XmlAwareLexer::new(source);
+        let pre =
+            rewrite_case_expressions(&rewrite_sgn_where(&rewrite_datatype_constructors(source)));
+        let lexer = lexical_analyzer::XmlAwareLexer::new(&pre);
         match grammar::FileParser::new().parse(lexer) {
             Ok(file) => Some(file),
             Err(e) => {
@@ -610,9 +1459,15 @@ pub fn parse_ur(_filename: &str, source: &str, errors: &mut ErrorReporter) -> Op
     }
 }
 
-/// Parse `val x = 1` as a smoke check (shared with the `test_parse` binary).
-pub fn smoke_parse_val_decl_count(errors: &mut ErrorReporter) -> Option<usize> {
-    parse_ur("test.ur", "val x = 1", errors).map(|f| f.len())
+/// Count top-level declarations after parsing `source` as a `.ur` file.
+///
+/// Used by the `test_parse` binary and tests (avoids a trivial `-> Some(1)` mutant surface).
+pub fn parse_top_level_decl_count(
+    virtual_path: &str,
+    source: &str,
+    errors: &mut ErrorReporter,
+) -> Option<usize> {
+    parse_ur(virtual_path, source, errors).map(|f| f.len())
 }
 
 /// Parse a `.urs` signature file.
@@ -676,7 +1531,7 @@ mod tests {
             return;
         };
         let pp = preprocess_urs(&content);
-        let pos: usize = 15599;
+        let pos: usize = 504;
         let start = pos.saturating_sub(300);
         let end = (pos + 200).min(pp.len());
         eprintln!("PREPROCESSED around {}:\n{}", pos, &pp[start..end]);
@@ -697,9 +1552,9 @@ mod tests {
     }
 
     #[test]
-    fn smoke_val_decl_count_tracks_parser() {
+    fn parse_top_level_decl_count_tracks_parser() {
         let mut errors = ErrorReporter::new();
-        let n = smoke_parse_val_decl_count(&mut errors);
+        let n = parse_top_level_decl_count("test.ur", "val x = 1", &mut errors);
         #[cfg(not(generated_parser))]
         {
             assert!(n.is_none());
@@ -720,13 +1575,25 @@ mod tests {
             assert_eq!(
                 n,
                 Some(2),
-                "catches smoke_parse_val_decl_count -> Some(1) style mutants"
+                "catches parse_top_level_decl_count -> Some(1) style mutants"
             );
         }
         #[cfg(not(generated_parser))]
         {
             assert!(n.is_none());
         }
+    }
+
+    #[test]
+    fn parse_top_level_decl_count_matches_parse_ur_len() {
+        let mut e1 = ErrorReporter::new();
+        let mut e2 = ErrorReporter::new();
+        let src = "val p = 1\nval q = 2\nval r = 3";
+        let a = parse_top_level_decl_count("m.ur", src, &mut e1);
+        let b = parse_ur("m.ur", src, &mut e2).map(|f| f.len());
+        assert_eq!(a, b);
+        #[cfg(generated_parser)]
+        assert_eq!(a, Some(3));
     }
 
     #[test]
@@ -745,6 +1612,157 @@ mod tests {
                 !items.is_empty(),
                 "catches parse_urs -> Some(vec![]) mutants"
             );
+        }
+    }
+
+    /// LALRPOP `ArithExp` vs [`expr_langsec::parse_cmp_app_spine`] on the same token stream
+    /// (subset: atoms + paren / arithmetic / cons / strcat; no postfix `.` / `[Con]`).
+    #[cfg(generated_parser)]
+    mod langsec_spine_equiv {
+        use super::*;
+        use crate::error_types::{Located, Span};
+        use crate::parse::expr_langsec::{parse_cmp_app_spine, ExprRecognizeError, TokenCursor};
+        use crate::parse::lexical_analyzer::{tokenize_xml_aware, Token};
+        use crate::primitives::Prim;
+        use crate::source::{Decl, Exp, Inference};
+
+        fn line_starts_for(src: &str) -> Vec<usize> {
+            let mut v = vec![0usize];
+            for (i, c) in src.char_indices() {
+                if c == '\n' {
+                    v.push(i + c.len_utf8());
+                }
+            }
+            v
+        }
+
+        fn span_at(file: &str, line_starts: &[usize], lo: usize, hi: usize) -> Span {
+            Span::from_offsets(file, lo, hi, line_starts)
+        }
+
+        fn spine_langsec_primary(
+            cur: &mut TokenCursor<'_>,
+        ) -> Result<Located<Exp>, ExprRecognizeError> {
+            let Some((l, tok, r)) = cur.peek().cloned() else {
+                return Err(ExprRecognizeError::UnexpectedEof);
+            };
+            match &tok {
+                Token::Ident(name) | Token::UpperIdent(name) => {
+                    let name = name.clone();
+                    cur.bump();
+                    Ok(Located::new(
+                        Exp::Var(vec![], name, Inference::DontInfer),
+                        span_at(cur.file, cur.line_starts, l, r),
+                    ))
+                }
+                Token::Int(n) => {
+                    let n = *n;
+                    cur.bump();
+                    Ok(Located::new(
+                        Exp::Prim(Prim::Int(n)),
+                        span_at(cur.file, cur.line_starts, l, r),
+                    ))
+                }
+                Token::Float(f) => {
+                    let f = *f;
+                    cur.bump();
+                    Ok(Located::new(
+                        Exp::Prim(Prim::Float(f)),
+                        span_at(cur.file, cur.line_starts, l, r),
+                    ))
+                }
+                Token::Unit => {
+                    cur.bump();
+                    Ok(Located::dummy(Exp::Record(vec![], false)))
+                }
+                Token::Lparen => {
+                    cur.bump();
+                    let inner = parse_cmp_app_spine(cur, spine_langsec_primary)?;
+                    match cur.bump() {
+                        Some((_, Token::Rparen, r2)) => Ok(Located::new(
+                            inner.node,
+                            span_at(cur.file, cur.line_starts, l, r2),
+                        )),
+                        _ => Err(ExprRecognizeError::UnbalancedParen { at_byte: l }),
+                    }
+                }
+                _ => Err(ExprRecognizeError::ExpectedPrimary { at_byte: l }),
+            }
+        }
+
+        fn exp_structure_eq(a: &Located<Exp>, b: &Located<Exp>) -> bool {
+            exp_node_eq(&a.node, &b.node)
+        }
+
+        fn exp_node_eq(a: &Exp, b: &Exp) -> bool {
+            match (a, b) {
+                (Exp::Var(qa, na, ia), Exp::Var(qb, nb, ib)) => qa == qb && na == nb && ia == ib,
+                (Exp::Prim(pa), Exp::Prim(pb)) => pa == pb,
+                (Exp::Record(fa, sa), Exp::Record(fb, sb)) => {
+                    fa.is_empty() && fb.is_empty() && sa == sb
+                }
+                (Exp::App(fa, xa), Exp::App(fb, xb)) => {
+                    exp_structure_eq(fa, fb) && exp_structure_eq(xa, xb)
+                }
+                (Exp::Infix(oa, la, ra), Exp::Infix(ob, lb, rb)) => {
+                    oa == ob && exp_structure_eq(la, lb) && exp_structure_eq(ra, rb)
+                }
+                _ => false,
+            }
+        }
+
+        #[test]
+        fn lalrpop_arith_exp_matches_expr_langsec() {
+            let cases = [
+                "a + b * c",
+                "f g h",
+                "f x * y",
+                "(a + b) * c",
+                "a :: b :: c",
+                "a + b :: c",
+                "a :: b + c",
+                "a + b = c",
+                "a ^ b",
+                "()",
+                "1",
+                "(1 + 2) * 3",
+            ];
+            for expr in cases {
+                let file_src = format!("val _ = {}\n", expr);
+                let mut errs = ErrorReporter::new();
+                let Some(file) = parse_ur("equiv.ur", &file_src, &mut errs) else {
+                    panic!("parse_ur failed for {:?}: {:?}", expr, errs.errors);
+                };
+                let Some(got) = file.iter().find_map(|d| {
+                    if let Decl::Val(_, e) = &d.node {
+                        Some(e.clone())
+                    } else {
+                        None
+                    }
+                }) else {
+                    panic!("no val decl for {:?}", expr);
+                };
+
+                let toks = tokenize_xml_aware(expr)
+                    .unwrap_or_else(|e| panic!("lex {:?}: {}", expr, e.message));
+                let line_starts = line_starts_for(expr);
+                let mut cur = TokenCursor::new(&toks, &line_starts, "");
+                let spine = parse_cmp_app_spine(&mut cur, spine_langsec_primary)
+                    .unwrap_or_else(|e| panic!("langsec {:?}: {:?}", expr, e));
+                assert!(
+                    cur.at_end(),
+                    "leftover tokens for {:?} at {}",
+                    expr,
+                    cur.pos
+                );
+                assert!(
+                    exp_structure_eq(&got, &spine),
+                    "spine mismatch {:?}\n LALR {:?}\n LS {:?}",
+                    expr,
+                    got.node,
+                    spine.node
+                );
+            }
         }
     }
 }

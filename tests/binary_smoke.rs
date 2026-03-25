@@ -57,6 +57,10 @@ fn test_parse_prints_status() {
             && (stdout.contains("Parsed") || stdout.contains("Parse failed")),
         "unexpected stdout: {stdout:?}"
     );
+    assert!(
+        stdout.contains("two_decls: 2") || stdout.contains("two_decls: parse failed"),
+        "test_parse must count two val decls or report parse failure (not a wrong count): {stdout:?}"
+    );
 }
 
 #[test]

@@ -46,6 +46,18 @@ fn alloc(counter: &mut usize) -> usize {
     r
 }
 
+/// Shared corify state: accumulated errors and fresh ids for recovery nodes.
+struct CorifyCx<'a> {
+    errors: &'a mut ErrorReporter,
+    counter: &'a mut usize,
+}
+
+impl CorifyCx<'_> {
+    fn report_at(&mut self, span: Span, msg: impl Into<String>) {
+        self.errors.report_at(span, msg);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Flattening / St data structures
 // ---------------------------------------------------------------------------
@@ -181,13 +193,18 @@ impl St {
 
     // --- Con bindings ---
 
-    fn bind_con(&mut self, x: &str, n: usize, counter: &mut usize) -> usize {
-        let n_new = alloc(counter);
+    fn bind_con(&mut self, x: &str, n: usize, cx: &mut CorifyCx<'_>, report: &Span) -> usize {
+        let n_new = alloc(cx.counter);
         match &mut self.current {
             Flattening::Normal { cons, .. } => {
                 cons.insert(x.to_string(), n_new);
             }
-            Flattening::Ffi { .. } => panic!("bind_con inside FFi flattening"),
+            Flattening::Ffi { .. } => {
+                cx.report_at(
+                    report.clone(),
+                    "Corify: internal error — cannot declare a type name inside FFI flattening",
+                );
+            }
         }
         self.cons.insert(n, n_new);
         n_new
@@ -197,36 +214,50 @@ impl St {
         self.cons.get(&n).copied()
     }
 
-    fn lookup_con_by_name(&self, x: &str) -> CoreCon {
+    fn lookup_con_by_name_opt(&self, x: &str) -> Option<CoreCon> {
         match &self.current {
-            Flattening::Ffi { module, .. } => CoreCon::Ffi(module.clone()),
-            Flattening::Normal { cons, .. } => match cons.get(x) {
-                None => panic!("Corify.St.lookupConByName {}", x),
-                Some(&n) => CoreCon::Normal(n),
-            },
+            Flattening::Ffi { module, .. } => Some(CoreCon::Ffi(module.clone())),
+            Flattening::Normal { cons, .. } => cons.get(x).copied().map(CoreCon::Normal),
         }
     }
 
     // --- Val bindings ---
 
-    fn bind_val(&mut self, x: &str, n: usize, counter: &mut usize) -> usize {
-        let n_new = alloc(counter);
+    fn bind_val(&mut self, x: &str, n: usize, cx: &mut CorifyCx<'_>, report: &Span) -> usize {
+        let n_new = alloc(cx.counter);
         match &mut self.current {
             Flattening::Normal { vals, .. } => {
                 vals.insert(x.to_string(), n_new);
             }
-            Flattening::Ffi { .. } => panic!("bind_val inside FFi flattening"),
+            Flattening::Ffi { .. } => {
+                cx.report_at(
+                    report.clone(),
+                    "Corify: internal error — cannot bind a value inside FFI flattening",
+                );
+            }
         }
         self.vals.insert(n, n_new);
         n_new
     }
 
-    fn bind_constructor_val(&mut self, x: &str, n: usize, n_new: usize) {
+    fn bind_constructor_val(
+        &mut self,
+        x: &str,
+        n: usize,
+        n_new: usize,
+        cx: &mut CorifyCx<'_>,
+        report: &Span,
+    ) {
         match &mut self.current {
             Flattening::Normal { vals, .. } => {
                 vals.insert(x.to_string(), n_new);
             }
-            Flattening::Ffi { .. } => panic!("bind_constructor_val inside FFi flattening"),
+            Flattening::Ffi { .. } => {
+                cx.report_at(
+                    report.clone(),
+                    "Corify: internal error — cannot bind a data constructor value inside FFI flattening",
+                );
+            }
         }
         self.vals.insert(n, n_new);
     }
@@ -235,46 +266,50 @@ impl St {
         self.vals.get(&n).copied()
     }
 
-    fn lookup_val_by_name(&self, x: &str) -> CoreVal {
+    fn lookup_val_by_name_opt(&self, x: &str) -> Option<CoreVal> {
         match &self.current {
-            Flattening::Ffi { module, vals, .. } => match vals.get(x) {
-                None => panic!("Corify.St.lookupValByName: no type for FFI val {}", x),
-                Some(t) => CoreVal::Ffi(module.clone(), t.clone()),
-            },
-            Flattening::Normal { name, vals, .. } => match vals.get(x) {
-                None => {
-                    let path: Vec<_> = name.iter().rev().cloned().collect();
-                    panic!("Corify.St.lookupValByName {}.{}", path.join("."), x)
-                }
-                Some(&n) => CoreVal::Normal(n),
-            },
+            Flattening::Ffi { module, vals, .. } => {
+                vals.get(x).map(|t| CoreVal::Ffi(module.clone(), t.clone()))
+            }
+            Flattening::Normal { vals, .. } => vals.get(x).copied().map(CoreVal::Normal),
         }
     }
 
     // --- Constructor (pattern) bindings ---
 
-    fn bind_constructor_as(&mut self, x: &str, n: usize, c: CorePatCon) {
+    fn bind_constructor_as(
+        &mut self,
+        x: &str,
+        n: usize,
+        c: CorePatCon,
+        cx: &mut CorifyCx<'_>,
+        report: &Span,
+    ) {
         match &mut self.current {
             Flattening::Normal { constructors, .. } => {
                 constructors.insert(x.to_string(), c.clone());
             }
-            Flattening::Ffi { .. } => panic!("bind_constructor_as inside FFi flattening"),
+            Flattening::Ffi { .. } => {
+                cx.report_at(
+                    report.clone(),
+                    "Corify: internal error — cannot bind a data constructor inside FFI flattening",
+                );
+            }
         }
         self.constructors.insert(n, c);
     }
 
-    fn bind_constructor(&mut self, x: &str, n: usize, counter: &mut usize) -> (CorePatCon, usize) {
-        let n_new = alloc(counter);
+    fn bind_constructor(
+        &mut self,
+        x: &str,
+        n: usize,
+        cx: &mut CorifyCx<'_>,
+        report: &Span,
+    ) -> (CorePatCon, usize) {
+        let n_new = alloc(cx.counter);
         let c = CorePatCon::Var(n_new);
-        self.bind_constructor_as(x, n, c.clone());
+        self.bind_constructor_as(x, n, c.clone(), cx, report);
         (c, n_new)
-    }
-
-    fn lookup_constructor_by_id(&self, n: usize) -> CorePatCon {
-        match self.constructors.get(&n) {
-            None => panic!("Corify.St.lookupConstructorById"),
-            Some(c) => c.clone(),
-        }
     }
 
     fn lookup_constructor_by_id_opt(&self, n: usize) -> Option<CorePatCon> {
@@ -299,13 +334,6 @@ impl St {
         }
     }
 
-    fn lookup_constructor_by_name(&self, x: &str) -> CorePatCon {
-        match self.lookup_constructor_by_name_opt(x) {
-            None => panic!("Corify.St.lookupConstructorByName {}", x),
-            Some(c) => c,
-        }
-    }
-
     // --- Enter/leave ---
 
     fn enter(&mut self, name: Vec<String>) {
@@ -313,48 +341,39 @@ impl St {
         self.nested.push(old);
     }
 
-    fn leave(&mut self) -> Flattening {
-        let inner = std::mem::replace(
-            &mut self.current,
-            self.nested
-                .pop()
-                .expect("Corify.St.leave: empty nested stack"),
-        );
-        inner
+    fn leave(&mut self, cx: &mut CorifyCx<'_>, report: &Span) -> Flattening {
+        match self.nested.pop() {
+            Some(old) => std::mem::replace(&mut self.current, old),
+            None => {
+                cx.report_at(
+                    report.clone(),
+                    "Corify: structure nesting stack underflow (compiler internal state)",
+                );
+                Flattening::new_normal(vec![])
+            }
+        }
     }
 
     // --- Str bindings ---
 
-    fn bind_str(&mut self, x: &str, n: usize, inner: &St) {
+    fn bind_str(&mut self, x: &str, n: usize, inner: &St, cx: &mut CorifyCx<'_>, report: &Span) {
         let f = inner.current.clone();
         match &mut self.current {
             Flattening::Normal { strs, .. } => {
                 strs.insert(x.to_string(), f.clone());
             }
-            Flattening::Ffi { .. } => panic!("bind_str inside FFi flattening"),
+            Flattening::Ffi { .. } => {
+                cx.report_at(
+                    report.clone(),
+                    "Corify: internal error — cannot bind a nested structure inside FFI flattening",
+                );
+            }
         }
         self.strs.insert(n, f);
     }
 
-    fn lookup_str_by_id(&self, n: usize) -> St {
-        match self.strs.get(&n) {
-            None => panic!("Corify.St.lookupStrById({})", n),
-            Some(f) => St::dummy(self.basis, f.clone()),
-        }
-    }
-
     fn lookup_str_by_id_opt(&self, n: usize) -> Option<St> {
         self.strs.get(&n).map(|f| St::dummy(self.basis, f.clone()))
-    }
-
-    fn lookup_str_by_name(&self, x: &str) -> St {
-        match &self.current {
-            Flattening::Normal { strs, .. } => match strs.get(x) {
-                None => panic!("Corify.St.lookupStrByName [1] {}", x),
-                Some(f) => St::dummy(self.basis, f.clone()),
-            },
-            Flattening::Ffi { .. } => panic!("Corify.St.lookupStrByName [2]"),
-        }
     }
 
     fn lookup_str_by_name_opt(&self, x: &str) -> Option<St> {
@@ -375,22 +394,22 @@ impl St {
         xa: String,
         na: usize,
         str: expl::LocatedStructure,
+        cx: &mut CorifyCx<'_>,
+        report: &Span,
     ) {
         let v = (xa, na, str);
         match &mut self.current {
             Flattening::Normal { funs, .. } => {
                 funs.insert(x.to_string(), v.clone());
             }
-            Flattening::Ffi { .. } => panic!("bind_functor inside FFi flattening"),
+            Flattening::Ffi { .. } => {
+                cx.report_at(
+                    report.clone(),
+                    "Corify: internal error — cannot bind a functor inside FFI flattening",
+                );
+            }
         }
         self.funs.insert(n, v);
-    }
-
-    fn lookup_functor_by_id(&self, n: usize) -> (String, usize, expl::LocatedStructure) {
-        match self.funs.get(&n) {
-            None => panic!("Corify.St.lookupFunctorById"),
-            Some(v) => v.clone(),
-        }
     }
 
     fn lookup_functor_by_id_opt(
@@ -400,13 +419,13 @@ impl St {
         self.funs.get(&n).cloned()
     }
 
-    fn lookup_functor_by_name(&self, x: &str) -> (String, usize, expl::LocatedStructure) {
+    fn lookup_functor_by_name_opt(
+        &self,
+        x: &str,
+    ) -> Option<(String, usize, expl::LocatedStructure)> {
         match &self.current {
-            Flattening::Normal { funs, .. } => match funs.get(x) {
-                None => panic!("Corify.St.lookupFunctorByName {} [1]", x),
-                Some(v) => v.clone(),
-            },
-            Flattening::Ffi { .. } => panic!("Corify.St.lookupFunctorByName [2]"),
+            Flattening::Normal { funs, .. } => funs.get(x).cloned(),
+            Flattening::Ffi { .. } => None,
         }
     }
 
@@ -434,6 +453,32 @@ impl St {
     }
 }
 
+fn walk_modproj_str(st: &St, m: usize, ms: &[String], span: &Span, cx: &mut CorifyCx<'_>) -> St {
+    let mut sub_st = match st.lookup_str_by_id_opt(m) {
+        Some(s) => s,
+        None => {
+            cx.report_at(
+                span.clone(),
+                format!("Corify: unknown structure id {m} in module path"),
+            );
+            St::dummy(st.basis, Flattening::new_normal(vec![]))
+        }
+    };
+    for seg in ms {
+        sub_st = match sub_st.lookup_str_by_name_opt(seg) {
+            Some(s) => s,
+            None => {
+                cx.report_at(
+                    span.clone(),
+                    format!("Corify: unknown submodule `{seg}` in module path"),
+                );
+                St::dummy(st.basis, Flattening::new_normal(vec![]))
+            }
+        };
+    }
+    sub_st
+}
+
 // ---------------------------------------------------------------------------
 // Kind / Con / Pat / Exp corification (pure translations)
 // ---------------------------------------------------------------------------
@@ -455,20 +500,27 @@ fn corify_kind(k: expl::LocatedKind) -> core_ir::LocatedKind {
     Located { node, span }
 }
 
-fn corify_con(st: &St, c: expl::LocatedConstructor) -> core_ir::LocatedConstructor {
+fn corify_con(
+    st: &St,
+    c: expl::LocatedConstructor,
+    cx: &mut CorifyCx<'_>,
+) -> core_ir::LocatedConstructor {
     let span = c.span.clone();
     let node = match c.node {
-        expl::Constructor::TFun(t1, t2) => {
-            core_ir::Constructor::TFun(Box::new(corify_con(st, *t1)), Box::new(corify_con(st, *t2)))
-        }
-        expl::Constructor::TCFun(x, k, t) => {
-            core_ir::Constructor::TCFun(x, Box::new(corify_kind(*k)), Box::new(corify_con(st, *t)))
-        }
+        expl::Constructor::TFun(t1, t2) => core_ir::Constructor::TFun(
+            Box::new(corify_con(st, *t1, cx)),
+            Box::new(corify_con(st, *t2, cx)),
+        ),
+        expl::Constructor::TCFun(x, k, t) => core_ir::Constructor::TCFun(
+            x,
+            Box::new(corify_kind(*k)),
+            Box::new(corify_con(st, *t, cx)),
+        ),
         expl::Constructor::TKFun(x, t) => {
-            core_ir::Constructor::TKFun(x, Box::new(corify_con(st, *t)))
+            core_ir::Constructor::TKFun(x, Box::new(corify_con(st, *t, cx)))
         }
         expl::Constructor::TRecord(c1) => {
-            core_ir::Constructor::TRecord(Box::new(corify_con(st, *c1)))
+            core_ir::Constructor::TRecord(Box::new(corify_con(st, *c1, cx)))
         }
         expl::Constructor::Rel(n) => core_ir::Constructor::Rel(n),
         expl::Constructor::Named(n) => {
@@ -479,13 +531,10 @@ fn corify_con(st: &St, c: expl::LocatedConstructor) -> core_ir::LocatedConstruct
             core_ir::Constructor::Named(n)
         }
         expl::Constructor::ModProj(m, ms, x) => {
-            let mut sub_st = st.lookup_str_by_id(m);
-            for seg in &ms {
-                sub_st = sub_st.lookup_str_by_name(seg);
-            }
-            match sub_st.lookup_con_by_name(&x) {
-                CoreCon::Normal(n) => core_ir::Constructor::Named(n),
-                CoreCon::Ffi(m_name) => {
+            let sub_st = walk_modproj_str(st, m, &ms, &span, cx);
+            match sub_st.lookup_con_by_name_opt(&x) {
+                Some(CoreCon::Normal(n)) => core_ir::Constructor::Named(n),
+                Some(CoreCon::Ffi(m_name)) => {
                     if m_name == "Basis" && x == "unit" {
                         // Basis.unit => TRecord (CRecord (KType, []))
                         core_ir::Constructor::TRecord(Box::new(Located {
@@ -502,72 +551,106 @@ fn corify_con(st: &St, c: expl::LocatedConstructor) -> core_ir::LocatedConstruct
                         core_ir::Constructor::Ffi(m_name, x)
                     }
                 }
+                None => {
+                    cx.report_at(
+                        span.clone(),
+                        format!(
+                            "Corify: unknown type name `{x}` in this module path (check spelling and imports)"
+                        ),
+                    );
+                    core_ir::Constructor::Unit
+                }
             }
         }
-        expl::Constructor::App(c1, c2) => {
-            core_ir::Constructor::App(Box::new(corify_con(st, *c1)), Box::new(corify_con(st, *c2)))
-        }
-        expl::Constructor::Abs(x, k, c1) => {
-            core_ir::Constructor::Abs(x, Box::new(corify_kind(*k)), Box::new(corify_con(st, *c1)))
-        }
+        expl::Constructor::App(c1, c2) => core_ir::Constructor::App(
+            Box::new(corify_con(st, *c1, cx)),
+            Box::new(corify_con(st, *c2, cx)),
+        ),
+        expl::Constructor::Abs(x, k, c1) => core_ir::Constructor::Abs(
+            x,
+            Box::new(corify_kind(*k)),
+            Box::new(corify_con(st, *c1, cx)),
+        ),
         expl::Constructor::KAbs(x, c1) => {
-            core_ir::Constructor::KAbs(x, Box::new(corify_con(st, *c1)))
+            core_ir::Constructor::KAbs(x, Box::new(corify_con(st, *c1, cx)))
         }
         expl::Constructor::KApp(c1, k) => {
-            core_ir::Constructor::KApp(Box::new(corify_con(st, *c1)), Box::new(corify_kind(*k)))
+            core_ir::Constructor::KApp(Box::new(corify_con(st, *c1, cx)), Box::new(corify_kind(*k)))
         }
         expl::Constructor::Name(s) => core_ir::Constructor::Name(s),
         expl::Constructor::Record(k, xcs) => core_ir::Constructor::Record(
             Box::new(corify_kind(*k)),
             xcs.into_iter()
-                .map(|(c1, c2)| (corify_con(st, c1), corify_con(st, c2)))
+                .map(|(c1, c2)| (corify_con(st, c1, cx), corify_con(st, c2, cx)))
                 .collect(),
         ),
         expl::Constructor::Concat(c1, c2) => core_ir::Constructor::Concat(
-            Box::new(corify_con(st, *c1)),
-            Box::new(corify_con(st, *c2)),
+            Box::new(corify_con(st, *c1, cx)),
+            Box::new(corify_con(st, *c2, cx)),
         ),
         expl::Constructor::Map(k1, k2) => {
             core_ir::Constructor::Map(Box::new(corify_kind(*k1)), Box::new(corify_kind(*k2)))
         }
         expl::Constructor::Unit => core_ir::Constructor::Unit,
         expl::Constructor::Tuple(cs) => {
-            core_ir::Constructor::Tuple(cs.into_iter().map(|c| corify_con(st, c)).collect())
+            core_ir::Constructor::Tuple(cs.into_iter().map(|c| corify_con(st, c, cx)).collect())
         }
         expl::Constructor::Proj(c1, n) => {
-            core_ir::Constructor::Proj(Box::new(corify_con(st, *c1)), n)
+            core_ir::Constructor::Proj(Box::new(corify_con(st, *c1, cx)), n)
         }
     };
     Located { node, span }
 }
 
-fn corify_pat_con(st: &St, pc: expl::PatternConstructor) -> CorePatCon {
+fn recovery_pat_con(cx: &mut CorifyCx<'_>) -> CorePatCon {
+    CorePatCon::Var(alloc(cx.counter))
+}
+
+fn corify_pat_con(
+    st: &St,
+    pc: expl::PatternConstructor,
+    span: &Span,
+    cx: &mut CorifyCx<'_>,
+) -> CorePatCon {
     match pc {
-        expl::PatternConstructor::Var(n) => st.lookup_constructor_by_id(n),
+        expl::PatternConstructor::Var(n) => {
+            st.lookup_constructor_by_id_opt(n).unwrap_or_else(|| {
+                cx.report_at(
+                    span.clone(),
+                    format!("Corify: unknown pattern constructor id {n}"),
+                );
+                recovery_pat_con(cx)
+            })
+        }
         expl::PatternConstructor::Proj(m1, ms, x) => {
-            let mut sub_st = st.lookup_str_by_id(m1);
-            for seg in &ms {
-                sub_st = sub_st.lookup_str_by_name(seg);
-            }
-            sub_st.lookup_constructor_by_name(&x)
+            let sub_st = walk_modproj_str(st, m1, &ms, span, cx);
+            sub_st.lookup_constructor_by_name_opt(&x).unwrap_or_else(|| {
+                cx.report_at(
+                    span.clone(),
+                    format!(
+                        "Corify: unknown data constructor `{x}` in this module path (check spelling)"
+                    ),
+                );
+                recovery_pat_con(cx)
+            })
         }
     }
 }
 
-fn corify_pat(st: &St, p: expl::LocatedPattern) -> core_ir::LocatedPattern {
+fn corify_pat(st: &St, p: expl::LocatedPattern, cx: &mut CorifyCx<'_>) -> core_ir::LocatedPattern {
     let span = p.span.clone();
     let node = match p.node {
-        expl::Pattern::Var(x, t) => core_ir::Pattern::Var(x, corify_con(st, t)),
+        expl::Pattern::Var(x, t) => core_ir::Pattern::Var(x, corify_con(st, t, cx)),
         expl::Pattern::Prim(p) => core_ir::Pattern::Prim(p),
         expl::Pattern::Constructor(dk, pc, ts, po) => core_ir::Pattern::Constructor(
             dk,
-            corify_pat_con(st, pc),
-            ts.into_iter().map(|t| corify_con(st, t)).collect(),
-            po.map(|p| Box::new(corify_pat(st, *p))),
+            corify_pat_con(st, pc, &span, cx),
+            ts.into_iter().map(|t| corify_con(st, t, cx)).collect(),
+            po.map(|p| Box::new(corify_pat(st, *p, cx))),
         ),
         expl::Pattern::Record(xps) => core_ir::Pattern::Record(
             xps.into_iter()
-                .map(|(x, p, t)| (x, corify_pat(st, p), corify_con(st, t)))
+                .map(|(x, p, t)| (x, corify_pat(st, p, cx), corify_con(st, t, cx)))
                 .collect(),
         ),
     };
@@ -584,7 +667,11 @@ fn is_transactional(c: &core_ir::LocatedConstructor) -> bool {
     }
 }
 
-fn corify_exp(st: &St, e: expl::LocatedExpression) -> core_ir::LocatedExpression {
+fn corify_exp(
+    st: &St,
+    e: expl::LocatedExpression,
+    cx: &mut CorifyCx<'_>,
+) -> core_ir::LocatedExpression {
     let span = e.span.clone();
     let node = match e.node {
         expl::Expression::Prim(p) => core_ir::Expression::Prim(p),
@@ -607,10 +694,7 @@ fn corify_exp(st: &St, e: expl::LocatedExpression) -> core_ir::LocatedExpression
             core_ir::Expression::Named(n)
         }
         expl::Expression::ModProj(m, ms, x) => {
-            let mut sub_st = st.lookup_str_by_id(m);
-            for seg in &ms {
-                sub_st = sub_st.lookup_str_by_name(seg);
-            }
+            let sub_st = walk_modproj_str(st, m, &ms, &span, cx);
 
             // First check if it's a constructor
             if let Some(pc) = sub_st.lookup_constructor_by_name_opt(&x) {
@@ -689,9 +773,9 @@ fn corify_exp(st: &St, e: expl::LocatedExpression) -> core_ir::LocatedExpression
             }
 
             // Otherwise look up as val
-            match sub_st.lookup_val_by_name(&x) {
-                CoreVal::Normal(n) => core_ir::Expression::Named(n),
-                CoreVal::Ffi(m_name, t) => {
+            match sub_st.lookup_val_by_name_opt(&x) {
+                Some(CoreVal::Normal(n)) => core_ir::Expression::Named(n),
+                Some(CoreVal::Ffi(m_name, t)) => {
                     // Check if it's a transaction wrapper
                     match &t.node {
                         core_ir::Constructor::App(f, dom) if matches!(&f.node, core_ir::Constructor::Ffi(bm, bt) if bm == "Basis" && bt == "transaction") =>
@@ -846,79 +930,103 @@ fn corify_exp(st: &St, e: expl::LocatedExpression) -> core_ir::LocatedExpression
                     // Otherwise just EFfi
                     core_ir::Expression::Ffi(m_name, x)
                 }
+                None => {
+                    let bogus = alloc(cx.counter);
+                    cx.report_at(
+                        span.clone(),
+                        format!(
+                            "Corify: `{x}` is not a value or data constructor at this module path"
+                        ),
+                    );
+                    return Located {
+                        node: core_ir::Expression::Named(bogus),
+                        span,
+                    };
+                }
             }
         }
-        expl::Expression::App(e1, e2) => {
-            core_ir::Expression::App(Box::new(corify_exp(st, *e1)), Box::new(corify_exp(st, *e2)))
-        }
+        expl::Expression::App(e1, e2) => core_ir::Expression::App(
+            Box::new(corify_exp(st, *e1, cx)),
+            Box::new(corify_exp(st, *e2, cx)),
+        ),
         expl::Expression::Abs(x, dom, ran, e1) => core_ir::Expression::Abs(
             x,
-            corify_con(st, dom),
-            corify_con(st, ran),
-            Box::new(corify_exp(st, *e1)),
+            corify_con(st, dom, cx),
+            corify_con(st, ran, cx),
+            Box::new(corify_exp(st, *e1, cx)),
         ),
         expl::Expression::CApp(e1, c) => {
-            core_ir::Expression::CApp(Box::new(corify_exp(st, *e1)), corify_con(st, c))
+            core_ir::Expression::CApp(Box::new(corify_exp(st, *e1, cx)), corify_con(st, c, cx))
         }
-        expl::Expression::CAbs(x, k, e1) => {
-            core_ir::Expression::CAbs(x, Box::new(corify_kind(*k)), Box::new(corify_exp(st, *e1)))
-        }
+        expl::Expression::CAbs(x, k, e1) => core_ir::Expression::CAbs(
+            x,
+            Box::new(corify_kind(*k)),
+            Box::new(corify_exp(st, *e1, cx)),
+        ),
         expl::Expression::KApp(e1, k) => {
-            core_ir::Expression::KApp(Box::new(corify_exp(st, *e1)), Box::new(corify_kind(*k)))
+            core_ir::Expression::KApp(Box::new(corify_exp(st, *e1, cx)), Box::new(corify_kind(*k)))
         }
         expl::Expression::KAbs(x, e1) => {
-            core_ir::Expression::KAbs(x, Box::new(corify_exp(st, *e1)))
+            core_ir::Expression::KAbs(x, Box::new(corify_exp(st, *e1, cx)))
         }
         expl::Expression::Record(xes) => core_ir::Expression::Record(
             xes.into_iter()
-                .map(|(c, e, t)| (corify_con(st, c), corify_exp(st, e), corify_con(st, t)))
+                .map(|(c, e, t)| {
+                    (
+                        corify_con(st, c, cx),
+                        corify_exp(st, e, cx),
+                        corify_con(st, t, cx),
+                    )
+                })
                 .collect(),
         ),
         expl::Expression::Field(e1, c, meta) => core_ir::Expression::Field(
-            Box::new(corify_exp(st, *e1)),
-            corify_con(st, c),
+            Box::new(corify_exp(st, *e1, cx)),
+            corify_con(st, c, cx),
             core_ir::FieldMeta {
-                field: corify_con(st, meta.field),
-                rest: corify_con(st, meta.rest),
+                field: corify_con(st, meta.field, cx),
+                rest: corify_con(st, meta.rest, cx),
             },
         ),
         expl::Expression::Concat(e1, c1, e2, c2) => core_ir::Expression::Concat(
-            Box::new(corify_exp(st, *e1)),
-            corify_con(st, c1),
-            Box::new(corify_exp(st, *e2)),
-            corify_con(st, c2),
+            Box::new(corify_exp(st, *e1, cx)),
+            corify_con(st, c1, cx),
+            Box::new(corify_exp(st, *e2, cx)),
+            corify_con(st, c2, cx),
         ),
         expl::Expression::Cut(e1, c, meta) => core_ir::Expression::Cut(
-            Box::new(corify_exp(st, *e1)),
-            corify_con(st, c),
+            Box::new(corify_exp(st, *e1, cx)),
+            corify_con(st, c, cx),
             core_ir::FieldMeta {
-                field: corify_con(st, meta.field),
-                rest: corify_con(st, meta.rest),
+                field: corify_con(st, meta.field, cx),
+                rest: corify_con(st, meta.rest, cx),
             },
         ),
         expl::Expression::CutMulti(e1, c, meta) => core_ir::Expression::CutMulti(
-            Box::new(corify_exp(st, *e1)),
-            corify_con(st, c),
+            Box::new(corify_exp(st, *e1, cx)),
+            corify_con(st, c, cx),
             core_ir::RestMeta {
-                rest: corify_con(st, meta.rest),
+                rest: corify_con(st, meta.rest, cx),
             },
         ),
         expl::Expression::Case(e1, pes, meta) => core_ir::Expression::Case(
-            Box::new(corify_exp(st, *e1)),
+            Box::new(corify_exp(st, *e1, cx)),
             pes.into_iter()
-                .map(|(p, e)| (corify_pat(st, p), corify_exp(st, e)))
+                .map(|(p, e)| (corify_pat(st, p, cx), corify_exp(st, e, cx)))
                 .collect(),
             core_ir::CaseMeta {
-                disc: corify_con(st, meta.disc),
-                result: corify_con(st, meta.result),
+                disc: corify_con(st, meta.disc, cx),
+                result: corify_con(st, meta.result, cx),
             },
         ),
-        expl::Expression::Write(e1) => core_ir::Expression::Write(Box::new(corify_exp(st, *e1))),
+        expl::Expression::Write(e1) => {
+            core_ir::Expression::Write(Box::new(corify_exp(st, *e1, cx)))
+        }
         expl::Expression::Let(x, t, e1, e2) => core_ir::Expression::Let(
             x,
-            corify_con(st, t),
-            Box::new(corify_exp(st, *e1)),
-            Box::new(corify_exp(st, *e2)),
+            corify_con(st, t, cx),
+            Box::new(corify_exp(st, *e1, cx)),
+            Box::new(corify_exp(st, *e2, cx)),
         ),
     };
     Located { node, span }
@@ -957,18 +1065,17 @@ fn corify_decl(
     mods: &[String],
     d: expl::LocatedDeclaration,
     st: &mut St,
-    counter: &mut usize,
+    cfx: &mut CorifyCx<'_>,
     settings: &mut Settings,
-    errors: &mut ErrorReporter,
 ) -> Vec<core_ir::LocatedDeclaration> {
     let span = d.span.clone();
 
     match d.node {
         // DCon
         expl::Declaration::Constructor(x, n, k, c) => {
-            let n_new = st.bind_con(&x, n, counter);
+            let n_new = st.bind_con(&x, n, cfx, &span);
             let ck = corify_kind(k);
-            let cc = corify_con(st, c);
+            let cc = corify_con(st, c, cfx);
             vec![Located {
                 node: core_ir::Declaration::Constructor(x, n_new, ck, cc),
                 span,
@@ -985,7 +1092,7 @@ fn corify_decl(
                 Vec<(String, usize, Option<expl::LocatedConstructor>)>,
             )> = Vec::new();
             for dt in dts {
-                let n_new = st.bind_con(&dt.name, dt.id, counter);
+                let n_new = st.bind_con(&dt.name, dt.id, cfx, &span);
                 dts_with_new_ids.push((dt.name, n_new, dt.params, dt.constrs));
             }
 
@@ -997,9 +1104,9 @@ fn corify_decl(
                 let mut core_xncs: Vec<(String, usize, Option<core_ir::LocatedConstructor>)> =
                     Vec::new();
                 for (cx, cn, co) in xncs {
-                    let (_pat_con, cn_new) = st.bind_constructor(&cx, cn, counter);
-                    st.bind_constructor_val(&cx, cn, cn_new);
-                    let co_core = co.map(|c| corify_con(st, c));
+                    let (_pat_con, cn_new) = st.bind_constructor(&cx, cn, cfx, &span);
+                    st.bind_constructor_val(&cx, cn, cn_new, cfx, &span);
+                    let co_core = co.map(|c| corify_con(st, c, cfx));
                     core_xncs.push((cx, cn_new, co_core));
                 }
 
@@ -1138,29 +1245,34 @@ fn corify_decl(
             orig_constrs_path: _,
             constrs: xncs,
         } => {
-            let n_new = st.bind_con(&x, n, counter);
+            let n_new = st.bind_con(&x, n, cfx, &span);
 
             // Corify the constructor type reference
             let c_ref = expl::LocatedConstructor {
                 node: expl::Constructor::ModProj(m1, ms.clone(), s.clone()),
                 span: span.clone(),
             };
-            let c_base = corify_con(st, c_ref);
+            let c_base = corify_con(st, c_ref, cfx);
 
             // Build the "inner" structure to look up constructors by name
-            let mut inner_st = st.lookup_str_by_id(m1);
-            for seg in &ms {
-                inner_st = inner_st.lookup_str_by_name(seg);
-            }
+            let inner_st = walk_modproj_str(st, m1, &ms, &span, cfx);
 
             // Process constructors
             let mut core_xncs: Vec<(String, usize, Option<core_ir::LocatedConstructor>)> =
                 Vec::new();
             for (cx, cn, co) in xncs {
-                let n_prime = inner_st.lookup_constructor_by_name(&cx);
-                st.bind_constructor_as(&cx, cn, n_prime);
-                let cn_new = st.bind_val(&cx, cn, counter);
-                let co_core = co.map(|c| corify_con(st, c));
+                let n_prime = inner_st
+                    .lookup_constructor_by_name_opt(&cx)
+                    .unwrap_or_else(|| {
+                        cfx.report_at(
+                            span.clone(),
+                            format!("Corify: unknown imported data constructor `{cx}`"),
+                        );
+                        recovery_pat_con(cfx)
+                    });
+                st.bind_constructor_as(&cx, cn, n_prime, cfx, &span);
+                let cn_new = st.bind_val(&cx, cn, cfx, &span);
+                let co_core = co.map(|c| corify_con(st, c, cfx));
                 core_xncs.push((cx, cn_new, co_core));
             }
 
@@ -1198,7 +1310,7 @@ fn corify_decl(
                     node: expl::Expression::ModProj(m1, ms.clone(), cx.clone()),
                     span: span.clone(),
                 };
-                let e_core = corify_exp(st, e_expl);
+                let e_core = corify_exp(st, e_expl, cfx);
 
                 cds.push(Located {
                     node: core_ir::Declaration::Val(cx.clone(), *cn_new, val_t, e_core, cx.clone()),
@@ -1219,12 +1331,16 @@ fn corify_decl(
             let n_prime = if let expl::Expression::Named(np) = e.node {
                 np
             } else {
-                unreachable!()
+                cfx.report_at(
+                    span.clone(),
+                    "Corify: internal error — val binding expected to be Named here",
+                );
+                return vec![];
             };
             if let Some(pc) = st.lookup_constructor_by_id_opt(n_prime) {
-                st.bind_constructor_as(&x, n, pc);
+                st.bind_constructor_as(&x, n, pc, cfx, &span);
             }
-            let n_new = st.bind_val(&x, n, counter);
+            let n_new = st.bind_val(&x, n, cfx, &span);
             let s = do_restify(settings, &PathKind::Url, mods, &x);
             let e_named = expl::LocatedExpression {
                 node: expl::Expression::Named(n_prime),
@@ -1234,8 +1350,8 @@ fn corify_decl(
                 node: core_ir::Declaration::Val(
                     x,
                     n_new,
-                    corify_con(st, t),
-                    corify_exp(st, e_named),
+                    corify_con(st, t, cfx),
+                    corify_exp(st, e_named, cfx),
                     s,
                 ),
                 span,
@@ -1244,10 +1360,16 @@ fn corify_decl(
 
         // DVal (general)
         expl::Declaration::Val(x, n, t, e) => {
-            let n_new = st.bind_val(&x, n, counter);
+            let n_new = st.bind_val(&x, n, cfx, &span);
             let s = do_restify(settings, &PathKind::Url, mods, &x);
             vec![Located {
-                node: core_ir::Declaration::Val(x, n_new, corify_con(st, t), corify_exp(st, e), s),
+                node: core_ir::Declaration::Val(
+                    x,
+                    n_new,
+                    corify_con(st, t, cfx),
+                    corify_exp(st, e, cfx),
+                    s,
+                ),
                 span,
             }]
         }
@@ -1263,7 +1385,7 @@ fn corify_decl(
             )> = vis
                 .into_iter()
                 .map(|(x, n, t, e)| {
-                    let n_new = st.bind_val(&x, n, counter);
+                    let n_new = st.bind_val(&x, n, cfx, &span);
                     (x, n_new, t, e)
                 })
                 .collect();
@@ -1278,7 +1400,7 @@ fn corify_decl(
                 .into_iter()
                 .map(|(x, n_new, t, e)| {
                     let s = do_restify(settings, &PathKind::Url, mods, &x);
-                    (x, n_new, corify_con(st, t), corify_exp(st, e), s)
+                    (x, n_new, corify_con(st, t, cfx), corify_exp(st, e, cfx), s)
                 })
                 .collect();
 
@@ -1296,7 +1418,7 @@ fn corify_decl(
             if matches!(str.node, expl::Structure::Fun(_, _, _, _, _)) =>
         {
             if let expl::Structure::Fun(xa, na, _dom, _ran, body) = str.node {
-                st.bind_functor(&x, n, xa, na, *body);
+                st.bind_functor(&x, n, xa, na, *body, cfx, &span);
             }
             vec![]
         }
@@ -1306,14 +1428,20 @@ fn corify_decl(
             if matches!(str.node, expl::Structure::Proj(_, _)) =>
         {
             if let expl::Structure::Proj(inner_str, x_prime) = str.node {
-                let (ds, inner) = corify_str(mods, *inner_str, st, counter, settings, errors);
+                let (ds, inner) = corify_str(mods, *inner_str, st, cfx, settings);
                 // Drop ds (no declarations from structure projections)
                 let _ = ds;
                 if let Some(sub_st) = inner.lookup_str_by_name_opt(&x_prime) {
-                    st.bind_str(&x, n, &sub_st);
+                    st.bind_str(&x, n, &sub_st, cfx, &span);
+                } else if let Some((xa, na, str2)) = inner.lookup_functor_by_name_opt(&x_prime) {
+                    st.bind_functor(&x, n, xa, na, str2, cfx, &span);
                 } else {
-                    let (xa, na, str2) = inner.lookup_functor_by_name(&x_prime);
-                    st.bind_functor(&x, n, xa, na, str2);
+                    cfx.report_at(
+                        span.clone(),
+                        format!(
+                            "Corify: `{x_prime}` is not a submodule or functor visible in this structure"
+                        ),
+                    );
                 }
             }
             vec![]
@@ -1325,10 +1453,14 @@ fn corify_decl(
         {
             if let expl::Structure::Var(n_prime) = str.node {
                 if let Some((arg, dom, body)) = st.lookup_functor_by_id_opt(n_prime) {
-                    st.bind_functor(&x, n, arg, dom, body);
+                    st.bind_functor(&x, n, arg, dom, body, cfx, &span);
+                } else if let Some(sub_st) = st.lookup_str_by_id_opt(n_prime) {
+                    st.bind_str(&x, n, &sub_st, cfx, &span);
                 } else {
-                    let sub_st = st.lookup_str_by_id(n_prime);
-                    st.bind_str(&x, n, &sub_st);
+                    cfx.report_at(
+                        span.clone(),
+                        format!("Corify: unknown structure variable id {n_prime}"),
+                    );
                 }
             }
             vec![]
@@ -1343,8 +1475,8 @@ fn corify_decl(
                 v.extend_from_slice(mods);
                 v
             };
-            let (ds, inner) = corify_str(&mods_prime, str, st, counter, settings, errors);
-            st.bind_str(&x, n, &inner);
+            let (ds, inner) = corify_str(&mods_prime, str, st, cfx, settings);
+            st.bind_str(&x, n, &inner, cfx, &span);
             ds
         }
 
@@ -1367,7 +1499,7 @@ fn corify_decl(
                 for sgi in sgis {
                     match sgi.node {
                         expl::SignatureItem::ConAbs(x, sn, k) => {
-                            let n_new = st.bind_con(&x, sn, counter);
+                            let n_new = st.bind_con(&x, sn, cfx, &span);
                             // Record the FFI mapping for reverse lookup by explicit ID
                             st.con_ffi_map.insert(sn, (m.clone(), x.clone()));
                             if x == "transaction" {
@@ -1384,7 +1516,7 @@ fn corify_decl(
                             });
                         }
                         expl::SignatureItem::Constructor(x, sn, k, _c) => {
-                            let n_new = st.bind_con(&x, sn, counter);
+                            let n_new = st.bind_con(&x, sn, cfx, &span);
                             st.con_ffi_map.insert(sn, (m.clone(), x.clone()));
                             let core_k = corify_kind(k);
                             let ffi_con = Located {
@@ -1432,7 +1564,7 @@ fn corify_decl(
                                     }
                                 };
 
-                                let n_new = st.bind_con(&dt.name, dt.id, counter);
+                                let n_new = st.bind_con(&dt.name, dt.id, cfx, &span);
 
                                 for (cx, cn, co) in &dt.constrs {
                                     let dt_con = Located {
@@ -1448,7 +1580,8 @@ fn corify_decl(
                                         })
                                         .collect();
 
-                                    let co_core = co.as_ref().map(|c| corify_con(st, c.clone()));
+                                    let co_core =
+                                        co.as_ref().map(|c| corify_con(st, c.clone(), cfx));
 
                                     let pc = core_ir::PatternConstructor::Ffi {
                                         module: m.clone(),
@@ -1547,7 +1680,7 @@ fn corify_decl(
                                         }
                                     };
 
-                                    st.bind_constructor_as(cx, *cn, pc);
+                                    st.bind_constructor_as(cx, *cn, pc, cfx, &span);
                                     conmap.insert(
                                         cx.clone(),
                                         (dt.name.clone(), xs.clone(), co_core, dk),
@@ -1577,8 +1710,8 @@ fn corify_decl(
 
                             // Apply transactify if we know the transaction type
                             let c_core = match trans {
-                                None => corify_con(st, c),
-                                Some(trans_id) => transactify(st, trans_id, &m, c, &span),
+                                None => corify_con(st, c, cfx),
+                                Some(trans_id) => transactify(st, trans_id, &m, c, &span, cfx),
                             };
 
                             if is_transactional(&c_core) {
@@ -1595,13 +1728,13 @@ fn corify_decl(
                 }
 
                 let ffi_st = St::ffi(m.clone(), cmap, conmap);
-                st.bind_str(&m, n, &ffi_st);
+                st.bind_str(&m, n, &ffi_st, cfx, &span);
                 if m == "Basis" {
                     st.basis = Some(n);
                 }
                 ds
             } else {
-                errors.report_at(span, "Non-const signature for FFI structure");
+                cfx.report_at(span, "Non-const signature for FFI structure");
                 vec![]
             }
         }
@@ -1625,23 +1758,34 @@ fn corify_decl(
 
                 match pathify(&str.node) {
                     None => {
-                        errors.report_at(span, "Structure is too fancy to export");
+                        cfx.report_at(span, "Structure is too fancy to export");
                         vec![]
                     }
                     Some((m, ms)) => {
-                        let basis_n = match st.lookup_basis() {
-                            None => panic!("Corify: Don't know number of Basis"),
-                            Some(n) => n,
+                        let Some(basis_n) = st.lookup_basis() else {
+                            cfx.report_at(
+                                span.clone(),
+                                "Corify: Basis FFI module is missing; cannot compile 'export' of a page",
+                            );
+                            return vec![];
                         };
 
                         let mut wrap_decls: Vec<expl::LocatedDeclaration> = Vec::new();
-                        let mut export_fns: Vec<Box<dyn Fn(&St) -> core_ir::LocatedDeclaration>> =
-                            Vec::new();
+                        let mut export_fns: Vec<
+                            Box<
+                                dyn Fn(
+                                    &St,
+                                    &mut ErrorReporter,
+                                    &mut usize,
+                                )
+                                    -> core_ir::LocatedDeclaration,
+                            >,
+                        > = Vec::new();
 
                         for sgi in sgis {
                             if let expl::SignatureItem::Val(s, _, t) = sgi.node {
                                 // Check if it's a page (returns transaction xml)
-                                if let Some((ran_prime, args)) = get_page(basis_n, &t, st) {
+                                if let Some((ran_prime, args)) = get_page(basis_n, &t, st, cfx) {
                                     let wrap_name = format!("wrap_{}", s);
                                     let unit_t = expl::LocatedConstructor {
                                         node: expl::Constructor::Record(
@@ -1675,7 +1819,7 @@ fn corify_decl(
                                     // Check for postBody in args
                                     let has_post_body = args.iter().any(|arg_t| {
                                         matches!(
-                                            corify_con(st, arg_t.clone()).node,
+                                            corify_con(st, arg_t.clone(), cfx).node,
                                             core_ir::Constructor::Ffi(ref bm, ref bx) if bm == "Basis" && bx == "postBody"
                                         )
                                     });
@@ -1831,28 +1975,44 @@ fn corify_decl(
                                     let _s_clone = s.clone();
                                     let wrap_name_clone = wrap_name.clone();
                                     let span_clone = span.clone();
-                                    export_fns.push(Box::new(move |st2: &St| {
-                                        let e = expl::LocatedExpression {
-                                            node: expl::Expression::ModProj(
-                                                en,
-                                                vec![],
-                                                wrap_name_clone.clone(),
-                                            ),
-                                            span: span_clone.clone(),
-                                        };
-                                        let ce = corify_exp(st2, e);
-                                        match ce.node {
-                                            core_ir::Expression::Named(n) => Located {
-                                                node: core_ir::Declaration::Export(
-                                                    exp_kind, n, false,
+                                    export_fns.push(Box::new(
+                                        move |st2: &St, errs: &mut ErrorReporter, ctr: &mut usize| {
+                                            let mut lcx = CorifyCx {
+                                                errors: errs,
+                                                counter: ctr,
+                                            };
+                                            let e = expl::LocatedExpression {
+                                                node: expl::Expression::ModProj(
+                                                    en,
+                                                    vec![],
+                                                    wrap_name_clone.clone(),
                                                 ),
                                                 span: span_clone.clone(),
-                                            },
-                                            _ => panic!(
-                                                "Corify: Value to export didn't corify properly"
-                                            ),
-                                        }
-                                    }));
+                                            };
+                                            let ce = corify_exp(st2, e, &mut lcx);
+                                            match ce.node {
+                                                core_ir::Expression::Named(n) => Located {
+                                                    node: core_ir::Declaration::Export(
+                                                        exp_kind, n, false,
+                                                    ),
+                                                    span: span_clone.clone(),
+                                                },
+                                                _ => {
+                                                    lcx.report_at(
+                                                        span_clone.clone(),
+                                                        "Corify: exported value did not corify to a global name (skipping with a placeholder id)",
+                                                    );
+                                                    let n = alloc(lcx.counter);
+                                                    Located {
+                                                        node: core_ir::Declaration::Export(
+                                                            exp_kind, n, false,
+                                                        ),
+                                                        span: span_clone.clone(),
+                                                    }
+                                                }
+                                            }
+                                        },
+                                    ));
                                 }
                             }
                         }
@@ -1863,16 +2023,16 @@ fn corify_decl(
                             span: span.clone(),
                         };
 
-                        let m_st = st.lookup_str_by_id(m);
-                        let m_st2 = ms.iter().fold(m_st, |acc, seg| acc.lookup_str_by_name(seg));
+                        let m_st2 = walk_modproj_str(st, m, &ms, &span, cfx);
                         let wrapper_mods = m_st2.name();
 
-                        let (ds, inner) =
-                            corify_str(&wrapper_mods, wrapper_str, st, counter, settings, errors);
-                        st.bind_str("wrapper", en, &inner);
+                        let (ds, inner) = corify_str(&wrapper_mods, wrapper_str, st, cfx, settings);
+                        st.bind_str("wrapper", en, &inner, cfx, &span);
 
-                        let export_ds: Vec<core_ir::LocatedDeclaration> =
-                            export_fns.iter().map(|f| f(st)).collect();
+                        let export_ds: Vec<core_ir::LocatedDeclaration> = export_fns
+                            .iter()
+                            .map(|f| f(st, cfx.errors, cfx.counter))
+                            .collect();
 
                         let mut out = ds;
                         out.extend(export_ds);
@@ -1880,7 +2040,7 @@ fn corify_decl(
                     }
                 }
             } else {
-                errors.report_at(span, "Non-const signature for 'export'");
+                cfx.report_at(span, "Non-const signature for 'export'");
                 vec![]
             }
         }
@@ -1896,18 +2056,18 @@ fn corify_decl(
             pk_exp: ce,
             unique_con: cc,
         } => {
-            let n_new = st.bind_val(&x, n, counter);
+            let n_new = st.bind_val(&x, n, cfx, &span);
             let s = relify(&do_restify(settings, &PathKind::Table, mods, &x));
             vec![Located {
                 node: core_ir::Declaration::Table {
                     sql_name: x.clone(),
                     id: n_new,
-                    con: corify_con(st, c),
+                    con: corify_con(st, c, cfx),
                     sql_con: s,
-                    exp: corify_exp(st, pe),
-                    pk_con: corify_con(st, pc),
-                    pk_exp: corify_exp(st, ce),
-                    unique_con: corify_con(st, cc),
+                    exp: corify_exp(st, pe, cfx),
+                    pk_con: corify_con(st, pc, cfx),
+                    pk_exp: corify_exp(st, ce, cfx),
+                    unique_con: corify_con(st, cc, cfx),
                 },
                 span,
             }]
@@ -1915,7 +2075,7 @@ fn corify_decl(
 
         // DSequence
         expl::Declaration::Sequence(_mod_id, x, n) => {
-            let n_new = st.bind_val(&x, n, counter);
+            let n_new = st.bind_val(&x, n, cfx, &span);
             let s = relify(&do_restify(settings, &PathKind::Sequence, mods, &x));
             vec![Located {
                 node: core_ir::Declaration::Sequence(x, n_new, s),
@@ -1925,10 +2085,16 @@ fn corify_decl(
 
         // DView
         expl::Declaration::View(_mod_id, x, n, e, c) => {
-            let n_new = st.bind_val(&x, n, counter);
+            let n_new = st.bind_val(&x, n, cfx, &span);
             let s = relify(&do_restify(settings, &PathKind::View, mods, &x));
             vec![Located {
-                node: core_ir::Declaration::View(x, n_new, s, corify_exp(st, e), corify_con(st, c)),
+                node: core_ir::Declaration::View(
+                    x,
+                    n_new,
+                    s,
+                    corify_exp(st, e, cfx),
+                    corify_con(st, c, cfx),
+                ),
                 span,
             }]
         }
@@ -1936,7 +2102,7 @@ fn corify_decl(
         // DIndex
         expl::Declaration::Index(e1, e2) => {
             vec![Located {
-                node: core_ir::Declaration::Index(corify_exp(st, e1), corify_exp(st, e2)),
+                node: core_ir::Declaration::Index(corify_exp(st, e1, cfx), corify_exp(st, e2, cfx)),
                 span,
             }]
         }
@@ -1951,17 +2117,17 @@ fn corify_decl(
 
         // DCookie
         expl::Declaration::Cookie(_mod_id, x, n, c) => {
-            let n_new = st.bind_val(&x, n, counter);
+            let n_new = st.bind_val(&x, n, cfx, &span);
             let s = do_restify(settings, &PathKind::Cookie, mods, &x);
             vec![Located {
-                node: core_ir::Declaration::Cookie(x, n_new, corify_con(st, c), s),
+                node: core_ir::Declaration::Cookie(x, n_new, corify_con(st, c, cfx), s),
                 span,
             }]
         }
 
         // DStyle
         expl::Declaration::Style(_mod_id, x, n) => {
-            let n_new = st.bind_val(&x, n, counter);
+            let n_new = st.bind_val(&x, n, cfx, &span);
             let s = relify(&do_restify(settings, &PathKind::Style, mods, &x));
             vec![Located {
                 node: core_ir::Declaration::Style(x, n_new, s),
@@ -1972,7 +2138,7 @@ fn corify_decl(
         // DTask
         expl::Declaration::Task(e1, e2) => {
             vec![Located {
-                node: core_ir::Declaration::Task(corify_exp(st, e1), corify_exp(st, e2)),
+                node: core_ir::Declaration::Task(corify_exp(st, e1, cfx), corify_exp(st, e2, cfx)),
                 span,
             }]
         }
@@ -1980,24 +2146,21 @@ fn corify_decl(
         // DPolicy
         expl::Declaration::Policy(e1) => {
             vec![Located {
-                node: core_ir::Declaration::Policy(corify_exp(st, e1)),
+                node: core_ir::Declaration::Policy(corify_exp(st, e1, cfx)),
                 span,
             }]
         }
 
         // DOnError
         expl::Declaration::OnError(m, ms, x) => {
-            let mut sub_st = st.lookup_str_by_id(m);
-            for seg in &ms {
-                sub_st = sub_st.lookup_str_by_name(seg);
-            }
-            match sub_st.lookup_val_by_name(&x) {
-                CoreVal::Normal(n) => vec![Located {
+            let sub_st = walk_modproj_str(st, m, &ms, &span, cfx);
+            match sub_st.lookup_val_by_name_opt(&x) {
+                Some(CoreVal::Normal(n)) => vec![Located {
                     node: core_ir::Declaration::OnError(n),
                     span,
                 }],
-                _ => {
-                    errors.report_at(span, "Wrong type of identifier for 'onError'");
+                Some(CoreVal::Ffi(_, _)) | None => {
+                    cfx.report_at(span, "Wrong type of identifier for 'onError'");
                     vec![]
                 }
             }
@@ -2008,7 +2171,7 @@ fn corify_decl(
             let m_name = match st.name().as_slice() {
                 [m] => m.clone(),
                 _ => {
-                    errors.report_at(
+                    cfx.report_at(
                         span.clone(),
                         "Used 'ffi' declaration beneath module top level",
                     );
@@ -2016,9 +2179,9 @@ fn corify_decl(
                 }
             };
 
-            let n_new = st.bind_val(&x, n, counter);
+            let n_new = st.bind_val(&x, n, cfx, &span);
             let s = do_restify(settings, &PathKind::Url, mods, &x);
-            let t_core = corify_con(st, t);
+            let t_core = corify_con(st, t, cfx);
 
             fn num_args(c: &core_ir::LocatedConstructor) -> usize {
                 match &c.node {
@@ -2210,11 +2373,12 @@ fn transactify(
     m: &str,
     c: expl::LocatedConstructor,
     span: &Span,
+    cfx: &mut CorifyCx<'_>,
 ) -> core_ir::LocatedConstructor {
     match c.node {
         expl::Constructor::TFun(dom, ran) => {
-            let core_dom = corify_con(st, *dom);
-            let ran_t = transactify(st, trans_id, m, *ran, span);
+            let core_dom = corify_con(st, *dom, cfx);
+            let ran_t = transactify(st, trans_id, m, *ran, span, cfx);
             Located {
                 node: core_ir::Constructor::TFun(Box::new(core_dom), Box::new(ran_t)),
                 span: span.clone(),
@@ -2223,7 +2387,7 @@ fn transactify(
         expl::Constructor::App(f, arg) => {
             if let expl::Constructor::Named(id) = f.node {
                 if id == trans_id {
-                    let arg_core = corify_con(st, *arg);
+                    let arg_core = corify_con(st, *arg, cfx);
                     let trans_ffi = Located {
                         node: core_ir::Constructor::Ffi(m.to_string(), "transaction".to_string()),
                         span: span.clone(),
@@ -2240,9 +2404,10 @@ fn transactify(
                     node: expl::Constructor::App(f, arg),
                     span: span.clone(),
                 },
+                cfx,
             )
         }
-        _ => corify_con(st, c),
+        _ => corify_con(st, c, cfx),
     }
 }
 
@@ -2252,8 +2417,9 @@ fn get_page(
     basis_n: usize,
     t: &expl::LocatedConstructor,
     st: &St,
+    cfx: &mut CorifyCx<'_>,
 ) -> Option<(expl::LocatedConstructor, Vec<expl::LocatedConstructor>)> {
-    get_page_inner(basis_n, t, vec![], st)
+    get_page_inner(basis_n, t, vec![], st, cfx)
 }
 
 fn get_page_inner(
@@ -2261,12 +2427,13 @@ fn get_page_inner(
     t: &expl::LocatedConstructor,
     args: Vec<expl::LocatedConstructor>,
     st: &St,
+    cfx: &mut CorifyCx<'_>,
 ) -> Option<(expl::LocatedConstructor, Vec<expl::LocatedConstructor>)> {
     match &t.node {
         expl::Constructor::App(f, arg) => {
             let is_trans = is_basis_transaction(basis_n, f, st);
             if is_trans {
-                let is_xml = is_xml_html(basis_n, arg, st);
+                let is_xml = is_xml_html(basis_n, arg, st, cfx);
                 if is_xml {
                     return Some((arg.as_ref().clone(), args));
                 }
@@ -2276,7 +2443,7 @@ fn get_page_inner(
         expl::Constructor::TFun(dom, ran) => {
             let mut new_args = args;
             new_args.push(*dom.clone());
-            get_page_inner(basis_n, ran, new_args, st)
+            get_page_inner(basis_n, ran, new_args, st, cfx)
         }
         _ => None,
     }
@@ -2296,7 +2463,12 @@ fn is_basis_transaction(basis_n: usize, f: &expl::LocatedConstructor, st: &St) -
     }
 }
 
-fn is_xml_html(basis_n: usize, t: &expl::LocatedConstructor, st: &St) -> bool {
+fn is_xml_html(
+    basis_n: usize,
+    t: &expl::LocatedConstructor,
+    st: &St,
+    cfx: &mut CorifyCx<'_>,
+) -> bool {
     // Match: xml Html _ _
     // i.e. App(App(App(xml, Record([("Html", _)])), _), _)
     // Handle both ModProj and Named forms for "xml"
@@ -2333,7 +2505,8 @@ fn is_xml_html(basis_n: usize, t: &expl::LocatedConstructor, st: &St) -> bool {
                                             true
                                         } else {
                                             // Try corifying and checking for Record [Html = ...]
-                                            let core_con = corify_con(st, xml_arg.as_ref().clone());
+                                            let core_con =
+                                                corify_con(st, xml_arg.as_ref().clone(), cfx);
                                             matches!(&core_con.node, core_ir::Constructor::Record(_, fields)
                                                 if fields.len() == 1 &&
                                                    matches!(&fields[0].0.node, core_ir::Constructor::Name(n) if n == "Html"))
@@ -2365,77 +2538,112 @@ fn corify_str(
     mods: &[String],
     str: expl::LocatedStructure,
     st: &mut St,
-    counter: &mut usize,
+    cfx: &mut CorifyCx<'_>,
     settings: &mut Settings,
-    errors: &mut ErrorReporter,
 ) -> (Vec<core_ir::LocatedDeclaration>, St) {
+    let str_span = str.span.clone();
     match str.node {
         expl::Structure::Const(ds) => {
             st.enter(mods.to_vec());
             let mut out_ds: Vec<core_ir::LocatedDeclaration> = Vec::new();
             for d in ds {
-                let new_ds = corify_decl(mods, d, st, counter, settings, errors);
+                let new_ds = corify_decl(mods, d, st, cfx, settings);
                 out_ds.extend(new_ds);
             }
-            let inner_flat = st.leave();
+            let inner_flat = st.leave(cfx, &str_span);
             let inner_st = St::dummy(st.basis, inner_flat);
             (out_ds, inner_st)
         }
         expl::Structure::Var(n) => {
-            let inner = st.lookup_str_by_id(n);
+            let inner = match st.lookup_str_by_id_opt(n) {
+                Some(s) => s,
+                None => {
+                    cfx.report_at(
+                        str_span.clone(),
+                        format!("Corify: unknown structure id {n}"),
+                    );
+                    St::dummy(st.basis, Flattening::new_normal(vec![]))
+                }
+            };
             (vec![], inner)
         }
         expl::Structure::Proj(inner_str, x) => {
-            let (ds, inner) = corify_str(mods, *inner_str, st, counter, settings, errors);
-            let sub = inner.lookup_str_by_name(&x);
+            let (ds, inner) = corify_str(mods, *inner_str, st, cfx, settings);
+            let sub = match inner.lookup_str_by_name_opt(&x) {
+                Some(s) => s,
+                None => {
+                    cfx.report_at(
+                        str_span.clone(),
+                        format!("Corify: unknown submodule `{x}` in structure projection"),
+                    );
+                    St::dummy(inner.basis, Flattening::new_normal(vec![]))
+                }
+            };
             (ds, sub)
         }
         expl::Structure::Fun(_, _, _, _, _) => {
-            panic!("Corify of nested functor definition")
+            cfx.report_at(
+                str_span,
+                "Corify: nested functor definitions inside functor applications are not supported",
+            );
+            (vec![], St::dummy(st.basis, Flattening::new_normal(vec![])))
         }
         expl::Structure::App(str1, str2) => {
             // Unwind str1 to find functor
             fn unwind_functor(
                 str: &expl::Structure,
                 st: &St,
-            ) -> (String, usize, expl::LocatedStructure) {
+                cfx: &mut CorifyCx<'_>,
+                report: &Span,
+            ) -> Option<(String, usize, expl::LocatedStructure)> {
                 match str {
-                    expl::Structure::Var(n) => st.lookup_functor_by_id(*n),
+                    expl::Structure::Var(n) => st.lookup_functor_by_id_opt(*n),
                     expl::Structure::Proj(inner, x) => {
-                        let inner_st = unwind_str(&inner.node, st);
-                        inner_st.lookup_functor_by_name(x)
+                        let inner_st = unwind_str(&inner.node, st, cfx, report)?;
+                        inner_st.lookup_functor_by_name_opt(x)
                     }
-                    _ => panic!("Corify of fancy functor application [2]"),
+                    _ => None,
                 }
             }
 
-            fn unwind_str(str: &expl::Structure, st: &St) -> St {
+            fn unwind_str(
+                str: &expl::Structure,
+                st: &St,
+                cfx: &mut CorifyCx<'_>,
+                report: &Span,
+            ) -> Option<St> {
                 match str {
-                    expl::Structure::Var(n) => st.lookup_str_by_id(*n),
+                    expl::Structure::Var(n) => st.lookup_str_by_id_opt(*n),
                     expl::Structure::Proj(inner, x) => {
-                        let inner_st = unwind_str(&inner.node, st);
-                        inner_st.lookup_str_by_name(x)
+                        let inner_st = unwind_str(&inner.node, st, cfx, report)?;
+                        inner_st.lookup_str_by_name_opt(x)
                     }
-                    _ => panic!("Corify of fancy functor application [1]"),
+                    _ => None,
                 }
             }
 
-            let (xa, na, body) = unwind_functor(&str1.node, st);
+            let Some((xa, na, body)) = unwind_functor(&str1.node, st, cfx, &str_span) else {
+                cfx.report_at(
+                    str_span.clone(),
+                    "Corify: functor application is not in a supported form (expected path to a functor)",
+                );
+                return (vec![], St::dummy(st.basis, Flattening::new_normal(vec![])));
+            };
 
             // Freshen all named ids in the functor body to avoid id capture.
-            let body = crate::explicit::expl_rename::rename(counter, &xa, na, body);
+            let body = crate::explicit::expl_rename::rename(cfx.counter, &xa, na, body);
 
-            let (ds1, inner_prime) = corify_str(mods, *str2, st, counter, settings, errors);
+            let (ds1, inner_prime) = corify_str(mods, *str2, st, cfx, settings);
 
             // Bind the argument
-            st.bind_str(&xa, na, &inner_prime);
-            let (ds2, inner) = corify_str(mods, body, st, counter, settings, errors);
+            st.bind_str(&xa, na, &inner_prime, cfx, &str_span);
+            let (ds2, inner) = corify_str(mods, body, st, cfx, settings);
 
             // Bind the argument in inner too
             // (in SML: inner = St.bindStr inner xa na inner')
             // We approximate by constructing a new St with xa bound
             let mut inner_with_arg = inner;
-            inner_with_arg.bind_str(&xa, na, &inner_prime);
+            inner_with_arg.bind_str(&xa, na, &inner_prime, cfx, &str_span);
 
             let mut all_ds = ds1;
             all_ds.extend(ds2);
@@ -2497,14 +2705,18 @@ pub fn corify(
 ) -> Option<core_ir::File> {
     let mut counter = max_name(&file) + 1;
     let mut st = St::empty();
+    let mut cfx = CorifyCx {
+        errors,
+        counter: &mut counter,
+    };
 
     let mut out: Vec<core_ir::LocatedDeclaration> = Vec::new();
     for d in file {
-        let ds = corify_decl(&[], d, &mut st, &mut counter, settings, errors);
+        let ds = corify_decl(&[], d, &mut st, &mut cfx, settings);
         out.extend(ds);
     }
 
-    if errors.has_errors() {
+    if cfx.errors.has_errors() {
         None
     } else {
         Some(out)

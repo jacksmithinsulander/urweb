@@ -1095,26 +1095,42 @@ pub(crate) fn simplify_exp(
                 }
             }
 
+            let build_full_case =
+                |arms: Vec<(LocatedPattern, LocatedExpression)>| -> LocatedExpression {
+                    let arms_simplified: Vec<(LocatedPattern, LocatedExpression)> = arms
+                        .into_iter()
+                        .map(|(pattern, arm_body)| {
+                            let binder_count = pat_binds_n(&pattern);
+                            let pattern_simplified = simplify_pat(environment, pattern);
+                            let mut arm_environment: Environment =
+                                (0..binder_count).map(|_| EnvItem::Unknown).collect();
+                            arm_environment.extend_from_slice(environment);
+                            (pattern_simplified, simplify_exp(&arm_environment, arm_body))
+                        })
+                        .collect();
+                    mk(Expression::Case(
+                        Box::new(discriminant_simplified.clone()),
+                        arms_simplified,
+                        case_meta_simplified.clone(),
+                    ))
+                };
+
             if definitely_decided {
-                chosen_arm.unwrap()
+                match chosen_arm {
+                    Some(arm) => arm,
+                    None => {
+                        eprintln!(
+                            "{}",
+                            crate::compiler_diagnostics::internal_compiler_error(
+                                "local_reduction::simplify_exp",
+                                "static case elimination decided a branch but the arm expression is missing",
+                            )
+                        );
+                        build_full_case(arms)
+                    }
+                }
             } else {
-                // Simplify all arms normally
-                let arms_simplified: Vec<(LocatedPattern, LocatedExpression)> = arms
-                    .into_iter()
-                    .map(|(pattern, arm_body)| {
-                        let binder_count = pat_binds_n(&pattern);
-                        let pattern_simplified = simplify_pat(environment, pattern);
-                        let mut arm_environment: Environment =
-                            (0..binder_count).map(|_| EnvItem::Unknown).collect();
-                        arm_environment.extend_from_slice(environment);
-                        (pattern_simplified, simplify_exp(&arm_environment, arm_body))
-                    })
-                    .collect();
-                mk(Expression::Case(
-                    Box::new(discriminant_simplified),
-                    arms_simplified,
-                    case_meta_simplified,
-                ))
+                build_full_case(arms)
             }
         }
         Expression::Write(inner_expression) => mk(Expression::Write(Box::new(simplify_exp(

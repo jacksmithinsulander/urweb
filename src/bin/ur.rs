@@ -20,17 +20,22 @@ Run 'ur new <name>' to create a project, then 'cd <name> && ur build'"
             return 1;
         }
     };
-    let entries = cli_common::parse_toml(&toml_content);
+    let cfg = match cli_common::parse_ur_toml_strict(&toml_content) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("error: ur.toml: {}", e);
+            return 1;
+        }
+    };
 
-    let kind = cli_common::toml_get(&entries, "package.kind").unwrap_or("app");
-    let entry = cli_common::toml_get(&entries, "build.entry").unwrap_or("");
-    let db = cli_common::toml_get(&entries, "build.db").unwrap_or("sqlite");
-    let cc = cli_common::toml_get(&entries, "build.ccompiler").unwrap_or("");
+    let kind = cfg.package.kind.as_str();
+    let entry = cfg.build.entry.as_str();
+    let db = cfg.build.db.as_str();
+    let cc = cfg.build.ccompiler.as_str();
     let is_lib = cli_common::is_lib_project(kind);
-    let boot =
-        cli_common::parse_boot(cli_common::toml_get(&entries, "build.boot").unwrap_or("false"));
-    let scss = cli_common::toml_get(&entries, "style.scss");
-    let css = cli_common::toml_get(&entries, "style.css");
+    let boot = cfg.build.boot;
+    let scss = cfg.style.as_ref().and_then(|s| s.scss.as_deref());
+    let css = cfg.style.as_ref().and_then(|s| s.css.as_deref());
 
     if entry.is_empty() {
         eprintln!("error: ur.toml: [build] entry is required");

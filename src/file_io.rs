@@ -4,6 +4,7 @@
 //! - **resolve**: resolve path relative to base
 //! - **most_recent_mod_time** / **ModTime**: for incremental builds
 
+use crate::compiler_diagnostics::lock_for_compile;
 use anyhow::Context;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
@@ -30,7 +31,8 @@ static UPDATE_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicU
 fn update_mod_time(path: &Path) {
     if let Ok(meta) = std::fs::metadata(path) {
         if let Ok(mtime) = meta.modified() {
-            let mut guard = MOST_RECENT_MOD.lock().unwrap();
+            let mut guard =
+                lock_for_compile(&MOST_RECENT_MOD, "file I/O modification time tracker");
             if guard.map_or(true, |prev| mtime > prev) {
                 *guard = Some(mtime);
                 UPDATE_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -46,16 +48,14 @@ pub(crate) fn __update_count_for_test() -> usize {
 
 /// Resets mod-time state for tests.
 pub(crate) fn __reset_for_test() {
-    *MOST_RECENT_MOD.lock().unwrap() = None;
+    *lock_for_compile(&MOST_RECENT_MOD, "file I/O modification time tracker") = None;
     UPDATE_COUNT.store(0, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// Returns the most recent modification time seen, or `UNIX_EPOCH` if none.
 pub fn most_recent_mod_time() -> ModTime {
     ModTime(
-        MOST_RECENT_MOD
-            .lock()
-            .unwrap()
+        lock_for_compile(&MOST_RECENT_MOD, "file I/O modification time tracker")
             .unwrap_or(SystemTime::UNIX_EPOCH),
     )
 }

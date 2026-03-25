@@ -56,8 +56,14 @@ fn fmt_command(args: &[String]) -> i32 {
                 return 1;
             }
         };
-        let entries = cli_common::parse_toml(&toml_content);
-        let entry = cli_common::toml_get(&entries, "build.entry").unwrap_or("");
+        let cfg = match cli_common::parse_ur_toml_strict(&toml_content) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("error: ur.toml: {}", e);
+                return 1;
+            }
+        };
+        let entry = cfg.build.entry.as_str();
         if entry.is_empty() {
             eprintln!("error: ur.toml: [build] entry is required");
             return 1;

@@ -173,7 +173,7 @@ fn non_recursive_singleton(
     if scc.len() != 1 {
         return None;
     }
-    let n = *scc.iter().next().unwrap();
+    let n = *scc.iter().next()?;
     let empty = BTreeSet::new();
     let deps = dep_map.get(&n).unwrap_or(&empty);
     if deps.contains(&n) {

@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use anyhow::Result;
 use lsp_server::{Connection, Message, Response};
 use lsp_types::{
-    notification::{DidChangeTextDocument, DidOpenTextDocument, Notification as _},
+    notification::{DidChangeTextDocument, DidOpenTextDocument, Initialized, Notification as _},
     Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams, DidOpenTextDocumentParams,
     Position, PublishDiagnosticsParams, Range, ServerCapabilities, ServerInfo,
     TextDocumentSyncCapability, TextDocumentSyncKind, Uri,
@@ -18,7 +18,7 @@ fn main() {
     if let Err(e) = run() {
         // Disconnection from the editor is a normal termination (not an error).
         let msg = e.to_string();
-        if msg.contains("disconnected") || msg.contains("channel") || msg.contains("io error") {
+        if ur::lsp_support::disconnect_error_exits_clean(&msg) {
             std::process::exit(0);
         }
         eprintln!("ur-lsp error: {e}");
@@ -70,32 +70,31 @@ fn run() -> Result<()> {
                 connection.sender.send(Message::Response(resp))?;
             }
             Message::Notification(notif) => {
-                match notif.method.as_str() {
-                    DidOpenTextDocument::METHOD => {
-                        if let Ok(p) = serde_json::from_value::<DidOpenTextDocumentParams>(
-                            notif.params.clone(),
-                        ) {
+                // Use `if`/`else if` (not `match` + `_`) so `delete match arm` mutants
+                // cannot swallow `didChange` / `initialized` into a catch-all.
+                let method = notif.method.as_str();
+                if method == DidOpenTextDocument::METHOD {
+                    if let Ok(p) =
+                        serde_json::from_value::<DidOpenTextDocumentParams>(notif.params.clone())
+                    {
+                        let uri = p.text_document.uri;
+                        let text = p.text_document.text;
+                        docs.insert(uri.clone(), text.clone());
+                        publish_diagnostics(&connection, &uri, &text)?;
+                    }
+                } else if method == DidChangeTextDocument::METHOD {
+                    if let Ok(p) =
+                        serde_json::from_value::<DidChangeTextDocumentParams>(notif.params.clone())
+                    {
+                        if let Some(change) = p.content_changes.into_iter().next() {
                             let uri = p.text_document.uri;
-                            let text = p.text_document.text;
+                            let text = change.text;
                             docs.insert(uri.clone(), text.clone());
                             publish_diagnostics(&connection, &uri, &text)?;
                         }
                     }
-                    DidChangeTextDocument::METHOD => {
-                        if let Ok(p) = serde_json::from_value::<DidChangeTextDocumentParams>(
-                            notif.params.clone(),
-                        ) {
-                            if let Some(change) = p.content_changes.into_iter().next() {
-                                let uri = p.text_document.uri;
-                                let text = change.text;
-                                docs.insert(uri.clone(), text.clone());
-                                publish_diagnostics(&connection, &uri, &text)?;
-                            }
-                        }
-                    }
-                    // initialized notification — no-op
-                    "initialized" => {}
-                    _ => {}
+                } else if method == Initialized::METHOD {
+                    // Client lifecycle (no-op); explicit branch for spec compliance.
                 }
             }
             Message::Response(_) => {}

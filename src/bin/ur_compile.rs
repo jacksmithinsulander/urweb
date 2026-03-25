@@ -257,11 +257,29 @@ pub fn run_compiler_args(args: &[String]) -> i32 {
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     // Run in a thread with 64MB stack to handle deep elaboration recursion.
-    let code = std::thread::Builder::new()
+    let worker = match std::thread::Builder::new()
         .stack_size(ur::COMPILE_THREAD_STACK_BYTES)
         .spawn(move || run_compiler_args(&args[1..]))
-        .unwrap()
-        .join()
-        .unwrap_or(1);
+    {
+        Ok(h) => h,
+        Err(e) => {
+            eprintln!(
+                "Could not start the compiler worker thread (stack size {} bytes): {e}\n\
+                 Try closing other heavy processes or raising the stack limit.",
+                ur::COMPILE_THREAD_STACK_BYTES
+            );
+            process::exit(1);
+        }
+    };
+    let code = match worker.join() {
+        Ok(exit) => exit,
+        Err(_) => {
+            eprintln!(
+                "The compiler worker thread panicked. This is usually a compiler bug.\n\
+                 If you can reproduce it with a small project, please report it."
+            );
+            1
+        }
+    };
     process::exit(code);
 }

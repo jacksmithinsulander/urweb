@@ -1867,7 +1867,10 @@ fn class_head_of(constructor: &LocatedConstructor) -> Option<ClassName> {
         Constructor::App(function_con, _) => class_head_of(function_con),
         Constructor::Abs(_, _, body) => class_head_of(body),
         Constructor::Unif(_, _, _, _, cell) => {
-            let guard = cell.lock().unwrap();
+            let guard = crate::compiler_diagnostics::lock_for_compile(
+                cell.as_ref(),
+                "elaboration environment cell",
+            );
             match &*guard {
                 super::CUnif::Known(inner) => class_head_of(inner),
                 super::CUnif::Unknown => None,
@@ -1905,7 +1908,10 @@ fn rule_in(
     )> {
         match &c.node {
             Constructor::Unif(_, _, _, _, cell) => {
-                let guard = cell.lock().unwrap();
+                let guard = crate::compiler_diagnostics::lock_for_compile(
+                    cell.as_ref(),
+                    "elaboration environment cell",
+                );
                 match &*guard {
                     super::CUnif::Known(inner) => {
                         let inner = inner.clone();

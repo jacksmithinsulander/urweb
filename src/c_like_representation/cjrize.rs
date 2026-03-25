@@ -207,7 +207,10 @@ fn cify_typ_dtmap(
             let r_cjr: cjr::DatatypeRef = Arc::new(Mutex::new(vec![]));
             dtmap.insert(*n, r_cjr.clone());
             let constrs = {
-                let guard = r.lock().unwrap();
+                let guard = crate::compiler_diagnostics::lock_for_compile(
+                    r.as_ref(),
+                    "cjrize translation cell",
+                );
                 guard.constrs.clone()
             };
             let translated: Vec<(String, usize, Option<LocTyp>)> = constrs
@@ -218,7 +221,8 @@ fn cify_typ_dtmap(
                 })
                 .collect();
             let kind = classify_constrs(&translated);
-            *r_cjr.lock().unwrap() = translated;
+            *crate::compiler_diagnostics::lock_for_compile(&*r_cjr, "cjrize CJR datatype ref") =
+                translated;
             Located::new(Typ::Datatype(kind, *n, r_cjr), loc)
         }
         mono::Typ::Ffi(m, x) => Located::new(Typ::Ffi(m.clone(), x.clone()), loc),

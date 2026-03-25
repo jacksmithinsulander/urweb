@@ -551,7 +551,8 @@ fn inc_fuse() {
 
 /// Read through a solved unification variable, returning the stored constructor.
 fn read_cunif(r: &CUnifRef) -> Option<LocatedConstructor> {
-    match &*r.lock().unwrap() {
+    match &*crate::compiler_diagnostics::lock_for_compile(r.as_ref(), "type operations CUnif cell")
+    {
         CUnif::Known(c) => Some(*c.clone()),
         CUnif::Unknown => None,
     }

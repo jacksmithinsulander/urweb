@@ -133,7 +133,10 @@ pub fn unify_kinds(
 ) -> Result<(), KUnifyError> {
     // Chase known unif vars first
     if let elab::Kind::Unif(_, _, r) = &k1.node {
-        let guard = r.lock().unwrap();
+        let guard = crate::compiler_diagnostics::lock_for_compile(
+            r.as_ref(),
+            "elaboration unification cell",
+        );
         if let elab::KUnif::Known(inner) = &*guard {
             let inner = *inner.clone();
             drop(guard);
@@ -142,7 +145,10 @@ pub fn unify_kinds(
         drop(guard);
     }
     if let elab::Kind::Unif(_, _, r) = &k2.node {
-        let guard = r.lock().unwrap();
+        let guard = crate::compiler_diagnostics::lock_for_compile(
+            r.as_ref(),
+            "elaboration unification cell",
+        );
         if let elab::KUnif::Known(inner) = &*guard {
             let inner = *inner.clone();
             drop(guard);
@@ -151,7 +157,10 @@ pub fn unify_kinds(
         drop(guard);
     }
     if let elab::Kind::TupleUnif(_, _, r) = &k1.node {
-        let guard = r.lock().unwrap();
+        let guard = crate::compiler_diagnostics::lock_for_compile(
+            r.as_ref(),
+            "elaboration unification cell",
+        );
         if let elab::KUnif::Known(inner) = &*guard {
             let inner = *inner.clone();
             drop(guard);
@@ -160,7 +169,10 @@ pub fn unify_kinds(
         drop(guard);
     }
     if let elab::Kind::TupleUnif(_, _, r) = &k2.node {
-        let guard = r.lock().unwrap();
+        let guard = crate::compiler_diagnostics::lock_for_compile(
+            r.as_ref(),
+            "elaboration unification cell",
+        );
         if let elab::KUnif::Known(inner) = &*guard {
             let inner = *inner.clone();
             drop(guard);
@@ -209,7 +221,10 @@ pub fn unify_kinds(
             if occurs_kind(r1, k2) {
                 return Err(KUnifyError::OccursCheck(k1.clone(), k2.clone()));
             }
-            *r1.lock().unwrap() = elab::KUnif::Known(Box::new(k2.clone()));
+            *crate::compiler_diagnostics::lock_for_compile(
+                r1.as_ref(),
+                "elaboration unification cell",
+            ) = elab::KUnif::Known(Box::new(k2.clone()));
             Ok(())
         }
         // Unif(r) ~ k2: solve
@@ -217,7 +232,10 @@ pub fn unify_kinds(
             if occurs_kind(r, k2) {
                 return Err(KUnifyError::OccursCheck(k1.clone(), k2.clone()));
             }
-            *r.lock().unwrap() = elab::KUnif::Known(Box::new(k2.clone()));
+            *crate::compiler_diagnostics::lock_for_compile(
+                r.as_ref(),
+                "elaboration unification cell",
+            ) = elab::KUnif::Known(Box::new(k2.clone()));
             Ok(())
         }
         // k1 ~ Unif(r): solve
@@ -225,7 +243,10 @@ pub fn unify_kinds(
             if occurs_kind(r, k1) {
                 return Err(KUnifyError::OccursCheck(k1.clone(), k2.clone()));
             }
-            *r.lock().unwrap() = elab::KUnif::Known(Box::new(k1.clone()));
+            *crate::compiler_diagnostics::lock_for_compile(
+                r.as_ref(),
+                "elaboration unification cell",
+            ) = elab::KUnif::Known(Box::new(k1.clone()));
             Ok(())
         }
 
@@ -240,7 +261,10 @@ pub fn unify_kinds(
                     .ok_or_else(|| KUnifyError::Incompatible(k1.clone(), k2.clone()))?;
                 unify_kinds(env, ki, target)?;
             }
-            *r.lock().unwrap() = elab::KUnif::Known(Box::new(k2.clone()));
+            *crate::compiler_diagnostics::lock_for_compile(
+                r.as_ref(),
+                "elaboration unification cell",
+            ) = elab::KUnif::Known(Box::new(k2.clone()));
             Ok(())
         }
         (elab::Kind::Tuple(ks), elab::Kind::TupleUnif(_, nks, r)) => {
@@ -253,7 +277,10 @@ pub fn unify_kinds(
                     .ok_or_else(|| KUnifyError::Incompatible(k1.clone(), k2.clone()))?;
                 unify_kinds(env, target, ki)?;
             }
-            *r.lock().unwrap() = elab::KUnif::Known(Box::new(k1.clone()));
+            *crate::compiler_diagnostics::lock_for_compile(
+                r.as_ref(),
+                "elaboration unification cell",
+            ) = elab::KUnif::Known(Box::new(k1.clone()));
             Ok(())
         }
         // TupleUnif ~ TupleUnif: merge
@@ -275,8 +302,14 @@ pub fn unify_kinds(
                 elab::Kind::TupleUnif(loc.clone(), merged, new_r),
                 loc.clone(),
             );
-            *r1.lock().unwrap() = elab::KUnif::Known(Box::new(new_k.clone()));
-            *r2.lock().unwrap() = elab::KUnif::Known(Box::new(new_k));
+            *crate::compiler_diagnostics::lock_for_compile(
+                r1.as_ref(),
+                "elaboration unification cell",
+            ) = elab::KUnif::Known(Box::new(new_k.clone()));
+            *crate::compiler_diagnostics::lock_for_compile(
+                r2.as_ref(),
+                "elaboration unification cell",
+            ) = elab::KUnif::Known(Box::new(new_k));
             Ok(())
         }
 
@@ -304,7 +337,10 @@ fn check_kind(
 fn hnorm_kind(k: elab::LocatedKind) -> elab::LocatedKind {
     match &k.node {
         elab::Kind::Unif(_, _, r) => {
-            let guard = r.lock().unwrap();
+            let guard = crate::compiler_diagnostics::lock_for_compile(
+                r.as_ref(),
+                "elaboration unification cell",
+            );
             if let elab::KUnif::Known(inner) = &*guard {
                 let inner = *inner.clone();
                 drop(guard);
@@ -315,7 +351,10 @@ fn hnorm_kind(k: elab::LocatedKind) -> elab::LocatedKind {
             }
         }
         elab::Kind::TupleUnif(_, _, r) => {
-            let guard = r.lock().unwrap();
+            let guard = crate::compiler_diagnostics::lock_for_compile(
+                r.as_ref(),
+                "elaboration unification cell",
+            );
             if let elab::KUnif::Known(inner) = &*guard {
                 let inner = *inner.clone();
                 drop(guard);
@@ -645,7 +684,10 @@ fn elab_con_inner(
                         elab::Kind::Arrow(Box::new(kd.clone()), Box::new(kr.clone())),
                         span.clone(),
                     );
-                    *r.lock().unwrap() = elab::KUnif::Known(Box::new(karrow));
+                    *crate::compiler_diagnostics::lock_for_compile(
+                        r.as_ref(),
+                        "elaboration unification cell",
+                    ) = elab::KUnif::Known(Box::new(karrow));
                     let (c2e, k2) = elab_con(ctx, env, c2);
                     check_kind(ctx, env, &c2.span, &c2e, &k2, &kd);
                     let result =
@@ -836,7 +878,10 @@ fn elab_con_inner(
                         elab::Kind::TupleUnif(span.clone(), vec![(*n, ku.clone())], new_r2),
                         span.clone(),
                     );
-                    *r.lock().unwrap() = elab::KUnif::Known(Box::new(tku));
+                    *crate::compiler_diagnostics::lock_for_compile(
+                        r.as_ref(),
+                        "elaboration unification cell",
+                    ) = elab::KUnif::Known(Box::new(tku));
                     let result = Located::new(elab::Constructor::Proj(Box::new(c1e), *n), span);
                     (result, ku)
                 }
@@ -1305,7 +1350,10 @@ fn unify_cons_inner(
                 return Err(CUnifyError::Undetermined);
             }
             let adjusted = mlift_con_in_con(*nl1, c2n.clone());
-            *r1.lock().unwrap() = elab::CUnif::Known(Box::new(adjusted));
+            *crate::compiler_diagnostics::lock_for_compile(
+                r1.as_ref(),
+                "elaboration unification cell",
+            ) = elab::CUnif::Known(Box::new(adjusted));
             return Ok(());
         }
         (elab::Constructor::Unif(nl, _, k, _, r), _) => {
@@ -1313,7 +1361,10 @@ fn unify_cons_inner(
                 return Err(CUnifyError::Undetermined);
             }
             let adjusted = mlift_con_in_con(*nl, c2n.clone());
-            *r.lock().unwrap() = elab::CUnif::Known(Box::new(adjusted));
+            *crate::compiler_diagnostics::lock_for_compile(
+                r.as_ref(),
+                "elaboration unification cell",
+            ) = elab::CUnif::Known(Box::new(adjusted));
             return Ok(());
         }
         (_, elab::Constructor::Unif(nl, _, k, _, r)) => {
@@ -1321,7 +1372,10 @@ fn unify_cons_inner(
                 return Err(CUnifyError::Undetermined);
             }
             let adjusted = mlift_con_in_con(*nl, c1n.clone());
-            *r.lock().unwrap() = elab::CUnif::Known(Box::new(adjusted));
+            *crate::compiler_diagnostics::lock_for_compile(
+                r.as_ref(),
+                "elaboration unification cell",
+            ) = elab::CUnif::Known(Box::new(adjusted));
             return Ok(());
         }
 
@@ -1478,7 +1532,10 @@ fn unify_rows(
         }
         let solution = fields_to_row(&remaining, span, &c2.span);
         let adjusted = mlift_con_in_con(*nl, solution);
-        *r.lock().unwrap() = elab::CUnif::Known(Box::new(adjusted));
+        *crate::compiler_diagnostics::lock_for_compile(
+            r.as_ref(),
+            "elaboration unification cell",
+        ) = elab::CUnif::Known(Box::new(adjusted));
         return Ok(());
     }
     if s2.unifs.len() == 1 && s2.others.is_empty() && s1.unifs.is_empty() && s1.others.is_empty() {
@@ -1489,7 +1546,10 @@ fn unify_rows(
         }
         let solution = fields_to_row(&remaining, span, &c1.span);
         let adjusted = mlift_con_in_con(*nl, solution);
-        *r.lock().unwrap() = elab::CUnif::Known(Box::new(adjusted));
+        *crate::compiler_diagnostics::lock_for_compile(
+            r.as_ref(),
+            "elaboration unification cell",
+        ) = elab::CUnif::Known(Box::new(adjusted));
         return Ok(());
     }
 
@@ -1837,7 +1897,10 @@ fn elab_exp_inner(
                         elab::Constructor::TFun(Box::new(dom.clone()), Box::new(ran.clone())),
                         span.clone(),
                     );
-                    *r.lock().unwrap() = elab::CUnif::Known(Box::new(tfun));
+                    *crate::compiler_diagnostics::lock_for_compile(
+                        r.as_ref(),
+                        "elaboration unification cell",
+                    ) = elab::CUnif::Known(Box::new(tfun));
                     let (ae, at) = elab_exp(ctx, env, denv, arg);
                     check_con(ctx, env, &arg.span, &at, &dom);
                     let result =
@@ -2232,6 +2295,11 @@ fn elab_exp_inner(
                 span,
             );
             (result, bodytype)
+        }
+
+        source::Exp::Infix(_op, _e1, _e2) => {
+            // TODO: elaborate infix operators via type class resolution
+            (eerror(span.clone()), cerror(span))
         }
     }
 }
@@ -2717,6 +2785,11 @@ pub fn elab_sgn_item(
             let (new_env, id) = env.clone().push_e_named(x.clone(), ce.clone());
             let result = Located::new(elab::SignatureItem::Val(x.clone(), id, ce), span);
             (Some(result), new_env)
+        }
+
+        source::SgnItem::Functor(_name, _arg, _s1, _s2) => {
+            // TODO: elaborate functor signature item
+            (None, env.clone())
         }
     }
 }
@@ -3278,6 +3351,11 @@ pub fn elab_decl(
             );
             (vec![decl_out], new_env, denv.clone())
         }
+
+        source::Decl::OpenStr(_s) => {
+            // TODO: elaborate open with functor application
+            (vec![], env.clone(), denv.clone())
+        }
     }
 }
 
@@ -3688,7 +3766,10 @@ fn solve_constraints(ctx: &mut ElabCtx, env: &Env) {
                         // This instantiates any type variables, e.g. solving `Unif(m) = transaction`
                         // when the class is `monad Unif(m)` and the head is `monad transaction`.
                         let _ = unify_cons(ctx, &c_env, &span, &class, &matched_head);
-                        *result.lock().unwrap() = Some(witness);
+                        *crate::compiler_diagnostics::lock_for_compile(
+                            result.as_ref(),
+                            "elaboration unification cell",
+                        ) = Some(witness);
                     }
                     None => {
                         remaining.push(Constraint::TypeClass {

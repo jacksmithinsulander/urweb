@@ -946,9 +946,9 @@ fn specialize_capp(e: LocatedExpression, state: &mut State) -> LocatedExpression
     let vis_prime: Vec<(String, usize, LocatedConstructor, LocatedExpression, String)> =
         specialized
             .iter()
-            .map(|(nm, new_id, spec, tag)| {
-                let (t, ex) = spec.as_ref().unwrap().clone();
-                (nm.clone(), *new_id, t, ex, tag.clone())
+            .filter_map(|(nm, new_id, spec, tag)| {
+                spec.as_ref()
+                    .map(|(t, ex)| (nm.clone(), *new_id, t.clone(), ex.clone(), tag.clone()))
             })
             .collect();
 

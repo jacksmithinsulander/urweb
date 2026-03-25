@@ -4,11 +4,19 @@
 // LALRPOP syntax.  Phase 1 provides the full structure with `todo!()` actions;
 // subsequent phases will fill in the AST construction.
 //
+// **Strictness**: `build.rs` runs LALRPOP with conflicts as hard errors — ambiguous
+// parse tables must not be generated or silently resolved. Prefer grammar refactors
+// over suppressing conflicts.
+//
 // Token names match crate::parse::lexical_analyzer::Token variant names.
 
 use crate::error_types::{Located, Span};
 use crate::source::*;
-use crate::parse::xml_helpers::{XmlAttr, capitalize_attr, xml_empty_cdata};
+use crate::parse::grammar_helpers::con_record_field_pun;
+use crate::parse::xml_helpers::{
+    XmlAttr, XmlAttrsAcc, FunParam, capitalize_attr, xml_attrs_push, xml_desugar_tag_open,
+    xml_empty_cdata, wrap_fun_params, str_to_decl_open,
+};
 
 grammar;
 
@@ -68,7 +76,8 @@ extern {
         "type"      => crate::parse::lexical_analyzer::Token::Type,  // ltype in SML grammar
         "val"       => crate::parse::lexical_analyzer::Token::Val,
         "view"      => crate::parse::lexical_analyzer::Token::View,
-        "where"     => crate::parse::lexical_analyzer::Token::Where,
+        "sgn_where" => crate::parse::lexical_analyzer::Token::Where,
+        "sgn_subwhere" => crate::parse::lexical_analyzer::Token::SgnSubwhere,
         "Name"      => crate::parse::lexical_analyzer::Token::Name,
         "Type"      => crate::parse::lexical_analyzer::Token::KindType,
         "Unit"      => crate::parse::lexical_analyzer::Token::KindUnit,
@@ -83,6 +92,13 @@ extern {
         "()"  => crate::parse::lexical_analyzer::Token::Unit,
         "->"  => crate::parse::lexical_analyzer::Token::Arrow,
         "=>"  => crate::parse::lexical_analyzer::Token::Darrow,
+        "case_bar" => crate::parse::lexical_analyzer::Token::CaseBar,
+        "arm_sep" => crate::parse::lexical_analyzer::Token::ArmSep,
+        "case_end" => crate::parse::lexical_analyzer::Token::CaseEnd,
+        "dtype_of" => crate::parse::lexical_analyzer::Token::DtypeOf,
+        "dt_con0" => crate::parse::lexical_analyzer::Token::DtCon0,
+        "dt_bar" => crate::parse::lexical_analyzer::Token::DtBar,
+        "dt_done" => crate::parse::lexical_analyzer::Token::DtDone,
         "==>" => crate::parse::lexical_analyzer::Token::Dkarrow,
         "-->" => crate::parse::lexical_analyzer::Token::Karrow,
         "++"  => crate::parse::lexical_analyzer::Token::Plusplus,
@@ -126,6 +142,8 @@ extern {
         "IDENT"  => crate::parse::lexical_analyzer::Token::Ident(<String>),
         "UIDENT" => crate::parse::lexical_analyzer::Token::UpperIdent(<String>),
         "SYMBOL" => crate::parse::lexical_analyzer::Token::Csymbol(<String>),
+        "XML_ATTR_NAME_EQ" => crate::parse::lexical_analyzer::Token::XmlAttrNameEq(<String>),
+        "XML_ATTR_NAME_BARE" => crate::parse::lexical_analyzer::Token::XmlAttrNameBare(<String>),
         "BACKTICK_PATH" => crate::parse::lexical_analyzer::Token::BacktickPath(<String>),
 
         // XML
@@ -171,8 +189,10 @@ DeclNode: Decl = {
         Decl::ValRec(binds)
     },
 
-    // type / con declaration
+    // type / con declaration (`type` is a synonym for `con`)
     "con" <name:"IDENT"> <k:KindAnnot?> "=" <c:Con> =>
+        Decl::Con(name, k.map(Box::new), c),
+    "type" <name:"IDENT"> <k:KindAnnot?> "=" <c:Con> =>
         Decl::Con(name, k.map(Box::new), c),
 
     // datatype
@@ -185,29 +205,17 @@ DeclNode: Decl = {
     "structure" <name:"UIDENT"> <annot:SgnAnnot?> "=" <st:Str> =>
         Decl::Str(name, annot, None, st, false),
 
-    // open
-    "open" <path:ModPath> => {
-        let mut v: Vec<String> = path;
-        let last = v.pop().unwrap_or_default();
-        Decl::Open(last, v)
-    },
+    // open — accepts any structure expression (module path or functor application)
+    "open" <s:Str> => str_to_decl_open(s),
 
     // functor
     "functor" <name:"UIDENT"> "(" <arg:"UIDENT"> ":" <s:Sgn> ")" <ret:SgnAnnot?> "=" <body:Str> =>
         Decl::Str(name, None, None, Located::dummy(Str::Fun(arg, s, ret, Box::new(body))), false),
 
-    // table / sequence / view / cookie / style
-    "table" <name:"IDENT"> ":" <c:Con> =>
-        Decl::Table(name, c,
-            Located::dummy(Exp::Record(vec![], false)),
-            Located::dummy(Exp::Record(vec![], false))),
-
-    "table" <name:"IDENT"> ":" <c:Con> "where" <pol1:NonSeqExp> =>
-        Decl::Table(name, c, pol1,
-            Located::dummy(Exp::Record(vec![], false))),
-
-    "table" <name:"IDENT"> ":" <c:Con> "where" <pol1:NonSeqExp> "where" <pol2:NonSeqExp> =>
-        Decl::Table(name, c, pol1, pol2),
+    "table" <name:"IDENT"> ":" <c:Con> => {
+        let z = Located::dummy(Exp::Record(vec![], false));
+        Decl::Table(name, c, z.clone(), z)
+    },
 
     "sequence" <name:"IDENT"> => Decl::Sequence(name),
 
@@ -264,47 +272,51 @@ StrNode: Str = {
     "struct" <decls:Decl*> "end" => Str::Const(decls),
     "functor" "(" <arg:"UIDENT"> ":" <sgn:Sgn> ")" <ret:SgnAnnot?> "=>" <body:Str> =>
         Str::Fun(arg, sgn, ret, Box::new(body)),
-    <f:AppStr> "(" <x:AppStr> ")" => Str::App(Box::new(f), Box::new(x)),
+    <f:AppStr> "(" <x:Str> ")" => Str::App(Box::new(f), Box::new(x)),
     <s:AppStr> => s.node,
 };
 
 // ---------------------------------------------------------------------------
 // Signatures
 // ---------------------------------------------------------------------------
+//
+// `rewrite_sgn_where` emits `sgn_where` at paren depth 0 and `sgn_subwhere` when nested.
+// `Sgn` is a flat alternation (no `SgnNoTopWhere = SgnPrimary` beside `Sgn = SgnPrimary sgn_where`)
+// so at `SgnPrimary (*)` we only shift `sgn_where` / `sgn_subwhere` or reduce the bare arm — no
+// reduce/reduce or shift/reduce with shared prefixes (LangSec / LR(1)).
 
 Sgn: LocSgn = {
-    <l:@L> <s:SgnNode> <r:@R> => Located::new(s, Span::from_offsets("", l, r, &[])),
-};
-
-// AppSgn handles "where" extension to avoid shift/reduce conflict
-AppSgn: LocSgn = {
-    <l:@L> <s:AppSgnInner> <r:@R> => Located::new(s, Span::from_offsets("", l, r, &[])),
-};
-
-AppSgnInner: Sgn = {
-    // Sgn "where" path "=" con — s is already LocSgn, no re-wrap needed
-    <s:AppSgn> "where" <path:ModPath> "=" <c:Con> => {
-        let mut p = path;
-        let last = p.pop().unwrap_or_default();
-        Sgn::Where(Box::new(s), p, last, c)
+    <l:@L> <p:SgnPrimary> "sgn_where" <path:ModPath> "=" <w:Con> <r:@R> => {
+        let mut pth = path;
+        let last = pth.pop().unwrap_or_default();
+        Located::new(Sgn::Where(Box::new(p), pth, last, w), Span::from_offsets("", l, r, &[]))
     },
-    <s:AtomSgn> => s.node,
+    <l:@L> <p:SgnPrimary> "sgn_subwhere" <path:ModPath> "=" <w:Con> <r:@R> => {
+        let mut pth = path;
+        let last = pth.pop().unwrap_or_default();
+        Located::new(Sgn::Where(Box::new(p), pth, last, w), Span::from_offsets("", l, r, &[]))
+    },
+    <f:SgnFunctor> => f,
+    <p:SgnPrimary> => p,
 };
 
-AtomSgn: LocSgn = {
-    <l:@L> <s:AtomSgnNode> <r:@R> => Located::new(s, Span::from_offsets("", l, r, &[])),
+SgnFunctor: LocSgn = {
+    <l:@L> <n:SgnFunctorNode> <r:@R> => Located::new(n, Span::from_offsets("", l, r, &[])),
 };
 
-AtomSgnNode: Sgn = {
+SgnFunctorNode: Sgn = {
+    "functor" "(" <arg:"UIDENT"> ":" <s1:Sgn> ")" ":" <s2:Sgn> =>
+        Sgn::Fun(arg, Box::new(s1), Box::new(s2)),
+};
+
+SgnPrimary: LocSgn = {
+    <l:@L> <n:SgnPrimaryNode> <r:@R> => Located::new(n, Span::from_offsets("", l, r, &[])),
+};
+
+SgnPrimaryNode: Sgn = {
+    "sig" <items:SgnItem*> "end" => Sgn::Const(items),
     <name:"UIDENT"> => Sgn::Var(name),
     "(" <s:Sgn> ")" => s.node,
-};
-
-SgnNode: Sgn = {
-    "sig" <items:SgnItem*> "end" => Sgn::Const(items),
-    "functor" "(" <arg:"UIDENT"> ":" <s1:Sgn> ")" "->" <s2:Sgn> =>
-        Sgn::Fun(arg, Box::new(s1), Box::new(s2)),
-    <s:AppSgn> => s.node,
 };
 
 SgnItem: LocSgnItem = {
@@ -312,37 +324,36 @@ SgnItem: LocSgnItem = {
 };
 
 SgnItemNode: SgnItem = {
-    // Abstract type: `type X`  →  con X :: Type (no definition)
-    "type" <name:"IDENT"> => SgnItem::ConAbs(name, Box::new(Located::dummy(Kind::Type))),
-    // Type alias: `type X = C`  →  con X = C (kind inferred)
+    // `type nm` (abstract) and `type nm = C` (defining) — no preprocessing needed.
     "type" <name:"IDENT"> "=" <c:Con> => SgnItem::Con(name, None, c),
-    "con" <name:"IDENT"> "::" <k:Kind> => SgnItem::ConAbs(name, Box::new(k)),
-    "con" <name:"IDENT"> "::" <k:Kind> "=" <c:Con> => SgnItem::Con(name, Some(Box::new(k)), c),
-    // con alias without explicit kind: `con foo = T`
+    "type" <name:"IDENT"> => SgnItem::ConAbs(name, Box::new(Located::dummy(Kind::Type))),
+    // `con nm = C` | `con nm :: K` (abstract) | `con nm :: K = C` (defining)
+    // After `Kind`, lookahead `=` shifts (defining) while follow(SgnItem) ≠ `=` so no S/R conflict.
     "con" <name:"IDENT"> "=" <c:Con> => SgnItem::Con(name, None, c),
+    "con" <name:"IDENT"> "::" <k:Kind> => SgnItem::ConAbs(name, Box::new(k)),
+    "con" <name:"IDENT"> "::" <k:Kind> "=" <c:Con> =>
+        SgnItem::Con(name, Some(Box::new(k)), c),
     "val" <name:"IDENT"> ":" <c:SigCon> => SgnItem::Val(name, c),
     "datatype" <dts:DatatypeDecls> => SgnItem::Datatype(dts),
     "structure" <name:"UIDENT"> ":" <s:Sgn> => SgnItem::Str(name, s),
     "signature" <name:"UIDENT"> "=" <s:Sgn> => SgnItem::Sgn(name, s),
     "include" <s:Sgn> => SgnItem::Include(s),
     "constraint" <c1:Con> "~" <c2:Con> => SgnItem::Constraint(c1, c2),
-    // Class without kind: `class C`  →  default kind Type
-    // class C — default kind is Type -> Type (type class of one type argument)
-    "class" <name:"IDENT"> => SgnItem::ClassAbs(name, Box::new(Located::dummy(Kind::Arrow(
-        Box::new(Located::dummy(Kind::Type)),
-        Box::new(Located::dummy(Kind::Type)),
-    )))),
+    // `class nm` (bare → Type→Type kind) | `class nm = C` | `class nm :: K` | `class nm :: K = C`
+    "class" <name:"IDENT"> "=" <c:Con> =>
+        SgnItem::Class(name, Box::new(Located::dummy(Kind::Wild)), c),
     "class" <name:"IDENT"> "::" <k:Kind> => SgnItem::ClassAbs(name, Box::new(k)),
-    "class" <name:"IDENT"> "::" <k:Kind> "=" <c:Con> => SgnItem::Class(name, Box::new(k), c),
-    "table" <name:"IDENT"> ":" <c:Con> =>
-        SgnItem::Table(name, c,
-            Located::dummy(Exp::Record(vec![], false)),
-            Located::dummy(Exp::Record(vec![], false))),
-    "table" <name:"IDENT"> ":" <c:Con> "where" <p1:NonSeqExp> =>
-        SgnItem::Table(name, c, p1,
-            Located::dummy(Exp::Record(vec![], false))),
-    "table" <name:"IDENT"> ":" <c:Con> "where" <p1:NonSeqExp> "where" <p2:NonSeqExp> =>
-        SgnItem::Table(name, c, p1, p2),
+    "class" <name:"IDENT"> "::" <k:Kind> "=" <c:Con> =>
+        SgnItem::Class(name, Box::new(k), c),
+    "class" <name:"IDENT"> => SgnItem::ClassAbs(name, Box::new(Located::dummy(Kind::Arrow(
+        Box::new(Located::dummy(Kind::Type)), Box::new(Located::dummy(Kind::Type)))))),
+    "table" <name:"IDENT"> ":" <c:Con> => {
+        let z = Located::dummy(Exp::Record(vec![], false));
+        SgnItem::Table(name, c, z.clone(), z)
+    },
+    // Functor declaration in a signature; return sig delimited by `:` (matching Ur/Web grammar)
+    "functor" <name:"UIDENT"> "(" <arg:"UIDENT"> ":" <s1:Sgn> ")" ":" <s2:Sgn> =>
+        SgnItem::Functor(name, arg, Box::new(s1), Box::new(s2)),
 };
 
 // ---------------------------------------------------------------------------
@@ -403,14 +414,10 @@ KindAnnot: LocKind = {
 // Like Con but also allows `name ::: kind ->` and `name :: kind ->` at the top.
 // ---------------------------------------------------------------------------
 
-// Signature constructor type: like Con but also allows bare `name ::: kind ->` quantifiers.
-// Uses KindAtom (not full Kind) for the quantifier kind to avoid shift/reduce conflict with `->`
-// in kind arrows. In practice, .urs quantifiers use simple kinds: Type, {Type}, {Unit}, etc.
+// Same surface as `Con`. `.urs` input is preprocessed (`parse::preprocess_urs`) so leading
+// `name :: KindAtom ->` / `name ::: KindAtom ->` become bracketed row quantifiers parseable
+// as `Con` — avoiding a second `IDENT ::` / `IDENT :::` start that conflicted with `AtomCon`.
 SigCon: LocCon = {
-    <l:@L> <n:"IDENT"> ":::" <k:KindApp> "->" <c:SigCon> <r:@R> =>
-        Located::new(Con::TCFun(Explicitness::Implicit, n, Box::new(k), Box::new(c)), Span::from_offsets("", l, r, &[])),
-    <l:@L> <n:"IDENT"> "::" <k:KindApp> "->" <c:SigCon> <r:@R> =>
-        Located::new(Con::TCFun(Explicitness::Explicit, n, Box::new(k), Box::new(c)), Span::from_offsets("", l, r, &[])),
     Con => <>,
 };
 
@@ -439,8 +446,8 @@ ConNode: Con = {
     // constructor-level function type (implicit) — kind annotation required
     // to avoid ambiguity with "[" FieldName "]" row literal
     "[" <name:"IDENT"> "::" <k:Kind> "]" "->" <c:Con> =>
-        Con::TCFun(Explicitness::Implicit, name, Box::new(k), Box::new(c)),
-    // Same with ::: (Tcolonwild — "implicit, wildcard-named" in SML grammar)
+        Con::TCFun(Explicitness::Explicit, name, Box::new(k), Box::new(c)),
+    // Same with ::: (implicit / wildcard-style quantifier)
     "[" <name:"IDENT"> ":::" <k:Kind> "]" "->" <c:Con> =>
         Con::TCFun(Explicitness::Implicit, name, Box::new(k), Box::new(c)),
 
@@ -463,9 +470,12 @@ ConNode: Con = {
         Con::Abs("_".into(), Some(Box::new(k)), rest),
     "fn" "_" <rest:ConFnRest> =>
         Con::Abs("_".into(), None, rest),
-    // parenthesized kind-annotated constructor lambda: `fn (nm :: K) rest`
-    "fn" "(" <name:"IDENT"> "::" <k:Kind> ")" <rest:ConFnRest> =>
-        Con::Abs(name, Some(Box::new(k)), rest),
+    // multi-param constructor lambda: `fn (a :: K1, b :: K2) => body` (also single `(a :: K)`)
+    "fn" "(" <params:ConLamParamList> ")" <rest:ConFnRest> => {
+        params.into_iter().rev().fold((*rest).node, |acc_node, (nm, k)| {
+            Con::Abs(nm, Some(Box::new(k)), Box::new(Located::dummy(acc_node)))
+        })
+    },
 
     // concatenation
     <c1:AppCon> "++" <c2:Con> => Con::Concat(Box::new(c1), Box::new(c2)),
@@ -488,8 +498,12 @@ ConFnRest: Box<LocCon> = {
         Box::new(Located::new(Con::Abs("_".into(), Some(Box::new(k)), rest), Span::from_offsets("", l, r, &[]))),
     <l:@L> "_" <rest:ConFnRest> <r:@R> =>
         Box::new(Located::new(Con::Abs("_".into(), None, rest), Span::from_offsets("", l, r, &[]))),
-    <l:@L> "(" <name:"IDENT"> "::" <k:Kind> ")" <rest:ConFnRest> <r:@R> =>
-        Box::new(Located::new(Con::Abs(name, Some(Box::new(k)), rest), Span::from_offsets("", l, r, &[]))),
+    <l:@L> "(" <params:ConLamParamList> ")" <rest:ConFnRest> <r:@R> => {
+        let inner = params.into_iter().rev().fold((*rest).node, |acc_node, (nm, k)| {
+            Con::Abs(nm, Some(Box::new(k)), Box::new(Located::dummy(acc_node)))
+        });
+        Box::new(Located::new(inner, Span::from_offsets("", l, r, &[])))
+    },
 };
 
 AppCon: LocCon = {
@@ -553,7 +567,7 @@ AtomConNode: Con = {
     <name:"UIDENT"> => Con::Var(vec![], name),
     // Empty row: []
     "[" "]" => Con::Record(vec![]),
-    // Non-empty row literal
+    // Non-empty row literal: `[nm = T, ...]` or punned `[nm, ...]`
     "[" <fields:ConFieldList> "]" => Con::Record(fields),
     // Parenthesised constructors — use ConInParen to isolate the `_ ::` case
     // from the general `_` reduction state (avoids LALR state merge dropping
@@ -581,10 +595,31 @@ ConList2: Vec<LocCon> = {
     <cs:ConList2> "," <c:Con> => { let mut v = cs; v.push(c); v },
 };
 
-// Non-empty comma-separated list of constructor fields (no empty alternative)
+/// A single `nm :: K` or `nm ::: K` binder for multi-param con lambda.
+ConLamParam: (String, LocKind) = {
+    <nm:"IDENT"> "::" <k:Kind> => (nm, k),
+    <nm:"IDENT"> ":::" <k:Kind> => (nm, k),
+};
+
+/// Comma-separated con lambda params: `(a :: K1, b :: K2, ...)` — left-recursive list
+/// (no nullable comma tail) for LALR.
+ConLamParamList: Vec<(String, LocKind)> = {
+    <p:ConLamParam> => vec![p],
+    <ps:ConLamParamList> "," <p:ConLamParam> => { let mut v = ps; v.push(p); v },
+};
+
+// Non-empty comma-separated list of constructor record fields (no empty alternative).
+// Using AtomCon (not bare IDENT) for the field name ensures the LR(1) state after
+// `[` `IDENT` has {=, ], ,} as the follow set for the IDENT reduction — keeping `::` and
+// `:::` exclusively as shift actions for `[nm :: K] -> Con` / `[nm ::: K] -> Con`.
 ConFieldList: Vec<(LocCon, LocCon)> = {
     <f:ConField> => vec![f],
     <fs:ConFieldList> "," <f:ConField> => { let mut v = fs; v.push(f); v },
+};
+
+ConField: (LocCon, LocCon) = {
+    <name:AtomCon> "=" <c:Con> => (name, c),
+    <name:AtomCon> => con_record_field_pun(name),
 };
 
 /// Named record type fields: `nm : T, ...` (uses `:` not `=`)
@@ -599,21 +634,7 @@ TypeRecordFields: Vec<(String, LocCon)> = {
 TypeRecordFieldName: String = {
     <name:"IDENT">  => name,
     <name:"UIDENT"> => name,
-};
-
-ConField: (LocCon, LocCon) = {
-    <name:AtomCon> "=" <c:Con> => (name, c),
-    <name:AtomCon> => {
-        // Uppercase identifier without value: [Body] → (Name("Body"), unit)
-        // Lowercase: punned [nm] = [nm = nm]
-        match &name.node {
-            Con::Var(ms, x) if ms.is_empty() && x.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) => {
-                let name_con = Located::dummy(Con::Name(x.clone()));
-                (name_con, Located::dummy(Con::Unit))
-            }
-            _ => (name.clone(), name)
-        }
-    },
+    "Name" => "Name".to_string(),
 };
 
 // ---------------------------------------------------------------------------
@@ -628,22 +649,42 @@ ConField: (LocCon, LocCon) = {
 // arms. The "Pat" level handles type annotation.
 // ---------------------------------------------------------------------------
 
+// LangSec: LR(1)-clean pattern grammar (no #[precedence] needed — context-sensitive
+// lookaheads resolve all ambiguities automatically in full LR(1) mode).
+//
+// Design:
+//  - Constructor application `Con atpat` lives in PatNode (NOT in AtomPat)
+//  - List cons `atpat :: pat` lives in PatNode; tail recurses on Pat for right-assoc
+//  - Bare constructors live in AtomPatNode — LR(1) keeps them in separate states from
+//    PatNode's `UpperPath AtomPat` context, so no shift/reduce conflict arises
+//  - Annotation uses `AtomPat ":" Con` (no `Pat ":" Con`) to avoid `h::t : T` ambiguity
 Pat: LocPat = {
     <l:@L> <p:PatNode> <r:@R> => Located::new(p, Span::from_offsets("", l, r, &[])),
 };
 
 PatNode: Pat = {
-    // Type annotation on an atomic pattern
-    <p:AtomPat> ":" <c:Con> => Pat::Annot(Box::new(p), c),
-    // Constructor pattern with one AtomPat argument: Con pat
-    // This is at PatNode level (not AtomPat) to avoid LR(1) conflict in AtomPat+.
-    // Pattern `Con arg` is valid where a full Pat is expected (case arms, val bindings).
-    // In function heads (AtomPat+), use "(Con arg)" instead.
+    // Type annotation on an atomic pattern: p : T
+    <l:@L> <p:AtomPat> ":" <c:Con> <r:@R> =>
+        Pat::Annot(Box::new(p), c),
+    // Constructor application: Con atpat
+    // At PatNode level (not in AtomPat) so that the UpperPath in function-arg
+    // lists (AtomPat+) stays in a separate LR(1) state from the constructor-app rule.
     <path:UpperPath> <inner:AtomPat> => {
         let mut v = path;
         let last = v.pop().unwrap_or_default();
         Pat::Con(v, last, Some(Box::new(inner)))
     },
+    // List cons: atpat :: pat — right-associative via recursion on Pat.
+    // LR(1): after AtomPat, seeing "::" is unambiguous because "::" ∉ FOLLOW(PatNode).
+    // Bare `Foo :: rest` works via AtomPatNode = UpperPath → AtomPat, then this rule.
+    <l:@L> <h:AtomPat> "::" <t:Pat> <r:@R> => {
+        let pair = Located::new(
+            Pat::Record(vec![("1".into(), h), ("2".into(), t)], false),
+            Span::from_offsets("", l, r, &[]),
+        );
+        Pat::Con(vec![], "Cons".into(), Some(Box::new(pair)))
+    },
+    // Pass-through
     <p:AtomPat> => p.node,
 };
 
@@ -652,6 +693,8 @@ AtomPat: LocPat = {
 };
 
 AtomPatNode: Pat = {
+    // Unit pattern: `()`
+    "()" => Pat::Record(vec![], false),
     "_" => Pat::Var("_".into()),
     <name:"IDENT"> => Pat::Var(name),
     <n:"INT"> => Pat::Prim(crate::primitives::Prim::Int(n)),
@@ -660,14 +703,16 @@ AtomPatNode: Pat = {
     <ch:"CHAR"> => Pat::Prim(crate::primitives::Prim::Char(ch)),
     "true"  => Pat::Prim(crate::primitives::Prim::Int(1)),
     "false" => Pat::Prim(crate::primitives::Prim::Int(0)),
-    // Bare constructor without argument (uppercase identifier or path)
-    // Constructor-with-argument is handled at ConPat level (not here), to avoid
-    // the LR(1) ambiguity in function argument lists.
+    // Bare constructor without argument. LR(1) keeps this in a separate state from
+    // `PatNode = UpperPath AtomPat` when UpperPath appears in function-arg (AtomPat+)
+    // context, so no shift/reduce conflict arises.
     <path:UpperPath> => {
         let mut v = path;
         let last = v.pop().unwrap_or_default();
         Pat::Con(v, last, None)
     },
+    // Nil pattern: `[]`
+    "[" "]" => Pat::Con(vec![], "Nil".into(), None),
     // Record pattern — explicit empty/nonempty/open cases to avoid nullable conflict
     "{" "}" =>
         Pat::Record(vec![], false),
@@ -677,7 +722,7 @@ AtomPatNode: Pat = {
         Pat::Record(fields, false),
     "{" <fields:PatFieldList> "," "..." "}" =>
         Pat::Record(fields, true),
-    // Parenthesized pattern: also handles constructor-with-arg (e.g. "(Some x)")
+    // Parenthesized pattern: also handles constructor-with-arg: (Some x), etc.
     "(" <p:Pat> ")" => p.node,
 };
 
@@ -688,9 +733,13 @@ PatFieldList: Vec<(String, LocPat)> = {
 };
 
 PatField: (String, LocPat) = {
-    <name:"IDENT"> "=" <p:Pat> => (name, p),
+    <name:FieldName> "=" <p:Pat> => (name, p),
     <name:"IDENT"> => {
         let l = Located::dummy(Pat::Var(name.clone()));
+        (name, l)
+    },
+    <name:"UIDENT"> => {
+        let l = Located::dummy(Pat::Con(vec![], name.clone(), None));
         (name, l)
     },
 };
@@ -698,11 +747,19 @@ PatField: (String, LocPat) = {
 // ---------------------------------------------------------------------------
 // Expressions
 //
+// LangSec (https://langsec.org/): valid input should be a formal language and
+// the parser a single recognizer for it—no ambiguous tables, no scattered
+// “shotgun” disambiguation. The application / type-app / dot-postfix tier follows
+// ML `eapps` in `src/urweb.grm`: **left-recursive** juxtaposition is `AppExp` (`AtomExp` /
+// `PostfixOp`); `MulExp` is `AppExp` plus left-recursive `*` `/` `%` on `AppExp` operands only.
+// `expr_langsec::parse_cmp_app_spine` remains the reference recognizer for that tier.
+//
 // Precedence levels (low to high):
 //   Exp       — sequencing (e1 ; e2), right-associative
-//   NonSeqExp — andalso/orelse chains, left-associative
-//   BoolExp   — type annotation, fn, if, case, let, disjoint
-//   AppExp    — function application (left-assoc) + field access + module qual
+//   NonSeqExp — `BoolExp` + right-factored andalso/orelse tail (left-associative fold)
+//   BoolExp   — type annotation, fn, if, case, let
+//   CmpExp … MulExp — comparisons, add, mul (left-associative)
+//   AppExp — juxtaposition, `[Con]` CApp, `.` projections (see `urweb.grm` `eapps`)
 //   AtomExp   — atomic (literals, identifiers, records, parens)
 //
 // The split between Exp and NonSeqExp is critical: declarations use NonSeqExp
@@ -716,19 +773,28 @@ Exp: LocExp = {
 };
 
 ExpNode: Exp = {
+    // Lambda — body is full Exp (greedy right extension, avoids dangling-fn ambiguity
+    // by keeping fn out of NonSeqExp so the left of `;` is always NonSeqExp).
+    "fn" <params:FnLamParams> "=>" <e:Exp> =>
+        wrap_fun_params(params, e).node,
+    // Monadic bind: `x <- e1; e2`  (also `_ <- e1; e2`)
+    <name:"IDENT"> "<-" <e1:NonSeqExp> ";" <e2:Exp> =>
+        Exp::Let(vec![Located::dummy(EDecl::Val(Located::dummy(Pat::Var(name)), e1))], Box::new(e2)),
+    "_" "<-" <e1:NonSeqExp> ";" <e2:Exp> =>
+        Exp::Let(vec![Located::dummy(EDecl::Val(Located::dummy(Pat::Var("_".into())), e1))], Box::new(e2)),
     // Sequencing — right-associative via NonSeqExp on left, Exp on right
     <e1:NonSeqExp> ";" <e2:Exp> =>
         Exp::Let(vec![Located::dummy(EDecl::Val(Located::dummy(Pat::Var("_".into())), e1))], Box::new(e2)),
     <e:NonSeqExp> => e.node,
 };
 
-// Non-sequencing expression — used at declaration level
+// Non-sequencing expression — left-recursive andalso/orelse (LangSec: one algorithm,
+// no nullable tails that produce shift/reduce conflicts).
 NonSeqExp: LocExp = {
     <l:@L> <e:NonSeqExpNode> <r:@R> => Located::new(e, Span::from_offsets("", l, r, &[])),
 };
 
 NonSeqExpNode: Exp = {
-    // Left-associative andalso/orelse: BoolExp andalso BoolExp andalso ...
     <e1:NonSeqExp> "andalso" <e2:BoolExp> => Exp::Case(Box::new(e1), vec![
         (Located::dummy(Pat::Con(vec!["Basis".into()], "True".into(), None)), e2),
         (Located::dummy(Pat::Con(vec!["Basis".into()], "False".into(), None)),
@@ -742,129 +808,213 @@ NonSeqExpNode: Exp = {
     <e:BoolExp> => e.node,
 };
 
-// Boolean/annotation level — fn, if, case, let, type annotation, disjoint
+// Boolean/annotation level — fn, if, case, let, type annotation
 BoolExp: LocExp = {
     <l:@L> <e:BoolExpNode> <r:@R> => Located::new(e, Span::from_offsets("", l, r, &[])),
 };
 
 BoolExpNode: Exp = {
-    // Type annotation
-    <e:AppExp> ":" <c:Con> => Exp::Annot(Box::new(e), c),
-
-    // fn — body is full Exp to allow sequencing inside lambda
-    "fn" <p:Pat> "=>" <e:BoolExp> => {
-        let span = p.span.clone();
-        match p.node {
-            Pat::Var(x) => Exp::Abs(x, None, Box::new(e)),
-            node => {
-                let fresh = "_fn_arg".to_string();
-                Exp::Abs(
-                    fresh.clone(),
-                    None,
-                    Box::new(Located::dummy(Exp::Case(
-                        Box::new(Located::dummy(Exp::Var(vec![], fresh, Inference::DontInfer))),
-                        vec![(Located::new(node, span), e)],
-                    ))),
-                )
-            },
-        }
-    },
-
-    // if-then-else
+    // Keyword expressions — no conflict with ArithExp (different FIRST sets).
+    #[precedence(level="0")]
     "if" <cond:NonSeqExp> "then" <t:BoolExp> "else" <f:BoolExp> =>
         Exp::Case(Box::new(cond), vec![
             (Located::dummy(Pat::Con(vec!["Basis".into()], "True".into(), None)), t),
             (Located::dummy(Pat::Con(vec!["Basis".into()], "False".into(), None)), f),
         ]),
 
-    // case
-    "case" <e:NonSeqExp> "of" <arms:CaseArms> =>
-        Exp::Case(Box::new(e), arms),
+    // case — two prefixes so `case_bar` / first `Pat` are disjoint (no nullable `CaseBarOpt`).
+    #[precedence(level="0")]
+    "case" <e:NonSeqExp> "of" "case_bar" <first:CaseArm> <more:CalTail> => {
+        let mut arms = vec![first];
+        arms.extend(more);
+        Exp::Case(Box::new(e), arms)
+    },
+    #[precedence(level="0")]
+    "case" <e:NonSeqExp> "of" <first:CaseArm> <more:CalTail> => {
+        let mut arms = vec![first];
+        arms.extend(more);
+        Exp::Case(Box::new(e), arms)
+    },
 
     // let — body uses full Exp to allow sequencing
+    #[precedence(level="0")]
     "let" <decls:EDecl*> "in" <e:Exp> "end" =>
         Exp::Let(decls, Box::new(e)),
 
-    // Disjoint application
-    <e:AppExp> "[" <c1:Con> "~" <c2:Con> "]" =>
-        Exp::Disjoint(c1, c2, Box::new(e)),
+    // Type annotation: prefer shift (`:`) over pass-through reduce.
+    // LangSec: `#[precedence]` is the formal disambiguation — no implicit yacc defaults.
+    #[precedence(level="2")]
+    <e:ArithExp> ":" <c:Con> => Exp::Annot(Box::new(e), c),
 
-    <e:AppExp> => e.node,
+    // Pass-through — lower precedence so `:` forces the annotation rule above.
+    #[precedence(level="1")]
+    <e:ArithExp> => e.node,
 };
 
+// ---------------------------------------------------------------------------
+// Arithmetic expression levels
+// ---------------------------------------------------------------------------
+//
+// LangSec: one flat `ArithExp` non-terminal with `#[precedence]` annotations
+// is the single, total, unambiguous recognizer for the operator/application
+// spine — exactly mirroring `expr_langsec::parse_cmp_app_spine`.
+//
+// Precedence levels (higher number = tighter binding):
+//   1 — atoms (base case, no operator)
+//   2 — application: juxtaposition + `[Con]` CApp + `.` projections
+//   3 — `*`, `/`, `%`
+//   4 — `+`, `-`, `^`; `::` is right-associative at the same level
+//   5 — `=`, `<>`, `<`, `>`, `<=`, `>=` (loosest)
+//
+// `AppExp` is kept as a *separate*, application-only non-terminal used exclusively
+// in the `task` rule where `=` must terminate the trigger without ambiguity.
+// Because `AppExp` appears only in that context (follow set = {"="}), which is
+// disjoint from FIRST(AtomExp), no shift/reduce conflict arises for `AppExp`.
+
+PostfixOp: crate::parse::expr_langsec::ExpPostfixOp = {
+    "[" <c:Con> "]" => crate::parse::expr_langsec::ExpPostfixOp::CApp(c),
+    "." <name:"IDENT"> => crate::parse::expr_langsec::ExpPostfixOp::DotIdent(name),
+    "." "#" <name:"IDENT"> => crate::parse::expr_langsec::ExpPostfixOp::DotHash(name),
+    "." <name:"UIDENT"> => crate::parse::expr_langsec::ExpPostfixOp::DotUident(name),
+};
+
+// Application-only expressions — used exclusively in `task` to prevent `=` ambiguity.
 AppExp: LocExp = {
-    <l:@L> <e:AppExpInner> <r:@R> => Located::new(e, Span::from_offsets("", l, r, &[])),
+    <a:AtomExp> => a,
+    <l:@L> <e:AppExp> <t:AtomExp> <r:@R> => Located::new(
+        Exp::App(Box::new(e), Box::new(t)),
+        Span::from_offsets("", l, r, &[])),
+    <l:@L> <e:AppExp> <op:PostfixOp> <r:@R> =>
+        crate::parse::expr_langsec::fold_postfixes(e, vec![op], "", l, r, &[]),
 };
 
-AppExpInner: Exp = {
-    <f:AppExp> <x:AtomExp> => Exp::App(Box::new(f), Box::new(x)),
-    // Constructor-level application
-    <f:AppExp> "[" <c:Con> "]" => Exp::CApp(Box::new(f), c),
-    // "." IDENT → module member (when base is an uppercase module path) or record field access.
-    // LR always reduces App(f2, Var("M")) before seeing ".", so we must detect the module case here.
-    <f:AppExp> "." <name:"IDENT"> => {
-        let fspan = f.span.clone();
-        match f.node {
-            // Var(qs, "M").x where M starts uppercase → module member access
-            Exp::Var(mut quals, last, inf) if last.chars().next().map_or(false, |c| c.is_uppercase()) => {
-                quals.push(last);
-                Exp::Var(quals, name, inf)
-            }
-            // App(f2, Var([], "M")).x where M starts uppercase → App(f2, Var(["M"], x))
-            Exp::App(f2, xbox) => {
-                let Located { node: xnode, span: xspan } = *xbox;
-                match xnode {
-                    Exp::Var(mut q, last, inf) if q.is_empty() && last.chars().next().map_or(false, |c| c.is_uppercase()) => {
-                        q.push(last);
-                        Exp::App(f2, Box::new(Located::new(Exp::Var(q, name, inf), xspan)))
-                    }
-                    xnode => {
-                        let f_loc = Located::new(Exp::App(f2, Box::new(Located::new(xnode, xspan))), fspan);
-                        Exp::Field(Box::new(f_loc), Located::dummy(Con::Name(name)))
-                    }
-                }
-            }
-            // Otherwise: record field access
-            fnode => Exp::Field(Box::new(Located::new(fnode, fspan)), Located::dummy(Con::Name(name)))
-        }
+// Full arithmetic + application spine — single flat recognizer, conflict-free via `#[precedence]`.
+ArithExp: LocExp = {
+    // Atoms — base case (level 1)
+    #[precedence(level="1")]
+    <a:AtomExp> => a,
+
+    // Application and postfixes (level 2 — tighter than all operators)
+    #[precedence(level="2")] #[assoc(side="left")]
+    <l:@L> <e:ArithExp> <t:AtomExp> <r:@R> => Located::new(
+        Exp::App(Box::new(e), Box::new(t)),
+        Span::from_offsets("", l, r, &[])),
+    #[precedence(level="2")] #[assoc(side="left")]
+    <l:@L> <e:ArithExp> <op:PostfixOp> <r:@R> =>
+        crate::parse::expr_langsec::fold_postfixes(e, vec![op], "", l, r, &[]),
+
+    // Multiplicative operators (level 3)
+    #[precedence(level="3")] #[assoc(side="left")]
+    <l:@L> <e1:ArithExp> "*" <e2:ArithExp> <r:@R> => Located::new(
+        Exp::Infix("*".into(), Box::new(e1), Box::new(e2)),
+        Span::from_offsets("", l, r, &[])),
+    #[precedence(level="3")] #[assoc(side="left")]
+    <l:@L> <e1:ArithExp> "/" <e2:ArithExp> <r:@R> => Located::new(
+        Exp::Infix("/".into(), Box::new(e1), Box::new(e2)),
+        Span::from_offsets("", l, r, &[])),
+    #[precedence(level="3")] #[assoc(side="left")]
+    <l:@L> <e1:ArithExp> "%" <e2:ArithExp> <r:@R> => Located::new(
+        Exp::Infix("%".into(), Box::new(e1), Box::new(e2)),
+        Span::from_offsets("", l, r, &[])),
+
+    // Additive operators (level 4)
+    #[precedence(level="4")] #[assoc(side="left")]
+    <l:@L> <e1:ArithExp> "+" <e2:ArithExp> <r:@R> => Located::new(
+        Exp::Infix("+".into(), Box::new(e1), Box::new(e2)),
+        Span::from_offsets("", l, r, &[])),
+    #[precedence(level="4")] #[assoc(side="left")]
+    <l:@L> <e1:ArithExp> "-" <e2:ArithExp> <r:@R> => Located::new(
+        Exp::Infix("-".into(), Box::new(e1), Box::new(e2)),
+        Span::from_offsets("", l, r, &[])),
+    // `^` is Ur/Web string-concatenation: desugar to `Basis.strcat e1 e2`
+    #[precedence(level="4")] #[assoc(side="left")]
+    <l:@L> <e1:ArithExp> "^" <e2:ArithExp> <r:@R> => {
+        let pos = Span::from_offsets("", l, r, &[]);
+        let strcat = Located::new(
+            Exp::Var(vec!["Basis".into()], "strcat".into(), Inference::DontInfer),
+            pos.clone(),
+        );
+        let app1 = Located::new(Exp::App(Box::new(strcat), Box::new(e1)), pos.clone());
+        Located::new(Exp::App(Box::new(app1), Box::new(e2)), pos)
     },
-    // "." "#" IDENT → hash field access
-    <f:AppExp> "." "#" <name:"IDENT"> => Exp::Field(Box::new(f), Located::dummy(Con::Name(name))),
-    // "." UIDENT → module qualification
-    <f:AppExp> "." <name:"UIDENT"> => {
-        let fspan = f.span.clone();
-        match f.node {
-            Exp::Var(mut quals, last, inf) => { quals.push(last); Exp::Var(quals, name, inf) }
-            // App(prev, Var([], "M")).N => App(prev, Var(["M"], "N"))
-            Exp::App(f2, xbox) => {
-                let Located { node: xnode, span: xspan } = *xbox;
-                match xnode {
-                    Exp::Var(mut q, last, inf) if q.is_empty() => {
-                        q.push(last);
-                        Exp::App(f2, Box::new(Located::new(Exp::Var(q, name, inf), xspan)))
-                    }
-                    xnode => Exp::Var(vec![], name, Inference::DontInfer)
-                }
-            },
-            _ => Exp::Var(vec![], name, Inference::DontInfer)
-        }
-    },
-    <e:AtomExp> => e.node,
+    // `::` is right-associative (cons): `a :: b :: c` = `a :: (b :: c)`
+    // Level 5 — looser than additive (+/-/^) but tighter than comparison
+    #[precedence(level="5")] #[assoc(side="right")]
+    <l:@L> <e1:ArithExp> "::" <e2:ArithExp> <r:@R> => Located::new(
+        Exp::Infix("::".into(), Box::new(e1), Box::new(e2)),
+        Span::from_offsets("", l, r, &[])),
+
+    // Comparison operators (level 6 — loosest)
+    #[precedence(level="6")] #[assoc(side="left")]
+    <l:@L> <e1:ArithExp> "=" <e2:ArithExp> <r:@R> => Located::new(
+        Exp::Infix("=".into(), Box::new(e1), Box::new(e2)),
+        Span::from_offsets("", l, r, &[])),
+    #[precedence(level="6")] #[assoc(side="left")]
+    <l:@L> <e1:ArithExp> "<>" <e2:ArithExp> <r:@R> => Located::new(
+        Exp::Infix("<>".into(), Box::new(e1), Box::new(e2)),
+        Span::from_offsets("", l, r, &[])),
+    #[precedence(level="6")] #[assoc(side="left")]
+    <l:@L> <e1:ArithExp> "<" <e2:ArithExp> <r:@R> => Located::new(
+        Exp::Infix("<".into(), Box::new(e1), Box::new(e2)),
+        Span::from_offsets("", l, r, &[])),
+    #[precedence(level="6")] #[assoc(side="left")]
+    <l:@L> <e1:ArithExp> ">" <e2:ArithExp> <r:@R> => Located::new(
+        Exp::Infix(">".into(), Box::new(e1), Box::new(e2)),
+        Span::from_offsets("", l, r, &[])),
+    #[precedence(level="6")] #[assoc(side="left")]
+    <l:@L> <e1:ArithExp> "<=" <e2:ArithExp> <r:@R> => Located::new(
+        Exp::Infix("<=".into(), Box::new(e1), Box::new(e2)),
+        Span::from_offsets("", l, r, &[])),
+    #[precedence(level="6")] #[assoc(side="left")]
+    <l:@L> <e1:ArithExp> ">=" <e2:ArithExp> <r:@R> => Located::new(
+        Exp::Infix(">=".into(), Box::new(e1), Box::new(e2)),
+        Span::from_offsets("", l, r, &[])),
 };
+
+// Table `where` policies are not in the LR(1) surface grammar here (would share a `Con`·`where`
+// boundary with `AppSgn`); the reference compiler supports them via a distinct parse path.
 
 AtomExp: LocExp = {
     <l:@L> <e:AtomExpNode> <r:@R> => Located::new(e, Span::from_offsets("", l, r, &[])),
 };
 
+// ---------------------------------------------------------------------------
+// Lambda / function parameter lists
+// ---------------------------------------------------------------------------
+
+/// One parameter in a fn/fun binding: a term pattern or a constructor-level arg.
+FnLamParam: FunParam = {
+    <p:AtomPat> => FunParam::Term(p),
+    // Implicit constructor variable (kind inferred): [nm]
+    "[" <nm:"IDENT"> "]" => FunParam::ConArg(Explicitness::Implicit, nm, None),
+    // Explicit constructor variable with kind: [nm :: K]
+    "[" <nm:"IDENT"> "::" <k:Kind> "]" => FunParam::ConArg(Explicitness::Explicit, nm, Some(k)),
+    // Row/implicit constructor variable: [nm ::: K]
+    "[" <nm:"IDENT"> ":::" <k:Kind> "]" => FunParam::ConArg(Explicitness::Implicit, nm, Some(k)),
+    // Wildcard implicit: [_ :: K]  (WILDANNOT inside brackets)
+    "[" "WILDANNOT" <k:Kind> "]" => FunParam::ConArg(Explicitness::Implicit, "_".into(), Some(k)),
+    // Disjointness constraint: [[c1] ~ rest]
+    "[" <c1:Con> "~" <c2:Con> "]" => FunParam::Disjoint(c1, c2),
+};
+
+/// One or more lambda/fun parameters.
+FnLamParams: Vec<FunParam> = {
+    <p:FnLamParam> => vec![p],
+    <ps:FnLamParams> <p:FnLamParam> => { let mut v = ps; v.push(p); v },
+};
+
 AtomExpNode: Exp = {
-    "()" => Exp::Prim(crate::primitives::Prim::Int(0)), // unit literal placeholder
+    // Unit literal: `()` → empty record
+    "()" => Exp::Record(vec![], false),
+    // Explicit application: @e applies e's next implicit argument explicitly
+    "@" <e:AtomExp> => Exp::DisjointApp(Box::new(e)),
     <n:"INT">    => Exp::Prim(crate::primitives::Prim::Int(n)),
     <f:"FLOAT">  => Exp::Prim(crate::primitives::Prim::Float(f)),
     <s:"STRING"> => Exp::Prim(crate::primitives::Prim::String(crate::primitives::StringMode::Normal, s)),
     <ch:"CHAR">  => Exp::Prim(crate::primitives::Prim::Char(ch)),
     "true"  => Exp::Var(vec!["Basis".into()], "True".into(), Inference::DontInfer),
     "false" => Exp::Var(vec!["Basis".into()], "False".into(), Inference::DontInfer),
-    // Simple identifier (no dots — dots handled in AppExpInner)
+    // Simple identifier (no dots — dots handled in PostfixOp)
     <name:"IDENT">  => Exp::Var(vec![], name, Inference::DontInfer),
     <name:"UIDENT"> => Exp::Var(vec![], name, Inference::DontInfer),
     // Record expressions — explicit empty and non-empty cases to avoid
@@ -880,7 +1030,11 @@ AtomExpNode: Exp = {
     // XML outer wrapper: <xml> content </xml>
     // The lexer produces BeginTag("xml") from Regular mode, enters Xml mode,
     // then EndTag("xml") exits back to Regular mode.
-    <l:@L> "BEGIN_TAG" <xml:XmlOpt> "END_TAG" <r:@R> => xml.node,
+    <l:@L> "BEGIN_TAG" "END_TAG" <r:@R> => {
+        let pos = Span::from_offsets("", l, r, &[]);
+        xml_empty_cdata(pos).node
+    },
+    <l:@L> "BEGIN_TAG" <xml:Xml> "END_TAG" <r:@R> => xml.node,
     // <xml/>  — empty XML fragment
     <l:@L> "XML_BEGIN_END" <r:@R> => {
         let pos = Span::from_offsets("", l, r, &[]);
@@ -897,12 +1051,6 @@ ExpFieldList: Vec<(LocCon, LocExp)> = {
 // ---------------------------------------------------------------------------
 // XML rules
 // ---------------------------------------------------------------------------
-
-// Optional XML content.  Empty → cdata "".
-XmlOpt: LocExp = {
-    <xml:Xml> => xml,
-    <l:@L> <r:@R> => xml_empty_cdata(Span::from_offsets("", l, r, &[])),
-};
 
 // One or more XML items, right-associated via Basis.join.
 Xml: LocExp = {
@@ -950,9 +1098,9 @@ XmlOne: LocExp = {
         )
     },
     // { exp } — expression splice: the expression provides an XML value
-    "{" <e:NonSeqExp> "}" => e,
+    "{" <e:Exp> "}" => e,
     // { [exp] } — text splice: Top.txt exp
-    <l:@L> "{" "[" <e:NonSeqExp> "]" "}" <r:@R> => {
+    <l:@L> "{" "[" <e:Exp> "]" "}" <r:@R> => {
         let pos = Span::from_offsets("", l, r, &[]);
         Located::new(
             Exp::App(
@@ -965,117 +1113,41 @@ XmlOne: LocExp = {
             pos,
         )
     },
-    // Self-closing tag: <head attrs/>
-    <l:@L> <tag:XmlTagExpr> "/" ">" <r:@R> => {
+    // Tags: inline `TagHead` … `>` so we never reduce a tag expr before seeing `>` / `/>`
+    // (avoids shift/reduce vs another `XmlAttr` on the same lookahead).
+    <l:@L> <head:TagHead> "/" ">" <r:@R> => {
         let pos = Span::from_offsets("", l, r, &[]);
+        let tag = xml_desugar_tag_open(l, r, head, (None, None, None, None, vec![]));
         let cdata = xml_empty_cdata(pos.clone());
         Located::new(Exp::App(Box::new(tag), Box::new(cdata)), pos)
     },
-    // Full tag: <head attrs> xmlOpt </endtag>
-    <l:@L> <tag:XmlTagExpr> ">" <xml:XmlOpt> "END_TAG" <r:@R> => {
+    <l:@L> <head:TagHead> <attrs:XmlAttrPlus> "/" ">" <r:@R> => {
         let pos = Span::from_offsets("", l, r, &[]);
+        let tag = xml_desugar_tag_open(l, r, head, attrs);
+        let cdata = xml_empty_cdata(pos.clone());
+        Located::new(Exp::App(Box::new(tag), Box::new(cdata)), pos)
+    },
+    <l:@L> <head:TagHead> ">" "END_TAG" <r:@R> => {
+        let pos = Span::from_offsets("", l, r, &[]);
+        let tag = xml_desugar_tag_open(l, r, head, (None, None, None, None, vec![]));
+        let empty = xml_empty_cdata(pos.clone());
+        Located::new(Exp::App(Box::new(tag), Box::new(empty)), pos)
+    },
+    <l:@L> <head:TagHead> <attrs:XmlAttrPlus> ">" "END_TAG" <r:@R> => {
+        let pos = Span::from_offsets("", l, r, &[]);
+        let tag = xml_desugar_tag_open(l, r, head, attrs);
+        let empty = xml_empty_cdata(pos.clone());
+        Located::new(Exp::App(Box::new(tag), Box::new(empty)), pos)
+    },
+    <l:@L> <head:TagHead> ">" <xml:Xml> "END_TAG" <r:@R> => {
+        let pos = Span::from_offsets("", l, r, &[]);
+        let tag = xml_desugar_tag_open(l, r, head, (None, None, None, None, vec![]));
         Located::new(Exp::App(Box::new(tag), Box::new(xml)), pos)
     },
-};
-
-// XmlTagExpr: the tag desugared to a curried expression (waiting for content).
-// Produced from TagHead (the name + optional con-apps) plus Attrs.
-//
-// Default desugaring (non-special tags):
-//   Basis.tag class dynClass style dynStyle {attrs_record} (head_exp {})
-//
-// Special tags:
-//   form     → Basis.form key_opt class_opt
-//   subform/subforms → head_exp
-//   entry    → Basis.entry
-XmlTagExpr: LocExp = {
-    <l:@L> <head:TagHead> <attrs:XmlAttrs> <r:@R> => {
+    <l:@L> <head:TagHead> <attrs:XmlAttrPlus> ">" <xml:Xml> "END_TAG" <r:@R> => {
         let pos = Span::from_offsets("", l, r, &[]);
-        let (name, head_exp) = head;
-        let (cls, dcls, sty, dsty, attr_pairs) = attrs;
-
-        // Helper to wrap in Some(e)
-        let some_wrap = |e: LocExp, p: Span| -> LocExp {
-            Located::new(
-                Exp::App(
-                    Box::new(Located::new(
-                        Exp::Var(vec!["Basis".into()], "Some".into(), Inference::Infer),
-                        p.clone(),
-                    )),
-                    Box::new(e),
-                ),
-                p,
-            )
-        };
-        let none_exp = |p: Span| -> LocExp {
-            Located::new(
-                Exp::Var(vec!["Basis".into()], "None".into(), Inference::Infer),
-                p,
-            )
-        };
-
-        if name == "form" {
-            // Basis.form key_opt class_opt
-            let key_exp = none_exp(pos.clone()); // simplified: no id extraction
-            let cls_exp = match cls {
-                None => none_exp(pos.clone()),
-                Some(ce) => some_wrap(ce, pos.clone()),
-            };
-            let e = Located::new(
-                Exp::Var(vec!["Basis".into()], "form".into(), Inference::Infer),
-                pos.clone(),
-            );
-            let e = Located::new(Exp::App(Box::new(e), Box::new(key_exp)), pos.clone());
-            Located::new(Exp::App(Box::new(e), Box::new(cls_exp)), pos)
-        } else if name == "subform" || name == "subforms" {
-            // head_exp applied to {} (the content will then be applied)
-            let empty_rec = Located::new(Exp::Record(vec![], false), pos.clone());
-            Located::new(Exp::App(Box::new(head_exp), Box::new(empty_rec)), pos)
-        } else if name == "entry" {
-            Located::new(
-                Exp::Var(vec!["Basis".into()], "entry".into(), Inference::Infer),
-                pos,
-            )
-        } else {
-            // Default: Basis.tag class dynClass style dynStyle {attrs} (head {})
-            let basis_tag = Located::new(
-                Exp::Var(vec!["Basis".into()], "tag".into(), Inference::Infer),
-                pos.clone(),
-            );
-            let class_exp = match cls {
-                None => Located::new(
-                    Exp::Var(vec!["Basis".into()], "null".into(), Inference::Infer),
-                    pos.clone(),
-                ),
-                Some(ce) => ce,
-            };
-            let e = Located::new(Exp::App(Box::new(basis_tag), Box::new(class_exp)), pos.clone());
-            let dcls_exp = match dcls {
-                None => none_exp(pos.clone()),
-                Some(ce) => some_wrap(ce, pos.clone()),
-            };
-            let e = Located::new(Exp::App(Box::new(e), Box::new(dcls_exp)), pos.clone());
-            let sty_exp = match sty {
-                None => Located::new(
-                    Exp::Var(vec!["Basis".into()], "noStyle".into(), Inference::Infer),
-                    pos.clone(),
-                ),
-                Some(se) => se,
-            };
-            let e = Located::new(Exp::App(Box::new(e), Box::new(sty_exp)), pos.clone());
-            let dsty_exp = match dsty {
-                None => none_exp(pos.clone()),
-                Some(se) => some_wrap(se, pos.clone()),
-            };
-            let e = Located::new(Exp::App(Box::new(e), Box::new(dsty_exp)), pos.clone());
-            // Attributes record
-            let attrs_rec = Located::new(Exp::Record(attr_pairs, false), pos.clone());
-            let e = Located::new(Exp::App(Box::new(e), Box::new(attrs_rec)), pos.clone());
-            // Apply head to {}
-            let empty_rec = Located::new(Exp::Record(vec![], false), pos.clone());
-            let head_applied = Located::new(Exp::App(Box::new(head_exp), Box::new(empty_rec)), pos.clone());
-            Located::new(Exp::App(Box::new(e), Box::new(head_applied)), pos)
-        }
+        let tag = xml_desugar_tag_open(l, r, head, attrs);
+        Located::new(Exp::App(Box::new(tag), Box::new(xml)), pos)
     },
 };
 
@@ -1095,39 +1167,24 @@ TagHead: (String, LocExp) = {
     },
 };
 
-// Accumulated XML attributes: parse zero or more attrs right-to-left.
-XmlAttrs: (Option<LocExp>, Option<LocExp>, Option<LocExp>, Option<LocExp>, Vec<(LocCon, LocExp)>) = {
-    => (None, None, None, None, vec![]),
-    <a:XmlAttr> <rest:XmlAttrs> => {
-        let (mut cls, mut dcls, mut sty, mut dsty, mut av) = rest;
-        match a {
-            XmlAttr::Class(e)    => cls  = Some(e),
-            XmlAttr::DynClass(e) => dcls = Some(e),
-            XmlAttr::Style(e)    => sty  = Some(e),
-            XmlAttr::DynStyle(e) => dsty = Some(e),
-            XmlAttr::Normal(k, v) => av.insert(0, (k, v)),
-        }
-        (cls, dcls, sty, dsty, av)
-    },
+XmlAttrPlus: XmlAttrsAcc = {
+    <a:XmlAttr> => xml_attrs_push((None, None, None, None, vec![]), a),
+    <rest:XmlAttrPlus> <a:XmlAttr> => xml_attrs_push(rest, a),
 };
 
-// A single XML attribute.
+// Lexer emits `XML_ATTR_NAME_EQ` vs `XML_ATTR_NAME_BARE` after 1-token disambiguation in XmlTag.
 XmlAttr: XmlAttr = {
-    // name = value
-    <name:"SYMBOL"> "=" <v:AttrV> => {
+    <name:"XML_ATTR_NAME_EQ"> "=" <v:AttrV> => {
+        let cap = capitalize_attr(&name);
         match name.as_str() {
             "class"    => XmlAttr::Class(v),
             "dynClass" => XmlAttr::DynClass(v),
             "style"    => XmlAttr::Style(v),
             "dynStyle" => XmlAttr::DynStyle(v),
-            _ => {
-                let cap = capitalize_attr(&name);
-                XmlAttr::Normal(Located::dummy(Con::Name(cap)), v)
-            }
+            _ => XmlAttr::Normal(Located::dummy(Con::Name(cap)), v),
         }
     },
-    // bare name (boolean attribute → True)
-    <l:@L> <name:"SYMBOL"> <r:@R> => {
+    <l:@L> <name:"XML_ATTR_NAME_BARE"> <r:@R> => {
         let pos = Span::from_offsets("", l, r, &[]);
         let cap = capitalize_attr(&name);
         let true_exp = Located::new(
@@ -1152,28 +1209,40 @@ AttrV: LocExp = {
         Exp::Prim(crate::primitives::Prim::String(crate::primitives::StringMode::Normal, s)),
         Span::from_offsets("", l, r, &[]),
     ),
-    "{" <e:NonSeqExp> "}" => e,
+    "{" <e:Exp> "}" => e,
 };
 
 ExpField: (LocCon, LocExp) = {
-    <name:"IDENT"> "=" <e:NonSeqExp> => (Located::dummy(Con::Name(name)), e),
+    <name:FieldName> "=" <e:Exp> => (Located::dummy(Con::Name(name)), e),
     <name:"IDENT"> => {
         // Punning: {x} means {x = x}
         let e = Located::dummy(Exp::Var(vec![], name.clone(), Inference::DontInfer));
         (Located::dummy(Con::Name(name)), e)
     },
+    // Uppercase pun: {X} means {X = X}
+    <name:"UIDENT"> => {
+        let e = Located::dummy(Exp::Var(vec![], name.clone(), Inference::DontInfer));
+        (Located::dummy(Con::Name(name)), e)
+    },
 };
 
-// Case arms — each arm's body uses NonCaseBoolExp to avoid the dangling-case
-// ambiguity where `|` after a nested case could belong to the inner or outer case.
-// To write a case expression as a case arm body, use `(case ...)` or `let...in case...end`.
-CaseArms: Vec<(LocPat, LocExp)> = {
-    <arm:CaseArm> => vec![arm],
-    <arms:CaseArms> "|" <arm:CaseArm> => { let mut v = arms; v.push(arm); v },
+/// Field name: lower or upper identifier, or certain keywords used as field names.
+FieldName: String = {
+    <name:"IDENT"> => name,
+    <name:"UIDENT"> => name,
+    "Name" => "Name".to_string(),
 };
 
+// Remaining arms after the first — no nullable alternative; `case_end` / `arm_sep` are disjoint.
+CalTail: Vec<(LocPat, LocExp)> = {
+    "case_end" => vec![],
+    "arm_sep" <a:CaseArm> <rest:CalTail> => { let mut v = vec![a]; v.extend(rest); v },
+};
+
+// Case arm body uses full Exp — safe because arms are delimited by arm_sep/case_end
+// pseudo-tokens (not in any Exp rule), so Exp reduces before consuming them.
 CaseArm: (LocPat, LocExp) = {
-    <p:Pat> "=>" <e:NonCaseBoolExp> => (p, e),
+    <p:Pat> "=>" <e:Exp> => (p, e),
 };
 
 // BoolExp without top-level "case" and "fn" — used as case arm body to avoid
@@ -1185,12 +1254,11 @@ NonCaseBoolExp: LocExp = {
 };
 
 NonCaseBoolExpNode: Exp = {
-    // Type annotation
-    <e:AppExp> ":" <c:Con> => Exp::Annot(Box::new(e), c),
+    // No `ArithExp : Con` here: use `(e : t)` via `AtomExp` / full `Exp` if you need an
+    // annotation in a case arm. No `fn` here either — fn is now only in ExpNode.
 
-    // if-then-else — the else branch uses NonCaseBoolExp to avoid the
-    // dangling-case problem: "if cond then t else case e of ... | ..."
-    // where "|" would be ambiguous if the else branch allowed top-level case.
+    // if-then-else
+    #[precedence(level="0")]
     "if" <cond:NonSeqExp> "then" <t:BoolExp> "else" <f:NonCaseBoolExp> =>
         Exp::Case(Box::new(cond), vec![
             (Located::dummy(Pat::Con(vec!["Basis".into()], "True".into(), None)), t),
@@ -1198,14 +1266,12 @@ NonCaseBoolExpNode: Exp = {
         ]),
 
     // let — unambiguous because terminated by "end"
+    #[precedence(level="0")]
     "let" <decls:EDecl*> "in" <e:Exp> "end" =>
         Exp::Let(decls, Box::new(e)),
 
-    // Disjoint application
-    <e:AppExp> "[" <c1:Con> "~" <c2:Con> "]" =>
-        Exp::Disjoint(c1, c2, Box::new(e)),
-
-    <e:AppExp> => e.node,
+    #[precedence(level="1")]
+    <e:ArithExp> => e.node,
 };
 
 // Local declarations inside let
@@ -1256,9 +1322,10 @@ FfiMode: FfiMode = {
     },
 };
 
+// Right-recursive like `urweb.grm` `dtypes` / `valis` (avoids reduce/shift on `and` under LALR).
 DatatypeDecls: Vec<DatatypeDecl> = {
     <d:DatatypeDecl> => vec![d],
-    <ds:DatatypeDecls> "and" <d:DatatypeDecl> => { let mut v = ds; v.push(d); v },
+    <d:DatatypeDecl> "and" <rest:DatatypeDecls> => { let mut v = vec![d]; v.extend(rest); v },
 };
 
 DatatypeDecl: DatatypeDecl = {
@@ -1273,48 +1340,39 @@ TyParams: Vec<String> = {
     <ps:TyParams> <p:"IDENT"> => { let mut v = ps; v.push(p); v },
 };
 
+// `dt_done` closes the list — FIRST {`dt_done`, `dt_bar`} is disjoint (no nullable `DtConstrs`).
 DtConstrs: Vec<(String, Option<LocCon>)> = {
-    <c:DtConstr> => vec![c],
-    <cs:DtConstrs> "|" <c:DtConstr> => { let mut v = cs; v.push(c); v },
+    <c:DtConstr> <tail:DtConstrTail> => { let mut v = vec![c]; v.extend(tail); v },
 };
 
+DtConstrTail: Vec<(String, Option<LocCon>)> = {
+    "dt_done" => vec![],
+    "dt_bar" <c:DtConstr> <rest:DtConstrTail> => { let mut v = vec![c]; v.extend(rest); v },
+};
+
+// `dt_con0` is inserted for nullary constructors so `dtype_of` is never shift/reduce-split with ε.
 DtConstr: (String, Option<LocCon>) = {
-    <name:"UIDENT"> "of" <c:Con> => (name, Some(c)),
-    <name:"UIDENT"> => (name, None),
+    <name:"UIDENT"> "dtype_of" <c:Con> => (name, Some(c)),
+    <name:"UIDENT"> "dt_con0" => (name, None),
 };
 
 ValRecBindings: Vec<(String, Option<LocCon>, LocExp)> = {
     <b:ValRecBind> => vec![b],
-    <bs:ValRecBindings> "and" <b:ValRecBind> => { let mut v = bs; v.push(b); v },
+    <b:ValRecBind> "and" <rest:ValRecBindings> => { let mut v = vec![b]; v.extend(rest); v },
 };
 
 ValRecBind: (String, Option<LocCon>, LocExp) = {
-    <name:"IDENT"> <ann:(":" <Con>)?> "=" <e:NonSeqExp> => (name, ann, e),
+    <name:"IDENT"> <ann:(":" <Con>)?> "=" <e:Exp> => (name, ann, e),
 };
 
 FunBindings: Vec<(String, Option<LocCon>, LocExp)> = {
     <b:FunBind> => vec![b],
-    <bs:FunBindings> "and" <b:FunBind> => { let mut v = bs; v.push(b); v },
+    <b:FunBind> "and" <rest:FunBindings> => { let mut v = vec![b]; v.extend(rest); v },
 };
 
 FunBind: (String, Option<LocCon>, LocExp) = {
-    <name:"IDENT"> <params:AtomPat+> <ret:(":" <Con>)?> "=" <e:NonSeqExp> => {
-        // Wrap body in nested Abs for each parameter
-        let body = params.into_iter().rev().fold(e, |acc, p| {
-            let span = p.span.clone();
-            let (param_name, inner) = match p.node {
-                Pat::Var(x) => (x, acc),
-                node => {
-                    let fresh = "_arg".to_string();
-                    let case_e = Located::dummy(Exp::Case(
-                        Box::new(Located::dummy(Exp::Var(vec![], fresh.clone(), Inference::DontInfer))),
-                        vec![(Located::new(node, span), acc)],
-                    ));
-                    (fresh, case_e)
-                },
-            };
-            Located::dummy(Exp::Abs(param_name, None, Box::new(inner)))
-        });
+    <name:"IDENT"> <params:FnLamParams> <ret:(":" <Con>)?> "=" <e:Exp> => {
+        let body = wrap_fun_params(params, e);
         (name, ret, body)
     },
 };

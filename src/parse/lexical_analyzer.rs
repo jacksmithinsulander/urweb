@@ -45,7 +45,9 @@ fn process_string_escapes(s: &str) -> Option<String> {
                 for _ in 0..2 {
                     if let Some(&d) = chars.peek() {
                         if d.is_ascii_digit() {
-                            digits.push(chars.next().unwrap());
+                            if let Some(ch) = chars.next() {
+                                digits.push(ch);
+                            }
                         }
                     }
                 }
@@ -158,6 +160,34 @@ pub enum Token {
     Dcolonwild,
     #[token("___", priority = 4)]
     Underunderunder,
+    /// Signature-only: inserted before `::` on abstract `con` / `class` lines (preprocess).
+    #[token("sgn_abs", priority = 6)]
+    SgnAbs,
+    /// Signature-only: inserted by `preprocess_urs` after `::` kind on `con` / `class` lines
+    /// (replaces `=` before the defining `Con`) so the grammar need not use ε before the RHS.
+    #[token("sgn_def_con", priority = 6)]
+    SgnDefCon,
+    /// Optional leading `|` right after `case` … `of` (`urweb.grm` `barOpt`) — disjoint from `arm_sep`.
+    #[token("case_bar", priority = 6)]
+    CaseBar,
+    /// Between `case` arms (not the optional leading bar).
+    #[token("arm_sep", priority = 6)]
+    ArmSep,
+    /// Closes the `case` … `of` arm list before `;` / `)` / `}` (inserted by preprocess; disjoint
+    /// from `arm_sep` so `CaseArmsMore` need not use a nullable tail with the same lookahead).
+    #[token("case_end", priority = 6)]
+    CaseEnd,
+    /// In `datatype` … `=` constructor lists only (`rewrite_datatype_constructors`).
+    #[token("dtype_of", priority = 6)]
+    DtypeOf,
+    /// Nullary datatype constructor marker (inserted before `dt_bar` / `dt_done` when no `dtype_of`).
+    #[token("dt_con0", priority = 6)]
+    DtCon0,
+    #[token("dt_bar", priority = 6)]
+    DtBar,
+    /// Ends a `datatype` … `=` constructor list (before `and` / `;`).
+    #[token("dt_done", priority = 6)]
+    DtDone,
     #[token("==>", priority = 4)]
     Dkarrow,
     #[token("...", priority = 4)]
@@ -331,8 +361,12 @@ pub enum Token {
     Val,
     #[token("view", priority = 2)]
     View,
-    #[token("where", priority = 2)]
+    /// Signature `where` at paren depth 0 (`rewrite_sgn_where`).
+    #[token("sgn_where", priority = 6)]
     Where,
+    /// Signature `where` inside `(...)` (depth > 0) — disjoint from `sgn_where` for LR(1).
+    #[token("sgn_subwhere", priority = 6)]
+    SgnSubwhere,
 
     // `Name` is the kind of field names; must be priority 3 to shadow UpperIdent.
     #[token("Name", priority = 3)]
@@ -391,6 +425,11 @@ pub enum Token {
     Celse,
     Cwhere,
     Csymbol(String),
+
+    /// XML tag attribute name when the next non-whitespace byte is `=` (LangSec: disjoint from bare).
+    XmlAttrNameEq(String),
+    /// XML tag attribute name when not followed by `=` (boolean / bare attribute).
+    XmlAttrNameBare(String),
 
     // -----------------------------------------------------------------------
     // Compound token: `_` followed by `::` (with optional whitespace).
@@ -933,7 +972,17 @@ impl<'a> XmlAwareLexer<'a> {
             "type" => Token::Type,
             "val" => Token::Val,
             "view" => Token::View,
-            "where" => Token::Where,
+            "sgn_abs" => Token::SgnAbs,
+            "sgn_def_con" => Token::SgnDefCon,
+            "case_bar" => Token::CaseBar,
+            "arm_sep" => Token::ArmSep,
+            "case_end" => Token::CaseEnd,
+            "dtype_of" => Token::DtypeOf,
+            "dt_con0" => Token::DtCon0,
+            "dt_bar" => Token::DtBar,
+            "dt_done" => Token::DtDone,
+            "sgn_where" => Token::Where,
+            "sgn_subwhere" => Token::SgnSubwhere,
             "Name" => Token::Name,
             "Type" => Token::KindType,
             "Unit" => Token::KindUnit,
@@ -1140,14 +1189,28 @@ impl<'a> XmlAwareLexer<'a> {
                 return Some(self.scan_number(start));
             }
 
-            // xmlid → Csymbol (attribute name)
+            // xmlid → Eq/bare-disjoint attribute name tokens (no optional `=` in the CFG).
             if b.is_ascii_alphabetic() || b == b'_' {
                 let end = self.scan_xml_id(start);
                 self.pos = end;
                 let name = std::str::from_utf8(&self.src[start..end])
                     .unwrap_or("")
                     .to_string();
-                return Some(Ok((start, Token::Csymbol(name), self.pos)));
+                let mut p = self.pos;
+                while p < self.src.len() {
+                    let bb = self.src[p];
+                    if bb == b' ' || bb == b'\t' || bb == b'\r' || bb == b'\n' {
+                        p += 1;
+                        continue;
+                    }
+                    break;
+                }
+                let tok = if p < self.src.len() && self.src[p] == b'=' {
+                    Token::XmlAttrNameEq(name)
+                } else {
+                    Token::XmlAttrNameBare(name)
+                };
+                return Some(Ok((start, tok, self.pos)));
             }
 
             // Other characters
@@ -1177,6 +1240,24 @@ impl<'a> Iterator for XmlAwareLexer<'a> {
             return Some(result);
         }
     }
+}
+
+/// Production token stream for LangSec spine tests: [`XmlAwareLexer`], whitespace/comments stripped.
+/// Returns the first [`LexError`] if lexical analysis fails.
+pub fn tokenize_xml_aware(src: &str) -> Result<Vec<(usize, Token, usize)>, LexError> {
+    let mut out = Vec::new();
+    for item in XmlAwareLexer::new(src) {
+        match item {
+            Ok((lo, tok, hi)) => {
+                if matches!(tok, Token::Whitespace | Token::Comment) {
+                    continue;
+                }
+                out.push((lo, tok, hi));
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(out)
 }
 
 #[cfg(test)]

@@ -7,9 +7,30 @@
 
 use anyhow::{bail, Context, Result};
 use std::path::{Path, PathBuf};
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::error_types::ErrorReporter;
 use crate::settings::Settings;
+
+#[cfg(test)]
+pub(crate) static APPLY_BOOT_SETTINGS_CALLS: AtomicUsize = AtomicUsize::new(0);
+#[cfg(test)]
+pub(crate) static CSS_SUMMARIZE_CALLS: AtomicUsize = AtomicUsize::new(0);
+#[cfg(test)]
+pub(crate) static MONO_FILECACHE_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+/// When diagnostics were already printed to stderr, summarize why compilation stops.
+fn bail_if_errors_reported(errors: &ErrorReporter, phase: &str) -> Result<()> {
+    if !errors.has_errors() {
+        return Ok(());
+    }
+    let n = errors.errors.len();
+    bail!(
+        "{phase} reported {n} error(s). Messages above list each issue with file and location.\n\
+         Fix those problems, then run the compiler again."
+    );
+}
 
 // ---------------------------------------------------------------------------
 // Job description (mirrors `compiler.sml`'s `job` record)
@@ -159,6 +180,8 @@ pub fn parse_urp(path: &Path) -> Result<Job> {
 /// find the project root (the directory containing `lib/ur/basis.urs`) and
 /// populate `job.basis_lib_dir` and the `config_*` settings.
 fn apply_boot_settings(job: &mut Job, settings: &mut Settings) {
+    #[cfg(test)]
+    APPLY_BOOT_SETTINGS_CALLS.fetch_add(1, Ordering::SeqCst);
     if !settings.boot_linking {
         return;
     }
@@ -604,6 +627,8 @@ pub fn mono_filecache(
     file: crate::monomorphized::File,
     settings: &Settings,
 ) -> crate::monomorphized::File {
+    #[cfg(test)]
+    MONO_FILECACHE_CALLS.fetch_add(1, Ordering::SeqCst);
     crate::monomorphized::filecache::instrument(file, settings)
 }
 
@@ -693,6 +718,8 @@ pub fn sql_generate(file: &crate::c_like_representation::File, settings: &Settin
 // ---------------------------------------------------------------------------
 
 pub fn css_summarize(file: &crate::core::File) -> crate::core::css::Summary {
+    #[cfg(test)]
+    CSS_SUMMARIZE_CALLS.fetch_add(1, Ordering::SeqCst);
     crate::core::css::summarize(file)
 }
 
@@ -842,21 +869,10 @@ pub fn cc_and_link(c_source: &str, output: &Path, job: &Job, settings: &Settings
         }
     }
     link_cmd.arg("-lurweb").arg("-lm");
-    // Link DBMS-specific library. Use `match` (not `==`) so `replace == with !=` mutants
-    // cannot pick the wrong -l and stall the linker under `cargo mutants`.
+    // DBMS-specific library (factored for unit tests; `match` avoids `==`/`!=` mutants in `cc_and_link`).
     let dbms = settings.dbms.as_str();
-    match dbms {
-        "sqlite" => {
-            link_cmd.arg("-lsqlite3");
-        }
-        "mysql" => {
-            link_cmd.arg("-lmysqlclient");
-        }
-        _ => {
-            link_cmd.arg("-lpq");
-        }
-    } // postgres and default
-      // BearSSL (crypto)
+    link_cmd.arg(dbms_link_library_flag(dbms));
+    // BearSSL (crypto)
     match settings.config_bearssl_libs.is_empty() {
         true => {}
         false => {
@@ -898,6 +914,24 @@ pub fn cc_and_link(c_source: &str, output: &Path, job: &Job, settings: &Settings
 // Top-level: full build pipeline
 // ---------------------------------------------------------------------------
 
+/// Resolve a user-given project path to the `.urp` file we open (`foo.ur` → `foo.urp`).
+pub(crate) fn resolve_urp_project_path(urp_path: &Path) -> PathBuf {
+    if urp_path.extension().map_or(true, |e| e != "urp") {
+        urp_path.with_extension("urp")
+    } else {
+        urp_path.to_path_buf()
+    }
+}
+
+/// Linker flag for the configured DBMS (unit-tested; `cc_and_link` delegates here).
+pub(crate) fn dbms_link_library_flag(dbms: &str) -> &'static str {
+    match dbms {
+        "sqlite" => "-lsqlite3",
+        "mysql" => "-lmysqlclient",
+        _ => "-lpq",
+    }
+}
+
 /// Run the complete compilation pipeline for a `.urp` project.
 ///
 /// Corresponds to `Compiler.run` / the main compilation path in `main.mlton.sml`.
@@ -909,14 +943,8 @@ fn run_compile(urp_path: &Path, settings: &mut Settings) -> Result<PathBuf> {
     let mut errors = ErrorReporter::new();
 
     // Phase 1: parse project file (append .urp if not already present)
-    let urp_path_buf;
-    let urp_path = if urp_path.extension().map_or(true, |e| e != "urp") {
-        urp_path_buf = urp_path.with_extension("urp");
-        urp_path_buf.as_path()
-    } else {
-        urp_path
-    };
-    let mut job = parse_urp(urp_path)?;
+    let urp_path_buf = resolve_urp_project_path(urp_path);
+    let mut job = parse_urp(&urp_path_buf)?;
 
     apply_boot_settings(&mut job, settings);
 
@@ -930,16 +958,12 @@ fn run_compile(urp_path: &Path, settings: &mut Settings) -> Result<PathBuf> {
     // Phase 2: parse sources
     let source_file =
         parse_sources(&job, &mut errors).ok_or_else(|| anyhow::anyhow!("Parse failed"))?;
-    if errors.has_errors() {
-        bail!("parse errors");
-    }
+    bail_if_errors_reported(&errors, "Parsing")?;
 
     // Phase 3: elaborate
     let elab_file = elaborate(source_file, settings, &mut errors)
         .ok_or_else(|| anyhow::anyhow!("Elaboration failed"))?;
-    if errors.has_errors() {
-        bail!("elaboration errors");
-    }
+    bail_if_errors_reported(&errors, "Elaboration (types and modules)")?;
 
     // Phase 3.5: unnest
     let elab_file = unnest(elab_file);
@@ -969,9 +993,7 @@ fn run_compile(urp_path: &Path, settings: &mut Settings) -> Result<PathBuf> {
     // Core checks
     check_marshal(&core_file, settings, &mut errors);
     check_termination(&core_file, &mut errors);
-    if errors.has_errors() {
-        bail!("check errors");
-    }
+    bail_if_errors_reported(&errors, "Core verification (marshalling / termination)")?;
 
     // Monoize
     let mono_file = monoize(core_file, settings, &mut errors)
@@ -998,9 +1020,7 @@ fn run_compile(urp_path: &Path, settings: &mut Settings) -> Result<PathBuf> {
     let (mono_file, _env_vars) = mono_side_check(mono_file, settings, &mut errors);
     let mono_file = mono_sig_check(mono_file);
     let mono_file = mono_dbmode_check(mono_file);
-    if errors.has_errors() {
-        bail!("mono check errors");
-    }
+    bail_if_errors_reported(&errors, "Monomorphization checks")?;
 
     let mono_file = if settings.debug {
         mono_iflow(mono_file, settings, &mut errors)
@@ -1027,9 +1047,7 @@ fn run_compile(urp_path: &Path, settings: &mut Settings) -> Result<PathBuf> {
     // CJRize
     let cjr_file =
         cjrize(mono_file, &mut errors).ok_or_else(|| anyhow::anyhow!("CJRize failed"))?;
-    if errors.has_errors() {
-        bail!("CJR errors");
-    }
+    bail_if_errors_reported(&errors, "C back-end (CJR)")?;
 
     // Prepare SQL statements and annotate nested queries
     let cjr_file = cjr_prepare(cjr_file, settings);
@@ -1070,15 +1088,11 @@ pub fn compile_to_outputs(urp_path: &Path, settings: &mut Settings) -> Result<(S
 
     let source_file =
         parse_sources(&job, &mut errors).ok_or_else(|| anyhow::anyhow!("Parse failed"))?;
-    if errors.has_errors() {
-        bail!("parse errors");
-    }
+    bail_if_errors_reported(&errors, "Parsing")?;
 
     let elab_file = elaborate(source_file, settings, &mut errors)
         .ok_or_else(|| anyhow::anyhow!("Elaboration failed"))?;
-    if errors.has_errors() {
-        bail!("elaboration errors");
-    }
+    bail_if_errors_reported(&errors, "Elaboration (types and modules)")?;
 
     let elab_file = unnest(elab_file);
     let expl_file =
@@ -1101,9 +1115,7 @@ pub fn compile_to_outputs(urp_path: &Path, settings: &mut Settings) -> Result<(S
 
     check_marshal(&core_file, settings, &mut errors);
     check_termination(&core_file, &mut errors);
-    if errors.has_errors() {
-        bail!("check errors");
-    }
+    bail_if_errors_reported(&errors, "Core verification (marshalling / termination)")?;
 
     let mono_file = monoize(core_file, settings, &mut errors)
         .ok_or_else(|| anyhow::anyhow!("Monoize failed"))?;
@@ -1120,9 +1132,7 @@ pub fn compile_to_outputs(urp_path: &Path, settings: &mut Settings) -> Result<(S
     let (mono_file, _env_vars) = mono_side_check(mono_file, settings, &mut errors);
     let mono_file = mono_sig_check(mono_file);
     let mono_file = mono_dbmode_check(mono_file);
-    if errors.has_errors() {
-        bail!("mono check errors");
-    }
+    bail_if_errors_reported(&errors, "Monomorphization checks")?;
 
     let mono_file = if settings.debug {
         mono_iflow(mono_file, settings, &mut errors)
@@ -1141,9 +1151,7 @@ pub fn compile_to_outputs(urp_path: &Path, settings: &mut Settings) -> Result<(S
     let _js = js_compile(&mono_file, settings, &mut errors);
     let cjr_file =
         cjrize(mono_file, &mut errors).ok_or_else(|| anyhow::anyhow!("CJRize failed"))?;
-    if errors.has_errors() {
-        bail!("CJR errors");
-    }
+    bail_if_errors_reported(&errors, "C back-end (CJR)")?;
 
     let cjr_file = cjr_prepare(cjr_file, settings);
     let cjr_file = cjr_check_nest(cjr_file);
@@ -1177,6 +1185,7 @@ pub fn module_of(filename: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::Ordering;
 
     fn minimal_mono_file() -> crate::monomorphized::File {
         (
@@ -1287,11 +1296,45 @@ mod tests {
             source_file.len() >= 2,
             "parse_sources must return Basis + at least one user module (catches Some(Default::default()))"
         );
+        assert_eq!(
+            source_file[0].span.file, "<basis>",
+            "Basis wrapper span.file must be set (catches delete field file in basis Span literal)"
+        );
         let user_module = &source_file[1];
         assert!(
             user_module.span.file.ends_with("x.ur"),
             "span.file must be set to source path (catches delete field file mutant): {}",
             user_module.span.file
+        );
+    }
+
+    #[test]
+    fn parse_sources_sets_span_file_for_urs_signature() {
+        let dir = tempfile::tempdir().unwrap();
+        let urp_path = dir.path().join("app.urp");
+        std::fs::write(&urp_path, "database dbname=test\nsql out.sql\n\nx\n").unwrap();
+        std::fs::write(dir.path().join("x.ur"), "val x = 1").unwrap();
+        std::fs::write(dir.path().join("x.urs"), "val x : int").unwrap();
+        let job = parse_urp(&urp_path).unwrap();
+        let mut errors = ErrorReporter::new();
+        let cwd = std::env::current_dir().unwrap();
+        std::env::set_current_dir(dir.path()).unwrap();
+        let result = parse_sources(&job, &mut errors);
+        std::env::set_current_dir(&cwd).unwrap();
+        let source_file = result.unwrap_or_else(|| {
+            panic!("parse_sources: {:?}", errors);
+        });
+        let user_module = &source_file[1];
+        let crate::source::Decl::Str(_, Some(sgn), _, _, _) = &user_module.node else {
+            panic!(
+                "expected Str decl with signature, got {:?}",
+                user_module.node
+            );
+        };
+        assert!(
+            sgn.span.file.ends_with("x.urs"),
+            "signature span.file must name .urs path (catches delete field file in sgn_span): {}",
+            sgn.span.file
         );
     }
 
@@ -2190,6 +2233,94 @@ mod tests {
                 || err_msg.contains("timed out"),
             "invalid C must fail at compile or time out (never silent link): {}",
             err_msg
+        );
+    }
+
+    #[test]
+    fn run_compile_invokes_apply_boot_settings() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("boot.urp"), "m\n").unwrap();
+        APPLY_BOOT_SETTINGS_CALLS.store(0, Ordering::SeqCst);
+        let proj = dir.path().join("boot");
+        let _ = run_compile(&proj, &mut Settings::default());
+        assert!(
+            APPLY_BOOT_SETTINGS_CALLS.load(Ordering::SeqCst) >= 1,
+            "apply_boot_settings must run (catches replace with () mutant)"
+        );
+    }
+
+    #[test]
+    fn resolve_urp_project_path_appends_urp_suffix() {
+        assert_eq!(
+            resolve_urp_project_path(Path::new("/tmp/w/widget.ur")),
+            PathBuf::from("/tmp/w/widget.urp")
+        );
+        assert_eq!(
+            resolve_urp_project_path(Path::new("/tmp/w/widget.urp")),
+            PathBuf::from("/tmp/w/widget.urp")
+        );
+    }
+
+    #[test]
+    fn dbms_link_library_flag_sqlite_is_sqlite3() {
+        assert_eq!(dbms_link_library_flag("sqlite"), "-lsqlite3");
+        assert_eq!(dbms_link_library_flag("mysql"), "-lmysqlclient");
+        assert_eq!(dbms_link_library_flag(""), "-lpq");
+    }
+
+    #[test]
+    fn mono_filecache_invokes_instrument() {
+        MONO_FILECACHE_CALLS.store(0, Ordering::SeqCst);
+        let mut settings = Settings::default();
+        settings.file_cache = Some("/tmp/urweb_fc_test".into());
+        let file: crate::monomorphized::File = (
+            vec![crate::error_types::Located::dummy(
+                crate::monomorphized::Decl::JavaScript("/*x*/".into()),
+            )],
+            vec![],
+        );
+        let out = mono_filecache(file.clone(), &settings);
+        assert_eq!(MONO_FILECACHE_CALLS.load(Ordering::SeqCst), 1);
+        assert_eq!(out.0.len(), file.0.len());
+    }
+
+    #[test]
+    fn css_summarize_invokes_core_summarize() {
+        CSS_SUMMARIZE_CALLS.store(0, Ordering::SeqCst);
+        let file: crate::core::File = vec![];
+        let _ = css_summarize(&file);
+        assert_eq!(CSS_SUMMARIZE_CALLS.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn parse_sources_ffi_module_span_names_urs_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let urp_path = dir.path().join("app.urp");
+        std::fs::write(
+            &urp_path,
+            "ffi extmod\ndatabase dbname=test\nsql out.sql\n\nx\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("extmod.urs"), "val f : int").unwrap();
+        std::fs::write(dir.path().join("x.ur"), "val x = 1").unwrap();
+        let job = parse_urp(&urp_path).unwrap();
+        let mut errors = ErrorReporter::new();
+        let cwd = std::env::current_dir().unwrap();
+        std::env::set_current_dir(dir.path()).unwrap();
+        let result = parse_sources(&job, &mut errors);
+        std::env::set_current_dir(&cwd).unwrap();
+        let source_file = result.expect("parse_sources");
+        let ffi_decl = source_file.iter().find(|d| {
+            matches!(
+                &d.node,
+                crate::source::Decl::FfiStr(name, _, _) if name == "Extmod"
+            )
+        });
+        let ffi_decl = ffi_decl.expect("FFI module decl");
+        assert!(
+            ffi_decl.span.file.ends_with("extmod.urs"),
+            "FFI span.file must be the .urs path (catches delete field file in ffi span): {}",
+            ffi_decl.span.file
         );
     }
 }
