@@ -392,6 +392,32 @@ pub fn rewrite_case_arm_separators(input: &str) -> String {
                 }
                 continue;
             }
+            // Declaration keywords at top level (let_depth == 0) → case arm ends
+            if depth == 0 && let_depth == 0 {
+                for kw in &[
+                    b"fun" as &[u8],
+                    b"val",
+                    b"and",
+                    b"open",
+                    b"structure",
+                    b"functor",
+                    b"signature",
+                    b"datatype",
+                    b"type",
+                    b"class",
+                    b"con",
+                    b"table",
+                    b"sequence",
+                    b"view",
+                    b"cookie",
+                    b"style",
+                    b"task",
+                ] {
+                    if pp_kw_word_at(b, i, n, kw) {
+                        return Some((i, BodyStop::CaseDone));
+                    }
+                }
+            }
             match b[i] {
                 b'(' | b'[' | b'{' => {
                     out.push(b[i] as char);
@@ -506,6 +532,138 @@ pub fn rewrite_case_arm_separators(input: &str) -> String {
 
 pub fn rewrite_case_expressions(src: &str) -> String {
     rewrite_case_arm_separators(&rewrite_case_leading_bars(src))
+}
+
+/// Rewrite bare kind binders `nm :: KindExpr ->` to `[nm :: KindExpr] ->`.
+///
+/// In Ur/Web, `nm :: K -> C` is valid at the constructor level (equivalent to `[nm :: K] -> C`).
+/// Adding this as a grammar rule causes LR(1) conflicts because `IDENT` is used for both
+/// `AtomConNode` and `KindAtom`.  The preprocessor handles the common case by scanning for
+/// `lowercase-ident :: kind ->` patterns and wrapping in brackets.
+pub fn rewrite_bare_kind_binders(src: &str) -> String {
+    let b = src.as_bytes();
+    let n = b.len();
+    let mut out = String::with_capacity(n);
+    let mut i = 0usize;
+
+    while i < n {
+        // Skip ML comments
+        if i + 1 < n && b[i] == b'(' && b[i + 1] == b'*' {
+            let start = i;
+            i = skip_ml_comment_bytes(b, i + 2, n);
+            out.push_str(&src[start..i]);
+            continue;
+        }
+        // Skip strings
+        if b[i] == b'"' {
+            let start = i;
+            i = skip_string_bytes(b, i + 1, n);
+            out.push_str(&src[start..i]);
+            continue;
+        }
+        // Check for lowercase ident
+        if b[i].is_ascii_lowercase() || b[i] == b'_' {
+            // Require word boundary on left
+            if i > 0 && pp_kw_cont(b[i - 1]) {
+                out.push(b[i] as char);
+                i += 1;
+                continue;
+            }
+            // Scan identifier
+            let id_start = i;
+            while i < n && pp_kw_cont(b[i]) {
+                i += 1;
+            }
+            let id = &src[id_start..i];
+            // Skip whitespace
+            let ws_start = i;
+            while i < n && matches!(b[i], b' ' | b'\t' | b'\n' | b'\r') {
+                i += 1;
+            }
+            let ws1 = &src[ws_start..i];
+            // Check for `::` (not `:::`)
+            if i + 2 <= n && &b[i..i + 2] == b"::" && b.get(i + 2).copied() != Some(b':') {
+                i += 2;
+                // Skip whitespace after ::
+                let ws2_start = i;
+                while i < n && matches!(b[i], b' ' | b'\t') {
+                    i += 1;
+                }
+                let ws2 = &src[ws2_start..i];
+                // Scan kind expression: tokens until `->` at bracket depth 0
+                let kind_start = i;
+                let mut depth = 0i32;
+                let mut found_arrow = false;
+                let mut arrow_pos = i;
+                let mut j = i;
+                while j < n {
+                    if j + 1 < n && b[j] == b'(' && b[j + 1] == b'*' {
+                        j = skip_ml_comment_bytes(b, j + 2, n);
+                        continue;
+                    }
+                    if b[j] == b'"' {
+                        j = skip_string_bytes(b, j + 1, n);
+                        continue;
+                    }
+                    if matches!(b[j], b'(' | b'[' | b'{') {
+                        depth += 1;
+                        j += 1;
+                        continue;
+                    }
+                    if matches!(b[j], b')' | b']' | b'}') {
+                        depth -= 1;
+                        if depth < 0 {
+                            break;
+                        }
+                        j += 1;
+                        continue;
+                    }
+                    if depth == 0 && j + 2 <= n && &b[j..j + 2] == b"->" {
+                        found_arrow = true;
+                        arrow_pos = j;
+                        break;
+                    }
+                    // Stop at tokens that can't appear in a kind at depth 0
+                    if depth == 0 && matches!(b[j], b',' | b'=' | b'|' | b';') {
+                        break;
+                    }
+                    j += 1;
+                }
+                if found_arrow {
+                    let kind_text = src[kind_start..arrow_pos].trim_end();
+                    out.push('[');
+                    out.push_str(id);
+                    out.push_str(ws1);
+                    out.push_str("::");
+                    out.push_str(ws2);
+                    out.push_str(kind_text);
+                    out.push_str("] -> ");
+                    i = arrow_pos + 2;
+                    while i < n && matches!(b[i], b' ' | b'\t') {
+                        i += 1;
+                    }
+                    continue;
+                } else {
+                    // No arrow: emit id, whitespace, `::`, whitespace as-is
+                    out.push_str(id);
+                    out.push_str(ws1);
+                    out.push_str("::");
+                    out.push_str(ws2);
+                    // i is already at kind_start
+                    continue;
+                }
+            } else {
+                out.push_str(id);
+                out.push_str(ws1);
+                // i is already past ws1
+                continue;
+            }
+        }
+        let ch = src[i..].chars().next().unwrap_or('\0');
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    out
 }
 
 /// Strip SQL table-constraint continuation lines from `.ur` source.
@@ -1513,7 +1671,7 @@ pub fn parse_ur(_filename: &str, source: &str, errors: &mut ErrorReporter) -> Op
     #[cfg(generated_parser)]
     {
         let pre = rewrite_case_expressions(&rewrite_sgn_where(&rewrite_datatype_constructors(
-            &strip_table_constraints(source),
+            &rewrite_bare_kind_binders(&strip_table_constraints(source)),
         )));
         let lexer = lexical_analyzer::XmlAwareLexer::new(&pre);
         match grammar::FileParser::new().parse(lexer) {

@@ -1,41 +1,23 @@
-parse_ur(/Users/jacksmith/prog/urweb/demo/subforms.ur) error: UnrecognizedToken { token: (234, In, 236), expected: ["\"arm_sep\"", "\"case_end\""] }
-:0:0-0:0: UnrecognizedToken { token: (234, In, 236), expected: ["\"arm_sep\"", "\"case_end\""] }
-parse_ur(/Users/jacksmith/prog/urweb/demo/list.ur) error: UnrecognizedToken { token: (245, Comma, 246), expected: ["\")\""] }
-:0:0-0:0: UnrecognizedToken { token: (245, Comma, 246), expected: ["\")\""] }
-parse_ur(/Users/jacksmith/prog/urweb/demo/listFun.ur) error: UnrecognizedToken { token: (291, Comma, 292), expected: ["\")\""] }
-:0:0-0:0: UnrecognizedToken { token: (291, Comma, 292), expected: ["\")\""] }
-parse_ur(/Users/jacksmith/prog/urweb/demo/sql.ur) error: UnrecognizedToken { token: (935, Comma, 936), expected: ["\")\""] }
-:0:0-0:0: UnrecognizedToken { token: (935, Comma, 936), expected: ["\")\""] }
-parse_ur(/Users/jacksmith/prog/urweb/demo/refFun.ur) error: UnrecognizedToken { token: (293, Comma, 294), expected: ["\")\""] }
-:0:0-0:0: UnrecognizedToken { token: (293, Comma, 294), expected: ["\")\""] }
+parse_ur(/Users/jacksmith/prog/urweb/demo/listFun.ur) error: UnrecognizedToken { token: (355, Fun, 358), expected: ["\"arm_sep\"", "\"case_end\""] }
+:0:0-0:0: UnrecognizedToken { token: (355, Fun, 358), expected: ["\"arm_sep\"", "\"case_end\""] }
+parse_ur(/Users/jacksmith/prog/urweb/demo/refFun.ur) error: UnrecognizedToken { token: (546, Fun, 549), expected: ["\"arm_sep\"", "\"case_end\""] }
+:0:0-0:0: UnrecognizedToken { token: (546, Fun, 549), expected: ["\"arm_sep\"", "\"case_end\""] }
 parse_ur(/Users/jacksmith/prog/urweb/demo/treeFun.ur) error: UnrecognizedToken { token: (639, Lparen, 640), expected: ["\",\"", "\"=\"", "\"}\""] }
 :0:0-0:0: UnrecognizedToken { token: (639, Lparen, 640), expected: ["\",\"", "\"=\"", "\"}\""] }
-parse_ur(/Users/jacksmith/prog/urweb/demo/tree.ur) error: UnrecognizedToken { token: (85, Comma, 86), expected: ["\"con\"", "\"constraint\"", "\"cookie\"", "\"datatype\"", "\"export\"", "\"ffi\"", "\"fun\"", "\"functor\"", "\"open\"", "\"policy\"", "\"sequence\"", "\"signature\"", "\"structure\"", "\"style\"", "\"table\"", "\"task\"", "\"type\"", "\"val\"", "\"view\""] }
-:0:0-0:0: UnrecognizedToken { token: (85, Comma, 86), expected: ["\"con\"", "\"constraint\"", "\"cookie\"", "\"datatype\"", "\"export\"", "\"ffi\"", "\"fun\"", "\"functor\"", "\"open\"", "\"policy\"", "\"sequence\"", "\"signature\"", "\"structure\"", "\"style\"", "\"table\"", "\"task\"", "\"type\"", "\"val\"", "\"view\""] }
-parse_ur(/Users/jacksmith/prog/urweb/demo/constraints.ur) error: UnrecognizedToken { token: (74, Comma, 75), expected: ["\"con\"", "\"constraint\"", "\"cookie\"", "\"datatype\"", "\"export\"", "\"ffi\"", "\"fun\"", "\"functor\"", "\"open\"", "\"policy\"", "\"sequence\"", "\"signature\"", "\"structure\"", "\"style\"", "\"table\"", "\"task\"", "\"type\"", "\"val\"", "\"view\""] }
-:0:0-0:0: UnrecognizedToken { token: (74, Comma, 75), expected: ["\"con\"", "\"constraint\"", "\"cookie\"", "\"datatype\"", "\"export\"", "\"ffi\"", "\"fun\"", "\"functor\"", "\"open\"", "\"policy\"", "\"sequence\"", "\"signature\"", "\"structure\"", "\"style\"", "\"table\"", "\"task\"", "\"type\"", "\"val\"", "\"view\""] }
-parse_ur(/Users/jacksmith/prog/urweb/demo/outer.ur) error: UnrecognizedToken { token: (134, Comma, 135), expected: ["\"con\"", "\"constraint\"", "\"cookie\"", "\"datatype\"", "\"export\"", "\"ffi\"", "\"fun\"", "\"functor\"", "\"open\"", "\"policy\"", "\"sequence\"", "\"signature\"", "\"structure\"", "\"style\"", "\"table\"", "\"task\"", "\"type\"", "\"val\"", "\"view\""] }
-:0:0-0:0: UnrecognizedToken { token: (134, Comma, 135), expected: ["\"con\"", "\"constraint\"", "\"cookie\"", "\"datatype\"", "\"export\"", "\"ffi\"", "\"fun\"", "\"functor\"", "\"open\"", "\"policy\"", "\"sequence\"", "\"signature\"", "\"structure\"", "\"style\"", "\"table\"", "\"task\"", "\"type\"", "\"val\"", "\"view\""] }
-parse_ur(/Users/jacksmith/prog/urweb/demo/view.ur) error: UnrecognizedToken { token: (597, Lbrack, 598), expected: ["\"...\"", "\"IDENT\"", "\"Name\"", "\"UIDENT\"", "\"}\""] }
-:0:0-0:0: UnrecognizedToken { token: (597, Lbrack, 598), expected: ["\"...\"", "\"IDENT\"", "\"Name\"", "\"UIDENT\"", "\"}\""] }
-parse_ur(/Users/jacksmith/prog/urweb/demo/cookieSec.ur) error: UnrecognizedToken { token: (944, Lbrack, 945), expected: ["\"...\"", "\"IDENT\"", "\"Name\"", "\"UIDENT\"", "\"}\""] }
-:0:0-0:0: UnrecognizedToken { token: (944, Lbrack, 945), expected: ["\"...\"", "\"IDENT\"", "\"Name\"", "\"UIDENT\"", "\"}\""] }
-parse_ur(/Users/jacksmith/prog/urweb/demo/crud.ur) error: UnrecognizedToken { token: (150, Dcolon, 152), expected: ["\"#\"", "\"$\"", "\"(\"", "\"()\"", "\"*\"", "\"++\"", "\",\"", "\"->\"", "\".\"", "\"IDENT\"", "\"UIDENT\"", "\"[\"", "\"_\"", "\"map\"", "\"{\"", "\"}\""] }
-:0:0-0:0: UnrecognizedToken { token: (150, Dcolon, 152), expected: ["\"#\"", "\"$\"", "\"(\"", "\"()\"", "\"*\"", "\"++\"", "\",\"", "\"->\"", "\".\"", "\"IDENT\"", "\"UIDENT\"", "\"[\"", "\"_\"", "\"map\"", "\"{\"", "\"}\""] }
+parse_ur(/Users/jacksmith/prog/urweb/demo/constraints.ur) error: UnrecognizedToken { token: (1073, Rbrack, 1074), expected: ["\"arm_sep\"", "\"case_end\""] }
+:0:0-0:0: UnrecognizedToken { token: (1073, Rbrack, 1074), expected: ["\"arm_sep\"", "\"case_end\""] }
+parse_ur(/Users/jacksmith/prog/urweb/demo/crud.ur) error: UnrecognizedToken { token: (2014, Minusminus, 2016), expected: ["\"%\"", "\"(\"", "\"()\"", "\")\"", "\"*\"", "\"+\"", "\",\"", "\"-\"", "\".\"", "\"/\"", "\":\"", "\"::\"", "\";\"", "\"<\"", "\"<=\"", "\"<>\"", "\"=\"", "\">\"", "\">=\"", "\"@\"", "\"BEGIN_TAG\"", "\"CHAR\"", "\"FLOAT\"", "\"IDENT\"", "\"INT\"", "\"STRING\"", "\"UIDENT\"", "\"XML_BEGIN_END\"", "\"[\"", "\"^\"", "\"_\"", "\"___\"", "\"andalso\"", "\"false\"", "\"orelse\"", "\"true\"", "\"{\""] }
+:0:0-0:0: UnrecognizedToken { token: (2014, Minusminus, 2016), expected: ["\"%\"", "\"(\"", "\"()\"", "\")\"", "\"*\"", "\"+\"", "\",\"", "\"-\"", "\".\"", "\"/\"", "\":\"", "\"::\"", "\";\"", "\"<\"", "\"<=\"", "\"<>\"", "\"=\"", "\">\"", "\">=\"", "\"@\"", "\"BEGIN_TAG\"", "\"CHAR\"", "\"FLOAT\"", "\"IDENT\"", "\"INT\"", "\"STRING\"", "\"UIDENT\"", "\"XML_BEGIN_END\"", "\"[\"", "\"^\"", "\"_\"", "\"___\"", "\"andalso\"", "\"false\"", "\"orelse\"", "\"true\"", "\"{\""] }
 parse_ur(/Users/jacksmith/prog/urweb/demo/listEdit.ur) error: UnrecognizedToken { token: (652, Fun, 655), expected: ["\"arm_sep\"", "\"case_end\""] }
 :0:0-0:0: UnrecognizedToken { token: (652, Fun, 655), expected: ["\"arm_sep\"", "\"case_end\""] }
-parse_ur(/Users/jacksmith/prog/urweb/demo/noisy.ur) error: UnrecognizedToken { token: (171, Comma, 172), expected: ["\")\""] }
-:0:0-0:0: UnrecognizedToken { token: (171, Comma, 172), expected: ["\")\""] }
-parse_ur(/Users/jacksmith/prog/urweb/demo/batch.ur) error: UnrecognizedToken { token: (211, Comma, 212), expected: ["\")\""] }
-:0:0-0:0: UnrecognizedToken { token: (211, Comma, 212), expected: ["\")\""] }
-parse_ur(/Users/jacksmith/prog/urweb/demo/batchFun.ur) error: UnrecognizedToken { token: (1321, Comma, 1322), expected: ["\")\""] }
-:0:0-0:0: UnrecognizedToken { token: (1321, Comma, 1322), expected: ["\")\""] }
-parse_ur(/Users/jacksmith/prog/urweb/demo/buffer.ur) error: UnrecognizedToken { token: (173, Larrow, 175), expected: ["\"%\"", "\"(\"", "\"()\"", "\"*\"", "\"+\"", "\"-\"", "\".\"", "\"/\"", "\":\"", "\"::\"", "\"<\"", "\"<=\"", "\"<>\"", "\"=\"", "\">\"", "\">=\"", "\"@\"", "\"BEGIN_TAG\"", "\"CHAR\"", "\"FLOAT\"", "\"IDENT\"", "\"INT\"", "\"STRING\"", "\"UIDENT\"", "\"XML_BEGIN_END\"", "\"[\"", "\"^\"", "\"_\"", "\"___\"", "\"andalso\"", "\"con\"", "\"constraint\"", "\"cookie\"", "\"datatype\"", "\"export\"", "\"false\"", "\"ffi\"", "\"fun\"", "\"functor\"", "\"open\"", "\"orelse\"", "\"policy\"", "\"sequence\"", "\"signature\"", "\"structure\"", "\"style\"", "\"table\"", "\"task\"", "\"true\"", "\"type\"", "\"val\"", "\"view\"", "\"{\""] }
-:0:0-0:0: UnrecognizedToken { token: (173, Larrow, 175), expected: ["\"%\"", "\"(\"", "\"()\"", "\"*\"", "\"+\"", "\"-\"", "\".\"", "\"/\"", "\":\"", "\"::\"", "\"<\"", "\"<=\"", "\"<>\"", "\"=\"", "\">\"", "\">=\"", "\"@\"", "\"BEGIN_TAG\"", "\"CHAR\"", "\"FLOAT\"", "\"IDENT\"", "\"INT\"", "\"STRING\"", "\"UIDENT\"", "\"XML_BEGIN_END\"", "\"[\"", "\"^\"", "\"_\"", "\"___\"", "\"andalso\"", "\"con\"", "\"constraint\"", "\"cookie\"", "\"datatype\"", "\"export\"", "\"false\"", "\"ffi\"", "\"fun\"", "\"functor\"", "\"open\"", "\"orelse\"", "\"policy\"", "\"sequence\"", "\"signature\"", "\"structure\"", "\"style\"", "\"table\"", "\"task\"", "\"true\"", "\"type\"", "\"val\"", "\"view\"", "\"{\""] }
-parse_ur(/Users/jacksmith/prog/urweb/demo/roundTrip.ur) error: UnrecognizedToken { token: (215, Lbrack, 216), expected: ["\"...\"", "\"IDENT\"", "\"Name\"", "\"UIDENT\"", "\"}\""] }
-:0:0-0:0: UnrecognizedToken { token: (215, Lbrack, 216), expected: ["\"...\"", "\"IDENT\"", "\"Name\"", "\"UIDENT\"", "\"}\""] }
-parse_ur(/Users/jacksmith/prog/urweb/demo/broadcast.ur) error: UnrecognizedToken { token: (353, Lbrack, 354), expected: ["\"...\"", "\"IDENT\"", "\"Name\"", "\"UIDENT\"", "\"}\""] }
-:0:0-0:0: UnrecognizedToken { token: (353, Lbrack, 354), expected: ["\"...\"", "\"IDENT\"", "\"Name\"", "\"UIDENT\"", "\"}\""] }
-parse_ur(/Users/jacksmith/prog/urweb/demo/chat.ur) error: UnrecognizedToken { token: (264, Comma, 265), expected: ["\")\""] }
-:0:0-0:0: UnrecognizedToken { token: (264, Comma, 265), expected: ["\")\""] }
+parse_ur(/Users/jacksmith/prog/urweb/demo/noisy.ur) error: UnrecognizedToken { token: (412, Fun, 415), expected: ["\"arm_sep\"", "\"case_end\""] }
+:0:0-0:0: UnrecognizedToken { token: (412, Fun, 415), expected: ["\"arm_sep\"", "\"case_end\""] }
+parse_ur(/Users/jacksmith/prog/urweb/demo/batchFun.ur) error: UnrecognizedToken { token: (1629, Plusplus, 1631), expected: ["\"%\"", "\"(\"", "\"()\"", "\")\"", "\"*\"", "\"+\"", "\",\"", "\"-\"", "\".\"", "\"/\"", "\":\"", "\"::\"", "\";\"", "\"<\"", "\"<-\"", "\"<=\"", "\"<>\"", "\"=\"", "\">\"", "\">=\"", "\"@\"", "\"BEGIN_TAG\"", "\"CHAR\"", "\"FLOAT\"", "\"IDENT\"", "\"INT\"", "\"STRING\"", "\"UIDENT\"", "\"XML_BEGIN_END\"", "\"[\"", "\"^\"", "\"_\"", "\"___\"", "\"andalso\"", "\"false\"", "\"orelse\"", "\"true\"", "\"{\""] }
+:0:0-0:0: UnrecognizedToken { token: (1629, Plusplus, 1631), expected: ["\"%\"", "\"(\"", "\"()\"", "\")\"", "\"*\"", "\"+\"", "\",\"", "\"-\"", "\".\"", "\"/\"", "\":\"", "\"::\"", "\";\"", "\"<\"", "\"<-\"", "\"<=\"", "\"<>\"", "\"=\"", "\">\"", "\">=\"", "\"@\"", "\"BEGIN_TAG\"", "\"CHAR\"", "\"FLOAT\"", "\"IDENT\"", "\"INT\"", "\"STRING\"", "\"UIDENT\"", "\"XML_BEGIN_END\"", "\"[\"", "\"^\"", "\"_\"", "\"___\"", "\"andalso\"", "\"false\"", "\"orelse\"", "\"true\"", "\"{\""] }
+parse_ur(/Users/jacksmith/prog/urweb/demo/buffer.ur) error: UnrecognizedToken { token: (407, And, 410), expected: ["\"arm_sep\"", "\"case_end\""] }
+:0:0-0:0: UnrecognizedToken { token: (407, And, 410), expected: ["\"arm_sep\"", "\"case_end\""] }
+parse_ur(/Users/jacksmith/prog/urweb/demo/roundTrip.ur) error: UnrecognizedToken { token: (489, Int(1), 490), expected: ["\"#\"", "\"IDENT\"", "\"UIDENT\""] }
+:0:0-0:0: UnrecognizedToken { token: (489, Int(1), 490), expected: ["\"#\"", "\"IDENT\"", "\"UIDENT\""] }
+parse_ur(/Users/jacksmith/prog/urweb/demo/broadcast.ur) error: UnrecognizedToken { token: (419, CaseEnd, 427), expected: ["\";\"", "\"andalso\"", "\"orelse\""] }
+:0:0-0:0: UnrecognizedToken { token: (419, CaseEnd, 427), expected: ["\";\"", "\"andalso\"", "\"orelse\""] }
 Parse failed

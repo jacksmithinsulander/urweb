@@ -16,15 +16,25 @@ pub struct GdbSession {
 }
 
 impl GdbSession {
-    pub fn spawn(gdb_path: &str) -> Result<Self> {
-        let mut child = Command::new(gdb_path)
+    /// Run GDB (`--interpreter=mi3`) or LLDB via **lldb-mi** (`--interpreter=mi2`).
+    /// Launch `MIMode`: `gdb` (default) or `lldb` / `lldb-mi`.
+    pub fn spawn(exe: &str, mi_mode: &str) -> Result<Self> {
+        let mm = mi_mode.to_ascii_lowercase();
+        let lldb = mm == "lldb" || mm == "lldb-mi" || mm == "lldbmi";
+        let mut child = Command::new(exe);
+        child
             .arg("-q")
-            .arg("--interpreter=mi3")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+            .stderr(Stdio::piped());
+        if lldb {
+            child.args(["--interpreter", "mi2"]);
+        } else {
+            child.arg("--interpreter=mi3");
+        }
+        let mut child = child
             .spawn()
-            .with_context(|| format!("failed to spawn GDB '{gdb_path}'"))?;
+            .with_context(|| format!("failed to spawn debugger '{exe}' ({mi_mode})"))?;
         let stdin = child.stdin.take().unwrap();
         let stdout = child.stdout.take().unwrap();
         let stderr = child.stderr.take().unwrap();
@@ -32,7 +42,7 @@ impl GdbSession {
             let mut br = BufReader::new(stderr);
             let mut line = String::new();
             while br.read_line(&mut line).unwrap_or(0) > 0 {
-                eprint!("[ur-debugger gdb] {line}");
+                eprint!("[ur-debugger mi] {line}");
                 line.clear();
             }
         });
@@ -186,6 +196,20 @@ impl GdbSession {
         Ok(())
     }
 
+    /// Watchpoint (`-break-watch`). `expr` is a C expression or address (e.g. `*0x...`).
+    pub fn break_watch(&mut self, expr: &str, access: WatchAccess) -> Result<Option<String>> {
+        let flag = match access {
+            WatchAccess::Write => "",
+            WatchAccess::Read => "-r ",
+            WatchAccess::ReadWrite => "-a ",
+        };
+        let pl = self.mi_simple(&format!(
+            "-break-watch {flag}{}",
+            shell_escape(expr)
+        ))?;
+        Ok(extract_bkpt_number(&pl))
+    }
+
     pub fn exec_run(&mut self, args: &[String]) -> Result<String> {
         if !args.is_empty() {
             let mut c = String::from("-exec-arguments");
@@ -214,6 +238,87 @@ impl GdbSession {
         self.mi_exec_until_stop("-exec-finish")
     }
 
+    /// `-exec-interrupt` then wait for `*stopped` (pause / break all).
+    pub fn exec_interrupt(&mut self) -> Result<String> {
+        let t = self.send_cmd("-exec-interrupt")?;
+        loop {
+            let line = self.read_line_raw()?;
+            if line.trim().is_empty() {
+                continue;
+            }
+            let tl = line.trim_end();
+            match classify_mi_line(tl) {
+                Some(MiRecord::Result {
+                    token: tok,
+                    class: MiResultClass::Error,
+                    payload: pl,
+                }) if tok == t => {
+                    let msg = mi_get_str(pl, "msg").unwrap_or("GDB/MI error");
+                    return Err(anyhow!("{msg}"));
+                }
+                Some(MiRecord::Result {
+                    token: tok,
+                    class: MiResultClass::Done,
+                    ..
+                }) if tok == t => {
+                    // Continue until asynchronous *stopped.
+                }
+                Some(MiRecord::ExecAsync {
+                    class: "stopped",
+                    payload,
+                }) => {
+                    return Ok(payload.to_string());
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Evaluate an expression in the given thread/frame (watch / debug console).
+    pub fn data_evaluate_expression(
+        &mut self,
+        thread: u64,
+        frame: u32,
+        expr: &str,
+    ) -> Result<String> {
+        self.thread_select(thread)?;
+        let quoted = mi_double_quote(expr);
+        self.mi_simple(&format!(
+            "-data-evaluate-expression --thread {thread} --frame {frame} {quoted}"
+        ))
+    }
+
+    /// Assign to a variable in the current stack frame (DAP `setVariable`).
+    pub fn set_variable(
+        &mut self,
+        thread: u64,
+        frame: u32,
+        name: &str,
+        value: &str,
+    ) -> Result<()> {
+        if !name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_')
+        {
+            return Err(anyhow!(
+                "setVariable name must be a simple C identifier"
+            ));
+        }
+        self.thread_select(thread)?;
+        self.mi_simple(&format!("-stack-select-frame {frame}"))?;
+        let cmd = format!("set var {name} = {value}");
+        let mi = format!("-interpreter-exec console {}", mi_double_quote(&cmd));
+        self.mi_simple(&mi)?;
+        Ok(())
+    }
+
+    /// Disassemble a byte range `[start, end)` (GDB `-data-disassemble`, mode 0 = assembly only).
+    pub fn data_disassemble_range(&mut self, start: &str, end: &str) -> Result<String> {
+        self.mi_simple(&format!(
+            "-data-disassemble -s {start} -e {end} -- 0"
+        ))
+    }
+
     pub fn thread_select(&mut self, id: u64) -> Result<()> {
         self.mi_simple(&format!("-thread-select {id}"))?;
         Ok(())
@@ -230,10 +335,42 @@ impl GdbSession {
     }
 
     pub fn stack_list_vars(&mut self, thread: u64, frame: u32) -> Result<String> {
+        self.stack_list_vars_all(thread, frame)
+    }
+
+    /// Locals with `numchild` / types (for DAP variable expansion).
+    pub fn stack_list_vars_all(&mut self, thread: u64, frame: u32) -> Result<String> {
         self.thread_select(thread)?;
         self.mi_simple(&format!(
-            "-stack-list-variables --simple-values --frame {frame}"
+            "-stack-list-variables --all-values --frame {frame}"
         ))
+    }
+
+    pub fn var_create(&mut self, thread: u64, frame: u32, expr: &str) -> Result<String> {
+        self.thread_select(thread)?;
+        self.mi_simple(&format!(
+            "-var-create --thread {thread} --frame {frame} - * {}",
+            mi_double_quote(expr)
+        ))
+    }
+
+    pub fn var_list_children(&mut self, varobj: &str) -> Result<String> {
+        self.mi_simple(&format!(
+            "-var-list-children --all-values {varobj}"
+        ))
+    }
+
+    pub fn var_assign(&mut self, varobj: &str, value_expr: &str) -> Result<String> {
+        self.mi_simple(&format!(
+            "-var-assign {} {}",
+            varobj,
+            mi_double_quote(value_expr)
+        ))
+    }
+
+    pub fn var_delete(&mut self, varobj: &str) -> Result<()> {
+        let _ = self.mi_simple(&format!("-var-delete {varobj}"));
+        Ok(())
     }
 
     pub fn target_attach(&mut self, pid: u32) -> Result<()> {
@@ -271,6 +408,17 @@ fn escape_env_value(s: &str) -> String {
     s.replace('\\', "\\\\")
         .replace('"', "\\\"")
         .replace('\n', "\\n")
+}
+
+fn mi_double_quote(s: &str) -> String {
+    format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum WatchAccess {
+    Write,
+    Read,
+    ReadWrite,
 }
 
 fn extract_bkpt_number(pl: &str) -> Option<String> {

@@ -5,6 +5,12 @@
 //!
 //! ## Editor usage
 //! Point the debug adapter at `ur-debugger` with argument `--dap` (stdout must be JSON-RPC only).
+//!
+//! Implemented DAP (subset): `initialize`, `launch`, `attach`, `configurationDone`, `setBreakpoints`,
+//! `continue` / `next` / `stepIn` / `stepOut`, `pause`, `evaluate`, `setVariable`, `disassemble`,
+//! `threads`, `stackTrace`, `scopes`, `variables`, `disconnect`, `terminate`, `shutdown`; `stopped`
+//! + `terminated` on process exit; `entry` stop reason when `stopAtEntry` is set.
+//! With `ur-compile -debug`, C includes `#line` back to `.ur` where spans are present (per decl).
 
 use anyhow::{Context, Result};
 

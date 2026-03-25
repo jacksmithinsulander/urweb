@@ -1640,6 +1640,15 @@ fn p_proto(env: &CjrEnv, fx: &str, n: usize, args: &[(String, LocTyp)], ran: &Lo
 // Declaration printing
 // ---------------------------------------------------------------------------
 
+/// C `#line` so DWARF/debuggers map generated C back to Ur source (`.ur` / `.urs`).
+fn format_line_directive_for_span(span: &crate::error_types::Span) -> Option<String> {
+    if span.file.is_empty() || span.first.line == 0 {
+        return None;
+    }
+    let path = span.file.replace('\\', "\\\\").replace('"', "\\\"");
+    Some(format!("#line {} \"{}\"\n", span.first.line, path))
+}
+
 fn p_decl(
     env: &CjrEnv,
     d: &LocDecl,
@@ -3289,10 +3298,16 @@ pub fn cjr_print(file: &crate::c_like_representation::File, settings: &Settings)
     // Print each declaration using the full_env (for forward references)
     let mut decl_outputs: Vec<String> = Vec::new();
     for d in &all_ds {
-        let s = p_decl(&full_env, d, settings, &mut global_initializers);
-        if !s.is_empty() {
-            decl_outputs.push(s);
+        let body = p_decl(&full_env, d, settings, &mut global_initializers);
+        if body.is_empty() {
+            continue;
         }
+        let mut s = String::new();
+        if let Some(dir) = format_line_directive_for_span(&d.span) {
+            s.push_str(&dir);
+        }
+        s.push_str(&body);
+        decl_outputs.push(s);
     }
 
     // Build global forward declarations (prototypes) for all named functions

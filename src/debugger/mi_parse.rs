@@ -156,6 +156,43 @@ fn brace_close_index(s: &str) -> Option<usize> {
     None
 }
 
+/// Rows of `(address, instruction_text)` from `-data-disassemble` `asm_insns=[...]`.
+/// Each `child={...}` inside `-var-list-children` output.
+pub fn mi_extract_var_children(children_payload: &str) -> Vec<String> {
+    let mut v = Vec::new();
+    let mut rest = children_payload;
+    while let Some(pos) = rest.find("child={") {
+        let from = pos + "child=".len();
+        let inner = &rest[from..];
+        if let Some(end) = brace_close_index(inner) {
+            v.push(inner[..=end].to_string());
+            rest = &inner[end + 1..];
+        } else {
+            break;
+        }
+    }
+    v
+}
+
+pub fn mi_extract_asm_insns(payload: &str) -> Vec<(String, String)> {
+    let mut v = Vec::new();
+    let mut rest = payload;
+    while let Some(pos) = rest.find("{address=\"") {
+        let inner = &rest[pos..];
+        if let Some(end) = brace_close_index(inner) {
+            let blob = &inner[..=end];
+            if let Some(addr) = mi_get_str(blob, "address") {
+                let inst = mi_get_str(blob, "inst").unwrap_or("").to_string();
+                v.push((addr.to_string(), inst));
+            }
+            rest = &inner[end + 1..];
+        } else {
+            break;
+        }
+    }
+    v
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -211,5 +248,22 @@ mod tests {
         let frames = mi_extract_frames(s);
         assert_eq!(frames.len(), 2);
         assert!(frames[0].contains("func=\"a\""));
+    }
+
+    #[test]
+    fn extract_asm_rows() {
+        let p = r#"asm_insns=[{address="0x100",inst="push %rbp"},{address="0x101",inst="mov %rsp,%rbp"}]"#;
+        let rows = mi_extract_asm_insns(p);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].0, "0x100");
+        assert_eq!(rows[0].1, "push %rbp");
+    }
+
+    #[test]
+    fn extract_var_children() {
+        let s = r#"numchild="2",children=[child={name="v.0",exp="x",value="1",type="int",numchild="0"},child={name="v.1",exp="y",value="2",type="int",numchild="0"}]"#;
+        let ch = mi_extract_var_children(s);
+        assert_eq!(ch.len(), 2);
+        assert!(ch[0].contains("exp=\"x\""));
     }
 }
