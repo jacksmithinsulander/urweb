@@ -834,7 +834,7 @@ mod tests {
                     "member with dml+getCookie must be in writers and readers (catches line 219 && mutant)"
                 );
             }
-            _ => panic!(),
+            _ => panic!("expected Export(Action(ReadCookieWrite), 14, _)"),
         }
     }
 

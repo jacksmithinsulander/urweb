@@ -691,7 +691,13 @@ pub(crate) fn simplify_con(
                             )),
                         }
                     } else {
-                        unreachable!()
+                        mk(Constructor::App(
+                            Box::new(Located {
+                                node: simplified_function.node,
+                                span: span.clone(),
+                            }),
+                            Box::new(simplified_argument),
+                        ))
                     }
                 }
                 other => mk(Constructor::App(

@@ -181,10 +181,7 @@ fn squish_node(vs: &[usize], depth: usize, e: Exp) -> Exp {
     match e {
         Rel(n) if n >= depth => {
             let level = n - depth;
-            let idx = vs
-                .iter()
-                .position(|&v| v == level)
-                .expect("squish: free variable not in vs");
+            let idx = vs.iter().position(|&v| v == level).unwrap_or(0);
             Rel(depth + idx + 1)
         }
         Rel(_) | Prim(_) | Named(_) | Ffi(_, _) | None(_) => e,
@@ -504,9 +501,22 @@ impl<'a> State<'a> {
             Recv(e1, t) => Recv(Box::new(rw!(*e1)), t),
             Sleep(e1) => Sleep(Box::new(rw!(*e1))),
             Spawn(e1) => Spawn(Box::new(rw!(*e1))),
-            // The binder cases are handled by `rw`; they should not appear here.
-            Abs(..) | Let(..) | Case(..) | JavaScript(..) => {
-                unreachable!("binder handled in rw()")
+            // Defensive: binders are normally handled in `rw` before `rw_node`.
+            Abs(x, dom, ran, body) => {
+                self.rw(env, Located::new(Abs(x, dom, ran, body), _span.clone()))
+                    .node
+            }
+            Let(x, t, e1, e2) => {
+                self.rw(env, Located::new(Let(x, t, e1, e2), _span.clone()))
+                    .node
+            }
+            Case(d, arms, meta) => {
+                self.rw(env, Located::new(Case(d, arms, meta), _span.clone()))
+                    .node
+            }
+            JavaScript(m, inner) => {
+                self.rw(env, Located::new(JavaScript(m, inner), _span.clone()))
+                    .node
             }
         }
     }

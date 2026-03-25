@@ -261,13 +261,17 @@ fn tarjan_sccs_topological(
             if lowlink[&current_node] == current_index {
                 // Pop an SCC off the tarjan_stack.
                 let mut scc = BTreeSet::new();
-                loop {
-                    let popped = tarjan_stack.pop().expect("Tarjan stack underflow");
+                let mut hit_root = false;
+                while let Some(popped) = tarjan_stack.pop() {
                     on_stack.remove(&popped);
                     scc.insert(popped);
                     if popped == current_node {
+                        hit_root = true;
                         break;
                     }
+                }
+                if !hit_root {
+                    scc.insert(current_node);
                 }
                 sccs_reverse_topo.push(scc);
             }

@@ -18,7 +18,7 @@ use crate::elaborated::{
     LocatedConstructor, LocatedDeclaration, LocatedElaboratedDeclaration, LocatedExpression,
     LocatedKind, LocatedPattern, Pattern,
 };
-use crate::error_types::Located;
+use crate::error_types::{ErrorReporter, Located};
 
 // ---------------------------------------------------------------------------
 // Lift / shift de Bruijn indices
@@ -513,15 +513,33 @@ fn fvs_exp_acc(
 // Squishing: remap free variable indices to captured set
 // ---------------------------------------------------------------------------
 
-fn position_of(x: usize, list: &[usize]) -> usize {
+fn position_of(
+    x: usize,
+    list: &[usize],
+    span: &crate::error_types::Span,
+    errors: &mut ErrorReporter,
+) -> usize {
     list.iter()
         .position(|&v| v == x)
-        .unwrap_or_else(|| panic!("unnest: position_of({x}, {list:?})"))
+        .unwrap_or_else(|| {
+            errors.report_at(
+                span.clone(),
+                format!(
+                    "Internal: unnest remap failed (free-var index {x} missing from {list:?}) — report a bug"
+                ),
+            );
+            0
+        })
 }
 
 /// Remap free constructor variables in `c` to use positions in `kfv`/`cfv`.
-fn squish_c(kfv: &[usize], cfv: &[usize], c: LocatedConstructor) -> LocatedConstructor {
-    squish_c_bound(0, 0, kfv, cfv, c)
+fn squish_c(
+    kfv: &[usize],
+    cfv: &[usize],
+    c: LocatedConstructor,
+    errors: &mut ErrorReporter,
+) -> LocatedConstructor {
+    squish_c_bound(0, 0, kfv, cfv, c, errors)
 }
 
 fn squish_c_bound(
@@ -530,69 +548,74 @@ fn squish_c_bound(
     kfv: &[usize],
     cfv: &[usize],
     c: LocatedConstructor,
+    errors: &mut ErrorReporter,
 ) -> LocatedConstructor {
     let span = c.span.clone();
     let node = match c.node {
-        Constructor::Rel(n) if n >= cb => Constructor::Rel(position_of(n - cb, cfv) + cb),
+        Constructor::Rel(n) if n >= cb => {
+            Constructor::Rel(position_of(n - cb, cfv, &span, errors) + cb)
+        }
         Constructor::TFun(a, b) => Constructor::TFun(
-            Box::new(squish_c_bound(kb, cb, kfv, cfv, *a)),
-            Box::new(squish_c_bound(kb, cb, kfv, cfv, *b)),
+            Box::new(squish_c_bound(kb, cb, kfv, cfv, *a, errors)),
+            Box::new(squish_c_bound(kb, cb, kfv, cfv, *b, errors)),
         ),
         Constructor::TCFun(expl, name, k, body) => Constructor::TCFun(
             expl,
             name,
             k,
-            Box::new(squish_c_bound(kb, cb + 1, kfv, cfv, *body)),
+            Box::new(squish_c_bound(kb, cb + 1, kfv, cfv, *body, errors)),
         ),
         Constructor::TRecord(c2) => {
-            Constructor::TRecord(Box::new(squish_c_bound(kb, cb, kfv, cfv, *c2)))
+            Constructor::TRecord(Box::new(squish_c_bound(kb, cb, kfv, cfv, *c2, errors)))
         }
         Constructor::TDisjoint(a, b, c2) => Constructor::TDisjoint(
-            Box::new(squish_c_bound(kb, cb, kfv, cfv, *a)),
-            Box::new(squish_c_bound(kb, cb, kfv, cfv, *b)),
-            Box::new(squish_c_bound(kb, cb, kfv, cfv, *c2)),
+            Box::new(squish_c_bound(kb, cb, kfv, cfv, *a, errors)),
+            Box::new(squish_c_bound(kb, cb, kfv, cfv, *b, errors)),
+            Box::new(squish_c_bound(kb, cb, kfv, cfv, *c2, errors)),
         ),
         Constructor::App(f, x) => Constructor::App(
-            Box::new(squish_c_bound(kb, cb, kfv, cfv, *f)),
-            Box::new(squish_c_bound(kb, cb, kfv, cfv, *x)),
+            Box::new(squish_c_bound(kb, cb, kfv, cfv, *f, errors)),
+            Box::new(squish_c_bound(kb, cb, kfv, cfv, *x, errors)),
         ),
         Constructor::Abs(name, k, body) => Constructor::Abs(
             name,
             k,
-            Box::new(squish_c_bound(kb, cb + 1, kfv, cfv, *body)),
+            Box::new(squish_c_bound(kb, cb + 1, kfv, cfv, *body, errors)),
         ),
-        Constructor::KAbs(name, body) => {
-            Constructor::KAbs(name, Box::new(squish_c_bound(kb, cb, kfv, cfv, *body)))
-        }
+        Constructor::KAbs(name, body) => Constructor::KAbs(
+            name,
+            Box::new(squish_c_bound(kb, cb, kfv, cfv, *body, errors)),
+        ),
         Constructor::KApp(f, k) => {
-            Constructor::KApp(Box::new(squish_c_bound(kb, cb, kfv, cfv, *f)), k)
+            Constructor::KApp(Box::new(squish_c_bound(kb, cb, kfv, cfv, *f, errors)), k)
         }
-        Constructor::TKFun(name, body) => {
-            Constructor::TKFun(name, Box::new(squish_c_bound(kb, cb, kfv, cfv, *body)))
-        }
+        Constructor::TKFun(name, body) => Constructor::TKFun(
+            name,
+            Box::new(squish_c_bound(kb, cb, kfv, cfv, *body, errors)),
+        ),
         Constructor::Record(k, fields) => Constructor::Record(
             k,
             fields
                 .into_iter()
                 .map(|(n, v)| {
                     (
-                        squish_c_bound(kb, cb, kfv, cfv, n),
-                        squish_c_bound(kb, cb, kfv, cfv, v),
+                        squish_c_bound(kb, cb, kfv, cfv, n, errors),
+                        squish_c_bound(kb, cb, kfv, cfv, v, errors),
                     )
                 })
                 .collect(),
         ),
         Constructor::Concat(a, b) => Constructor::Concat(
-            Box::new(squish_c_bound(kb, cb, kfv, cfv, *a)),
-            Box::new(squish_c_bound(kb, cb, kfv, cfv, *b)),
+            Box::new(squish_c_bound(kb, cb, kfv, cfv, *a, errors)),
+            Box::new(squish_c_bound(kb, cb, kfv, cfv, *b, errors)),
         ),
         Constructor::Tuple(cs) => Constructor::Tuple(
             cs.into_iter()
-                .map(|c2| squish_c_bound(kb, cb, kfv, cfv, c2))
+                .map(|c2| squish_c_bound(kb, cb, kfv, cfv, c2, errors))
                 .collect(),
         ),
         Constructor::Proj(c2, n) => {
-            Constructor::Proj(Box::new(squish_c_bound(kb, cb, kfv, cfv, *c2)), n)
+            Constructor::Proj(Box::new(squish_c_bound(kb, cb, kfv, cfv, *c2, errors)), n)
         }
         other => other,
     };
@@ -607,8 +630,9 @@ fn squish_e(
     cfv: &[usize],
     efv: &[usize],
     e: LocatedExpression,
+    errors: &mut ErrorReporter,
 ) -> LocatedExpression {
-    squish_e_bound(0, 0, nr, kfv, cfv, efv, e)
+    squish_e_bound(0, 0, nr, kfv, cfv, efv, e, errors)
 }
 
 fn squish_e_bound(
@@ -619,6 +643,7 @@ fn squish_e_bound(
     cfv: &[usize],
     efv: &[usize],
     e: LocatedExpression,
+    errors: &mut ErrorReporter,
 ) -> LocatedExpression {
     let span = e.span.clone();
     let node = match e.node {
@@ -631,76 +656,72 @@ fn squish_e_bound(
             // after applying subs', the remaining free vars need to be renumbered.
             // The squish remaps n-eb → position_of(n-eb, efv), then adds eb-nr back
             // (to account for remaining in-scope bindings above the recursion).
-            Expression::Rel(position_of(n - eb, efv) + eb - eb) // = position_of(n-eb, efv)
-                                                                // Wait, looking at SML more carefully:
-                                                                // squishExp (nr, kfv, cfv, efv): initial call with (0, 0, nr)
-                                                                // For ERel(n) where n >= nr (bound from outer scope):
-                                                                //   ERel(positionOf(n - nr) efv + nr - nr) = ERel(positionOf(n - nr, efv))
-                                                                // This maps the outer free var to its position in the efv list.
-                                                                // But we're at the level of the hoisted function body, where
-                                                                // the efv vars will be the first efv.len() lambda parameters (innermost).
-                                                                // So ERel(0..efv.len()-1) are the captured args.
+            Expression::Rel(position_of(n - eb, efv, &span, errors)) // = position_of(n-eb, efv)
         }
         Expression::App(f, x) => Expression::App(
-            Box::new(squish_e_bound(kb, cb, eb, kfv, cfv, efv, *f)),
-            Box::new(squish_e_bound(kb, cb, eb, kfv, cfv, efv, *x)),
+            Box::new(squish_e_bound(kb, cb, eb, kfv, cfv, efv, *f, errors)),
+            Box::new(squish_e_bound(kb, cb, eb, kfv, cfv, efv, *x, errors)),
         ),
         Expression::Abs(name, dom, ran, body) => Expression::Abs(
             name,
-            squish_c_bound(kb, cb, kfv, cfv, dom),
-            squish_c_bound(kb, cb, kfv, cfv, ran),
-            Box::new(squish_e_bound(kb, cb, eb + 1, kfv, cfv, efv, *body)),
+            squish_c_bound(kb, cb, kfv, cfv, dom, errors),
+            squish_c_bound(kb, cb, kfv, cfv, ran, errors),
+            Box::new(squish_e_bound(kb, cb, eb + 1, kfv, cfv, efv, *body, errors)),
         ),
         Expression::CApp(f, c) => Expression::CApp(
-            Box::new(squish_e_bound(kb, cb, eb, kfv, cfv, efv, *f)),
-            squish_c_bound(kb, cb, kfv, cfv, c),
+            Box::new(squish_e_bound(kb, cb, eb, kfv, cfv, efv, *f, errors)),
+            squish_c_bound(kb, cb, kfv, cfv, c, errors),
         ),
         Expression::CAbs(expl, name, k, body) => Expression::CAbs(
             expl,
             name,
             k,
-            Box::new(squish_e_bound(kb, cb + 1, eb, kfv, cfv, efv, *body)),
+            Box::new(squish_e_bound(kb, cb + 1, eb, kfv, cfv, efv, *body, errors)),
         ),
         Expression::KAbs(name, body) => Expression::KAbs(
             name,
-            Box::new(squish_e_bound(kb + 1, cb, eb, kfv, cfv, efv, *body)),
+            Box::new(squish_e_bound(kb + 1, cb, eb, kfv, cfv, efv, *body, errors)),
         ),
-        Expression::KApp(f, k) => {
-            Expression::KApp(Box::new(squish_e_bound(kb, cb, eb, kfv, cfv, efv, *f)), k)
-        }
+        Expression::KApp(f, k) => Expression::KApp(
+            Box::new(squish_e_bound(kb, cb, eb, kfv, cfv, efv, *f, errors)),
+            k,
+        ),
         Expression::Record(fields) => Expression::Record(
             fields
                 .into_iter()
-                .map(|(n, v, t)| (n, squish_e_bound(kb, cb, eb, kfv, cfv, efv, v), t))
+                .map(|(n, v, t)| (n, squish_e_bound(kb, cb, eb, kfv, cfv, efv, v, errors), t))
                 .collect(),
         ),
         Expression::Field(e2, c, meta) => Expression::Field(
-            Box::new(squish_e_bound(kb, cb, eb, kfv, cfv, efv, *e2)),
+            Box::new(squish_e_bound(kb, cb, eb, kfv, cfv, efv, *e2, errors)),
             c,
             meta,
         ),
         Expression::Concat(a, c1, b, c2) => Expression::Concat(
-            Box::new(squish_e_bound(kb, cb, eb, kfv, cfv, efv, *a)),
+            Box::new(squish_e_bound(kb, cb, eb, kfv, cfv, efv, *a, errors)),
             c1,
-            Box::new(squish_e_bound(kb, cb, eb, kfv, cfv, efv, *b)),
+            Box::new(squish_e_bound(kb, cb, eb, kfv, cfv, efv, *b, errors)),
             c2,
         ),
         Expression::Cut(e2, c, meta) => Expression::Cut(
-            Box::new(squish_e_bound(kb, cb, eb, kfv, cfv, efv, *e2)),
+            Box::new(squish_e_bound(kb, cb, eb, kfv, cfv, efv, *e2, errors)),
             c,
             meta,
         ),
         Expression::CutMulti(e2, c, meta) => Expression::CutMulti(
-            Box::new(squish_e_bound(kb, cb, eb, kfv, cfv, efv, *e2)),
+            Box::new(squish_e_bound(kb, cb, eb, kfv, cfv, efv, *e2, errors)),
             c,
             meta,
         ),
         Expression::Case(disc, arms, meta) => Expression::Case(
-            Box::new(squish_e_bound(kb, cb, eb, kfv, cfv, efv, *disc)),
+            Box::new(squish_e_bound(kb, cb, eb, kfv, cfv, efv, *disc, errors)),
             arms.into_iter()
                 .map(|(p, arm)| {
                     let d = pat_bind_depth(&p);
-                    (p, squish_e_bound(kb, cb, eb + d, kfv, cfv, efv, arm))
+                    (
+                        p,
+                        squish_e_bound(kb, cb, eb + d, kfv, cfv, efv, arm, errors),
+                    )
                 })
                 .collect(),
             meta,
@@ -714,7 +735,7 @@ fn squish_e_bound(
                     let (node2, added) = match de.node {
                         ElaboratedDeclaration::Val(p, ty, e2) => {
                             let d = pat_bind_depth(&p);
-                            let e2s = squish_e_bound(kb, cb, cur_eb, kfv, cfv, efv, e2);
+                            let e2s = squish_e_bound(kb, cb, cur_eb, kfv, cfv, efv, e2, errors);
                             (ElaboratedDeclaration::Val(p, ty, e2s), d)
                         }
                         ElaboratedDeclaration::ValRec(vis) => {
@@ -725,7 +746,16 @@ fn squish_e_bound(
                                     (
                                         x,
                                         ty,
-                                        squish_e_bound(kb, cb, cur_eb + nr2, kfv, cfv, efv, e2),
+                                        squish_e_bound(
+                                            kb,
+                                            cb,
+                                            cur_eb + nr2,
+                                            kfv,
+                                            cfv,
+                                            efv,
+                                            e2,
+                                            errors,
+                                        ),
                                     )
                                 })
                                 .collect();
@@ -738,7 +768,7 @@ fn squish_e_bound(
                 .collect();
             Expression::Let(
                 des2,
-                Box::new(squish_e_bound(kb, cb, cur_eb, kfv, cfv, efv, *body)),
+                Box::new(squish_e_bound(kb, cb, cur_eb, kfv, cfv, efv, *body, errors)),
                 t,
             )
         }
@@ -911,6 +941,7 @@ fn hoist_valrec(
     ctx: &Ctx,
     state: &mut State,
     loc: &crate::error_types::Span,
+    errors: &mut ErrorReporter,
 ) -> (Vec<(usize, LocatedExpression)>, usize) {
     let nr = vis.len();
 
@@ -991,8 +1022,8 @@ fn hoist_valrec(
         let body = apply_subs(&subs, body);
 
         // Squish: remap free variable indices to 0-based positions in kfv/cfv/efv.
-        let ty_squished = squish_c(&kfv, &cfv, ty);
-        let body_squished = squish_e(nr, &kfv, &cfv, &efv, body);
+        let ty_squished = squish_c(&kfv, &cfv, ty, errors);
+        let body_squished = squish_e(nr, &kfv, &cfv, &efv, body, errors);
 
         // Wrap body with exp lambdas (innermost efv first — reversed so outermost is efv[0]).
         let (mut wrapped_e, mut wrapped_t) = (body_squished, ty_squished);
@@ -1000,7 +1031,7 @@ fn hoist_valrec(
             let (arg_name, arg_type) = ctx
                 .exps
                 .get(ex)
-                .map(|(n, t)| (n.clone(), squish_c(&kfv, &cfv, t.clone())))
+                .map(|(n, t)| (n.clone(), squish_c(&kfv, &cfv, t.clone(), errors)))
                 .unwrap_or_else(|| ("_".into(), Located::dummy(Constructor::Error)));
             let result_type = wrapped_t.clone();
             let fun_type = Located::new(
@@ -1135,7 +1166,7 @@ fn unnest_exp_node(_ctx: &mut Ctx, e: Exp, _span: &crate::error_types::Span) -> 
 // Proper implementation using a self-contained traversal struct
 // ---------------------------------------------------------------------------
 
-struct UnnestCtx {
+struct UnnestCtx<'a> {
     /// Kind variable names (innermost first).
     knames: Vec<String>,
     /// Con variables (name, kind) (innermost first).
@@ -1148,13 +1179,14 @@ struct UnnestCtx {
     max_name: usize,
     /// Accumulated hoisted declarations.
     hoisted: Vec<(String, usize, LocatedConstructor, LocatedExpression)>,
+    errors: &'a mut ErrorReporter,
 }
 
 // Type alias for brevity inside this module.
 type Exp = Expression;
 
-impl UnnestCtx {
-    fn new(max_name: usize) -> Self {
+impl<'a> UnnestCtx<'a> {
+    fn new(max_name: usize, errors: &'a mut ErrorReporter) -> Self {
         UnnestCtx {
             knames: vec![],
             cons: vec![],
@@ -1162,6 +1194,7 @@ impl UnnestCtx {
             basis_id: None,
             max_name,
             hoisted: vec![],
+            errors,
         }
     }
 
@@ -1462,8 +1495,8 @@ impl UnnestCtx {
             let body = apply_subs(&subs, body);
 
             // Squish.
-            let ty_s = squish_c(&kfv, &cfv, ty);
-            let body_s = squish_e(nr, &kfv, &cfv, &efv, body);
+            let ty_s = squish_c(&kfv, &cfv, ty, self.errors);
+            let body_s = squish_e(nr, &kfv, &cfv, &efv, body, self.errors);
 
             // Wrap with exp lambdas (innermost efv first, i.e. reverse).
             let (mut we, mut wt) = (body_s, ty_s);
@@ -1471,7 +1504,7 @@ impl UnnestCtx {
                 let (aname, atype) = self
                     .exps
                     .get(ex)
-                    .map(|(n, t)| (n.clone(), squish_c(&kfv, &cfv, t.clone())))
+                    .map(|(n, t)| (n.clone(), squish_c(&kfv, &cfv, t.clone(), self.errors)))
                     .unwrap_or_else(|| ("_".into(), Located::dummy(Constructor::Error)));
                 let fun_t = Located::new(
                     Constructor::TFun(Box::new(atype.clone()), Box::new(wt.clone())),
@@ -1629,14 +1662,14 @@ impl UnnestCtx {
 /// Remove nested function definitions by lambda-lifting.
 ///
 /// Ported from `unnest.sml`. Must run between elaborate and explify.
-pub fn unnest(file: File) -> File {
+pub fn unnest(file: File, errors: &mut ErrorReporter) -> File {
     let max_name = {
         // Find the maximum named ID in the file to start fresh IDs above it.
         use crate::elaborated::utilities;
         utilities::file::max_name(&file) + 1
     };
 
-    let mut ctx = UnnestCtx::new(max_name);
+    let mut ctx = UnnestCtx::new(max_name, errors);
     file.into_iter().flat_map(|d| ctx.decl(d)).collect()
 }
 
@@ -1648,7 +1681,7 @@ pub fn unnest(file: File) -> File {
 mod tests {
     use super::*;
     use crate::elaborated::*;
-    use crate::error_types::Located;
+    use crate::error_types::{ErrorReporter, Located};
 
     fn dummy_type() -> LocatedConstructor {
         Located::dummy(Constructor::Error)
@@ -1661,8 +1694,10 @@ mod tests {
     #[test]
     fn unnest_empty_file() {
         let file: File = vec![];
-        let result = unnest(file);
+        let mut errors = ErrorReporter::new();
+        let result = unnest(file, &mut errors);
         assert!(result.is_empty());
+        assert!(!errors.has_errors());
     }
 
     #[test]
@@ -1674,9 +1709,11 @@ mod tests {
             dummy_type(),
             dummy_exp(),
         ))];
-        let result = unnest(file);
+        let mut errors = ErrorReporter::new();
+        let result = unnest(file, &mut errors);
         assert_eq!(result.len(), 1);
         assert!(matches!(result[0].node, Declaration::Val(..)));
+        assert!(!errors.has_errors());
     }
 
     #[test]
@@ -1697,8 +1734,10 @@ mod tests {
             dummy_type(),
             inner_let,
         ))];
-        let result = unnest(file);
+        let mut errors = ErrorReporter::new();
+        let result = unnest(file, &mut errors);
         // Should not panic; inner let without ValRec stays as Let.
         assert_eq!(result.len(), 1);
+        assert!(!errors.has_errors());
     }
 }

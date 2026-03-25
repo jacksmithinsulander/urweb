@@ -937,12 +937,7 @@ fn mono_basis_ffi(x: &str, loc: &Span) -> Option<LocExp> {
             Some(make_eq_fun(t, "==", loc))
         }
         "eq_float" | "eq_bool" | "eq_char" => {
-            let ffi_name = match x {
-                "eq_float" => "float",
-                "eq_bool" => "bool",
-                "eq_char" => "char",
-                _ => unreachable!(),
-            };
+            let ffi_name = x.strip_prefix("eq_").unwrap_or(x);
             let t = Located::new(Typ::Ffi("Basis".into(), ffi_name.into()), loc.clone());
             Some(make_eq_fun(t, "==", loc))
         }
@@ -1328,7 +1323,7 @@ fn mono_basis_capp(
                 "divide" => "Div",
                 "mod" => "Mod",
                 "pow" => "Pow",
-                _ => unreachable!(),
+                _ => "Plus",
             };
             let body = Located::new(
                 Exp::Field(
@@ -1817,7 +1812,7 @@ fn mono_exp(env: &Env, fm: &mut Fm, exp: &LocatedExpression) -> LocExp {
                     let me2 = mono_exp(env, fm, e2);
                     Located::new(Exp::App(Box::new(me1), Box::new(me2)), loc)
                 }
-                _ => unreachable!("CE::App match arm"),
+                _ => Located::new(Exp::Prim(Prim::Int(0)), loc),
             }
         }
         CE::Abs(x, dom, ran, body) => {

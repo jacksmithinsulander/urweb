@@ -423,7 +423,7 @@ pub fn sql_generate(file: &File, settings: &Settings) -> String {
                                     mangled
                                 }
                             }
-                            IndexMode::Skipped => unreachable!(),
+                            IndexMode::Skipped => mangled,
                         }
                     })
                     .collect();

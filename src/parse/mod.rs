@@ -330,7 +330,9 @@ pub fn rewrite_case_arm_separators(input: &str) -> String {
         None
     }
 
-    /// Copy body until `arm_sep` / `|` (NextArm) or `;` / `)` / `}` at depth 0 (CaseDone). Does not consume stop char.
+    /// Copy body until `arm_sep` / `|` (NextArm) or `;` / `)` / `}` / `in` / `end` at depth 0
+    /// (CaseDone). Does not consume stop char.
+    /// Tracks `let`/`end` nesting to avoid stopping at `in`/`end` inside nested `let` blocks.
     fn scan_body(
         out: &mut String,
         input: &str,
@@ -339,6 +341,7 @@ pub fn rewrite_case_arm_separators(input: &str) -> String {
         n: usize,
     ) -> Option<(usize, BodyStop)> {
         let mut depth = 0i32;
+        let mut let_depth = 0i32; // tracks open `let` keywords
         while i < n {
             if i + 1 < n && b[i] == b'(' && b[i + 1] == b'*' {
                 i = copy_ml_comment(out, input, b, i, n);
@@ -359,6 +362,35 @@ pub fn rewrite_case_arm_separators(input: &str) -> String {
             }
             if depth == 0 && matches!(b[i], b';' | b')' | b'}') {
                 return Some((i, BodyStop::CaseDone));
+            }
+            // Keyword tracking at bracket depth 0
+            if depth == 0 && pp_kw_word_at(b, i, n, b"let") {
+                out.push_str("let");
+                i += 3;
+                let_depth += 1;
+                continue;
+            }
+            if depth == 0 && pp_kw_word_at(b, i, n, b"in") {
+                if let_depth > 0 {
+                    // `in` of a nested `let...in...end`; copy and continue
+                    out.push_str("in");
+                    i += 2;
+                } else {
+                    // `in` of the enclosing `let` → case arm ends here
+                    return Some((i, BodyStop::CaseDone));
+                }
+                continue;
+            }
+            if depth == 0 && pp_kw_word_at(b, i, n, b"end") {
+                if let_depth > 0 {
+                    out.push_str("end");
+                    i += 3;
+                    let_depth -= 1;
+                } else {
+                    // `end` of the enclosing `let` → case arm ends here
+                    return Some((i, BodyStop::CaseDone));
+                }
+                continue;
             }
             match b[i] {
                 b'(' | b'[' | b'{' => {
@@ -777,6 +809,9 @@ pub fn rewrite_datatype_constructors(input: &str) -> String {
 /// defining `Con` so `=` is not overloaded and no ε competes with the RHS. Source
 /// files still write ordinary `=`; we rewrite the first defining `=` after `::` on
 /// `con` / `class` lines to `sgn_def_con`.
+///
+/// Line-oriented pass (not yet composed into [`preprocess_urs`]); kept for tooling / future merge.
+#[allow(dead_code)]
 fn rewrite_sig_type_class_abstract_lines(input: &str) -> String {
     fn ident_head(rest: &str) -> Option<(String, &str)> {
         let mut it = rest.chars();

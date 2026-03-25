@@ -6,14 +6,15 @@
 #[cfg(test)]
 use std::cell::Cell;
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use crate::c_like_representation::{
-    DatatypeDecl, Decl, DmlMeta, Exp, LocDecl, LocExp, LocPat, LocTyp, Pat, PatCon, QueryMeta, Typ,
+    DatatypeDecl, Decl, DmlMeta, Exp, ExportEntry, LocDecl, LocExp, LocPat, LocTyp, Pat, PatCon,
+    QueryMeta, Typ,
 };
 use crate::compiler_diagnostics::lock_for_compile;
 use crate::datatype_kind::DatatypeKind;
-use crate::export::ExportKind;
+use crate::export::{Effect, ExportKind};
 use crate::monomorphized::{DbMode, Sidedness};
 use crate::settings::{FailureMode, Settings};
 
@@ -412,7 +413,7 @@ fn p_pat_match(env: &CjrEnv, disc: &str, pat: &LocPat) -> String {
                 None => base,
                 Some(inner_pat) => {
                     let disc2 = match dk {
-                        DatatypeKind::Enum => panic!("Enum con has argument"),
+                        DatatypeKind::Enum => disc.to_string(),
                         DatatypeKind::Default => {
                             format!("{}->{}", disc, con_field_name(env, pc))
                         }
@@ -482,7 +483,7 @@ fn p_pat_bind(env: &mut CjrEnv, disc: &str, pat: &LocPat) -> String {
         Pat::Con(_, _, None) => String::new(),
         Pat::Con(dk, pc, Some(inner_pat)) => {
             let disc2 = match dk {
-                DatatypeKind::Enum => panic!("Enum con has argument"),
+                DatatypeKind::Enum => disc.to_string(),
                 DatatypeKind::Default => format!("({}->data.{})", disc, con_field_name(env, pc)),
                 DatatypeKind::Option => {
                     let arg_t = get_pc_arg_typ(env, pc);
@@ -996,7 +997,7 @@ fn p_getcol(
             }
             SqlType::Channel => format!("uw_Basis_stringToChannel_error(ctx, {})", e),
             SqlType::Client => format!("uw_Basis_stringToClient_error(ctx, {})", e),
-            SqlType::Nullable(_) => panic!("Recursive Nullable"),
+            SqlType::Nullable(inner) => p_unsql(inner, e, e_len, wont_leak_strings),
         }
     }
 
@@ -3014,30 +3015,207 @@ fn gen_postgres_c_code(
     out
 }
 
-/// Generate uw_input_num: maps form input names to their indices.
-/// Returns -1 if not found.
-fn gen_input_num(ps: &[crate::c_like_representation::ExportEntry]) -> String {
+// ---------------------------------------------------------------------------
+// Form input indices (uw_input_num / inputs_len) — mirrors cjr_print.sml
+// ---------------------------------------------------------------------------
+
+/// Synthetic field name for cookie-signature hidden input (`sigName` in SML).
+fn sig_name(fields: &[(String, LocTyp)]) -> String {
+    let in_fields = |s: &str| fields.iter().any(|(n, _)| n == s);
+    if !in_fields("Sig") {
+        return "Sig".to_string();
+    }
+    let mut n = 0usize;
+    loop {
+        let candidate = format!("Sig{n}");
+        if !in_fields(&candidate) {
+            return candidate;
+        }
+        n += 1;
+    }
+}
+
+/// `flatFields` from cjr_print.sml: returns layers of sibling field names (outer to inner).
+fn flat_fields(env: &CjrEnv, always: &[String], t: &LocTyp) -> Option<Vec<Vec<String>>> {
     cjr_test_tick();
-    let inputs: Vec<(String, usize)> = Vec::new();
+    match &t.node {
+        Typ::Record(i) => {
+            let xts = env.lookup_struct(*i)?.clone();
+            let mut first: Vec<String> = always.to_vec();
+            first.extend(xts.iter().map(|(x, _)| x.clone()));
+            let mut nested_pieces: Vec<Vec<Vec<String>>> = Vec::new();
+            for (_, ft) in &xts {
+                if let Some(sub) = flat_fields(env, &[], ft) {
+                    nested_pieces.push(sub);
+                }
+            }
+            let mut concat_nested: Vec<Vec<String>> = Vec::new();
+            for piece in nested_pieces {
+                concat_nested.extend(piece);
+            }
+            let mut out = Vec::with_capacity(1 + concat_nested.len());
+            out.push(first);
+            out.extend(concat_nested);
+            Some(out)
+        }
+        Typ::List(_, i) => {
+            let ts = env.lookup_struct(*i)?;
+            if ts.len() == 2 && ts[0].0 == "1" && ts[1].0 == "2" {
+                flat_fields(env, &[], &ts[0].1)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+fn compute_form_field_layers(env: &CjrEnv, ps: &[ExportEntry]) -> Vec<Vec<String>> {
+    cjr_test_tick();
+    let mut acc: Vec<Vec<String>> = Vec::new();
     for (ek, _, _, ts, _, _, _, _) in ps {
-        if let crate::export::ExportKind::Action(_) = ek {
-            if ts.len() >= 2 {
-                // TODO: collect actual form input names when form processing is implemented
+        let ExportKind::Action(eff) = ek else {
+            continue;
+        };
+        if ts.len() < 2 {
+            continue;
+        }
+        let form_t = &ts[ts.len() - 2];
+        let Typ::Record(i) = &form_t.node else {
+            continue;
+        };
+        let Some(xts) = env.lookup_struct(*i) else {
+            continue;
+        };
+        let extra: Vec<String> = match eff {
+            Effect::ReadCookieWrite => vec![sig_name(xts)],
+            _ => vec![],
+        };
+        if let Some(fp) = flat_fields(env, &extra, form_t) {
+            acc = fp.into_iter().rev().chain(acc.into_iter()).collect();
+        }
+    }
+    acc
+}
+
+/// For each field name, the set of peer names in the same layer that must get distinct indices.
+fn build_peer_map(layers: &[Vec<String>]) -> BTreeMap<String, BTreeSet<String>> {
+    cjr_test_tick();
+    let mut fields: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for xts in layers {
+        let set: BTreeSet<String> = xts.iter().cloned().collect();
+        for x in xts {
+            let without_x: BTreeSet<String> = set.iter().filter(|&s| s != x).cloned().collect();
+            fields
+                .entry(x.clone())
+                .and_modify(|e| *e = e.union(&without_x).cloned().collect())
+                .or_insert(without_x);
+        }
+    }
+    fields
+}
+
+fn assign_fnums(peer_map: &BTreeMap<String, BTreeSet<String>>) -> BTreeMap<String, usize> {
+    cjr_test_tick();
+    let mut fnums: BTreeMap<String, usize> = BTreeMap::new();
+    for x in peer_map.keys() {
+        let xs = &peer_map[x];
+        let mut unusable: BTreeSet<usize> = BTreeSet::new();
+        for xprime in xs {
+            if let Some(&n) = fnums.get(xprime) {
+                unusable.insert(n);
+            }
+        }
+        let mut n = 0usize;
+        while unusable.contains(&n) {
+            n += 1;
+        }
+        fnums.insert(x.clone(), n);
+    }
+    fnums
+}
+
+#[derive(Clone, Copy)]
+enum SwitchAgg {
+    NotFound,
+    Found(usize),
+    Error,
+}
+
+fn fold_switch_agg(fnums: &BTreeMap<String, usize>) -> SwitchAgg {
+    cjr_test_tick();
+    let mut a = SwitchAgg::NotFound;
+    for &n in fnums.values() {
+        a = match a {
+            SwitchAgg::NotFound => SwitchAgg::Found(n),
+            SwitchAgg::Found(n0) if n0 == n => SwitchAgg::Found(n),
+            SwitchAgg::Found(_) => SwitchAgg::Error,
+            SwitchAgg::Error => SwitchAgg::Error,
+        };
+    }
+    a
+}
+
+fn c_switch_case_label(ch: char) -> String {
+    if ch == '\0' {
+        "0".to_string()
+    } else if ch.is_ascii() && (ch.is_ascii_alphanumeric() || ch == '_') && ch != '\'' {
+        format!("'{ch}'")
+    } else {
+        format!("{}", u32::from(ch))
+    }
+}
+
+fn make_switch_impl(fnums: &BTreeMap<String, usize>, i: usize, indent: &str) -> String {
+    cjr_test_tick();
+    match fold_switch_agg(fnums) {
+        SwitchAgg::NotFound => format!("{indent}return -1;\n"),
+        SwitchAgg::Found(n) => format!("{indent}return {n};\n"),
+        SwitchAgg::Error => {
+            let mut cmap: BTreeMap<char, BTreeMap<String, usize>> = BTreeMap::new();
+            for (maybe_str, n) in fnums {
+                let ch = maybe_str.chars().nth(i).unwrap_or('\0');
+                cmap.entry(ch).or_default().insert(maybe_str.clone(), *n);
+            }
+            if cmap.len() == 1 {
+                let (_ch, sub) = cmap.into_iter().next().unwrap();
+                let mut s = format!("{indent}if (name[{i}] == 0) return -1;\n");
+                s.push_str(&make_switch_impl(&sub, i + 1, indent));
+                s
+            } else {
+                let mut s = format!("{indent}switch ((unsigned char)name[{i}]) {{\n");
+                for (ch, sub) in &cmap {
+                    let lbl = c_switch_case_label(*ch);
+                    s.push_str(&format!("{indent}  case {lbl}:\n"));
+                    s.push_str(&make_switch_impl(sub, i + 1, &format!("{indent}    ")));
+                }
+                s.push_str(&format!(
+                    "{indent}  default:\n{indent}    return -1;\n{indent}}}\n"
+                ));
+                s
             }
         }
     }
-    if inputs.is_empty() {
-        return "static int uw_input_num(const char *name) { return -1; }\n\n".to_string();
+}
+
+/// Generate uw_input_num: maps form input names to their indices.
+/// Second return value is `inputs_len` for `uw_application` (max index + 1, at least 1).
+fn gen_input_num(env: &CjrEnv, ps: &[ExportEntry]) -> (String, usize) {
+    cjr_test_tick();
+    let layers = compute_form_field_layers(env, ps);
+    let peer_map = build_peer_map(&layers);
+    let fnums = assign_fnums(&peer_map);
+    let inputs_len = fnums.values().max().map(|m| m + 1).unwrap_or(0).max(1);
+    if fnums.is_empty() {
+        return (
+            "static int uw_input_num(const char *name) { return -1; }\n\n".to_string(),
+            inputs_len,
+        );
     }
     let mut out = String::from("static int uw_input_num(const char *name) {\n");
-    for (name, idx) in &inputs {
-        out.push_str(&format!(
-            "    if (!strcmp(name, \"{}\")) return {};\n",
-            name, idx
-        ));
-    }
-    out.push_str("    return -1;\n}\n\n");
-    out
+    out.push_str(&make_switch_impl(&fnums, 0, "    "));
+    out.push_str("}\n\n");
+    (out, inputs_len)
 }
 
 /// Generate uw_cookie_sig: HMAC signature for cookies.
@@ -3225,7 +3403,8 @@ pub fn cjr_print(file: &crate::c_like_representation::File, settings: &Settings)
     out.push_str(&gen_dbms_c_code(settings, &tables, &prepared_stmts));
 
     // uw_input_num and uw_cookie_sig
-    out.push_str(&gen_input_num(ps));
+    let (input_num_code, inputs_len) = gen_input_num(&full_env, ps);
+    out.push_str(&input_num_code);
     out.push_str(gen_cookie_sig());
 
     // Helper: emit optional HTML attribute (C11-compliant, no GNU extensions)
@@ -3421,12 +3600,6 @@ pub fn cjr_print(file: &crate::c_like_representation::File, settings: &Settings)
     // Prepared statement count
     let _prep_count = prepared_stmts.len();
 
-    // Input count (number of form inputs = number of exports with forms)
-    let input_count = ps
-        .iter()
-        .filter(|(ek, _, _, ts, _, _, _, _)| matches!(ek, ExportKind::Action(_)) && ts.len() >= 2)
-        .count();
-
     // uw_app struct (positional fields matching urweb runtime's uw_app struct)
     // Fields: inputs_len, timeout, url_prefix, client_init, initializer, expunger,
     //         db_init, db_begin, db_commit, db_rollback, db_close, handle,
@@ -3440,7 +3613,7 @@ pub fn cjr_print(file: &crate::c_like_representation::File, settings: &Settings)
         .unwrap_or_else(|| "NULL".to_string());
     out.push_str(&format!(
         "uw_app uw_application = {{\n\
-         {input_count},\n\
+         {inputs_len},\n\
          {timeout},\n\
          \"{url_prefix}\",\n\
          uw_client_init,\n\
@@ -3458,7 +3631,7 @@ pub fn cjr_print(file: &crate::c_like_representation::File, settings: &Settings)
          {is_html5},\n\
          {file_cache}\n\
          }};\n",
-        input_count = input_count,
+        inputs_len = inputs_len,
         timeout = settings.timeout,
         url_prefix = url_prefix.replace('"', "\\\""),
         on_error = if on_error_id.is_some() {
@@ -3481,8 +3654,10 @@ pub fn cjr_print(file: &crate::c_like_representation::File, settings: &Settings)
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::c_like_representation::{Decl, Exp, Typ};
+    use crate::c_like_representation::{Decl, Exp, ExportEntry, Typ};
     use crate::error_types::Located;
+    use crate::export::{Effect, ExportKind};
+    use crate::monomorphized::{DbMode, Sidedness};
     use crate::primitives::{Prim, StringMode};
     use crate::settings::Settings;
 
@@ -3508,6 +3683,89 @@ mod tests {
         assert!(
             result.contains("uw_app uw_application"),
             "output must contain uw_app struct, got:\n{}",
+            result
+        );
+    }
+
+    /// `inputs_len` matches SML (`max fnums + 1`, at least 1); no form fields → stub `uw_input_num`.
+    #[test]
+    fn uw_app_inputs_len_one_without_form_exports() {
+        let settings = Settings::default();
+        let result = cjr_print(&(vec![], vec![]), &settings);
+        assert!(
+            result.contains("uw_application = {\n1,"),
+            "first uw_app field should be inputs_len 1, got:\n{}",
+            result
+        );
+        assert!(
+            result.contains("static int uw_input_num(const char *name) { return -1; }"),
+            "expected stub uw_input_num, got:\n{}",
+            result
+        );
+    }
+
+    /// Action export with a 2-field form record → distinct indices and `inputs_len == 2`.
+    #[test]
+    fn action_export_uw_input_num_and_inputs_len_from_form_fields() {
+        let settings = Settings::default();
+        let t_int = dummy(Typ::Ffi("Basis".into(), "int".into()));
+        let form_rec = dummy(Typ::Record(99));
+        let ran = dummy(Typ::Ffi("Basis".into(), "unit".into()));
+        let struc = dummy(Decl::Struct(
+            99,
+            vec![("foo".into(), t_int.clone()), ("bar".into(), t_int.clone())],
+        ));
+        let export: ExportEntry = (
+            ExportKind::Action(Effect::ReadOnly),
+            "/page".into(),
+            0usize,
+            vec![form_rec, ran.clone()],
+            ran,
+            Sidedness::ServerOnly,
+            DbMode::NoDb,
+            false,
+        );
+        let result = cjr_print(&(vec![struc], vec![export]), &settings);
+        assert!(
+            result.contains("static int uw_input_num(const char *name) {")
+                && !result.contains("static int uw_input_num(const char *name) { return -1; }"),
+            "expected non-stub uw_input_num, got:\n{}",
+            result
+        );
+        assert!(
+            result.contains("return 0;") && result.contains("return 1;"),
+            "expected indices 0 and 1 for foo/bar, got:\n{}",
+            result
+        );
+        assert!(
+            result.contains("uw_application = {\n2,"),
+            "first uw_app field should be inputs_len 2, got:\n{}",
+            result
+        );
+    }
+
+    /// ReadCookieWrite adds synthetic `Sig` to the form layer (cookie signature field).
+    #[test]
+    fn action_read_cookie_write_includes_sig_in_input_num_trie() {
+        let settings = Settings::default();
+        let t_int = dummy(Typ::Ffi("Basis".into(), "int".into()));
+        let form_rec = dummy(Typ::Record(7));
+        let ran = dummy(Typ::Ffi("Basis".into(), "unit".into()));
+        let struc = dummy(Decl::Struct(7, vec![("field1".into(), t_int)]));
+        let export: ExportEntry = (
+            ExportKind::Action(Effect::ReadCookieWrite),
+            "/a".into(),
+            0usize,
+            vec![form_rec, ran.clone()],
+            ran,
+            Sidedness::ServerOnly,
+            DbMode::NoDb,
+            false,
+        );
+        let result = cjr_print(&(vec![struc], vec![export]), &settings);
+        assert!(
+            result.contains("Sig") && result.contains("field1"),
+            "expected Sig and field1 in uw_input_num, got:\n{}",
             result
         );
     }

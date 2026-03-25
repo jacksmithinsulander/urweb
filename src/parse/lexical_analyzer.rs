@@ -541,22 +541,8 @@ impl<'a> XmlAwareLexer<'a> {
         }
     }
 
-    fn peek(&self) -> Option<u8> {
-        self.src.get(self.pos).copied()
-    }
-
-    fn peek2(&self) -> Option<u8> {
-        self.src.get(self.pos + 1).copied()
-    }
-
     fn at(&self, offset: usize) -> Option<u8> {
         self.src.get(self.pos + offset).copied()
-    }
-
-    fn advance(&mut self) -> u8 {
-        let b = self.src[self.pos];
-        self.pos += 1;
-        b
     }
 
     fn skip_ml_comment(&mut self) {
@@ -712,7 +698,7 @@ impl<'a> XmlAwareLexer<'a> {
                     if self.at(rest - self.pos) == Some(b'/')
                         && self.at(rest - self.pos + 1) == Some(b'>')
                     {
-                        let name = std::str::from_utf8(&self.src[id_start..id_end])
+                        let _name = std::str::from_utf8(&self.src[id_start..id_end])
                             .unwrap_or("")
                             .to_string();
                         self.pos = id_end + 2; // skip `/>`
@@ -884,7 +870,6 @@ impl<'a> XmlAwareLexer<'a> {
         if neg {
             self.pos += 1;
         }
-        let int_start = self.pos;
         while self.pos < self.src.len() && self.src[self.pos].is_ascii_digit() {
             self.pos += 1;
         }

@@ -716,16 +716,7 @@ pub fn tag(file: File, error_reporter: &mut impl FnMut(&Span, &str)) -> File {
                 if new_val_decls.is_empty() {
                     result.push(d_located);
                 } else {
-                    let mut all_vis: Vec<(
-                        String,
-                        usize,
-                        LocatedConstructor,
-                        LocatedExpression,
-                        String,
-                    )> = match d_located.node {
-                        Declaration::ValRec(v) => v,
-                        _ => unreachable!(),
-                    };
+                    let mut all_vis = vis.clone();
                     for wrapper_d in new_val_decls {
                         if let Declaration::Val(x, n, t, e, s) = wrapper_d.node {
                             all_vis.push((x, n, t, e, s));
@@ -746,16 +737,9 @@ pub fn tag(file: File, error_reporter: &mut impl FnMut(&Span, &str)) -> File {
         result.extend(new_export_decls);
 
         // Update env with decl bindings
-        let Some(last_decl) = result.last() else {
-            panic!(
-                "{}",
-                crate::compiler_diagnostics::internal_compiler_error(
-                    "export_tagging",
-                    "declaration list was empty while updating the environment after a project declaration",
-                )
-            );
-        };
-        env = env.decl_binds(last_decl);
+        if let Some(last_decl) = result.last() {
+            env = env.decl_binds(last_decl);
+        }
     }
 
     result

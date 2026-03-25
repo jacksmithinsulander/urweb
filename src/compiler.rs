@@ -407,8 +407,11 @@ pub fn elaborate(
 // Phase 3.5: Unnest (elab → elab, lambda-lift nested val recs)
 // ---------------------------------------------------------------------------
 
-pub fn unnest(file: crate::elaborated::File) -> crate::elaborated::File {
-    crate::elaborated::unnest::unnest(file)
+pub fn unnest(
+    file: crate::elaborated::File,
+    errors: &mut ErrorReporter,
+) -> crate::elaborated::File {
+    crate::elaborated::unnest::unnest(file, errors)
 }
 
 // ---------------------------------------------------------------------------
@@ -966,7 +969,8 @@ fn run_compile(urp_path: &Path, settings: &mut Settings) -> Result<PathBuf> {
     bail_if_errors_reported(&errors, "Elaboration (types and modules)")?;
 
     // Phase 3.5: unnest
-    let elab_file = unnest(elab_file);
+    let elab_file = unnest(elab_file, &mut errors);
+    bail_if_errors_reported(&errors, "Unnest (lambda lifting)")?;
 
     // Phase 4: explify
     let expl_file =
@@ -1094,7 +1098,8 @@ pub fn compile_to_outputs(urp_path: &Path, settings: &mut Settings) -> Result<(S
         .ok_or_else(|| anyhow::anyhow!("Elaboration failed"))?;
     bail_if_errors_reported(&errors, "Elaboration (types and modules)")?;
 
-    let elab_file = unnest(elab_file);
+    let elab_file = unnest(elab_file, &mut errors);
+    bail_if_errors_reported(&errors, "Unnest (lambda lifting)")?;
     let expl_file =
         explify(elab_file, &mut errors).ok_or_else(|| anyhow::anyhow!("Explify failed"))?;
     let core_file =

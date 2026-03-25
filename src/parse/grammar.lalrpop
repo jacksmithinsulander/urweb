@@ -461,7 +461,7 @@ ConNode: Con = {
     // kind abstraction and constructor lambdas; ConFnRest handles remaining args
     "fn" "[" <name:"IDENT"> "]" <rest:ConFnRest> =>
         Con::KAbs(name, rest),
-    "fn" "[" <name:"IDENT"> "::" <k:Kind> "]" <rest:ConFnRest> =>
+    "fn" "[" <name:"IDENT"> "::" <_k:Kind> "]" <rest:ConFnRest> =>
         Con::KAbs(name, rest),
     "fn" <name:"IDENT"> <k:KindAnnot?> <rest:ConFnRest> =>
         Con::Abs(name, k.map(Box::new), rest),
@@ -490,7 +490,7 @@ ConFnRest: Box<LocCon> = {
     "=>" <c:Con> => Box::new(c),
     <l:@L> "[" <name:"IDENT"> "]" <rest:ConFnRest> <r:@R> =>
         Box::new(Located::new(Con::KAbs(name, rest), Span::from_offsets("", l, r, &[]))),
-    <l:@L> "[" <name:"IDENT"> "::" <k:Kind> "]" <rest:ConFnRest> <r:@R> =>
+    <l:@L> "[" <name:"IDENT"> "::" <_k:Kind> "]" <rest:ConFnRest> <r:@R> =>
         Box::new(Located::new(Con::KAbs(name, rest), Span::from_offsets("", l, r, &[]))),
     <l:@L> <name:"IDENT"> <k:KindAnnot?> <rest:ConFnRest> <r:@R> =>
         Box::new(Located::new(Con::Abs(name, k.map(Box::new), rest), Span::from_offsets("", l, r, &[]))),
@@ -664,7 +664,7 @@ Pat: LocPat = {
 
 PatNode: Pat = {
     // Type annotation on an atomic pattern: p : T
-    <l:@L> <p:AtomPat> ":" <c:Con> <r:@R> =>
+    <_l:@L> <p:AtomPat> ":" <c:Con> <_r:@R> =>
         Pat::Annot(Box::new(p), c),
     // Constructor application: Con atpat
     // At PatNode level (not in AtomPat) so that the UpperPath in function-arg
@@ -724,6 +724,20 @@ AtomPatNode: Pat = {
         Pat::Record(fields, true),
     // Parenthesized pattern: also handles constructor-with-arg: (Some x), etc.
     "(" <p:Pat> ")" => p.node,
+    // Tuple pattern: `(p1, p2, ...)` → record with integer field names
+    "(" <p:Pat> "," <rest:PatTupleTail> ")" => {
+        let mut fields = vec![("1".to_string(), p)];
+        for (i, r) in rest.into_iter().enumerate() {
+            fields.push((format!("{}", i + 2), r));
+        }
+        Pat::Record(fields, false)
+    },
+};
+
+// Tail of a tuple pattern (one or more comma-separated Pats after the first)
+PatTupleTail: Vec<LocPat> = {
+    <p:Pat> => vec![p],
+    <ps:PatTupleTail> "," <p:Pat> => { let mut v = ps; v.push(p); v },
 };
 
 // Non-empty comma-separated list of pattern fields
@@ -775,7 +789,8 @@ Exp: LocExp = {
 ExpNode: Exp = {
     // Lambda — body is full Exp (greedy right extension, avoids dangling-fn ambiguity
     // by keeping fn out of NonSeqExp so the left of `;` is always NonSeqExp).
-    "fn" <params:FnLamParams> "=>" <e:Exp> =>
+    // Uses LambdaParams (allows `x : T` annotated params) not FnLamParams.
+    "fn" <params:LambdaParams> "=>" <e:Exp> =>
         wrap_fun_params(params, e).node,
     // Monadic bind: `x <- e1; e2`  (also `_ <- e1; e2`)
     <name:"IDENT"> "<-" <e1:NonSeqExp> ";" <e2:Exp> =>
@@ -1003,6 +1018,36 @@ FnLamParams: Vec<FunParam> = {
     <ps:FnLamParams> <p:FnLamParam> => { let mut v = ps; v.push(p); v },
 };
 
+/// Lambda parameter for `fn => body` only.
+/// Adds `x : T` annotated term params without parens (safe because `fn...=>`
+/// has no `(":" rettype)?` suffix so `:` is unambiguously a param annotation).
+/// Uses AtomCon for the annotation type (not full Con) to avoid shift-reduce
+/// with Con application chains.
+LambdaParam: FunParam = {
+    // Annotated term param without parens: x : AtomType
+    // After IDENT, `:` ∉ FOLLOW(LambdaParam) so shifting `:` is unambiguous.
+    <name:"IDENT"> ":" <t:AtomCon> => FunParam::Term(Located::dummy(Pat::Annot(
+        Box::new(Located::dummy(Pat::Var(name))), t,
+    ))),
+    // Unnannotated or parenthesized pattern (handles (x : FullType) via AtomPat)
+    <p:AtomPat> => FunParam::Term(p),
+    // Implicit constructor variable (kind inferred): [nm]
+    "[" <nm:"IDENT"> "]" => FunParam::ConArg(Explicitness::Implicit, nm, None),
+    // Explicit constructor variable with kind: [nm :: K]
+    "[" <nm:"IDENT"> "::" <k:Kind> "]" => FunParam::ConArg(Explicitness::Explicit, nm, Some(k)),
+    // Row/implicit constructor variable: [nm ::: K]
+    "[" <nm:"IDENT"> ":::" <k:Kind> "]" => FunParam::ConArg(Explicitness::Implicit, nm, Some(k)),
+    // Wildcard implicit: [_ :: K]  (WILDANNOT inside brackets)
+    "[" "WILDANNOT" <k:Kind> "]" => FunParam::ConArg(Explicitness::Implicit, "_".into(), Some(k)),
+    // Disjointness constraint: [[c1] ~ rest]
+    "[" <c1:Con> "~" <c2:Con> "]" => FunParam::Disjoint(c1, c2),
+};
+
+LambdaParams: Vec<FunParam> = {
+    <p:LambdaParam> => vec![p],
+    <ps:LambdaParams> <p:LambdaParam> => { let mut v = ps; v.push(p); v },
+};
+
 AtomExpNode: Exp = {
     // Unit literal: `()` → empty record
     "()" => Exp::Record(vec![], false),
@@ -1025,6 +1070,14 @@ AtomExpNode: Exp = {
     "{" <fields:ExpFieldList> "," "..." "}" => Exp::Record(fields, true),
     // Parenthesized expression — uses full Exp to allow sequencing
     "(" <e:Exp> ")" => e.node,
+    // Tuple expression: `(e1, e2, ...)` → record with integer field names
+    "(" <e:Exp> "," <rest:ExpTupleTail> ")" => {
+        let mut fields: Vec<(LocCon, LocExp)> = vec![(Located::dummy(Con::Name("1".into())), e)];
+        for (i, r) in rest.into_iter().enumerate() {
+            fields.push((Located::dummy(Con::Name(format!("{}", i + 2))), r));
+        }
+        Exp::Record(fields, false)
+    },
     "_" => Exp::Wild,
     "___" => Exp::Hole,
     // XML outer wrapper: <xml> content </xml>
@@ -1034,7 +1087,7 @@ AtomExpNode: Exp = {
         let pos = Span::from_offsets("", l, r, &[]);
         xml_empty_cdata(pos).node
     },
-    <l:@L> "BEGIN_TAG" <xml:Xml> "END_TAG" <r:@R> => xml.node,
+    <_l:@L> "BEGIN_TAG" <xml:Xml> "END_TAG" <_r:@R> => xml.node,
     // <xml/>  — empty XML fragment
     <l:@L> "XML_BEGIN_END" <r:@R> => {
         let pos = Span::from_offsets("", l, r, &[]);
@@ -1046,6 +1099,12 @@ AtomExpNode: Exp = {
 ExpFieldList: Vec<(LocCon, LocExp)> = {
     <f:ExpField> => vec![f],
     <fs:ExpFieldList> "," <f:ExpField> => { let mut v = fs; v.push(f); v },
+};
+
+// Tail of a tuple expression (one or more Exps after the first, for `(e1, e2, ...)`)
+ExpTupleTail: Vec<LocExp> = {
+    <e:Exp> => vec![e],
+    <es:ExpTupleTail> "," <e:Exp> => { let mut v = es; v.push(e); v },
 };
 
 // ---------------------------------------------------------------------------

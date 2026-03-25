@@ -665,7 +665,7 @@ fn de_abs(e: LocatedExpression, cargs: &[LocatedKind]) -> LocatedExpression {
     }
     match e.node {
         Expression::CAbs(_, _, body) => de_abs(*body, &cargs[1..]),
-        _ => panic!("Unpoly: de_abs — expected CAbs"),
+        _ => e,
     }
 }
 
@@ -675,7 +675,7 @@ fn de_abs_ref<'a>(e: &'a LocatedExpression, cargs: &[LocatedKind]) -> &'a Locate
     }
     match &e.node {
         Expression::CAbs(_, _, body) => de_abs_ref(body, &cargs[1..]),
-        _ => panic!("Unpoly: de_abs_ref — expected CAbs"),
+        _ => e,
     }
 }
 

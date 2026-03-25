@@ -638,8 +638,13 @@ pub fn elab_con(
     });
     if d > 500 {
         ELAB_CON_DEPTH.with(|c| c.set(0));
-        eprintln!("GUARD: elab_con depth exceeded 500!");
-        panic!("elab_con: recursion depth exceeded 500");
+        let span = c.span.clone();
+        ctx.error(
+            span.clone(),
+            "Elaboration: constructor recursion depth exceeded 500 (internal limit — simplify types or report a bug)"
+                .to_string(),
+        );
+        return (cerror(span.clone()), kerror(span));
     }
     let result = elab_con_inner(ctx, env, c);
     ELAB_CON_DEPTH.with(|c| c.set(d));
@@ -1838,8 +1843,13 @@ pub fn elab_exp(
     });
     if d > 200 {
         ELAB_EXP_DEPTH.with(|c| c.set(0));
-        eprintln!("GUARD: elab_exp depth exceeded 200!");
-        panic!("elab_exp: recursion depth exceeded 200");
+        let span = e.span.clone();
+        ctx.error(
+            span.clone(),
+            "Elaboration: expression recursion depth exceeded 200 (internal limit — simplify the expression or report a bug)"
+                .to_string(),
+        );
+        return (eerror(span.clone()), cerror(span));
     }
     let result = elab_exp_inner(ctx, env, denv, e);
     ELAB_EXP_DEPTH.with(|c| c.set(d));
@@ -2297,9 +2307,19 @@ fn elab_exp_inner(
             (result, bodytype)
         }
 
-        source::Exp::Infix(_op, _e1, _e2) => {
-            // TODO: elaborate infix operators via type class resolution
-            (eerror(span.clone()), cerror(span))
+        source::Exp::Infix(op, e1, e2) => {
+            // Surface syntax stays `Exp::Infix` after parse; operator structure is fixed there
+            // (see `parse::expr_langsec` / LALRPOP spine). Here we only lower to application for
+            // typechecking — no second recognizer for operators.
+            // Desugar to curried application so elab_head inserts typeclass witnesses when needed.
+            let op_var = Located::new(
+                source::Exp::Var(vec![], op.clone(), source::Inference::Infer),
+                span.clone(),
+            );
+            let app1 = Located::new(source::Exp::App(Box::new(op_var), e1.clone()), span.clone());
+            let desugared =
+                Located::new(source::Exp::App(Box::new(app1), e2.clone()), span.clone());
+            elab_exp(ctx, env, denv, &desugared)
         }
     }
 }
@@ -2521,7 +2541,12 @@ fn elab_head_inner(
     depth: usize,
 ) -> (elab::LocatedExpression, elab::LocatedConstructor) {
     if depth > 50 {
-        panic!("elab_head: recursion depth exceeded 50 (likely infinite loop in type)");
+        ctx.error(
+            span.clone(),
+            "Elaboration: implicit argument insertion exceeded 50 iterations (possible infinite type expansion — report a bug if this persists)"
+                .to_string(),
+        );
+        return (eerror(span.clone()), cerror(span.clone()));
     }
     let tn = hnorm_con(t.clone());
     match &tn.node {
@@ -2787,9 +2812,27 @@ pub fn elab_sgn_item(
             (Some(result), new_env)
         }
 
-        source::SgnItem::Functor(_name, _arg, _s1, _s2) => {
-            // TODO: elaborate functor signature item
-            (None, env.clone())
+        source::SgnItem::Functor(functor_name, arg_name, s1, s2) => {
+            let dome = elab_sgn(ctx, env, denv, s1);
+            let (env_for_ran, arg_id) = env.clone().push_str_named(arg_name.clone(), dome.clone());
+            let rane = elab_sgn(ctx, &env_for_ran, denv, s2);
+            let fun_sgn = Located::new(
+                elab::Signature::Fun(arg_name.clone(), arg_id, Box::new(dome), Box::new(rane)),
+                span.clone(),
+            );
+            let (new_env, id) = env
+                .clone()
+                .push_str_named(functor_name.clone(), fun_sgn.clone());
+            let result = Located::new(
+                elab::SignatureItem::Structure(
+                    elab::ImportMode::Import,
+                    functor_name.clone(),
+                    id,
+                    fun_sgn,
+                ),
+                span,
+            );
+            (Some(result), new_env)
         }
     }
 }
@@ -3352,9 +3395,23 @@ pub fn elab_decl(
             (vec![decl_out], new_env, denv.clone())
         }
 
-        source::Decl::OpenStr(_s) => {
-            // TODO: elaborate open with functor application
-            (vec![], env.clone(), denv.clone())
+        source::Decl::OpenStr(s) => {
+            let (_str_e, str_sgn) = elab_str(ctx, env, denv, s, None);
+            let h = hnorm_sgn(env, &str_sgn);
+            let items = get_sgn_const_items(env, &str_sgn);
+            if items.is_empty() && !matches!(h.node, elab::Signature::Const(_)) {
+                ctx.error(
+                    span.clone(),
+                    "cannot open structure: signature is not a constant module".to_string(),
+                );
+                (vec![], env.clone(), denv.clone())
+            } else {
+                let mut new_env = env.clone();
+                for sgi in &items {
+                    new_env = enrich_env_from_sgi(new_env, &sgi.node, 0, &[], "");
+                }
+                (vec![], new_env, denv.clone())
+            }
         }
     }
 }

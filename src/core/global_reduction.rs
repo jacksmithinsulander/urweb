@@ -570,7 +570,7 @@ impl Reducer {
         span: Span,
     ) -> LocatedKind {
         match env.first() {
-            None => panic!("Reduce.kind: KRel {n_orig} unbound"),
+            None => Located::new(Kind::Type, span),
             Some(item) => match item {
                 EnvItem::UnknownC | EnvItem::KnownC(_) | EnvItem::UnknownE | EnvItem::KnownE(_) => {
                     self.find_kind(&env[1..], n_orig, n, nudge, span)
@@ -788,8 +788,8 @@ impl Reducer {
                 match c_red.node {
                     Constructor::Tuple(cs) => cs
                         .into_iter()
-                        .nth(n - 1)
-                        .unwrap_or_else(|| panic!("Reduce.con: Proj {n} out of bounds")),
+                        .nth(n.saturating_sub(1))
+                        .unwrap_or_else(|| Located::new(Constructor::Unit, span.clone())),
                     other => mk(Constructor::Proj(
                         Box::new(Located::new(other, span.clone())),
                         n,
@@ -810,7 +810,7 @@ impl Reducer {
         span: Span,
     ) -> LocatedConstructor {
         match env.first() {
-            None => panic!("Reduce.con: CRel {n_orig} unbound"),
+            None => Located::new(Constructor::Unit, span),
             Some(item) => match item {
                 EnvItem::UnknownK => {
                     self.find_con(&env[1..], n_orig, n, nudge, lift_k + 1, lift_c, span)
@@ -955,6 +955,7 @@ impl Reducer {
                 let de_env = de_known(env);
                 let e1_red = self.reduce_exp(env, *e1);
                 let e2_red = self.reduce_exp(env, *e2);
+                let e1_span = e1_red.span.clone();
                 match e1_red.node {
                     // ELet distribution: (let x = v in body) arg  →  let x = v in (body (lift arg))
                     Expression::Let(x, t, e1i, e2i) => {
@@ -1021,11 +1022,24 @@ impl Reducer {
                                 },
                             ))
                         } else {
-                            unreachable!()
+                            mk(Expression::App(
+                                Box::new(Located::new(
+                                    Expression::Case(
+                                        disc,
+                                        arms,
+                                        CaseMeta {
+                                            disc: d_t,
+                                            result: res_t,
+                                        },
+                                    ),
+                                    e1_span,
+                                )),
+                                Box::new(e2_red),
+                            ))
                         }
                     }
                     other => mk(Expression::App(
-                        Box::new(Located::new(other, span.clone())),
+                        Box::new(Located::new(other, e1_span)),
                         Box::new(e2_red),
                     )),
                 }
@@ -1043,6 +1057,7 @@ impl Reducer {
             Expression::CApp(e, c) => {
                 let e_red = self.reduce_exp(env, *e);
                 let c_red = self.reduce_con(env, c);
+                let e_red_span = e_red.span.clone();
                 match e_red.node {
                     Expression::CAbs(_, _, body) => {
                         let mut inner: Env = vec![EnvItem::KnownC(c_red)];
@@ -1092,11 +1107,24 @@ impl Reducer {
                                 },
                             ))
                         } else {
-                            unreachable!()
+                            mk(Expression::CApp(
+                                Box::new(Located::new(
+                                    Expression::Case(
+                                        disc,
+                                        arms,
+                                        CaseMeta {
+                                            disc: d_t,
+                                            result: res_t,
+                                        },
+                                    ),
+                                    e_red_span,
+                                )),
+                                c_red,
+                            ))
                         }
                     }
                     other => mk(Expression::CApp(
-                        Box::new(Located::new(other, span.clone())),
+                        Box::new(Located::new(other, e_red_span)),
                         c_red,
                     )),
                 }
@@ -1294,14 +1322,14 @@ impl Reducer {
                 ))
             }
             // Single-arm case with empty record pattern: just the body
-            Expression::Case(_, ref arms, _)
+            Expression::Case(_, mut arms, _)
                 if arms.len() == 1
                     && matches!(&arms[0].0.node, Pattern::Record(fs) if fs.is_empty()) =>
             {
-                if let Expression::Case(_, mut arms, _) = exp.node {
-                    return self.reduce_exp(env, arms.remove(0).1);
-                }
-                unreachable!()
+                return match arms.pop() {
+                    Some((_, body)) => self.reduce_exp(env, body),
+                    None => mk(Expression::Prim(Prim::Int(0))),
+                };
             }
             Expression::Case(
                 disc,
@@ -1399,7 +1427,7 @@ impl Reducer {
         span: Span,
     ) -> LocatedExpression {
         match env.first() {
-            None => panic!("Reduce.exp: ERel {n_orig} unbound"),
+            None => Located::new(Expression::Prim(Prim::Int(0)), span),
             Some(item) => match item {
                 EnvItem::UnknownK => self.find_exp(
                     &env[1..],

@@ -94,7 +94,7 @@ mod tests {
 
     #[test]
     fn open_text_reads_file() {
-        let _g = FILEIO_STATE_LOCK.lock().unwrap();
+        let _g = lock_for_compile(&FILEIO_STATE_LOCK, "file_io tests (serial)");
         let dir = tempfile::tempdir().unwrap();
         let f = dir.path().join("t.txt");
         std::fs::write(&f, "hello").unwrap();
@@ -104,7 +104,7 @@ mod tests {
 
     #[test]
     fn open_binary_reads_file() {
-        let _g = FILEIO_STATE_LOCK.lock().unwrap();
+        let _g = lock_for_compile(&FILEIO_STATE_LOCK, "file_io tests (serial)");
         let dir = tempfile::tempdir().unwrap();
         let f = dir.path().join("t.bin");
         std::fs::write(&f, [1u8, 2, 3]).unwrap();
@@ -121,7 +121,7 @@ mod tests {
 
     #[test]
     fn most_recent_mod_time_updates_on_open() {
-        let _g = FILEIO_STATE_LOCK.lock().unwrap();
+        let _g = lock_for_compile(&FILEIO_STATE_LOCK, "file_io tests (serial)");
         let dir = tempfile::tempdir().unwrap();
         let f = dir.path().join("t.txt");
         std::fs::write(&f, "x").unwrap();
@@ -133,7 +133,7 @@ mod tests {
 
     #[test]
     fn most_recent_mod_time_later_file_wins() {
-        let _g = FILEIO_STATE_LOCK.lock().unwrap();
+        let _g = lock_for_compile(&FILEIO_STATE_LOCK, "file_io tests (serial)");
         __reset_for_test();
         let dir = tempfile::tempdir().unwrap();
         let f1 = dir.path().join("a.txt");
@@ -155,7 +155,7 @@ mod tests {
 
     #[test]
     fn update_mod_time_uses_strict_greater_not_ge() {
-        let _g = FILEIO_STATE_LOCK.lock().unwrap();
+        let _g = lock_for_compile(&FILEIO_STATE_LOCK, "file_io tests (serial)");
         // Open same file twice (mtime unchanged). With mtime > prev we do NOT update
         // the second time. With mtime >= prev (mutant) we would. update_count differs.
         __reset_for_test();

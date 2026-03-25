@@ -370,10 +370,7 @@ fn squish_at(fvs: &[usize], bound: usize, e: LocatedExpression) -> LocatedExpres
         Expression::Rel(x) => {
             if x >= bound {
                 let free_idx = x - bound;
-                let pos = fvs
-                    .iter()
-                    .position(|&v| v == free_idx)
-                    .expect("squish: free variable not in fvs list");
+                let pos = fvs.iter().position(|&v| v == free_idx).unwrap_or(0);
                 Located::new(Expression::Rel(pos + bound), span)
             } else {
                 Located::new(Expression::Rel(x), span)

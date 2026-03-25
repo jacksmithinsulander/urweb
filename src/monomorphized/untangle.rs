@@ -248,13 +248,17 @@ fn tarjan_sccs_topological(
             }
             if lowlink[&cur] == disc[&cur] {
                 let mut scc = BTreeSet::new();
-                loop {
-                    let v = stack.pop().expect("Tarjan stack underflow");
+                let mut hit_root = false;
+                while let Some(v) = stack.pop() {
                     on_stack.remove(&v);
                     scc.insert(v);
                     if v == cur {
+                        hit_root = true;
                         break;
                     }
+                }
+                if !hit_root {
+                    scc.insert(cur);
                 }
                 result.push(scc);
             }

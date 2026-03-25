@@ -583,9 +583,8 @@ pub fn hnorm_con(constructor: LocatedConstructor) -> LocatedConstructor {
     });
     if d > 200 {
         HNORM_DEPTH.with(|c| c.set(0));
-        panic!(
-            "hnorm_con: infinite loop detected (depth > 200); likely circular unification variable"
-        );
+        let span = constructor.span.clone();
+        return Located::new(Constructor::Error, span);
     }
     let result = hnorm_con_inner(constructor);
     HNORM_DEPTH.with(|c| c.set(d));
@@ -697,12 +696,11 @@ fn hnorm_con_inner(constructor: LocatedConstructor) -> LocatedConstructor {
                                 }
                                 Constructor::Concat(cc1, cc2) => {
                                     match &cc1.node {
-                                        Constructor::Record(_, fields) if !fields.is_empty() => {
+                                        Constructor::Record(k_inner, fields)
+                                            if !fields.is_empty() =>
+                                        {
                                             let fields = fields.clone();
-                                            let k_inner = match &cc1.node {
-                                                Constructor::Record(k, _) => k.clone(),
-                                                _ => unreachable!(),
-                                            };
+                                            let k_inner = k_inner.clone();
                                             let (first_name, first_val) = fields[0].clone();
                                             let rest_fields = fields[1..].to_vec();
                                             let mapped_first = hnorm_con(Located {

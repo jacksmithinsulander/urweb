@@ -281,6 +281,7 @@ pub fn has_sass_or_sassc() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::compiler_diagnostics::lock_for_compile;
     use std::sync::Mutex;
 
     static CWD_LOCK: Mutex<()> = Mutex::new(());
@@ -481,7 +482,7 @@ k = "hello""#;
 
     #[test]
     fn file_exists_detects_present_and_absent() {
-        let _guard = CWD_LOCK.lock().unwrap();
+        let _guard = lock_for_compile(&CWD_LOCK, "cli_common file_exists test");
         let dir = tempfile::tempdir().unwrap();
         let cwd = std::env::current_dir().unwrap();
         std::env::set_current_dir(dir.path()).unwrap();

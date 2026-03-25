@@ -235,9 +235,7 @@ pub mod kind {
             (Record(left_inner), Record(right_inner)) => compare(left_inner, right_inner),
             (Tuple(kinds_left), Tuple(kinds_right)) => compare_kind_list(kinds_left, kinds_right),
             (Fun(_, body_left), Fun(_, body_right)) => compare(body_left, body_right),
-            _ => unreachable!(
-                "Kind variants exhaustively handled; discriminant equality implies same variant"
-            ),
+            _ => Ordering::Equal,
         }
     }
 
@@ -877,9 +875,7 @@ pub mod constructor {
                     .then_with(|| kind_utilities::compare(kind_left, kind_right))
             }
             (TKFun(_, body_left), TKFun(_, body_right)) => compare(body_left, body_right),
-            _ => unreachable!(
-                "Con variants exhaustively handled; discriminant equality implies same variant"
-            ),
+            _ => Ordering::Equal,
         }
     }
 

@@ -195,19 +195,19 @@ impl<T> VarLookup<T> {
         matches!(self, VarLookup::Named(_, _))
     }
 
-    /// Extract the de Bruijn index, panicking if not a `Rel` binding.
-    pub fn rel_index(&self) -> usize {
+    /// De Bruijn index when this lookup is a `Rel` binding.
+    pub fn rel_index(&self) -> Option<usize> {
         match self {
-            VarLookup::Rel(index, _) => *index,
-            _ => panic!("VarLookup::rel_index called on non-Rel variant"),
+            VarLookup::Rel(index, _) => Some(*index),
+            _ => None,
         }
     }
 
-    /// Extract the named id, panicking if not a `Named` binding.
-    pub fn named_id(&self) -> usize {
+    /// Named id when this lookup is a `Named` binding.
+    pub fn named_id(&self) -> Option<usize> {
         match self {
-            VarLookup::Named(id, _) => *id,
-            _ => panic!("VarLookup::named_id called on non-Named variant"),
+            VarLookup::Named(id, _) => Some(*id),
+            _ => None,
         }
     }
 }

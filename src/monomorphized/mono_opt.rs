@@ -603,7 +603,7 @@ fn opt_exp_peephole(
                         )
                         .node
                     } else {
-                        unreachable!()
+                        Exp::Strcat(e1, e2)
                     }
                 }
 

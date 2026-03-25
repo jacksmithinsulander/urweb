@@ -376,12 +376,8 @@ fn walk_pat(p: LocatedPattern, st: &mut State) -> LocatedPattern {
                 Some(dt) => dt,
             };
             let (_n_prime, cmap) = consider_specialization(st, dt_id, args, dt);
-            let new_pn = match cmap.get(&pn) {
-                None => panic!(
-                    "Specialize: Missing datatype constructor (pat) for pn={}",
-                    pn
-                ),
-                Some(&new_pn) => new_pn,
+            let Some(&new_pn) = cmap.get(&pn) else {
+                return p_rebuilt;
             };
             Located::new(
                 Pattern::Constructor(dk, PatternConstructor::Var(new_pn), vec![], po),
@@ -436,9 +432,8 @@ fn walk_exp(e: LocatedExpression, st: &mut State) -> LocatedExpression {
                 Some(dt) => dt,
             };
             let (_, cmap) = consider_specialization(st, dt_id, args, dt);
-            let new_pn = match cmap.get(&pn) {
-                None => panic!("Specialize: Missing datatype constructor for pn={}", pn),
-                Some(&new_pn) => new_pn,
+            let Some(&new_pn) = cmap.get(&pn) else {
+                return e_rebuilt;
             };
             Located::new(
                 Expression::Constructor(dk, PatternConstructor::Var(new_pn), vec![], eo),
