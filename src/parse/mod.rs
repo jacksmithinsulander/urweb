@@ -508,6 +508,47 @@ pub fn rewrite_case_expressions(src: &str) -> String {
     rewrite_case_arm_separators(&rewrite_case_leading_bars(src))
 }
 
+/// Strip SQL table-constraint continuation lines from `.ur` source.
+///
+/// In Ur/Web, `table name : {fields}` declarations may be followed by indented
+/// SQL constraint clauses (`PRIMARY KEY ...`, `CONSTRAINT ...`, `UNIQUE ...`, `CHECK ...`).
+/// These clauses are not part of the Ur/Web AST but are SQL DDL extras.  The Rust
+/// parser would otherwise consume the UIDENT tokens as constructor applications of
+/// the table type.  Stripping them here keeps the grammar simple.
+///
+/// We replace each constraint line with a blank line to preserve line numbers.
+pub fn strip_table_constraints(src: &str) -> String {
+    fn is_constraint_line(trimmed: &str) -> bool {
+        trimmed.starts_with("PRIMARY ")
+            || trimmed.starts_with("PRIMARY\t")
+            || trimmed.starts_with("CONSTRAINT ")
+            || trimmed.starts_with("CONSTRAINT\t")
+            || trimmed.starts_with("UNIQUE ")
+            || trimmed.starts_with("UNIQUE\t")
+            || trimmed.starts_with("CHECK ")
+            || trimmed.starts_with("CHECK\t")
+    }
+
+    let mut result = String::with_capacity(src.len());
+    for line in src.split('\n') {
+        let trimmed = line.trim_start();
+        if !trimmed.is_empty() && is_constraint_line(trimmed) {
+            // Replace with blank line preserving line count
+            result.push('\n');
+        } else {
+            result.push_str(line);
+            result.push('\n');
+        }
+    }
+    // Remove the trailing extra newline we added (split produces N+1 pieces for N newlines)
+    if result.ends_with('\n') && !src.ends_with('\n') {
+        result.pop();
+    } else if result.ends_with("\n\n") && src.ends_with('\n') {
+        result.pop();
+    }
+    result
+}
+
 fn pp_kw_word_at(b: &[u8], i: usize, n: usize, word: &[u8]) -> bool {
     if i + word.len() > n || &b[i..i + word.len()] != word {
         return false;
@@ -1471,8 +1512,9 @@ pub fn basis_urs_preprocessed_window(
 pub fn parse_ur(_filename: &str, source: &str, errors: &mut ErrorReporter) -> Option<File> {
     #[cfg(generated_parser)]
     {
-        let pre =
-            rewrite_case_expressions(&rewrite_sgn_where(&rewrite_datatype_constructors(source)));
+        let pre = rewrite_case_expressions(&rewrite_sgn_where(&rewrite_datatype_constructors(
+            &strip_table_constraints(source),
+        )));
         let lexer = lexical_analyzer::XmlAwareLexer::new(&pre);
         match grammar::FileParser::new().parse(lexer) {
             Ok(file) => Some(file),

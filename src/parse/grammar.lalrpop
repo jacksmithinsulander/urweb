@@ -177,8 +177,8 @@ Decl: LocDecl = {
 };
 
 DeclNode: Decl = {
-    // val p = e
-    "val" <p:Pat> "=" <e:NonSeqExp> => Decl::Val(p, e),
+    // val p = e  (uses Exp to allow monadic bind `<-` and sequencing `;`)
+    "val" <p:Pat> "=" <e:Exp> => Decl::Val(p, e),
 
     // val rec f : t = e and ...
     "val" "rec" <binds:ValRecBindings> => Decl::ValRec(binds),
@@ -450,8 +450,6 @@ ConNode: Con = {
     // Same with ::: (implicit / wildcard-style quantifier)
     "[" <name:"IDENT"> ":::" <k:Kind> "]" "->" <c:Con> =>
         Con::TCFun(Explicitness::Implicit, name, Box::new(k), Box::new(c)),
-
-
 
     // disjointness constraint
     "[" <c1:Con> "~" <c2:Con> "]" "=>" <c3:Con> =>
@@ -1062,6 +1060,18 @@ AtomExpNode: Exp = {
     // Simple identifier (no dots — dots handled in PostfixOp)
     <name:"IDENT">  => Exp::Var(vec![], name, Inference::DontInfer),
     <name:"UIDENT"> => Exp::Var(vec![], name, Inference::DontInfer),
+    // SQL/XML text-splice in expression context: `{[e]}` → Top.txt e
+    // Used inside SQL parameter substitutions like `VALUES ({[id]}, {[s]})`
+    <l:@L> "{" "[" <e:Exp> "]" "}" <r:@R> => {
+        let pos = Span::from_offsets("", l, r, &[]);
+        Exp::App(
+            Box::new(Located::new(
+                Exp::Var(vec!["Top".into()], "txt".into(), Inference::Infer),
+                pos.clone(),
+            )),
+            Box::new(e),
+        )
+    },
     // Record expressions — explicit empty and non-empty cases to avoid
     // nullable ExpFields conflict
     "{" "}" => Exp::Record(vec![], false),

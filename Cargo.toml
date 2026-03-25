@@ -35,6 +35,10 @@ path = "src/bin/ur_daemon.rs"
 name = "ur-lsp"
 path = "src/bin/ur_lsp.rs"
 
+[[bin]]
+name = "ur-debugger"
+path = "src/bin/ur_debugger.rs"
+
 [[example]]
 name = "dump_output"
 path = "examples/dump_output.rs"

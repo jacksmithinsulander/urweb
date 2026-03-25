@@ -123,6 +123,7 @@ fn print_usage() {
     println!("  ur install author/repo");
     println!("  ur daemon [stop|start]");
     println!("  ur lsp");
+    println!("  ur debugger [ur-debugger-args...]");
     println!("  ur [flag ...] project-name");
     println!();
     println!("Run 'ur -help' for compiler flag help (via ur-compile).");
@@ -198,6 +199,19 @@ fn dispatch(args: &[String]) -> i32 {
                 Ok(s) => s.code().unwrap_or(1),
                 Err(_) => {
                     eprintln!("error: ur-lsp not found in PATH");
+                    1
+                }
+            }
+        }
+        Some("debugger") => {
+            let rest: Vec<String> = args[1..].to_vec();
+            let status = std::process::Command::new("ur-debugger")
+                .args(&rest)
+                .status();
+            match status {
+                Ok(s) => s.code().unwrap_or(1),
+                Err(_) => {
+                    eprintln!("error: ur-debugger not found in PATH");
                     1
                 }
             }

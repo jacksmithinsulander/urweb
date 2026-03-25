@@ -35,6 +35,8 @@ pub mod compiler_diagnostics;
 pub mod core;
 /// Datatype representation kind (Enum, Option, Default).
 pub mod datatype_kind;
+/// GDB/MI + Debug Adapter Protocol (`ur-debugger --dap`).
+pub mod debugger;
 /// Demo mode: build a combined demo application from a demo directory.
 pub mod demo;
 /// Elaborated AST — after type inference, with unification variables.
