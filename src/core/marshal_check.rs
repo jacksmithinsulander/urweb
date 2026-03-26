@@ -312,18 +312,6 @@ mod tests {
         dummy(Constructor::Unit)
     }
 
-    fn dummy_exp() -> LocatedExpression {
-        dummy(Expression::Named(0))
-    }
-
-    fn settings_with_allowed(allowed: &[(&str, &str)]) -> Settings {
-        let mut s = Settings::default();
-        for (m, x) in allowed {
-            s.client_to_server.insert((m.to_string(), x.to_string()));
-        }
-        s
-    }
-
     /// Empty file produces no errors.
     #[test]
     fn test_empty_file() {

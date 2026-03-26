@@ -680,34 +680,6 @@ pub mod exp {
         crate::error_types::Located::new(transformed, span)
     }
 
-    fn map_con_ctx<Ctx, FK, FC, FB>(
-        c: LocatedConstructor,
-        ctx: &mut Ctx,
-        fk: &FK,
-        fc: &FC,
-        bind: &FB,
-    ) -> LocatedConstructor
-    where
-        FK: Fn(&mut Ctx, Kind) -> Kind,
-        FC: Fn(&mut Ctx, Constructor) -> Constructor,
-        FB: Fn(&mut Ctx, &con::Binder),
-        Ctx: Clone,
-    {
-        con::map_b(c, ctx, fk, fc, bind)
-    }
-
-    fn binder_bridge<Ctx, FB>(_bind: &FB) -> impl Fn(&mut Ctx, &con::Binder)
-    where
-        FB: Fn(&mut Ctx, &Binder),
-    {
-        // We can't directly return a closure that borrows bind, so we use a
-        // helper that converts con::Binder → exp::Binder.
-        move |_ctx, _b| {
-            // In a full implementation, convert con::Binder → Binder and call bind.
-            // For now, leave as a no-op since the exp-level bind handles this.
-        }
-    }
-
     fn map_b_node<Ctx, FK, FC, FE, FB>(
         e: Expression,
         ctx: &mut Ctx,

@@ -675,14 +675,8 @@ pub fn reset_stats() {
     FUSE.store(0, Ordering::Relaxed);
 }
 
-fn inc_identity() {
-    IDENTITY.fetch_add(1, Ordering::Relaxed);
-}
 fn inc_distribute() {
     DISTRIBUTE.fetch_add(1, Ordering::Relaxed);
-}
-fn inc_fuse() {
-    FUSE.fetch_add(1, Ordering::Relaxed);
 }
 
 // ---------------------------------------------------------------------------

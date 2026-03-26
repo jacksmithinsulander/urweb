@@ -30,14 +30,8 @@ use crate::source::{self};
 // Global state (mirrors SML refs)
 // ---------------------------------------------------------------------------
 
-/// Counter for fresh kind unification variables.
-static KUNIF_COUNT: AtomicUsize = AtomicUsize::new(0);
 /// Counter for fresh constructor unification variables.
 static CUNIF_COUNT: AtomicUsize = AtomicUsize::new(0);
-
-fn fresh_kunif_id() -> usize {
-    KUNIF_COUNT.fetch_add(1, Ordering::Relaxed)
-}
 
 fn fresh_cunif_id() -> usize {
     CUNIF_COUNT.fetch_add(1, Ordering::Relaxed)
@@ -65,10 +59,6 @@ fn elaborated_signature_error_at_span(source_span: Span) -> elab::LocatedSignatu
 
 fn elaborated_structure_error_at_span(source_span: Span) -> elab::LocatedStructure {
     Located::new(elab::Structure::Error, source_span)
-}
-
-fn dummy_span() -> Span {
-    Span::dummy()
 }
 
 // ---------------------------------------------------------------------------
@@ -136,7 +126,7 @@ pub enum FailedToUnifyKinds {
 ///
 /// # Errors
 ///
-/// [`FailedToUnifyKinds::IncompatibleKinds`] or [`FailedToUnifyKinds::OccursCheckFailed`] on failure.
+/// Boxed [`FailedToUnifyKinds`] (large AST nodes) on failure.
 ///
 /// # Returns
 ///
@@ -145,7 +135,7 @@ pub fn unify_kinds(
     elaboration_environment: &Env,
     left_kind: &elab::LocatedKind,
     right_kind: &elab::LocatedKind,
-) -> Result<(), FailedToUnifyKinds> {
+) -> Result<(), Box<FailedToUnifyKinds>> {
     // Chase known unif vars first
     if let elab::Kind::Unif(_, _, reference) = &left_kind.node {
         let guard = crate::compiler_diagnostics::lock_for_compile(
@@ -214,10 +204,10 @@ pub fn unify_kinds(
         }
         (elab::Kind::Tuple(components_left), elab::Kind::Tuple(components_right)) => {
             if components_left.len() != components_right.len() {
-                return Err(FailedToUnifyKinds::IncompatibleKinds(
+                return Err(Box::new(FailedToUnifyKinds::IncompatibleKinds(
                     left_kind.clone(),
                     right_kind.clone(),
-                ));
+                )));
             }
             for (kind_left, kind_right) in components_left.iter().zip(components_right.iter()) {
                 unify_kinds(elaboration_environment, kind_left, kind_right)?;
@@ -228,10 +218,10 @@ pub fn unify_kinds(
             if index_left == index_right {
                 Ok(())
             } else {
-                Err(FailedToUnifyKinds::IncompatibleKinds(
+                Err(Box::new(FailedToUnifyKinds::IncompatibleKinds(
                     left_kind.clone(),
                     right_kind.clone(),
-                ))
+                )))
             }
         }
         (elab::Kind::Fun(binder_name, body_left), elab::Kind::Fun(_, body_right)) => {
@@ -247,10 +237,10 @@ pub fn unify_kinds(
                 return Ok(());
             }
             if occurs_kind(ref_left, right_kind) {
-                return Err(FailedToUnifyKinds::OccursCheckFailed(
+                return Err(Box::new(FailedToUnifyKinds::OccursCheckFailed(
                     left_kind.clone(),
                     right_kind.clone(),
-                ));
+                )));
             }
             *crate::compiler_diagnostics::lock_for_compile(
                 ref_left.as_ref(),
@@ -261,10 +251,10 @@ pub fn unify_kinds(
         // Unif(r) ~ right: solve
         (elab::Kind::Unif(_, _, reference), _) => {
             if occurs_kind(reference, right_kind) {
-                return Err(FailedToUnifyKinds::OccursCheckFailed(
+                return Err(Box::new(FailedToUnifyKinds::OccursCheckFailed(
                     left_kind.clone(),
                     right_kind.clone(),
-                ));
+                )));
             }
             *crate::compiler_diagnostics::lock_for_compile(
                 reference.as_ref(),
@@ -275,10 +265,10 @@ pub fn unify_kinds(
         // left ~ Unif(r): solve
         (_, elab::Kind::Unif(_, _, reference)) => {
             if occurs_kind(reference, left_kind) {
-                return Err(FailedToUnifyKinds::OccursCheckFailed(
+                return Err(Box::new(FailedToUnifyKinds::OccursCheckFailed(
                     left_kind.clone(),
                     right_kind.clone(),
-                ));
+                )));
             }
             *crate::compiler_diagnostics::lock_for_compile(
                 reference.as_ref(),
@@ -294,10 +284,16 @@ pub fn unify_kinds(
         ) => {
             for (component_index, partial_kind) in partial_components {
                 let zero_based_index = component_index.checked_sub(1).ok_or_else(|| {
-                    FailedToUnifyKinds::IncompatibleKinds(left_kind.clone(), right_kind.clone())
+                    Box::new(FailedToUnifyKinds::IncompatibleKinds(
+                        left_kind.clone(),
+                        right_kind.clone(),
+                    ))
                 })?;
                 let target_kind = full_components.get(zero_based_index).ok_or_else(|| {
-                    FailedToUnifyKinds::IncompatibleKinds(left_kind.clone(), right_kind.clone())
+                    Box::new(FailedToUnifyKinds::IncompatibleKinds(
+                        left_kind.clone(),
+                        right_kind.clone(),
+                    ))
                 })?;
                 unify_kinds(elaboration_environment, partial_kind, target_kind)?;
             }
@@ -313,10 +309,16 @@ pub fn unify_kinds(
         ) => {
             for (component_index, partial_kind) in partial_components {
                 let zero_based_index = component_index.checked_sub(1).ok_or_else(|| {
-                    FailedToUnifyKinds::IncompatibleKinds(left_kind.clone(), right_kind.clone())
+                    Box::new(FailedToUnifyKinds::IncompatibleKinds(
+                        left_kind.clone(),
+                        right_kind.clone(),
+                    ))
                 })?;
                 let target_kind = full_components.get(zero_based_index).ok_or_else(|| {
-                    FailedToUnifyKinds::IncompatibleKinds(left_kind.clone(), right_kind.clone())
+                    Box::new(FailedToUnifyKinds::IncompatibleKinds(
+                        left_kind.clone(),
+                        right_kind.clone(),
+                    ))
                 })?;
                 unify_kinds(elaboration_environment, target_kind, partial_kind)?;
             }
@@ -361,10 +363,10 @@ pub fn unify_kinds(
             Ok(())
         }
 
-        _ => Err(FailedToUnifyKinds::IncompatibleKinds(
+        _ => Err(Box::new(FailedToUnifyKinds::IncompatibleKinds(
             left_kind.clone(),
             right_kind.clone(),
-        )),
+        ))),
     }
 }
 
@@ -494,45 +496,11 @@ impl ElabCtx {
     pub fn has_errors(&self) -> bool {
         !self.errors.is_empty()
     }
-
-    /// Look up a Basis type by name (e.g. "int", "float").
-    fn basis_con(
-        &self,
-        elaboration_environment: &Env,
-        name: &str,
-        span: &Span,
-    ) -> elab::LocatedConstructor {
-        // Try to find Basis.name in the environment
-        if let Some((str_id, _)) = elaboration_environment.lookup_str("Basis") {
-            // project_con from the Basis structure
-            if let Some(c) = project_con_from_str(elaboration_environment, *str_id, &[], name, span)
-            {
-                return c;
-            }
-        }
-        elaborated_constructor_error_at_span(span.clone())
-    }
 }
 
 // ---------------------------------------------------------------------------
 // Project a constructor/value/etc. from a named structure's signature
 // ---------------------------------------------------------------------------
-
-/// Project a constructor from a structure by name. Returns the constructor
-/// application `ModProj(str_id, path, name)` if the sig contains it.
-fn project_con_from_str(
-    _elaboration_environment: &Env,
-    str_id: usize,
-    path: &[String],
-    name: &str,
-    span: &Span,
-) -> Option<elab::LocatedConstructor> {
-    // Build ModProj constructor
-    Some(Located::new(
-        elab::Constructor::ModProj(str_id, path.to_vec(), name.to_string()),
-        span.clone(),
-    ))
-}
 
 /// Walk the items of a signature to find a `SgiCon`/`SgiConAbs`/`SgiClass` named `x`.
 fn sgi_find_con<'a>(
@@ -571,20 +539,6 @@ fn sgi_find_str<'a>(
 ) -> Option<&'a elab::SignatureItem> {
     for sgi in sgis {
         if let elab::SignatureItem::Structure(_, name, _, _) = &sgi.node {
-            if name == x {
-                return Some(&sgi.node);
-            }
-        }
-    }
-    None
-}
-
-fn sgi_find_sgn<'a>(
-    sgis: &'a [elab::LocatedSignatureItem],
-    x: &str,
-) -> Option<&'a elab::SignatureItem> {
-    for sgi in sgis {
-        if let elab::SignatureItem::Signature(name, _, _) = &sgi.node {
             if name == x {
                 return Some(&sgi.node);
             }
@@ -674,8 +628,6 @@ pub fn elab_kind(
 /// Insert implicit kind applications at the head of a constructor.
 /// Mirrors `elabConHead`.
 fn elab_con_head(
-    elaboration_context: &mut ElabCtx,
-    elaboration_environment: &Env,
     c: elab::LocatedConstructor,
     k: &elab::LocatedKind,
 ) -> (elab::LocatedConstructor, elab::LocatedKind) {
@@ -690,12 +642,7 @@ fn elab_con_head(
             );
             // substitute ku for Rel(0) in body
             let body_subst = sub_kind_in_kind(0, &ku, *body.clone());
-            elab_con_head(
-                elaboration_context,
-                elaboration_environment,
-                new_c,
-                &body_subst,
-            )
+            elab_con_head(new_c, &body_subst)
         }
         _ => (c, kn),
     }
@@ -1151,12 +1098,12 @@ fn elab_con_var(
         match elaboration_environment.lookup_c(x) {
             VarLookup::Rel(idx, k) => {
                 let c = Located::new(elab::Constructor::Rel(idx), span.clone());
-                let (c2, k2) = elab_con_head(elaboration_context, elaboration_environment, c, &k);
+                let (c2, k2) = elab_con_head(c, &k);
                 return (c2, k2);
             }
             VarLookup::Named(id, k) => {
                 let c = Located::new(elab::Constructor::Named(id), span.clone());
-                let (c2, k2) = elab_con_head(elaboration_context, elaboration_environment, c, &k);
+                let (c2, k2) = elab_con_head(c, &k);
                 return (c2, k2);
             }
             VarLookup::NotBound => {
@@ -1201,7 +1148,7 @@ fn elab_con_var(
                     elab::Constructor::ModProj(str_id, ms[1..].to_vec(), x.to_string()),
                     span.clone(),
                 );
-                let (c2, k2) = elab_con_head(elaboration_context, elaboration_environment, c, k);
+                let (c2, k2) = elab_con_head(c, k);
                 return (c2, k2);
             }
             elab::SignatureItem::ClassAbs(_, _id, k) | elab::SignatureItem::Class(_, _id, k, _) => {
@@ -1215,8 +1162,7 @@ fn elab_con_var(
                     elab::Kind::Arrow(Box::new(k.clone()), Box::new(ktype)),
                     span.clone(),
                 );
-                let (c2, k2) =
-                    elab_con_head(elaboration_context, elaboration_environment, c, &class_k);
+                let (c2, k2) = elab_con_head(c, &class_k);
                 return (c2, k2);
             }
             _ => {}
@@ -1564,7 +1510,7 @@ fn record_summary(elaboration_environment: &Env, c: elab::LocatedConstructor) ->
 ///
 /// # Errors
 ///
-/// Any [`FailedToUnifyConstructors`] variant on failure.
+/// Boxed [`FailedToUnifyConstructors`] (large AST in some variants) on failure.
 ///
 /// # Returns
 ///
@@ -1575,7 +1521,7 @@ pub fn unify_cons(
     diagnostic_span: &Span,
     left_constructor: &elab::LocatedConstructor,
     right_constructor: &elab::LocatedConstructor,
-) -> Result<(), FailedToUnifyConstructors> {
+) -> Result<(), Box<FailedToUnifyConstructors>> {
     unify_cons_inner(
         elaboration_context,
         elaboration_environment,
@@ -1593,9 +1539,11 @@ fn unify_cons_inner(
     left_constructor: &elab::LocatedConstructor,
     right_constructor: &elab::LocatedConstructor,
     recursion_depth: usize,
-) -> Result<(), FailedToUnifyConstructors> {
+) -> Result<(), Box<FailedToUnifyConstructors>> {
     if recursion_depth > 100 {
-        return Err(FailedToUnifyConstructors::UnificationRecursionLimitExceeded);
+        return Err(Box::new(
+            FailedToUnifyConstructors::UnificationRecursionLimitExceeded,
+        ));
     }
 
     // Chase known unif vars first
@@ -1614,9 +1562,11 @@ fn unify_cons_inner(
             if n1 == n2 {
                 return Ok(());
             }
-            Err(FailedToUnifyConstructors::IncompatibleConstructors(
-                left_normalized,
-                right_normalized,
+            Err(Box::new(
+                FailedToUnifyConstructors::IncompatibleConstructors(
+                    left_normalized,
+                    right_normalized,
+                ),
             ))
         }
         // Unification variable solving — must come before Named arms so that
@@ -1630,7 +1580,7 @@ fn unify_cons_inner(
             }
             // Solve r1 := right_normalized (adjusted for nesting); occurs check to prevent circular types
             if occurs_cunif(r1, &right_normalized) {
-                return Err(FailedToUnifyConstructors::OccursCheckWouldCycle);
+                return Err(Box::new(FailedToUnifyConstructors::OccursCheckWouldCycle));
             }
             let adjusted = mlift_con_in_con(*nl1, right_normalized.clone());
             *crate::compiler_diagnostics::lock_for_compile(
@@ -1641,7 +1591,7 @@ fn unify_cons_inner(
         }
         (elab::Constructor::Unif(nl, _, _k, _, r), _) => {
             if occurs_cunif(r, &right_normalized) {
-                return Err(FailedToUnifyConstructors::OccursCheckWouldCycle);
+                return Err(Box::new(FailedToUnifyConstructors::OccursCheckWouldCycle));
             }
             let adjusted = mlift_con_in_con(*nl, right_normalized.clone());
             *crate::compiler_diagnostics::lock_for_compile(
@@ -1652,7 +1602,7 @@ fn unify_cons_inner(
         }
         (_, elab::Constructor::Unif(nl, _, _k, _, r)) => {
             if occurs_cunif(r, &left_normalized) {
-                return Err(FailedToUnifyConstructors::OccursCheckWouldCycle);
+                return Err(Box::new(FailedToUnifyConstructors::OccursCheckWouldCycle));
             }
             let adjusted = mlift_con_in_con(*nl, left_normalized.clone());
             *crate::compiler_diagnostics::lock_for_compile(
@@ -1687,9 +1637,11 @@ fn unify_cons_inner(
                     recursion_depth + 1,
                 );
             }
-            Err(FailedToUnifyConstructors::IncompatibleConstructors(
-                left_normalized,
-                right_normalized,
+            Err(Box::new(
+                FailedToUnifyConstructors::IncompatibleConstructors(
+                    left_normalized,
+                    right_normalized,
+                ),
             ))
         }
         (elab::Constructor::Named(n1), _) => {
@@ -1715,9 +1667,11 @@ fn unify_cons_inner(
                     recursion_depth + 1,
                 );
             }
-            Err(FailedToUnifyConstructors::IncompatibleConstructors(
-                left_normalized,
-                right_normalized,
+            Err(Box::new(
+                FailedToUnifyConstructors::IncompatibleConstructors(
+                    left_normalized,
+                    right_normalized,
+                ),
             ))
         }
         (_, elab::Constructor::Named(n2)) => {
@@ -1742,9 +1696,11 @@ fn unify_cons_inner(
                     recursion_depth + 1,
                 );
             }
-            Err(FailedToUnifyConstructors::IncompatibleConstructors(
-                left_normalized,
-                right_normalized,
+            Err(Box::new(
+                FailedToUnifyConstructors::IncompatibleConstructors(
+                    left_normalized,
+                    right_normalized,
+                ),
             ))
         }
 
@@ -1769,13 +1725,15 @@ fn unify_cons_inner(
         }
         (elab::Constructor::TCFun(e1, x1, k1, b1), elab::Constructor::TCFun(e2, _, k2, b2)) => {
             if e1 != e2 {
-                return Err(FailedToUnifyConstructors::IncompatibleConstructors(
-                    left_normalized,
-                    right_normalized,
+                return Err(Box::new(
+                    FailedToUnifyConstructors::IncompatibleConstructors(
+                        left_normalized,
+                        right_normalized,
+                    ),
                 ));
             }
             unify_kinds(elaboration_environment, k1, k2)
-                .map_err(FailedToUnifyConstructors::KindUnificationFailed)?;
+                .map_err(|ek| Box::new(FailedToUnifyConstructors::KindUnificationFailed(*ek)))?;
             let constructor_environment_extended = elaboration_environment
                 .clone()
                 .push_c_rel(x1.clone(), *k1.clone());
@@ -1832,7 +1790,7 @@ fn unify_cons_inner(
         }
         (elab::Constructor::Abs(x1, k1, b1), elab::Constructor::Abs(_, k2, b2)) => {
             unify_kinds(elaboration_environment, k1, k2)
-                .map_err(FailedToUnifyConstructors::KindUnificationFailed)?;
+                .map_err(|ek| Box::new(FailedToUnifyConstructors::KindUnificationFailed(*ek)))?;
             let constructor_environment_extended = elaboration_environment
                 .clone()
                 .push_c_rel(x1.clone(), *k1.clone());
@@ -1867,24 +1825,28 @@ fn unify_cons_inner(
                 recursion_depth + 1,
             )?;
             unify_kinds(elaboration_environment, k1, k2)
-                .map_err(FailedToUnifyConstructors::KindUnificationFailed)
+                .map_err(|ek| Box::new(FailedToUnifyConstructors::KindUnificationFailed(*ek)))
         }
         (elab::Constructor::Name(s1), elab::Constructor::Name(s2)) => {
             if s1.to_lowercase() == s2.to_lowercase() {
                 Ok(())
             } else {
-                Err(FailedToUnifyConstructors::IncompatibleConstructors(
-                    left_normalized,
-                    right_normalized,
+                Err(Box::new(
+                    FailedToUnifyConstructors::IncompatibleConstructors(
+                        left_normalized,
+                        right_normalized,
+                    ),
                 ))
             }
         }
         (elab::Constructor::Unit, elab::Constructor::Unit) => Ok(()),
         (elab::Constructor::Tuple(left_tuple), elab::Constructor::Tuple(right_tuple)) => {
             if left_tuple.len() != right_tuple.len() {
-                return Err(FailedToUnifyConstructors::IncompatibleConstructors(
-                    left_normalized,
-                    right_normalized,
+                return Err(Box::new(
+                    FailedToUnifyConstructors::IncompatibleConstructors(
+                        left_normalized,
+                        right_normalized,
+                    ),
                 ));
             }
             for (left_element, right_element) in left_tuple.iter().zip(right_tuple.iter()) {
@@ -1901,9 +1863,11 @@ fn unify_cons_inner(
         }
         (elab::Constructor::Proj(left_base, n1), elab::Constructor::Proj(right_base, n2)) => {
             if n1 != n2 {
-                return Err(FailedToUnifyConstructors::IncompatibleConstructors(
-                    left_normalized,
-                    right_normalized,
+                return Err(Box::new(
+                    FailedToUnifyConstructors::IncompatibleConstructors(
+                        left_normalized,
+                        right_normalized,
+                    ),
                 ));
             }
             unify_cons_inner(
@@ -1951,7 +1915,7 @@ fn unify_rows(
     left_constructor: &elab::LocatedConstructor,
     right_constructor: &elab::LocatedConstructor,
     recursion_depth: usize,
-) -> Result<(), FailedToUnifyConstructors> {
+) -> Result<(), Box<FailedToUnifyConstructors>> {
     let left_summary = record_summary(elaboration_environment, left_constructor.clone());
     let right_summary = record_summary(elaboration_environment, right_constructor.clone());
 
@@ -1962,9 +1926,11 @@ fn unify_rows(
         && right_summary.others.is_empty()
     {
         if left_summary.fields.len() != right_summary.fields.len() {
-            return Err(FailedToUnifyConstructors::IncompatibleConstructors(
-                left_constructor.clone(),
-                right_constructor.clone(),
+            return Err(Box::new(
+                FailedToUnifyConstructors::IncompatibleConstructors(
+                    left_constructor.clone(),
+                    right_constructor.clone(),
+                ),
             ));
         }
         let mut right_fields_remaining = right_summary.fields.clone();
@@ -1986,9 +1952,11 @@ fn unify_rows(
                     recursion_depth + 1,
                 )?;
             } else {
-                return Err(FailedToUnifyConstructors::IncompatibleConstructors(
-                    left_constructor.clone(),
-                    right_constructor.clone(),
+                return Err(Box::new(
+                    FailedToUnifyConstructors::IncompatibleConstructors(
+                        left_constructor.clone(),
+                        right_constructor.clone(),
+                    ),
                 ));
             }
         }
@@ -2043,9 +2011,11 @@ fn unify_rows(
         // Leave for later constraint solving
         return Ok(());
     }
-    Err(FailedToUnifyConstructors::IncompatibleConstructors(
-        left_constructor.clone(),
-        right_constructor.clone(),
+    Err(Box::new(
+        FailedToUnifyConstructors::IncompatibleConstructors(
+            left_constructor.clone(),
+            right_constructor.clone(),
+        ),
     ))
 }
 
@@ -3323,14 +3293,12 @@ fn elab_exp_var(
             }
         };
 
-    if let Some(sgi) = sgi_find_val(&items, x) {
-        if let elab::SignatureItem::Val(_, _id, t) = sgi {
-            let e = Located::new(
-                elab::Expression::ModProj(str_id, ms[1..].to_vec(), x.to_string()),
-                span.clone(),
-            );
-            return (e, t.clone());
-        }
+    if let Some(elab::SignatureItem::Val(_, _id, t)) = sgi_find_val(&items, x) {
+        let e = Located::new(
+            elab::Expression::ModProj(str_id, ms[1..].to_vec(), x.to_string()),
+            span.clone(),
+        );
+        return (e, t.clone());
     }
     // Check for datatype constructor (e.g. Basis.None, Basis.Some)
     if let Some((_con_id, dt_id, type_params, arg_type)) = sgi_find_datatype_con(&items, x) {
@@ -4323,21 +4291,6 @@ fn sub_sgi(
 }
 
 // ---------------------------------------------------------------------------
-// selfify: make a structure's signature self-referential
-// ---------------------------------------------------------------------------
-
-fn selfify(
-    _elaboration_environment: &Env,
-    _str_id: usize,
-    sgn: &elab::LocatedSignature,
-) -> elab::LocatedSignature {
-    // Returns the signature with all abstract types made concrete
-    // via ModProj references to the actual structure.
-    // Simplified: just return the signature as-is for now.
-    sgn.clone()
-}
-
-// ---------------------------------------------------------------------------
 // Top-level declaration elaboration
 // ---------------------------------------------------------------------------
 
@@ -5067,14 +5020,14 @@ pub fn elab_str(
                 None,
             );
             let items = get_sgn_const_items(elaboration_environment, &str_isgn);
-            if let Some(sgi) = sgi_find_str(&items, field) {
-                if let elab::SignatureItem::Structure(_, _, _id, sgn) = sgi {
-                    let str_out = Located::new(
-                        elab::Structure::Proj(Box::new(str_ie), field.clone()),
-                        span.clone(),
-                    );
-                    return (str_out, sgn.clone());
-                }
+            if let Some(elab::SignatureItem::Structure(_, _, _id, sgn)) =
+                sgi_find_str(&items, field)
+            {
+                let str_out = Located::new(
+                    elab::Structure::Proj(Box::new(str_ie), field.clone()),
+                    span.clone(),
+                );
+                return (str_out, sgn.clone());
             }
             elaboration_context.error(span.clone(), format!("No structure `{}` in module", field));
             (

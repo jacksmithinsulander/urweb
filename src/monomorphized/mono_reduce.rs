@@ -43,7 +43,6 @@ enum Event {
     ReadDb,
     WriteDb,
     ReadCookie,
-    WriteCookie,
     UseRel,
     Unsure,
     Abort,
@@ -70,8 +69,6 @@ struct ReduceCtx {
     timpures: HashSet<usize>,
     /// Named val IDs that are simply-impure.
     impures: HashSet<usize>,
-    /// Leading EAbs count for each named val.
-    abs_counts: HashMap<usize, usize>,
     /// Use count for each named val.
     uses: HashMap<usize, usize>,
     /// Set to true when the "yanked case" optimisation fires.
@@ -1708,22 +1705,13 @@ fn do_let(
         let writes_page = effs_eprime.contains(&Event::WritePage);
         let reads_db = effs_eprime.contains(&Event::ReadDb);
         let writes_db = effs_eprime.contains(&Event::WriteDb);
-        let reads_cookie = effs_eprime.contains(&Event::ReadCookie);
-        // Note: SML uses ReadCookie for both reads_cookie and writes_cookie (looks like a bug
-        // in original, but we faithfully replicate it)
-        let writes_cookie = effs_eprime.contains(&Event::ReadCookie);
+        // Single flag: summarize does not distinguish read vs write cookie (mirrors upstream).
+        let cookie_effect = effs_eprime.contains(&Event::ReadCookie);
 
         let verify_unused = |eff: &Event| -> bool { *eff != Event::UseRel };
 
         let verify_compatible = |effs: &[Event]| -> bool {
-            verify_compatible_impl(
-                effs,
-                writes_page,
-                reads_db,
-                writes_db,
-                reads_cookie,
-                writes_cookie,
-            )
+            verify_compatible_impl(effs, writes_page, reads_db, writes_db, cookie_effect)
         };
 
         // Check if we can_sub:
@@ -1759,8 +1747,7 @@ fn verify_compatible_impl(
     writes_page: bool,
     reads_db: bool,
     writes_db: bool,
-    reads_cookie: bool,
-    writes_cookie: bool,
+    cookie_effect: bool,
 ) -> bool {
     match effs.split_first() {
         None => false,
@@ -1769,60 +1756,20 @@ fn verify_compatible_impl(
             Event::UseRel => rest.iter().all(|e| *e != Event::UseRel),
             Event::WritePage => {
                 !writes_page
-                    && verify_compatible_impl(
-                        rest,
-                        writes_page,
-                        reads_db,
-                        writes_db,
-                        reads_cookie,
-                        writes_cookie,
-                    )
+                    && verify_compatible_impl(rest, writes_page, reads_db, writes_db, cookie_effect)
             }
             Event::ReadDb => {
                 !writes_db
-                    && verify_compatible_impl(
-                        rest,
-                        writes_page,
-                        reads_db,
-                        writes_db,
-                        reads_cookie,
-                        writes_cookie,
-                    )
+                    && verify_compatible_impl(rest, writes_page, reads_db, writes_db, cookie_effect)
             }
             Event::WriteDb => {
                 !writes_db
                     && !reads_db
-                    && verify_compatible_impl(
-                        rest,
-                        writes_page,
-                        reads_db,
-                        writes_db,
-                        reads_cookie,
-                        writes_cookie,
-                    )
+                    && verify_compatible_impl(rest, writes_page, reads_db, writes_db, cookie_effect)
             }
             Event::ReadCookie => {
-                !writes_cookie
-                    && verify_compatible_impl(
-                        rest,
-                        writes_page,
-                        reads_db,
-                        writes_db,
-                        reads_cookie,
-                        writes_cookie,
-                    )
-            }
-            Event::WriteCookie => {
-                !writes_cookie
-                    && !reads_cookie
-                    && verify_compatible_impl(
-                        rest,
-                        writes_page,
-                        reads_db,
-                        writes_db,
-                        reads_cookie,
-                        writes_cookie,
-                    )
+                !cookie_effect
+                    && verify_compatible_impl(rest, writes_page, reads_db, writes_db, cookie_effect)
             }
             Event::Abort => true,
         },
@@ -1924,7 +1871,6 @@ fn reduce_once(file: File, settings: &Settings, full_mode: bool) -> (File, bool)
     let ctx = ReduceCtx {
         timpures,
         impures,
-        abs_counts,
         uses,
         yanked_case,
         full_mode,
@@ -2081,16 +2027,8 @@ mod tests {
     use crate::settings::Settings;
     use std::sync::{Arc, Mutex};
 
-    fn span() -> Span {
-        Span::dummy()
-    }
-
     fn dummy_typ() -> LocTyp {
         Located::dummy(Typ::Ffi("Basis".into(), "int".into()))
-    }
-
-    fn unit_rec_typ() -> LocTyp {
-        Located::dummy(Typ::Record(vec![]))
     }
 
     fn prim_int(n: i64) -> LocExp {
@@ -2141,7 +2079,6 @@ mod tests {
         let ctx = ReduceCtx {
             timpures: HashSet::new(),
             impures: HashSet::new(),
-            abs_counts: HashMap::new(),
             uses: HashMap::new(),
             yanked_case: Cell::new(false),
             full_mode: false,
@@ -2165,7 +2102,6 @@ mod tests {
         let ctx = ReduceCtx {
             timpures: HashSet::new(),
             impures: HashSet::new(),
-            abs_counts: HashMap::new(),
             uses: HashMap::new(),
             yanked_case: Cell::new(false),
             full_mode: false,
@@ -2187,7 +2123,6 @@ mod tests {
         let ctx = ReduceCtx {
             timpures: HashSet::new(),
             impures: HashSet::new(),
-            abs_counts: HashMap::new(),
             uses: HashMap::new(),
             yanked_case: Cell::new(false),
             full_mode: false,
@@ -2218,7 +2153,6 @@ mod tests {
         let ctx = ReduceCtx {
             timpures: HashSet::new(),
             impures: HashSet::new(),
-            abs_counts: HashMap::new(),
             uses: HashMap::new(),
             yanked_case: Cell::new(false),
             full_mode: false,
@@ -2277,7 +2211,6 @@ mod tests {
         let ctx = ReduceCtx {
             timpures: HashSet::new(),
             impures: HashSet::new(),
-            abs_counts: HashMap::new(),
             uses: HashMap::new(),
             yanked_case: Cell::new(false),
             full_mode: false,
@@ -2305,7 +2238,6 @@ mod tests {
         let ctx = ReduceCtx {
             timpures: HashSet::new(),
             impures: HashSet::new(),
-            abs_counts: HashMap::new(),
             uses: HashMap::new(),
             yanked_case: Cell::new(false),
             full_mode: false,

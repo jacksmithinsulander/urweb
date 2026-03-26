@@ -17,10 +17,6 @@ use crate::{core as core_ir, explicit as expl};
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn loc_dummy() -> Span {
-    Span::dummy()
-}
-
 fn do_restify(settings: &Settings, kind: &PathKind, mods: &[String], s: &str) -> String {
     // Strip "wrap_" prefix if present
     let s = s.strip_prefix("wrap_").unwrap_or(s);
@@ -174,11 +170,6 @@ impl St {
 
     fn lookup_val_ffi(&self, explicit_id: usize) -> Option<&(String, String)> {
         self.val_ffi_map.get(&explicit_id)
-    }
-
-    fn basis_is(mut self, n: usize) -> Self {
-        self.basis = Some(n);
-        self
     }
 
     fn lookup_basis(&self) -> Option<usize> {
@@ -2731,6 +2722,11 @@ mod tests {
     use crate::core as core_ir;
     use crate::core::Constructor;
     use crate::error_types::Located;
+    use crate::error_types::Span;
+
+    fn loc_dummy() -> Span {
+        Span::dummy()
+    }
 
     #[test]
     fn do_restify_empty_mods_identity() {

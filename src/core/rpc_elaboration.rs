@@ -18,13 +18,8 @@ use crate::settings::FailureMode;
 // Transaction function info
 // ---------------------------------------------------------------------------
 
-/// Info about a named function that returns a transaction.
-///
-/// `name`: source-level name, `args`: argument (name, type) list,
-/// `ran`: return type (the `ran` in `transaction ran`), `body`: the expression.
+/// Info about a named function that returns a transaction (`ran` in `transaction ran`).
 struct TFunc {
-    name: String,
-    args: Vec<(String, LocatedConstructor)>,
     ran: LocatedConstructor,
 }
 
@@ -113,7 +108,7 @@ pub fn rpcify(file: File, error_reporter: &mut impl FnMut(&Span, &str)) -> File 
             _ => {}
         }
 
-        for (x, n, t, e, _s) in vis_refs {
+        for (_x, n, t, e, _s) in vis_refs {
             // Crawl through TCFun/TFun/EAbs/ECAbs to find the transaction return type
             fn crawl(
                 t: &LocatedConstructor,
@@ -152,14 +147,7 @@ pub fn rpcify(file: File, error_reporter: &mut impl FnMut(&Span, &str)) -> File 
 
             let mut args = Vec::new();
             if let Some(ran) = crawl(t, e, &mut args, &e.span) {
-                tfuncs.insert(
-                    *n,
-                    TFunc {
-                        name: x.clone(),
-                        args,
-                        ran,
-                    },
-                );
+                tfuncs.insert(*n, TFunc { ran });
             }
         }
     }

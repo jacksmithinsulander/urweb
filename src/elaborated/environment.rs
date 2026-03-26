@@ -2699,10 +2699,6 @@ mod tests {
         Located::new(Kind::Type, dummy_span())
     }
 
-    fn kind_rel(index: usize) -> LocatedKind {
-        Located::new(Kind::Rel(index), dummy_span())
-    }
-
     fn con_rel(index: usize) -> LocatedConstructor {
         Located::new(Constructor::Rel(index), dummy_span())
     }

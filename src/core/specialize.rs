@@ -1163,10 +1163,6 @@ mod tests {
         Located::dummy(node)
     }
 
-    fn dummy_kind() -> LocatedKind {
-        dummy(Kind::Type)
-    }
-
     /// Build a simple monomorphic datatype (no params).
     #[test]
     fn test_monomorphic_datatype_passes_through() {

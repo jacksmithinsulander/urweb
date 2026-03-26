@@ -21,8 +21,8 @@ use crate::settings::{FailureMode, Settings};
 // CantEmbed — emitted when a type can't be serialised to JS
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone)]
-struct CantEmbed(LocTyp);
+#[derive(Debug, Clone, Copy)]
+struct CantEmbed;
 
 // ---------------------------------------------------------------------------
 // Mutable state threaded through the pass
@@ -100,14 +100,6 @@ fn fmt_typ(t: &LocTyp) -> String {
         Typ::Source => "Source".to_string(),
         Typ::Signal(inner) => format!("Signal({})", fmt_typ(inner)),
     }
-}
-
-// ---------------------------------------------------------------------------
-// Helper: build a dummy LocExp / LocTyp at a given span
-// ---------------------------------------------------------------------------
-
-fn dummy_span() -> Span {
-    Span::dummy()
 }
 
 fn str_typ(span: &Span) -> LocTyp {
@@ -192,13 +184,6 @@ fn make_abs(span: &Span, x: &str, dom: LocTyp, ran: LocTyp, body: LocExp) -> Loc
 
 fn make_case(span: &Span, disc: LocExp, arms: Vec<(LocPat, LocExp)>, meta: CaseMeta) -> LocExp {
     Located::new(Exp::Case(Box::new(disc), arms, meta), span.clone())
-}
-
-fn make_let(span: &Span, x: &str, t: LocTyp, e1: LocExp, e2: LocExp) -> LocExp {
-    Located::new(
-        Exp::Let(x.to_string(), t, Box::new(e1), Box::new(e2)),
-        span.clone(),
-    )
 }
 
 fn pat_none(span: &Span, t: LocTyp) -> LocPat {
@@ -321,7 +306,7 @@ fn max_name_exp(e: &Exp, mx: &mut usize) {
 // ---------------------------------------------------------------------------
 
 /// Serialise expression `e` of type `t` into a Mono expression that produces
-/// a JavaScript string.  Returns `Err(CantEmbed(t))` for unsupported types.
+/// a JavaScript string.  Returns `Err(CantEmbed)` for unsupported types.
 fn quote_exp(
     span: &Span,
     t: &LocTyp,
@@ -593,7 +578,7 @@ fn quote_exp(
             Ok(app(s, named(s, n_prime), e))
         }
 
-        _ => Err(CantEmbed(t.clone())),
+        _ => Err(CantEmbed),
     }
 }
 
@@ -785,26 +770,6 @@ fn java_script_mode_to_js_mode(m: &JavaScriptMode) -> JsMode {
         JavaScriptMode::Attribute => JsMode::Attribute,
         JavaScriptMode::Script => JsMode::Script,
         JavaScriptMode::Source(_) => JsMode::Source,
-    }
-}
-
-// ---------------------------------------------------------------------------
-// patBinds — collect types bound by a pattern (prepended to `outer`)
-// ---------------------------------------------------------------------------
-
-fn pat_binds_types(p: &LocPat, env: &mut Vec<LocTyp>) {
-    match &p.node {
-        Pat::Var(_, t) => env.insert(0, t.clone()),
-        Pat::Prim(_) => {}
-        Pat::Con(_, _, None) => {}
-        Pat::Con(_, _, Some(inner)) => pat_binds_types(inner, env),
-        Pat::Record(xpts) => {
-            for (_, p, _) in xpts {
-                pat_binds_types(p, env);
-            }
-        }
-        Pat::None(_) => {}
-        Pat::Some(_, inner) => pat_binds_types(inner, env),
     }
 }
 
@@ -1101,7 +1066,7 @@ fn js_e(
                 Ok(str!(&format!("{{c:\"v\",n:{n}}}")))
             } else {
                 let idx = n - inner;
-                let t = outer.get(idx).ok_or_else(|| CantEmbed(str_typ(s)))?.clone();
+                let t = outer.get(idx).ok_or(CantEmbed)?.clone();
                 let rel_e = rel(s, idx);
                 let quoted = quote_exp(s, &t, rel_e, st, settings)?;
                 Ok(cat![str!("{c:\"c\",v:"), quoted, str!("}")])
@@ -1637,7 +1602,7 @@ fn seek_field(
                     some_ts,
                     found_javascript,
                 )?;
-                let last_x = xs.last().ok_or_else(|| CantEmbed(str_typ(s)))?;
+                let last_x = xs.last().ok_or(CantEmbed)?;
                 let inner_c = {
                     // Build the base.fields_except_last expression
                     let mut e = base.clone();
@@ -1667,7 +1632,7 @@ fn seek_field(
             } else {
                 // Captured from server — resolve type through field chain
                 let idx = n - inner;
-                let mut t = outer.get(idx).ok_or_else(|| CantEmbed(str_typ(s)))?.clone();
+                let mut t = outer.get(idx).ok_or(CantEmbed)?.clone();
                 // Walk field chain to get the leaf type
                 for x in xs {
                     if let Typ::Record(fields) = &t.node.clone() {
@@ -1675,9 +1640,9 @@ fn seek_field(
                             .iter()
                             .find(|(name, _)| name == x)
                             .map(|(_, ft)| ft.clone())
-                            .ok_or_else(|| CantEmbed(str_typ(s)))?;
+                            .ok_or(CantEmbed)?;
                     } else {
-                        return Err(CantEmbed(t));
+                        return Err(CantEmbed);
                     }
                 }
                 // Build the field-access expression to pass to quoteExp
@@ -1712,7 +1677,7 @@ fn seek_field(
         }
         _ => {
             // Default: generic field access
-            let last_x = xs.last().ok_or_else(|| CantEmbed(str_typ(s)))?;
+            let last_x = xs.last().ok_or(CantEmbed)?;
             // Build the base expression (everything except the outermost field)
             let inner_c = if xs.len() == 1 {
                 js_e(

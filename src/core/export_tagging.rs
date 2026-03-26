@@ -81,12 +81,16 @@ pub(crate) fn unravel_app(
 }
 
 /// Emits an error for a duplicate URL prefix.
-fn report_dup_url(span: &Span, prefix_message: &str, error_reporter: &mut impl FnMut(&Span, &str)) {
+fn _report_dup_url(
+    span: &Span,
+    prefix_message: &str,
+    error_reporter: &mut impl FnMut(&Span, &str),
+) {
     error_reporter(span, &format!("Duplicate URL prefix {}", prefix_message));
 }
 
 /// Emits an error for conflicting export kinds.
-fn report_both(span: &Span, function_name: &str, error_reporter: &mut impl FnMut(&Span, &str)) {
+fn _report_both(span: &Span, function_name: &str, error_reporter: &mut impl FnMut(&Span, &str)) {
     error_reporter(
         span,
         &format!(

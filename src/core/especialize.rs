@@ -1469,16 +1469,8 @@ mod tests {
         Located::dummy(node)
     }
 
-    fn dummy_kind() -> LocatedKind {
-        dummy(Kind::Type)
-    }
-
     fn dummy_con() -> LocatedConstructor {
         dummy(Constructor::Unit)
-    }
-
-    fn dummy_span() -> Span {
-        Span::dummy()
     }
 
     /// Empty file passes through unchanged.
