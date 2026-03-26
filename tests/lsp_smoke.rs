@@ -10,8 +10,12 @@ use std::time::{Duration, Instant};
 use serde_json::{json, Value};
 
 /// Wall-clock bound waiting for `textDocument/publishDiagnostics` (CI / loaded hosts).
-const LSP_PUBLISH_DIAG_DEADLINE: Duration = Duration::from_secs(10);
+const LSP_PUBLISH_DIAG_DEADLINE: Duration = Duration::from_secs(6);
 const LSP_RECV_POLL: Duration = Duration::from_millis(200);
+
+/// Bound for expecting a JSON-RPC reply when the client is otherwise idle (e.g. initialize).
+/// Avoids blocking forever on `read_exact` when mutants stub `handle_request` / `dispatch_message`.
+const LSP_RPC_DEADLINE: Duration = Duration::from_secs(5);
 
 const SMOKE_DOC_URI: &str = "file:///tmp/ur-lsp-smoke.ur";
 
@@ -68,6 +72,51 @@ fn read_one_message<R: Read>(reader: &mut R) -> Option<Vec<u8>> {
     Some(body)
 }
 
+fn spawn_stdout_reader<R: Read + Send + 'static>(
+    stdout: R,
+) -> (thread::JoinHandle<()>, mpsc::Receiver<Vec<u8>>) {
+    let (tx, rx) = mpsc::channel::<Vec<u8>>();
+    let handle = thread::spawn(move || {
+        let mut stdout = stdout;
+        while let Some(body) = read_one_message(&mut stdout) {
+            if tx.send(body).is_err() {
+                break;
+            }
+        }
+    });
+    (handle, rx)
+}
+
+/// Next JSON-RPC object satisfying `pred`, or panic after `deadline`.
+fn recv_jsonrpc_matching(
+    rx: &mpsc::Receiver<Vec<u8>>,
+    mut pred: impl FnMut(&Value) -> bool,
+    deadline: Duration,
+    label: &str,
+) -> Vec<u8> {
+    let end = Instant::now() + deadline;
+    while Instant::now() < end {
+        let wait = end
+            .saturating_duration_since(Instant::now())
+            .min(LSP_RECV_POLL);
+        if wait.is_zero() {
+            break;
+        }
+        match rx.recv_timeout(wait) {
+            Ok(body) => {
+                if let Ok(v) = serde_json::from_slice::<Value>(&body) {
+                    if pred(&v) {
+                        return body;
+                    }
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+    panic!("timeout after {deadline:?} waiting for {label}");
+}
+
 /// `Some(diagnostics)` only when this JSON-RPC body is `publishDiagnostics` for `expected_uri`.
 fn diagnostics_for_uri(body: &[u8], expected_uri: &str) -> Option<Vec<Value>> {
     let v: Value = serde_json::from_slice(body).ok()?;
@@ -95,7 +144,8 @@ fn ur_lsp_initialize_reports_text_document_sync() {
         .expect("spawn ur-lsp");
 
     let mut stdin = child.stdin.take().expect("stdin");
-    let mut stdout = child.stdout.take().expect("stdout");
+    let stdout = child.stdout.take().expect("stdout");
+    let (reader, rx) = spawn_stdout_reader(stdout);
 
     write_msg(
         &mut stdin,
@@ -111,7 +161,12 @@ fn ur_lsp_initialize_reports_text_document_sync() {
         }),
     );
 
-    let body = read_one_message(&mut stdout).expect("initialize response");
+    let body = recv_jsonrpc_matching(
+        &rx,
+        |v| v.get("id") == Some(&json!(1)) && v.get("result").is_some(),
+        LSP_RPC_DEADLINE,
+        "initialize response with id=1",
+    );
     let msg: Value = serde_json::from_slice(&body).expect("parse json");
     let caps = msg
         .get("result")
@@ -154,16 +209,6 @@ fn ur_lsp_initialize_reports_text_document_sync() {
             }
         }),
     );
-
-    let (tx, rx) = mpsc::channel::<Vec<u8>>();
-    let reader = thread::spawn(move || {
-        let mut stdout = stdout;
-        while let Some(body) = read_one_message(&mut stdout) {
-            if tx.send(body).is_err() {
-                break;
-            }
-        }
-    });
 
     let deadline = Instant::now() + LSP_PUBLISH_DIAG_DEADLINE;
     let mut saw_diagnostic = false;
@@ -217,7 +262,8 @@ fn ur_lsp_did_change_replaces_text_and_clears_diagnostics() {
         .expect("spawn ur-lsp");
 
     let mut stdin = child.stdin.take().expect("stdin");
-    let mut stdout = child.stdout.take().expect("stdout");
+    let stdout = child.stdout.take().expect("stdout");
+    let (reader, rx) = spawn_stdout_reader(stdout);
 
     write_msg(
         &mut stdin,
@@ -232,7 +278,12 @@ fn ur_lsp_did_change_replaces_text_and_clears_diagnostics() {
             }
         }),
     );
-    let _ = read_one_message(&mut stdout).expect("initialize response");
+    recv_jsonrpc_matching(
+        &rx,
+        |v| v.get("id") == Some(&json!(1)) && v.get("result").is_some(),
+        LSP_RPC_DEADLINE,
+        "initialize response with id=1",
+    );
 
     write_msg(
         &mut stdin,
@@ -259,16 +310,6 @@ fn ur_lsp_did_change_replaces_text_and_clears_diagnostics() {
             }
         }),
     );
-
-    let (tx, rx) = mpsc::channel::<Vec<u8>>();
-    let reader = thread::spawn(move || {
-        let mut stdout = stdout;
-        while let Some(body) = read_one_message(&mut stdout) {
-            if tx.send(body).is_err() {
-                break;
-            }
-        }
-    });
 
     let deadline = Instant::now() + LSP_PUBLISH_DIAG_DEADLINE;
     let mut saw_bad = false;
@@ -350,7 +391,8 @@ fn ur_lsp_unknown_method_returns_method_not_found() {
         .expect("spawn ur-lsp");
 
     let mut stdin = child.stdin.take().expect("stdin");
-    let mut stdout = child.stdout.take().expect("stdout");
+    let stdout = child.stdout.take().expect("stdout");
+    let (reader, rx) = spawn_stdout_reader(stdout);
 
     write_msg(
         &mut stdin,
@@ -365,7 +407,12 @@ fn ur_lsp_unknown_method_returns_method_not_found() {
             }
         }),
     );
-    let _ = read_one_message(&mut stdout).expect("initialize response");
+    recv_jsonrpc_matching(
+        &rx,
+        |v| v.get("id") == Some(&json!(1)) && v.get("result").is_some(),
+        LSP_RPC_DEADLINE,
+        "initialize response with id=1",
+    );
 
     write_msg(
         &mut stdin,
@@ -389,7 +436,12 @@ fn ur_lsp_unknown_method_returns_method_not_found() {
         }),
     );
 
-    let body = read_one_message(&mut stdout).expect("error response");
+    let body = recv_jsonrpc_matching(
+        &rx,
+        |v| v.get("id") == Some(&json!(42)) && v.get("error").is_some(),
+        LSP_RPC_DEADLINE,
+        "JSON-RPC error for unknown method (id=42)",
+    );
     let msg: Value = serde_json::from_slice(&body).expect("parse json");
     assert_eq!(msg.get("id"), Some(&json!(42)));
     let err = msg.get("error").expect("JSON-RPC error object");
@@ -401,6 +453,8 @@ fn ur_lsp_unknown_method_returns_method_not_found() {
 
     let _ = child.kill();
     let _ = child.wait();
+    drop(rx);
+    let _ = reader.join();
 }
 
 #[test]

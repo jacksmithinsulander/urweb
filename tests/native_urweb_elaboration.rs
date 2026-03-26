@@ -1,11 +1,11 @@
 //! Elaboration checks for compiler-injected `UrwebNative` (`urweb_*`) with boot + native `dbms`.
 //! Skips when Basis cannot be resolved from the test binary (same idea as `corpus_core_langsec`).
 
+mod common;
+
 use std::fs;
 use std::sync::Mutex;
 use tempfile::tempdir;
-use ur::compiler;
-use ur::settings::Settings;
 
 static LOCK: Mutex<()> = Mutex::new(());
 
@@ -19,9 +19,10 @@ fn boot_elaborates(urp_body: &str, ur_body: &str) -> bool {
     fs::write(root.join("app.urp"), urp_body).unwrap();
     fs::write(root.join("m.ur"), ur_body).unwrap();
     std::env::set_current_dir(root).unwrap_or(());
-    let mut settings = Settings::new();
-    settings.boot_linking = true;
-    compiler::compile_to_outputs(&root.join("app.urp"), &mut settings).is_ok()
+    common::compile_to_outputs_bounded(root.join("app.urp"), |settings| {
+        settings.boot_linking = true;
+    })
+    .is_ok()
 }
 
 #[test]

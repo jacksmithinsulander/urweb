@@ -193,10 +193,20 @@ DeclNode: Decl = {
     },
 
     // type / con declaration (`type` is a synonym for `con`)
-    "con" <name:"IDENT"> <k:KindAnnot?> "=" <c:Con> =>
-        Decl::Con(name, k.map(Box::new), c),
-    "type" <name:"IDENT"> <k:KindAnnot?> "=" <c:Con> =>
-        Decl::Con(name, k.map(Box::new), c),
+    // Supports optional kind-annotated parameters: `con record (t :: {Type}) = $t`
+    // Each `(nm :: K)` param is desugared into a `fn nm :: K =>` wrapper on the body.
+    "con" <name:"IDENT"> <params:ConDeclParams> <k:KindAnnot?> "=" <c:Con> => {
+        let body = params.into_iter().rev().fold(c, |acc, (nm, k)| {
+            Located::dummy(Con::Abs(nm, Some(Box::new(k)), Box::new(acc)))
+        });
+        Decl::Con(name, k.map(Box::new), body)
+    },
+    "type" <name:"IDENT"> <params:ConDeclParams> <k:KindAnnot?> "=" <c:Con> => {
+        let body = params.into_iter().rev().fold(c, |acc, (nm, k)| {
+            Located::dummy(Con::Abs(nm, Some(Box::new(k)), Box::new(acc)))
+        });
+        Decl::Con(name, k.map(Box::new), body)
+    },
 
     // datatype
     "datatype" <dts:DatatypeDecls> => Decl::Datatype(dts),
@@ -412,6 +422,15 @@ KindAtom: Kind = {
 
 KindAnnot: LocKind = {
     "::" <k:Kind> => k,
+};
+
+/// Zero or more explicit kind-annotated con-declaration parameters: `(nm :: K)`.
+/// Used to desugar `con f (t :: K) = body` into `con f = fn t :: K => body`.
+ConDeclParams: Vec<(String, LocKind)> = {
+    => vec![],
+    <ps:ConDeclParams> "(" <nm:"IDENT"> "::" <k:Kind> ")" => {
+        let mut v = ps; v.push((nm, k)); v
+    },
 };
 
 
@@ -1090,12 +1109,15 @@ AtomExp: LocExp = {
 /// One parameter in a fn/fun binding: a term pattern or a constructor-level arg.
 FnLamParam: FunParam = {
     <p:AtomPat> => FunParam::Term(p),
-    // Implicit constructor variable (kind inferred): [nm]
+    // Implicit constructor variable (kind inferred): [nm] or [K]
     "[" <nm:"IDENT"> "]" => FunParam::ConArg(Explicitness::Implicit, nm, None),
-    // Explicit constructor variable with kind: [nm :: K]
+    "[" <nm:"UIDENT"> "]" => FunParam::ConArg(Explicitness::Implicit, nm, None),
+    // Explicit constructor variable with kind: [nm :: K] or [K :: Kind]
     "[" <nm:"IDENT"> "::" <k:Kind> "]" => FunParam::ConArg(Explicitness::Explicit, nm, Some(k)),
-    // Row/implicit constructor variable: [nm ::: K]
+    "[" <nm:"UIDENT"> "::" <k:Kind> "]" => FunParam::ConArg(Explicitness::Explicit, nm, Some(k)),
+    // Row/implicit constructor variable: [nm ::: K] or [K ::: Kind]
     "[" <nm:"IDENT"> ":::" <k:Kind> "]" => FunParam::ConArg(Explicitness::Implicit, nm, Some(k)),
+    "[" <nm:"UIDENT"> ":::" <k:Kind> "]" => FunParam::ConArg(Explicitness::Implicit, nm, Some(k)),
     // Wildcard implicit: [_ :: K]  (WILDANNOT inside brackets)
     "[" "WILDANNOT" <k:Kind> "]" => FunParam::ConArg(Explicitness::Implicit, "_".into(), Some(k)),
     // Disjointness constraint: [[c1] ~ rest]
@@ -1121,12 +1143,15 @@ LambdaParam: FunParam = {
     ))),
     // Unnannotated or parenthesized pattern (handles (x : FullType) via AtomPat)
     <p:AtomPat> => FunParam::Term(p),
-    // Implicit constructor variable (kind inferred): [nm]
+    // Implicit constructor variable (kind inferred): [nm] or [K]
     "[" <nm:"IDENT"> "]" => FunParam::ConArg(Explicitness::Implicit, nm, None),
-    // Explicit constructor variable with kind: [nm :: K]
+    "[" <nm:"UIDENT"> "]" => FunParam::ConArg(Explicitness::Implicit, nm, None),
+    // Explicit constructor variable with kind: [nm :: K] or [K :: Kind]
     "[" <nm:"IDENT"> "::" <k:Kind> "]" => FunParam::ConArg(Explicitness::Explicit, nm, Some(k)),
-    // Row/implicit constructor variable: [nm ::: K]
+    "[" <nm:"UIDENT"> "::" <k:Kind> "]" => FunParam::ConArg(Explicitness::Explicit, nm, Some(k)),
+    // Row/implicit constructor variable: [nm ::: K] or [K ::: Kind]
     "[" <nm:"IDENT"> ":::" <k:Kind> "]" => FunParam::ConArg(Explicitness::Implicit, nm, Some(k)),
+    "[" <nm:"UIDENT"> ":::" <k:Kind> "]" => FunParam::ConArg(Explicitness::Implicit, nm, Some(k)),
     // Wildcard implicit: [_ :: K]  (WILDANNOT inside brackets)
     "[" "WILDANNOT" <k:Kind> "]" => FunParam::ConArg(Explicitness::Implicit, "_".into(), Some(k)),
     // Disjointness constraint: [[c1] ~ rest]

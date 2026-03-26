@@ -1,11 +1,12 @@
 //! Compiler vs LSP must resolve the same effective [`ur::db::ProjectDb`] for a tree.
 
+mod common;
+
 use std::fs;
 use tempfile::tempdir;
 use ur::compiler;
 use ur::db::ProjectDb;
 use ur::lsp_analysis::ProjectState;
-use ur::settings::Settings;
 
 #[test]
 fn lsp_and_compiler_agree_on_manifest_db() {
@@ -47,8 +48,7 @@ fn compile_to_outputs_native_sql_is_placeholder() {
     fs::write(root.join("m.ur"), "val x = 1\n").unwrap();
     let urp = root.join("app.urp");
     std::env::set_current_dir(root).unwrap();
-    let mut s = Settings::new();
-    let (_, sql) = compiler::compile_to_outputs(&urp, &mut s).expect("compile");
+    let (_, sql) = common::compile_to_outputs_bounded(urp.clone(), |_| {}).expect("compile");
     assert!(
         sql.contains("tigerbeetle") && !sql.contains("CREATE TABLE"),
         "SQL sidecar: {sql}"

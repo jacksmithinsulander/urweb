@@ -558,6 +558,10 @@ pub fn rewrite_bare_kind_binders(src: &str) -> String {
     let n = b.len();
     let mut out = String::with_capacity(n);
     let mut i = 0usize;
+    // Track depth inside `[...]` brackets.  Inside brackets the binder is
+    // already in bracketed form (e.g. `[tf :: {K} -> Type]`) and must NOT be
+    // rewritten again — doing so would produce `[[tf :: {K}] -> Type]`.
+    let mut bracket_depth: i32 = 0;
 
     while i < n {
         // Skip ML comments
@@ -574,8 +578,8 @@ pub fn rewrite_bare_kind_binders(src: &str) -> String {
             out.push_str(&src[start..i]);
             continue;
         }
-        // Check for lowercase ident
-        if b[i].is_ascii_lowercase() || b[i] == b'_' {
+        // Check for lowercase ident — only rewrite bare binders at bracket depth 0.
+        if (b[i].is_ascii_lowercase() || b[i] == b'_') && bracket_depth == 0 {
             // Require word boundary on left
             if i > 0 && pp_kw_cont(b[i - 1]) {
                 out.push(b[i] as char);
@@ -673,6 +677,11 @@ pub fn rewrite_bare_kind_binders(src: &str) -> String {
             }
         }
         let ch = src[i..].chars().next().unwrap_or('\0');
+        if ch == '[' {
+            bracket_depth += 1;
+        } else if ch == ']' {
+            bracket_depth -= 1;
+        }
         out.push(ch);
         i += ch.len_utf8();
     }
@@ -2436,5 +2445,17 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn debug_top_ur_pos_263() {
+        let src =
+            std::fs::read_to_string("/Users/jacksmith/prog/urweb/lib/ur/top.ur").expect("top.ur");
+        let pre = preprocess_ur_for_parse(&src);
+        let pos = 263usize;
+        let start = pos.saturating_sub(40);
+        let end = (pos + 40).min(pre.len());
+        eprintln!("pos {}: {:?}", pos, pre.get(pos..pos + 1));
+        eprintln!("context around {}: {:?}", pos, &pre[start..end]);
     }
 }

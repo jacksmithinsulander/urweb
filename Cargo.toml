@@ -48,6 +48,7 @@ name = "dump_output"
 path = "examples/dump_output.rs"
 
 [dev-dependencies]
+anyhow = "1"
 tempfile = "3"
 
 [dependencies]

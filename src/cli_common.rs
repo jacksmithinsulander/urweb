@@ -94,28 +94,19 @@ pub fn exec_peer_bin(exe: &str, args: &[String]) -> i32 {
 // Project scaffolding templates
 // ---------------------------------------------------------------------------
 
-pub const CURSOR_MD: &str = "# Ur/Web - Cursor AI Context\n\
-\n\
-This file provides context for AI assistants working with Ur/Web projects.\n\
-For Cursor, you may copy this into `.cursor/rules/ur.mdc`.\n\
-\n\
-## Language Overview\n\
-\n\
-- **Ur** is an ML/Haskell-style language: functional, pure, strict, statically typed\n\
-- **Ur/Web** = Ur + web/SQL standard library\n\
-- **Key guarantee:** Well-typed programs avoid code injection, invalid HTML, dead links,\n\
-  form/handler mismatches, invalid SQL, and marshaling errors\n";
+/// `cursor.md` for new projects (`ur-new`); body lives in `templates/project_ai_shared.md`.
+pub const CURSOR_MD: &str = concat!(
+    "# Ur/Web — Cursor context (this project)\n\n",
+    "Reference this file in chat as **`@cursor.md`** when editing Ur/Web sources here.\n\n",
+    include_str!("../templates/project_ai_shared.md"),
+);
 
-pub const CLAUDE_MD: &str = "# Ur/Web - Claude AI Context\n\
-\n\
-This file provides context for Claude and other AI assistants working with Ur/Web projects.\n\
-\n\
-## Language Overview\n\
-\n\
-- **Ur** is an ML/Haskell-style language: functional, pure, strict, statically typed\n\
-- **Ur/Web** = Ur + web/SQL standard library\n\
-- **Key guarantee:** Well-typed programs avoid code injection, invalid HTML, dead links,\n\
-  form/handler mismatches, invalid SQL, and marshaling errors\n";
+/// `claude.md` for new projects (`ur-new`); body lives in `templates/project_ai_shared.md`.
+pub const CLAUDE_MD: &str = concat!(
+    "# Ur/Web — Claude context (this project)\n\n",
+    "Attach **`claude.md`** (e.g. `@claude.md`) when editing this Ur/Web project so answers follow Ur/Web semantics, not other languages.\n\n",
+    include_str!("../templates/project_ai_shared.md"),
+);
 
 pub const GITIGNORE: &str = "# Compiled executables\n\
 *.exe\n\

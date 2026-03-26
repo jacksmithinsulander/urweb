@@ -2,12 +2,12 @@
 //! Catches mutants that replace compile_to_outputs with Ok((String::new(), String::new())),
 //! and mutants in cjr_print, sql_generate, cjrize, prepare that corrupt output.
 
+mod common;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use tempfile::tempdir;
-use ur::compiler;
-use ur::settings::Settings;
 
 static CWD_LOCK: Mutex<()> = Mutex::new(());
 
@@ -15,8 +15,7 @@ static CWD_LOCK: Mutex<()> = Mutex::new(());
 /// construct (parse/elaboration failure). Tests use this to skip gracefully
 /// for features not yet fully implemented.
 fn try_compile(urp: &Path) -> Option<(String, String)> {
-    let mut settings = Settings::new();
-    compiler::compile_to_outputs(urp, &mut settings).ok()
+    common::compile_to_outputs_bounded(urp.to_path_buf(), |_| {}).ok()
 }
 
 fn setup_minimal_project() -> (tempfile::TempDir, PathBuf) {

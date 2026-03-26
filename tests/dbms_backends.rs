@@ -1,11 +1,11 @@
 //! Integration tests for [`ur::db`] — every backend codegen path, unknown `dbms`, SQL wires, default Postgres.
 
+mod common;
+
 use std::fs;
 use std::sync::Mutex;
 use tempfile::tempdir;
-use ur::compiler;
 use ur::db;
-use ur::settings::Settings;
 
 static CWD_LOCK: Mutex<()> = Mutex::new(());
 
@@ -28,7 +28,7 @@ fn compile_to_outputs_each_native_backend_emits_vendor_client() {
         let urp = dir_path.join("app.urp");
 
         std::env::set_current_dir(&dir_path).unwrap();
-        let (c, _) = compiler::compile_to_outputs(&urp, &mut Settings::new()).unwrap();
+        let (c, _) = common::compile_to_outputs_bounded(urp.clone(), |_| {}).unwrap();
         assert!(
             c.contains(needle),
             "dbms {canon} should mention {needle}: {}",
@@ -55,7 +55,7 @@ fn compile_to_outputs_tigerbeetle_emits_transfer_submit() {
     fs::write(dir_path.join("m.ur"), "val x = 1").unwrap();
     let urp = dir_path.join("app.urp");
     std::env::set_current_dir(&dir_path).unwrap();
-    let (c, _) = compiler::compile_to_outputs(&urp, &mut Settings::new()).unwrap();
+    let (c, _) = common::compile_to_outputs_bounded(urp.clone(), |_| {}).unwrap();
     assert!(
         c.contains("tb_client_submit") && c.contains("TB_OPERATION_CREATE_TRANSFERS"),
         "expected TigerBeetle transfer submit in C: {}",
@@ -73,7 +73,7 @@ fn compile_to_outputs_rejects_unknown_dbms_name() {
     let urp = dir_path.join("app.urp");
 
     std::env::set_current_dir(&dir_path).unwrap();
-    let err = compiler::compile_to_outputs(&urp, &mut Settings::new()).unwrap_err();
+    let err = common::compile_to_outputs_bounded(urp.clone(), |_| {}).unwrap_err();
     let msg = format!("{err:#}");
     assert!(
         msg.contains("unknown dbms") || msg.contains("oracle"),
@@ -90,10 +90,9 @@ fn compile_dbms_urp_minimal_c(urp_body: &str) -> String {
     fs::write(dir_path.join("m.ur"), "val x = 1").unwrap();
     let urp = dir_path.join("app.urp");
     std::env::set_current_dir(&dir_path).unwrap();
-    let (c_code, _) =
-        compiler::compile_to_outputs(&urp, &mut Settings::new()).unwrap_or_else(|e| {
-            panic!("compile_to_outputs must succeed for minimal SQL URP ({urp_body:?}): {e:#}")
-        });
+    let (c_code, _) = common::compile_to_outputs_bounded(urp.clone(), |_| {}).unwrap_or_else(|e| {
+        panic!("compile_to_outputs must succeed for minimal SQL URP ({urp_body:?}): {e:#}")
+    });
     assert!(
         !c_code.trim().is_empty(),
         "expected non-empty generated C for {urp_body:?}"
