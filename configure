@@ -7,6 +7,8 @@ builddir=$srcdir
 prefix=/usr/local
 CC=${CC:-cc}
 MLTON=${MLTON:-mlton}
+MLLEX=${MLLEX:-mllex}
+MLYACC=${MLYACC:-mlyacc}
 
 # ── Command-line options ──────────────────────────────────────────────────────
 for arg; do
@@ -21,6 +23,7 @@ done
 
 BIN=${BIN:-$prefix/bin}
 LIB=${LIB:-$prefix/lib}
+MANDIR=${MANDIR:-$prefix/share/man}
 # Compiler lib path: builddir when building from source, else prefix lib (for install)
 [ -z "${COMPILER_LIB+y}" ] && [ -f "$srcdir/lib/ur/basis.urs" ] && COMPILER_LIB="$builddir/src/c"
 COMPILER_LIB=${COMPILER_LIB:-$prefix/lib}
@@ -51,34 +54,59 @@ check_prog() {
 printf 'Checking required tools...\n'
 check_prog "$CC"
 check_prog "$MLTON"
-check_prog mllex
-check_prog mlyacc
-check_prog pkg-config
+check_prog "$MLLEX"
+check_prog "$MLYACC"
 
 # ── pthread ───────────────────────────────────────────────────────────────────
 PTHREAD_CFLAGS=-pthread
 PTHREAD_LIBS=-lpthread
 
-# ── ICU ───────────────────────────────────────────────────────────────────────
+# ── ICU (pkg-config optional; env overrides ICU_CFLAGS/ICU_INCLUDES, ICU_LIBS) ───
 printf 'Checking ICU... '
-if ICU_LIBS=$(pkg-config --libs icu-i18n 2>/dev/null) && \
-   ICU_INCLUDES=$(pkg-config --cflags icu-i18n 2>/dev/null); then
-    printf 'ok (%s)\n' "$ICU_LIBS"
+if [ -n "${ICU_CFLAGS}" ] || [ -n "${ICU_INCLUDES}" ]; then
+    ICU_INCLUDES="${ICU_CFLAGS:-$ICU_INCLUDES}"
+fi
+if [ -n "${ICU_INCLUDES}" ] && [ -n "${ICU_LIBS}" ]; then
+    printf 'ok (from env)\n'
 else
-    # Try common Homebrew locations for icu4c
-    for icu_pc in /opt/homebrew/opt/icu4c/lib/pkgconfig /usr/local/opt/icu4c/lib/pkgconfig; do
-        if [ -d "$icu_pc" ]; then
-            export PKG_CONFIG_PATH="${icu_pc}${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
-            if ICU_LIBS=$(pkg-config --libs icu-i18n 2>/dev/null) && \
-               ICU_INCLUDES=$(pkg-config --cflags icu-i18n 2>/dev/null); then
-                printf 'ok via %s (%s)\n' "$icu_pc" "$ICU_LIBS"
-                break
-            fi
+    # Try pkg-config (optional)
+    if command -v pkg-config >/dev/null 2>&1; then
+        if ICU_LIBS=$(pkg-config --libs icu-i18n 2>/dev/null) && \
+           ICU_INCLUDES=$(pkg-config --cflags icu-i18n 2>/dev/null); then
+            printf 'ok via pkg-config (%s)\n' "$ICU_LIBS"
+        else
+            # Try common Homebrew locations for icu4c
+            for icu_pc in /opt/homebrew/opt/icu4c/lib/pkgconfig /usr/local/opt/icu4c/lib/pkgconfig; do
+                if [ -d "$icu_pc" ]; then
+                    export PKG_CONFIG_PATH="${icu_pc}${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+                    if ICU_LIBS=$(pkg-config --libs icu-i18n 2>/dev/null) && \
+                       ICU_INCLUDES=$(pkg-config --cflags icu-i18n 2>/dev/null); then
+                        printf 'ok via %s (%s)\n' "$icu_pc" "$ICU_LIBS"
+                        break
+                    fi
+                fi
+            done
         fi
-    done
+    fi
     if [ -z "$ICU_LIBS" ] || [ -z "$ICU_INCLUDES" ]; then
-        printf 'not found via pkg-config\n' >&2
-        printf 'Hint: set PKG_CONFIG_PATH to your ICU lib/pkgconfig directory\n' >&2
+        # Fallback: probe common (include, lib) path pairs
+        for incdir in /opt/homebrew/include /usr/local/include /usr/include; do
+            for libdir in /opt/homebrew/lib /usr/local/lib /usr/lib; do
+                if [ -f "$incdir/unicode/utf.h" ] || [ -f "$incdir/unicode/utypes.h" ]; then
+                    if [ -f "$libdir/libicui18n.a" ] || [ -f "$libdir/libicui18n.so" ] || [ -f "$libdir/libicui18n.dylib" ]; then
+                        ICU_INCLUDES="-I$incdir"
+                        ICU_LIBS="-L$libdir -licui18n -licuuc"
+                        printf 'ok via probe (%s)\n' "$ICU_LIBS"
+                        break 2
+                    fi
+                fi
+            done
+        done
+    fi
+    if [ -z "$ICU_LIBS" ] || [ -z "$ICU_INCLUDES" ]; then
+        printf 'not found\n' >&2
+        printf 'Set ICU_CFLAGS and ICU_LIBS (or ICU_INCLUDES and ICU_LIBS), or install pkg-config and ICU dev packages.\n' >&2
+        printf 'E.g. ICU_CFLAGS=-I/usr/include ICU_LIBS="-licui18n -licuuc"\n' >&2
         exit 1
     fi
 fi
@@ -117,18 +145,21 @@ BEARSSL_INC="$srcdir/vendor/BearSSL/inc"
 BEARSSL_LIB_FILE="$srcdir/vendor/BearSSL/build/libbearssl.a"
 if [ ! -f "$BEARSSL_LIB_FILE" ]; then
     printf 'Building vendored BearSSL...\n'
-    make -C "$srcdir/vendor/BearSSL"
+    make -C "$srcdir/vendor/BearSSL" CC="$CC" CFLAGS="-std=c11 -pedantic -W -Wall -Os -fPIC"
 fi
 printf 'BearSSL: %s\n' "$BEARSSL_LIB_FILE"
 
 # ── Compile probes ────────────────────────────────────────────────────────────
-tmpdir=$(mktemp -d)
+tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/urweb.XXXXXXXXXX")
 trap 'rm -rf "$tmpdir"' EXIT
+
+# CFLAGS for probes (C11, match main build)
+PROBE_CFLAGS="-std=c11 -pedantic"
 
 probe() {
     _name=$1; _src=$2
     printf '%s' "$_src" > "$tmpdir/probe_$_name.c"
-    $CC $PTHREAD_CFLAGS -o "$tmpdir/probe_$_name" "$tmpdir/probe_$_name.c" \
+    $CC $PROBE_CFLAGS $PTHREAD_CFLAGS -o "$tmpdir/probe_$_name" "$tmpdir/probe_$_name.c" \
         $PTHREAD_LIBS >/dev/null 2>&1
 }
 
@@ -154,6 +185,12 @@ int main(void){int i=PTHREAD_PRIO_INHERIT;return i;}'; then
     HAVE_PTHREAD_PRIO_INHERIT=1
 else
     HAVE_PTHREAD_PRIO_INHERIT=0
+fi
+
+if probe gnu_asm 'int main(void){__asm__ __volatile__("");return 0;}'; then
+    HAVE_GNU_ASM=1; printf '  GNU inline asm: yes\n'
+else
+    HAVE_GNU_ASM=0; printf '  GNU inline asm: no (e.g. cproc; timing-safe cmp may be weaker)\n'
 fi
 
 # ── Platform ──────────────────────────────────────────────────────────────────
@@ -190,6 +227,7 @@ def1  STDC_HEADERS
 maybe HAVE_MEMMEM               "$HAVE_MEMMEM"
 maybe HAVE_STRCASESTR           "$HAVE_STRCASESTR"
 maybe HAVE_PTHREAD_PRIO_INHERIT "$HAVE_PTHREAD_PRIO_INHERIT"
+maybe HAVE_GNU_ASM              "$HAVE_GNU_ASM"
 printf '\n'
 printf '#define PACKAGE_NAME    "urweb"\n'
 printf '#define PACKAGE_VERSION "20200209"\n'
@@ -197,10 +235,14 @@ printf '#define PACKAGE_STRING  "urweb 20200209"\n'
 printf '#define PACKAGE_TARNAME "urweb"\n'
 printf '#define PACKAGE_BUGREPORT ""\n'
 printf '#define PACKAGE_URL ""\n'
-printf '\n/* System extension macros */\n'
-printf '#ifndef _GNU_SOURCE\n# define _GNU_SOURCE 1\n#endif\n'
-printf '#ifndef _DARWIN_C_SOURCE\n# define _DARWIN_C_SOURCE 1\n#endif\n'
-printf '#ifndef __EXTENSIONS__\n# define __EXTENSIONS__ 1\n#endif\n'
+printf '\n/* System extension macros (platform-guarded) */\n'
+printf '#if defined(__linux__)\n'
+printf '# ifndef _GNU_SOURCE\n#  define _GNU_SOURCE 1\n# endif\n'
+printf '#elif defined(__APPLE__)\n'
+printf '# ifndef _DARWIN_C_SOURCE\n#  define _DARWIN_C_SOURCE 1\n# endif\n'
+printf '#elif defined(__sun) || defined(__illumos__)\n'
+printf '# ifndef __EXTENSIONS__\n#  define __EXTENSIONS__ 1\n# endif\n'
+printf '#endif\n'
 } > "$CONFIG_H"
 
 printf 'Generated %s\n' "$CONFIG_H"
@@ -223,7 +265,7 @@ val includ = "$INCLUDE"
 val sitelisp = "$SITELISP"
 
 val ccompiler = "$CC"
-val ccArgs = ""
+val ccArgs = "-std=c11 -pedantic -Wno-gnu-zero-variadic-macro-arguments -Wno-overlength-strings -Wno-gnu-statement-expression -Wno-pedantic"
 
 val pgheader = "libpq-fe.h"
 val msheader = "mysql.h"
@@ -251,8 +293,8 @@ printf 'Generated %s\n' "$CONFIG_SML"
 
 # ── Generate build.ninja ──────────────────────────────────────────────────────
 srcdir="$srcdir" builddir="$builddir" \
-    CC="$CC" MLTON="$MLTON" \
-    prefix="$prefix" BIN="$BIN" LIB="$LIB" SRCLIB="$SRCLIB" INCLUDE="$INCLUDE" \
+    CC="$CC" MLTON="$MLTON" MLLEX="$MLLEX" MLYACC="$MLYACC" \
+    prefix="$prefix" BIN="$BIN" LIB="$LIB" MANDIR="$MANDIR" SRCLIB="$SRCLIB" INCLUDE="$INCLUDE" \
     BEARSSL_INCLUDES="-I$BEARSSL_INC" \
     BEARSSL_LDFLAGS="-L$(dirname "$BEARSSL_LIB_FILE")" \
     BEARSSL_LIBS="-lbearssl" \

@@ -1,0 +1,98 @@
+.\" urweb man page - POSIX/GNU-style
+.Dd March 10, 2025
+.Dt URWEB 1
+.Os
+.Sh NAME
+.Nm urweb
+.Nd Ur/Web compiler and project tool
+.Sh SYNOPSIS
+.Nm
+.Op Fl h | Fl -help
+.Op Fl V | Fl -version
+.Nm
+.Cm new
+.Op Fl -lib
+.Ar project-name
+.Nm
+.Cm build
+.Nm
+.Cm fmt
+.Op Fl -check
+.Op Fl w Ns Ar N | Fl -width Ns Ar N
+.Op Ar file ...
+.Nm
+.Cm install
+.Ar author/repo
+.Nm
+.Cm daemon
+.Cm start | stop
+.Nm
+.Op Ar flag ...
+.Ar project-name
+.Sh DESCRIPTION
+.Nm
+compiles Ur/Web applications and provides project management commands.
+Ur/Web is a domain-specific functional language for web applications with
+SQL backends.
+.Pp
+.Ss Subcommands
+.Bl -tag -width "daemon start|stop"
+.It Cm new Op Cm --lib Ar project-name
+Create a new application or library project.
+.It Cm build
+Build the project in the current directory (requires urweb.toml).
+.It Cm fmt Op Ar files...
+Format .ur and .urs source files.
+.It Cm install Ar author/repo
+Install a package via git submodule (e.g. urweb/upo).
+.It Cm daemon Cm start | Cm stop
+Start or stop the development daemon.
+.El
+.Pp
+.Ss Compiler Flags
+When
+.Ar project-name
+is given, the following flags are supported:
+.Bl -tag -width "-output, --output=file"
+.It Fl h , Fl -help
+Print usage and exit.
+.It Fl V , Fl -version
+Print version and exit.
+.It Fl -ccompiler Ar prog
+Set the C compiler.
+.It Fl -dbms Ar engine
+Select database: sqlite, mysql, or postgres.
+.It Fl -db Ar connstr
+Database connection string.
+.It Fl -prefix Ar prefix
+URL prefix for the application.
+.It Fl -sql Ar file
+Output SQL DDL to file.
+.It Fl o , Fl -output , Fl -output Ns = Ns Ar file
+Output executable to file.
+.It Fl -tc
+Stop after type checking.
+.It Fl -debug
+Save intermediate C files.
+.It Fl -verbose
+Verbose output.
+.It Fl -boot
+Use build tree; generate statically linked executables.
+.El
+.Pp
+For the full list of compiler flags, run
+.Nm Fl -help .
+.Sh EXIT STATUS
+.Ex -std
+.Sh ENVIRONMENT
+.Bl -tag -width "URWEB"
+.It Ev SRCLIB
+Override library search path (default: /usr/local/lib/urweb).
+.It Ev COMPILER_LIB
+Override compiler library path.
+.El
+.Sh SEE ALSO
+.Lk https://www.impredicative.com/ur/
+The Ur/Web project.
+.Sh AUTHORS
+Adam Chlipala and contributors.

@@ -35,7 +35,7 @@ val () = addProtocol {name = "cgi",
                       linkStatic = "liburweb_cgi.a",
                       linkDynamic = "-lurweb_cgi",
                       persistent = false,
-                      code = fn () => box [string "void uw_global_custom() {",
+                      code = fn () => box [string "void uw_global_custom(void) {",
                                            case getSigFile () of
                                                NONE => box []
                                              | SOME sf => box [string "extern char *uw_sig_file;",

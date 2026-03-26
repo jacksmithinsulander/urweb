@@ -24,10 +24,8 @@
 
 #if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
 #  define UW_NORETURN _Noreturn
-#elif defined(__GNUC__) || defined(__clang__)
-#  define UW_NORETURN __attribute__((noreturn))
 #else
-#  define UW_NORETURN
+#  error "C11 or later required (for _Noreturn)"
 #endif
 
 #include "uthash.h"
@@ -40,13 +38,14 @@ uw_unit uw_unit_v = 0;
 // Socket extras
 
 int uw_really_send(int sock, const void *buf, ssize_t len) {
+  const char *p = buf;
   while (len > 0) {
-    ssize_t n = send(sock, buf, len, 0);
+    ssize_t n = send(sock, p, len, 0);
 
     if (n < 0)
       return n;
 
-    buf += n;
+    p += n;
     len -= n;
   }
 
@@ -54,13 +53,14 @@ int uw_really_send(int sock, const void *buf, ssize_t len) {
 }
 
 int uw_really_write(int fd, const void *buf, size_t len) {
+  const char *p = buf;
   while (len > 0) {
-    ssize_t n = write(fd, buf, len);
+    ssize_t n = write(fd, p, len);
 
     if (n < 0)
       return n;
 
-    buf += n;
+    p += n;
     len -= n;
   }
 
@@ -178,7 +178,7 @@ static pthread_mutex_t clients_mutex = PTHREAD_MUTEX_INITIALIZER;
 size_t uw_messages_max = SIZE_MAX;
 size_t uw_clients_max = SIZE_MAX;
 
-void *uw_init_client_data();
+void *uw_init_client_data(void);
 void uw_free_client_data(void *);
 void uw_copy_client_data(void *dst, void *src);
 
@@ -371,10 +371,10 @@ static void client_send(client *c, uw_buffer *msg, const char *script, int scrip
 
 // Global entry points
 
-extern void uw_global_custom();
-extern void uw_init_crypto();
+extern void uw_global_custom(void);
+extern void uw_init_crypto(void);
 
-void uw_global_init() {
+void uw_global_init(void) {
   clients = malloc(0);
 
   uw_global_custom();
@@ -858,19 +858,19 @@ void uw_login(uw_context ctx) {
 
 static pthread_rwlock_t expunge_lock = PTHREAD_RWLOCK_INITIALIZER;
 
-void uw_transaction_arrives() {
+void uw_transaction_arrives(void) {
   pthread_rwlock_rdlock(&expunge_lock);
 }
 
-void uw_transaction_departs() {
+void uw_transaction_departs(void) {
   pthread_rwlock_unlock(&expunge_lock);
 }
 
-static void uw_expunger_arrives() {
+static void uw_expunger_arrives(void) {
   pthread_rwlock_wrlock(&expunge_lock);
 }
 
-static void uw_expunger_departs() {
+static void uw_expunger_departs(void) {
   pthread_rwlock_unlock(&expunge_lock);
 }
 
@@ -3119,7 +3119,7 @@ char *uw_Basis_sqlifyBoolN(uw_context ctx, uw_Basis_bool *b) {
 char *uw_Basis_sqlifyTime(uw_context ctx, uw_Basis_time t) {
   size_t len;
   char *r, *s;
-  struct tm stm = {};
+  struct tm stm = {0};
   stm.tm_isdst = -1;
 
   if (localtime_r(&t.seconds, &stm)) {
@@ -3183,7 +3183,7 @@ char *uw_Basis_sqlifyCalendardate(uw_context ctx, uw_Basis_calendardate t) {
 char *uw_Basis_attrifyTime(uw_context ctx, uw_Basis_time t) {
   size_t len;
   char *r;
-  struct tm stm = {};
+  struct tm stm = {0};
   stm.tm_isdst = -1;
 
   if (localtime_r(&t.seconds, &stm)) {
@@ -3202,7 +3202,7 @@ char *uw_Basis_attrifyTime(uw_context ctx, uw_Basis_time t) {
 char *uw_Basis_ensqlTime(uw_context ctx, uw_Basis_time t) {
   size_t len;
   char *r;
-  struct tm stm = {};
+  struct tm stm = {0};
   stm.tm_isdst = -1;
 
   if (localtime_r(&t.seconds, &stm)) {
@@ -3316,7 +3316,7 @@ uw_Basis_string uw_Basis_boolToString(uw_context ctx, uw_Basis_bool b) {
 uw_Basis_string uw_Basis_timef(uw_context ctx, const char *fmt, uw_Basis_time t) {
   size_t len;
   char *r;
-  struct tm stm = {};
+  struct tm stm = {0};
   stm.tm_isdst = -1;
 
   if (localtime_r(&t.seconds, &stm)) {
@@ -3415,7 +3415,7 @@ uw_Basis_bool *uw_Basis_stringToBool(uw_context ctx, uw_Basis_string s) {
 
 uw_Basis_time *uw_Basis_stringToTime(uw_context ctx, uw_Basis_string s) {
   char *dot = strchr(s, '.'), *end = strchr(s, 0);
-  struct tm stm = {};
+  struct tm stm = {0};
   stm.tm_isdst = -1;
 
   if (dot) {
@@ -3461,7 +3461,7 @@ uw_Basis_time *uw_Basis_stringToTime(uw_context ctx, uw_Basis_string s) {
 
 uw_Basis_clocktime *uw_Basis_stringToClocktime(uw_context ctx, uw_Basis_string s) {
   char *dot = strchr(s, '.'), *end = strchr(s, 0);
-  struct tm stm = {};
+  struct tm stm = {0};
   stm.tm_isdst = -1;
 
   if (dot){
@@ -3495,7 +3495,7 @@ uw_Basis_clocktime *uw_Basis_stringToClocktime(uw_context ctx, uw_Basis_string s
 
 uw_Basis_calendardate *uw_Basis_stringToCalendardate(uw_context ctx, uw_Basis_string s) {
   char *end = strchr(s, 0);
-  struct tm stm = {};
+  struct tm stm = {0};
   stm.tm_isdst = -1;
 
   if (strptime(s, "%Y-%m-%d", &stm) == end) {
@@ -3511,7 +3511,7 @@ uw_Basis_calendardate *uw_Basis_stringToCalendardate(uw_context ctx, uw_Basis_st
 
 uw_Basis_time *uw_Basis_stringToTimef(uw_context ctx, const char *fmt, uw_Basis_string s) {
   char *end = strchr(s, 0);
-  struct tm stm = {};
+  struct tm stm = {0};
   stm.tm_isdst = -1;
 
   if (strptime(s, fmt, &stm) == end) {
@@ -3526,7 +3526,7 @@ uw_Basis_time *uw_Basis_stringToTimef(uw_context ctx, const char *fmt, uw_Basis_
 
 uw_Basis_clocktime *uw_Basis_stringToClocktimef(uw_context ctx, const char *fmt, uw_Basis_string s) {
   char *end = strchr(s, 0);
-  struct tm stm = {};
+  struct tm stm = {0};
   stm.tm_isdst = -1;
 
   if (strptime(s, fmt, &stm) == end) {
@@ -3542,7 +3542,7 @@ uw_Basis_clocktime *uw_Basis_stringToClocktimef(uw_context ctx, const char *fmt,
 
 uw_Basis_calendardate *uw_Basis_stringToCalendardatef(uw_context ctx, const char *fmt, uw_Basis_string s) {
   char *end = strchr(s, 0);
-  struct tm stm = {};
+  struct tm stm = {0};
   stm.tm_isdst = -1;
 
   if (strptime(s, fmt, &stm) == end) {
@@ -3624,7 +3624,7 @@ uw_Basis_bool uw_Basis_stringToBool_error(uw_context ctx, uw_Basis_string s) {
 uw_Basis_time uw_Basis_unsqlTime(uw_context ctx, uw_Basis_string s) {
   char *dot = strchr(s, '.'), *end = strchr(s, 0);
   int dot_is_not_really_dot = 0;
-  struct tm stm = {};
+  struct tm stm = {0};
   stm.tm_isdst = -1;
 
   // Extra logic to skip Postgres content that we want to ignore
@@ -3684,7 +3684,7 @@ uw_Basis_calendardate uw_Basis_unsqlCalendardate(uw_context ctx, uw_Basis_string
 
 uw_Basis_time uw_Basis_stringToTime_error(uw_context ctx, uw_Basis_string s) {
   char *dot = strchr(s, '.'), *end = strchr(s, 0);
-  struct tm stm = {};
+  struct tm stm = {0};
   stm.tm_isdst = -1;
 
   if (dot) {
@@ -3737,7 +3737,7 @@ uw_Basis_calendardate uw_Basis_stringToCalendardate_error(uw_context ctx, uw_Bas
 
 uw_Basis_time uw_Basis_stringToTimef_error(uw_context ctx, const char *fmt, uw_Basis_string s) {
   char *end = strchr(s, 0);
-  struct tm stm = {};
+  struct tm stm = {0};
   stm.tm_isdst = -1;
 
   if (strptime(s, fmt, &stm) == end) {
@@ -3877,7 +3877,7 @@ uw_unit uw_Basis_set_cookie(uw_context ctx, uw_Basis_string prefix, uw_Basis_str
   uw_write_header(ctx, prefix);
   if (expires) {
     char formatted[30];
-    struct tm tm = {};
+    struct tm tm = {0};
     tm.tm_isdst = -1;
 
     gmtime_r(&expires->seconds, &tm);
@@ -4508,7 +4508,9 @@ int uw_streq(uw_Basis_string s1, uw_Basis_string s2) {
   if (len1 != strlen(s2)) return 0;
 
   for (i = 0; i < len1; ++i) {
+#if HAVE_GNU_ASM
         __asm__ __volatile__ ("");
+#endif
         x |= s1[i] ^ s2[i];
   }
 
@@ -4762,7 +4764,7 @@ uw_Basis_string uw_Basis_mstrcat(uw_context ctx, ...) {
   return r;
 }
 
-const uw_Basis_time uw_Basis_minTime = {};
+const uw_Basis_time uw_Basis_minTime = {0};
 
 uw_Basis_time uw_Basis_now(uw_context ctx) {
   (void)ctx;
@@ -5330,7 +5332,7 @@ uw_Basis_bool uw_Basis_le_clocktime(uw_context ctx, uw_Basis_clocktime t1, uw_Ba
 
 
 uw_Basis_time *uw_Basis_readUtc(uw_context ctx, uw_Basis_string s) {
-  struct tm stm = {};
+  struct tm stm = {0};
   char *end = strchr(s, 0);
   stm.tm_isdst = -1;
 

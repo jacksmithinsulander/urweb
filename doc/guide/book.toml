@@ -1,0 +1,10 @@
+[book]
+title = "The Ur/Web Guide"
+description = "A narrative guide to the Ur/Web language and this Rust toolchain (TRPL-style scaffold)."
+authors = ["Ur/Web Rust implementation contributors"]
+language = "en"
+multilingual = false
+src = "src"
+
+[build]
+build-dir = "built"

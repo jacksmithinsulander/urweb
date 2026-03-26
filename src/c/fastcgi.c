@@ -24,10 +24,8 @@
 
 #if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
 #  define THREAD_LOCAL _Thread_local
-#elif defined(__GNUC__) || defined(__clang__)
-#  define THREAD_LOCAL __thread
 #else
-#  error "No thread-local storage support detected"
+#  error "C11 or later required (for _Thread_local)"
 #endif
 
 extern uw_app uw_application;
@@ -69,7 +67,7 @@ static int fastcgi_request_id(const FCGI_Record* const r) {
   return requestid;
 }
 
-static FCGI_Output *fastcgi_output() {
+static FCGI_Output *fastcgi_output(void) {
   FCGI_Output *o = malloc(sizeof(FCGI_Output));
 
   o->r.version = FCGI_VERSION_1;
@@ -79,7 +77,7 @@ static FCGI_Output *fastcgi_output() {
   return o;
 }
 
-static FCGI_Input *fastcgi_input() {
+static FCGI_Input *fastcgi_input(void) {
   FCGI_Input *i = malloc(sizeof(FCGI_Input));
 
   i->available = i->used = 0;
@@ -105,7 +103,7 @@ static int fastcgi_send(FCGI_Output *o,
 
 static FCGI_Record *fastcgi_recv(FCGI_Input *i) {
   if (i->used > 0) {
-    memmove((void*)&i->r, (void*)&i->r + i->used, i->available - i->used);
+    memmove((char *)&i->r, (char *)&i->r + i->used, i->available - i->used);
     i->available -= i->used;
     i->used = 0;
   }
@@ -124,7 +122,7 @@ static FCGI_Record *fastcgi_recv(FCGI_Input *i) {
       return &i->r;
     }
 
-    n = recv(i->sock, (void*)&i->r + i->available, sizeof(i->r) - i->available, 0);
+    n = recv(i->sock, (char *)&i->r + i->available, sizeof(i->r) - i->available, 0);
 
     if (n <= 0)
       return NULL;
@@ -685,7 +683,7 @@ int main(int argc, char *argv[]) {
   }
 }
 
-void *uw_init_client_data() {
+void *uw_init_client_data(void) {
   return NULL;
 }
 

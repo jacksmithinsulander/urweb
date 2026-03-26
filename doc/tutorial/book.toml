@@ -1,0 +1,10 @@
+[book]
+title = "Learn Ur/Web"
+description = "A friendly, example-driven introduction (Learn You a Haskell–style scaffold)."
+authors = ["Ur/Web Rust implementation contributors"]
+language = "en"
+multilingual = false
+src = "src"
+
+[build]
+build-dir = "built"

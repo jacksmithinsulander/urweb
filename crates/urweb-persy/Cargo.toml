@@ -1,0 +1,13 @@
+[package]
+name = "urweb-persy"
+version = "0.1.0"
+edition = "2021"
+description = "C bridge staticlib: open a Persy database for Ur/Web native dbms=persy"
+license = "MIT"
+
+[lib]
+name = "urweb_persy"
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+persy = "1.7"

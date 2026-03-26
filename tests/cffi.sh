@@ -28,9 +28,14 @@ URWEB="${URWEB:-../bin/urweb}"
 
 PORT=${PORT:-8080}
 export PORT
+# Free port in case a previous run left a server
+free_port $PORT
+sleep 1
+
 "$TESTSRV" -q -a 127.0.0.1 -p "$PORT" &
 printf '%s\n' "$!" > "$TESTPID"
-sleep 1
+# Wait for server to be ready (up to 15s)
+wait_for_port "$PORT" 15 || { printf 'FAIL [cffi]: server not ready after 15s\n' >&2; exit 1; }
 
 cleanup() { kill "$(cat "$TESTPID" 2>/dev/null)" 2>/dev/null || true; }
 trap cleanup EXIT

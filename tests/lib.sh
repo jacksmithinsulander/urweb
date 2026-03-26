@@ -3,6 +3,34 @@
 
 PORT=${PORT:-8080}
 
+# free_port PORT -- kill process listening on PORT (uses lsof when available, else no-op)
+free_port() {
+    _p=$1
+    _pid=''
+    if command -v lsof >/dev/null 2>&1; then
+        _pid=$(lsof -ti:$_p 2>/dev/null) || true
+    fi
+    [ -n "$_pid" ] && kill $_pid 2>/dev/null || true
+}
+
+# wait_for_port PORT [MAX_SEC] -- return 0 when HTTP server on PORT is ready (curl or nc)
+wait_for_port() {
+    _port=$1
+    _max=${2:-15}
+    _i=0
+    while [ $_i -lt $_max ]; do
+        if curl -s "http://127.0.0.1:$_port/" >/dev/null 2>/dev/null; then
+            return 0
+        fi
+        if command -v nc >/dev/null 2>&1 && nc -z 127.0.0.1 $_port 2>/dev/null; then
+            return 0
+        fi
+        sleep 1
+        _i=$((_i + 1))
+    done
+    return 1
+}
+
 # fail MSG -- print failure and exit
 fail() {
     printf 'FAIL [%s]: %s\n' "${TESTNAME:-?}" "$*" >&2

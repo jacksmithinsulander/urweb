@@ -55,7 +55,7 @@ int main(int argc, char *argv[]) {
   }
 }
 
-void *uw_init_client_data() {
+void *uw_init_client_data(void) {
   return NULL;
 }
 

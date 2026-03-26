@@ -3,6 +3,7 @@
 set -e
 
 cd "$(dirname "$0")"
+. ./lib.sh
 
 TEST=endpoints
 TESTPID="/tmp/uw_${TEST}.pid"
@@ -15,14 +16,20 @@ URWEB="${URWEB:-../bin/urweb}"
 "$URWEB" ${URWEB_ARGS:+$URWEB_ARGS }-boot -noEmacs -endpoints "$TESTENDPOINTS" "$TEST" \
     || { printf 'FAIL [endpoints]: urweb compile failed\n' >&2; exit 1; }
 
-"$TESTSRV" -q -a 127.0.0.1 &
-printf '%s\n' "$!" > "$TESTPID"
+PORT=${PORT:-8110}
+# Free port in case a previous run left a server
+free_port $PORT
 sleep 1
+
+"$TESTSRV" -q -a 127.0.0.1 -p "$PORT" &
+printf '%s\n' "$!" > "$TESTPID"
+# Wait for server to be ready (up to 15s)
+wait_for_port "$PORT" 15 || { printf 'FAIL [endpoints]: server not ready after 15s\n' >&2; exit 1; }
 
 cleanup() { kill "$(cat "$TESTPID" 2>/dev/null)" 2>/dev/null || true; }
 trap cleanup EXIT
 
-PREFIX="http://localhost:8080"
+PREFIX="http://localhost:$PORT"
 
 if command -v jq >/dev/null 2>&1; then
     # Parse endpoints JSON with jq

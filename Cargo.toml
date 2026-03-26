@@ -1,0 +1,66 @@
+[workspace]
+members = [".", "crates/urweb-persy", "crates/urweb-ndb"]
+resolver = "2"
+
+[package]
+name = "ur"
+version = "0.1.0"
+edition = "2021"
+
+[profile.mutants]
+inherits = "test"
+debug = false  # Faster builds for cargo-mutants
+
+[[bin]]
+name = "ur"
+path = "src/bin/ur.rs"
+
+[[bin]]
+name = "ur-compile"
+path = "src/bin/ur_compile.rs"
+
+[[bin]]
+name = "ur-fmt"
+path = "src/bin/ur_fmt.rs"
+
+[[bin]]
+name = "ur-new"
+path = "src/bin/ur_new.rs"
+
+[[bin]]
+name = "ur-install"
+path = "src/bin/ur_install.rs"
+
+[[bin]]
+name = "ur-daemon"
+path = "src/bin/ur_daemon.rs"
+
+[[bin]]
+name = "ur-lsp"
+path = "src/bin/ur_lsp.rs"
+
+[[bin]]
+name = "ur-debugger"
+path = "src/bin/ur_debugger.rs"
+
+[[example]]
+name = "dump_output"
+path = "examples/dump_output.rs"
+
+[dev-dependencies]
+tempfile = "3"
+
+[dependencies]
+logos     = "0.14"
+lalrpop-util = { version = "0.20", features = ["lexer"] }
+thiserror = "2"
+anyhow    = "1"
+toml      = "0.8"
+lsp-server = "0.7"
+lsp-types = "0.97"
+crossbeam-channel = "0.5"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[build-dependencies]
+lalrpop = "0.20"

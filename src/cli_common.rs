@@ -1,0 +1,673 @@
+//! Shared CLI helpers and templates used by ur and sub-binaries.
+//!
+//! ## Binary conventions (`ur-*` drivers)
+//!
+//! - **Help text**: The orchestrator (`ur`) and `ur-compile` print command overview lines to **stdout**.
+//!   `ur-debugger` prints usage to **stderr** (terminal UX).
+//! - **Unknown flags**: `ur-compile` errors on unknown `-` flags; **ur-fmt** logs a **warning**
+//!   and continues (lenient for forward compatibility).
+//! - **Exit codes**: `0` success; `1` for failures unless documented otherwise (e.g. **ur-lsp** exits `0` on
+//!   clean editor disconnect when [`crate::lsp_support::disconnect_error_exits_clean`] matches).
+//! - **Error handling in `main`**: Long-running protocol tools (**ur-lsp**, **ur-debugger**) use
+//!   [`anyhow::Result`] in their `run()`; thin dispatch binaries typically return **`i32`** and use
+//!   `eprintln!` for user-facing errors.
+
+use serde::Deserialize;
+
+/// Relative path to the project manifest (strict TOML).
+pub const UR_MANIFEST_FILE: &str = "ur.toml";
+
+const UR_MANIFEST_MISSING_ORCHESTRATOR: &str = "ur.toml not found in current directory\n\
+Run 'ur new <name>' to create a project, then 'cd <name> && ur build'";
+
+const UR_MANIFEST_MISSING_FMT: &str =
+    "error: ur.toml not found; run from project directory or specify files";
+
+/// Lines printed under `usage:` for the `ur` orchestrator (`ur new`, `ur build`, …).
+pub const UR_ORCHESTRATOR_USAGE_LINES: &[&str] = &[
+    "  ur new <project-name>",
+    "  ur new --lib <project-name>",
+    "  ur build",
+    "  ur fmt [options] [files...]",
+    "  ur install author/repo",
+    "  ur daemon [stop|start]",
+    "  ur lsp",
+    "  ur debugger [ur-debugger-args...]",
+    "  ur [flag ...] project-name",
+];
+
+/// Load and strictly parse [`UR_MANIFEST_FILE`] from the current directory (e.g. `ur build`).
+pub fn load_ur_manifest_cwd() -> Result<UrTomlStrict, String> {
+    load_ur_manifest_cwd_inner(UR_MANIFEST_MISSING_ORCHESTRATOR)
+}
+
+/// Same as [`load_ur_manifest_cwd`], but when discovering files for **ur-fmt** with no explicit paths.
+pub fn load_ur_manifest_cwd_for_fmt_discovery() -> Result<UrTomlStrict, String> {
+    load_ur_manifest_cwd_inner(UR_MANIFEST_MISSING_FMT)
+}
+
+fn load_ur_manifest_cwd_inner(missing_msg: &str) -> Result<UrTomlStrict, String> {
+    if !file_exists(UR_MANIFEST_FILE) {
+        return Err(missing_msg.to_string());
+    }
+    let toml_content = std::fs::read_to_string(UR_MANIFEST_FILE)
+        .map_err(|e| format!("error reading ur.toml: {}", e))?;
+    parse_ur_toml_strict(&toml_content).map_err(|e| format!("error: ur.toml: {}", e))
+}
+
+/// Require a non-empty `[build] entry` (shared by **`ur build`** and default **ur-fmt** discovery).
+pub fn require_manifest_entry(cfg: &UrTomlStrict) -> Result<(), String> {
+    if cfg.build.entry.is_empty() {
+        Err("error: ur.toml: [build] entry is required".into())
+    } else {
+        Ok(())
+    }
+}
+
+/// **`ur-install`**: require `ur.toml` in cwd (no parse).
+pub fn ensure_ur_toml_present_for_install() -> Result<(), String> {
+    if !file_exists(UR_MANIFEST_FILE) {
+        Err("error: ur.toml not found; run from project directory".into())
+    } else {
+        Ok(())
+    }
+}
+
+/// Run a peer binary from `PATH`; returns its exit code, or `1` if the executable was not found.
+pub fn exec_peer_bin(exe: &str, args: &[String]) -> i32 {
+    match std::process::Command::new(exe).args(args).status() {
+        Ok(s) => {
+            if s.success() {
+                0
+            } else {
+                s.code().unwrap_or(1)
+            }
+        }
+        Err(_) => {
+            eprintln!("error: {} not found in PATH", exe);
+            1
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Project scaffolding templates
+// ---------------------------------------------------------------------------
+
+pub const CURSOR_MD: &str = "# Ur/Web - Cursor AI Context\n\
+\n\
+This file provides context for AI assistants working with Ur/Web projects.\n\
+For Cursor, you may copy this into `.cursor/rules/ur.mdc`.\n\
+\n\
+## Language Overview\n\
+\n\
+- **Ur** is an ML/Haskell-style language: functional, pure, strict, statically typed\n\
+- **Ur/Web** = Ur + web/SQL standard library\n\
+- **Key guarantee:** Well-typed programs avoid code injection, invalid HTML, dead links,\n\
+  form/handler mismatches, invalid SQL, and marshaling errors\n";
+
+pub const CLAUDE_MD: &str = "# Ur/Web - Claude AI Context\n\
+\n\
+This file provides context for Claude and other AI assistants working with Ur/Web projects.\n\
+\n\
+## Language Overview\n\
+\n\
+- **Ur** is an ML/Haskell-style language: functional, pure, strict, statically typed\n\
+- **Ur/Web** = Ur + web/SQL standard library\n\
+- **Key guarantee:** Well-typed programs avoid code injection, invalid HTML, dead links,\n\
+  form/handler mismatches, invalid SQL, and marshaling errors\n";
+
+pub const GITIGNORE: &str = "# Compiled executables\n\
+*.exe\n\
+\n\
+# SQLite databases and generated SQL schemas\n\
+*.db\n\
+*.sql\n\
+\n\
+# ur daemon socket\n\
+.ur_daemon\n";
+
+pub const GITIGNORE_APP_SUFFIX: &str = "\n\
+# Compiled CSS (regenerated by 'ur build' from style/scss/)\n\
+style/css/*.css\n";
+
+pub const URP_DIRECTIVE_KEYWORDS: &[&str] = &[
+    "database",
+    "sql",
+    "prefix",
+    "rewrite",
+    "file",
+    "library",
+    "link",
+    "ffi",
+    "effectful",
+    "benignEffectful",
+    "clientOnly",
+    "serverOnly",
+    "jsFunc",
+    "timeout",
+    "sigfile",
+    "debug",
+];
+
+// ---------------------------------------------------------------------------
+// Project kind and validation
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProjectKind {
+    App,
+    Library,
+}
+
+pub fn validate_project_name(name: &str) -> Result<(), String> {
+    if name.is_empty() {
+        return Err("project name cannot be empty".into());
+    }
+    if !name.chars().next().is_some_and(|c| c.is_alphabetic()) {
+        return Err(format!("project name must start with a letter: '{}'", name));
+    }
+    if !name.chars().all(|c| c.is_alphanumeric() || c == '_') {
+        return Err(format!(
+            "project name must contain only letters, digits, or underscores: '{}'",
+            name
+        ));
+    }
+    Ok(())
+}
+
+pub fn capitalize(s: &str) -> String {
+    let mut chars = s.chars();
+    match chars.next() {
+        None => String::new(),
+        Some(c) => {
+            let mut out = c.to_uppercase().collect::<String>();
+            out.push_str(chars.as_str());
+            out
+        }
+    }
+}
+
+pub fn kind_specific_created_files(kind: ProjectKind, name: &str) -> Vec<String> {
+    let mut out = vec![];
+    if kind == ProjectKind::Library {
+        out.push(format!("{name}/{name}.urs"));
+    }
+    if kind == ProjectKind::App {
+        out.push(format!("{name}/style/scss/main.scss"));
+        out.push(format!("{name}/style/css/main.css"));
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------
+// TOML
+// ---------------------------------------------------------------------------
+
+/// Project manifest with **closed** tables: extra keys are rejected (LangSec-style trust boundary).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UrTomlStrict {
+    pub package: UrTomlPackageStrict,
+    pub build: UrTomlBuildStrict,
+    #[serde(default)]
+    pub style: Option<UrTomlStyleStrict>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UrTomlPackageStrict {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default = "default_pkg_kind")]
+    pub kind: String,
+}
+
+fn default_pkg_kind() -> String {
+    "app".into()
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UrTomlBuildStrict {
+    pub entry: String,
+    /// Database **engine** for `ur build` → passed as `-dbms` (same names as `.urp` `dbms`: sqlite, mysql, postgres, …).
+    /// Validated by [`crate::db::validate_manifest_db_engine`] in the orchestrator. Not the SQL connection string (`-db` / `.urp` `database`).
+    #[serde(default = "default_build_db")]
+    pub db: String,
+    #[serde(default)]
+    pub ccompiler: String,
+    #[serde(default)]
+    pub boot: bool,
+}
+
+fn default_build_db() -> String {
+    "sqlite".into()
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UrTomlStyleStrict {
+    #[serde(default)]
+    pub scss: Option<String>,
+    #[serde(default)]
+    pub css: Option<String>,
+}
+
+pub fn parse_ur_toml_strict(content: &str) -> Result<UrTomlStrict, String> {
+    toml::from_str(content).map_err(|e| format!("{e}"))
+}
+
+pub fn parse_toml(content: &str) -> Vec<(String, String)> {
+    let mut section = String::new();
+    let mut entries = vec![];
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if line.starts_with('[') && line.ends_with(']') {
+            section = line[1..line.len() - 1].trim().to_string();
+            continue;
+        }
+        if let Some(eq) = line.find('=') {
+            let key = line[..eq].trim();
+            let raw_val = line[eq + 1..].trim();
+            let val = if raw_val.starts_with('"') && raw_val.ends_with('"') && raw_val.len() >= 2 {
+                raw_val[1..raw_val.len() - 1].to_string()
+            } else {
+                raw_val.to_string()
+            };
+            let full_key = if section.is_empty() {
+                key.to_string()
+            } else {
+                format!("{}.{}", section, key)
+            };
+            entries.push((full_key, val));
+        }
+    }
+    entries
+}
+
+pub fn toml_get<'a>(entries: &'a [(String, String)], key: &str) -> Option<&'a str> {
+    entries
+        .iter()
+        .find(|(k, _)| k == key)
+        .map(|(_, v)| v.as_str())
+}
+
+// ---------------------------------------------------------------------------
+// File and flag helpers
+// ---------------------------------------------------------------------------
+
+pub fn file_exists(path: &str) -> bool {
+    std::path::Path::new(path).exists()
+}
+
+/// Last path segment of an `author/repo` install spec, ignoring empty `//` segments.
+pub fn package_spec_repo_leaf(spec: &str) -> &str {
+    spec.split('/').rfind(|s| !s.is_empty()).unwrap_or(spec)
+}
+
+pub fn is_file_arg(arg: &str) -> bool {
+    !arg.starts_with('-')
+}
+
+pub fn should_skip_urp_line(line: &str) -> bool {
+    line.is_empty() || line.starts_with('#')
+}
+
+pub fn is_unknown_compiler_flag(flag: &str, arg: &str) -> bool {
+    flag.is_empty() || arg.starts_with('-')
+}
+
+pub fn is_valid_limit(n: i32) -> bool {
+    n >= 0
+}
+
+pub fn command_succeeded(status: &std::io::Result<std::process::ExitStatus>) -> bool {
+    status.as_ref().is_ok_and(|s| s.success())
+}
+
+// ---------------------------------------------------------------------------
+// Build config helpers
+// ---------------------------------------------------------------------------
+
+pub fn is_lib_project(kind: &str) -> bool {
+    kind == "lib"
+}
+
+pub fn parse_boot(value: &str) -> bool {
+    value == "true"
+}
+
+pub fn should_add_ccompiler(cc: &str) -> bool {
+    !cc.is_empty()
+}
+
+pub fn sass_tool_available(has_sass: bool, has_sassc: bool) -> bool {
+    has_sass || has_sassc
+}
+
+pub fn has_sass_or_sassc() -> bool {
+    let has_sass = std::process::Command::new("which")
+        .arg("sass")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success());
+    let has_sassc = std::process::Command::new("which")
+        .arg("sassc")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success());
+    sass_tool_available(has_sass, has_sassc)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::compiler_diagnostics::{lock_for_compile, TEST_CWD_LOCK};
+
+    #[test]
+    fn validate_name_empty() {
+        assert!(validate_project_name("").is_err());
+    }
+
+    #[test]
+    fn validate_name_starts_with_digit() {
+        assert!(validate_project_name("1foo").is_err());
+    }
+
+    #[test]
+    fn validate_name_valid() {
+        assert!(validate_project_name("my_app").is_ok());
+        assert!(validate_project_name("Foo123").is_ok());
+    }
+
+    #[test]
+    fn validate_name_hyphen_invalid() {
+        assert!(validate_project_name("my-app").is_err());
+    }
+
+    #[test]
+    fn ur_toml_strict_accepts_new_project_shape() {
+        let content = r#"[package]
+name = "demo"
+kind = "app"
+
+[build]
+entry = "demo"
+db = "sqlite"
+ccompiler = "gcc"
+boot = false
+
+[style]
+scss = "style/scss/main.scss"
+css = "style/css/main.css"
+"#;
+        let cfg = parse_ur_toml_strict(content).expect("valid ur.toml");
+        assert_eq!(cfg.package.kind, "app");
+        assert_eq!(cfg.build.entry, "demo");
+        assert!(cfg.style.is_some());
+    }
+
+    #[test]
+    fn ur_toml_strict_accepts_library_template_shape() {
+        let content = r#"[package]
+name = "mylib"
+kind = "lib"
+
+[build]
+entry = "mylib"
+boot = false
+"#;
+        assert!(parse_ur_toml_strict(content).is_ok());
+    }
+
+    #[test]
+    fn ur_toml_strict_rejects_unknown_table_fields() {
+        let content = r#"[package]
+name = "x"
+kind = "app"
+wat = true
+
+[build]
+entry = "m"
+"#;
+        assert!(parse_ur_toml_strict(content).is_err());
+    }
+
+    #[test]
+    fn toml_parse_basic() {
+        let content = "[build]\nentry = \"myapp\"\ndb = \"sqlite\"\n";
+        let entries = parse_toml(content);
+        assert_eq!(
+            entries
+                .iter()
+                .find(|(k, _)| k == "build.entry")
+                .map(|(_, v)| v.as_str()),
+            Some("myapp")
+        );
+    }
+
+    #[test]
+    fn toml_parse_section_and_key() {
+        let content = "[build]\nentry = \"x\"\n";
+        let entries = parse_toml(content);
+        assert_eq!(toml_get(&entries, "build.entry"), Some("x"));
+    }
+
+    #[test]
+    fn toml_get_missing_returns_none() {
+        let entries = parse_toml("[build]\nentry = \"x\"\n");
+        assert_eq!(toml_get(&entries, "build.other"), None);
+        assert_eq!(toml_get(&entries, "missing"), None);
+    }
+
+    #[test]
+    fn toml_parse_empty_line_skipped() {
+        let content = "[a]\n\nkey = \"v\"\n";
+        let entries = parse_toml(content);
+        assert_eq!(toml_get(&entries, "a.key"), Some("v"));
+    }
+
+    #[test]
+    fn toml_parse_quoted_value() {
+        let content = r#"[x]
+k = "hello""#;
+        let entries = parse_toml(content);
+        assert_eq!(toml_get(&entries, "x.k"), Some("hello"));
+    }
+
+    #[test]
+    fn toml_comment_ignored() {
+        let content = "# comment\n[build]\nentry = \"x\"\n";
+        let entries = parse_toml(content);
+        assert_eq!(entries.len(), 1);
+    }
+
+    #[test]
+    fn toml_line_looks_like_comment_not_parsed_as_key() {
+        let content = "#key = value\n[build]\nentry = \"x\"\n";
+        let entries = parse_toml(content);
+        assert!(!entries.iter().any(|(k, _)| k.starts_with('#')));
+        assert_eq!(toml_get(&entries, "build.entry"), Some("x"));
+    }
+
+    #[test]
+    fn toml_section_bracket_requires_both() {
+        let content = "[build\nentry = \"x\"\n";
+        let entries = parse_toml(content);
+        assert_eq!(toml_get(&entries, "entry"), Some("x"));
+    }
+
+    #[test]
+    fn is_lib_project_detects_lib() {
+        assert!(is_lib_project("lib"));
+        assert!(!is_lib_project("app"));
+        assert!(!is_lib_project(""));
+    }
+
+    #[test]
+    fn parse_boot_detects_true() {
+        assert!(parse_boot("true"));
+        assert!(!parse_boot("false"));
+        assert!(!parse_boot(""));
+    }
+
+    #[test]
+    fn should_add_ccompiler_when_non_empty() {
+        assert!(should_add_ccompiler("gcc"));
+        assert!(!should_add_ccompiler(""));
+    }
+
+    #[test]
+    fn is_file_arg_accepts_ur_without_dash() {
+        assert!(is_file_arg("m.ur"));
+        assert!(!is_file_arg("-check"));
+    }
+
+    #[test]
+    fn should_skip_urp_line_empty_and_comments() {
+        assert!(should_skip_urp_line(""));
+        assert!(should_skip_urp_line("# comment"));
+        assert!(!should_skip_urp_line("mymod"));
+    }
+
+    #[test]
+    fn is_unknown_compiler_flag_detects_flags() {
+        assert!(is_unknown_compiler_flag("", "-"));
+        assert!(is_unknown_compiler_flag("bad", "-bad"));
+        assert!(!is_unknown_compiler_flag("myproj", "myproj"));
+    }
+
+    #[test]
+    fn is_valid_limit_non_negative() {
+        assert!(is_valid_limit(0));
+        assert!(is_valid_limit(1));
+        assert!(!is_valid_limit(-1));
+    }
+
+    #[test]
+    fn command_succeeded_ok_and_success() {
+        let s = std::process::Command::new("true").status();
+        assert!(command_succeeded(&s));
+    }
+
+    #[test]
+    fn sass_tool_available_either_or() {
+        assert!(sass_tool_available(true, false));
+        assert!(sass_tool_available(false, true));
+        assert!(sass_tool_available(true, true));
+        assert!(!sass_tool_available(false, false));
+    }
+
+    #[test]
+    fn file_exists_detects_present_and_absent() {
+        let _guard = lock_for_compile(&TEST_CWD_LOCK, "cli_common file_exists test");
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = std::env::current_dir().unwrap();
+        std::env::set_current_dir(dir.path()).unwrap();
+        std::fs::write("exists.txt", "").unwrap();
+        assert!(file_exists("exists.txt"));
+        assert!(!file_exists("nonexistent.txt"));
+        std::env::set_current_dir(&cwd).unwrap();
+    }
+
+    #[test]
+    fn command_succeeded_err_fails() {
+        let s = std::process::Command::new("/nonexistent").status();
+        assert!(!command_succeeded(&s));
+    }
+
+    #[test]
+    fn toml_unclosed_quote_preserves_raw() {
+        let content = "[x]\nk = \"hello\n";
+        let entries = parse_toml(content);
+        let v = toml_get(&entries, "x.k").unwrap();
+        assert!(v.contains("hello"), "unclosed quote should not strip");
+    }
+
+    #[test]
+    fn capitalize_helper() {
+        assert_eq!(capitalize("hello"), "Hello");
+        assert_eq!(capitalize(""), "");
+        assert_eq!(capitalize("A"), "A");
+    }
+
+    #[test]
+    fn kind_specific_created_files_app() {
+        let files = kind_specific_created_files(ProjectKind::App, "foo");
+        assert!(files.iter().any(|s| s.contains("style/scss")));
+        assert!(!files.iter().any(|s| s.ends_with(".urs")));
+    }
+
+    #[test]
+    fn kind_specific_created_files_library() {
+        let files = kind_specific_created_files(ProjectKind::Library, "mylib");
+        assert!(files.iter().any(|s| s.ends_with(".urs")));
+        assert!(!files.iter().any(|s| s.contains("style/")));
+    }
+
+    #[test]
+    fn package_spec_repo_leaf_skips_empty_segments() {
+        assert_eq!(package_spec_repo_leaf("org/repo"), "repo");
+        assert_eq!(package_spec_repo_leaf("org//repo"), "repo");
+    }
+
+    #[test]
+    fn load_ur_manifest_cwd_ok_and_entry() {
+        let _guard = lock_for_compile(&TEST_CWD_LOCK, "cli_common manifest load");
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = std::env::current_dir().unwrap();
+        std::env::set_current_dir(dir.path()).unwrap();
+        std::fs::write(
+            UR_MANIFEST_FILE,
+            r#"[package]
+kind = "app"
+[build]
+entry = "demo"
+"#,
+        )
+        .unwrap();
+        let cfg = load_ur_manifest_cwd().unwrap();
+        assert_eq!(cfg.build.entry, "demo");
+        assert!(require_manifest_entry(&cfg).is_ok());
+        std::fs::write(
+            UR_MANIFEST_FILE,
+            r#"[package]
+kind = "app"
+[build]
+entry = ""
+"#,
+        )
+        .unwrap();
+        let cfg_empty = load_ur_manifest_cwd().unwrap();
+        assert!(require_manifest_entry(&cfg_empty).is_err());
+        std::env::set_current_dir(&cwd).unwrap();
+    }
+
+    #[test]
+    fn ensure_ur_toml_present_for_install_checks_file() {
+        let _guard = lock_for_compile(&TEST_CWD_LOCK, "cli_common install manifest");
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = std::env::current_dir().unwrap();
+        std::env::set_current_dir(dir.path()).unwrap();
+        assert!(super::ensure_ur_toml_present_for_install().is_err());
+        std::fs::write(
+            UR_MANIFEST_FILE,
+            "[package]\nkind=\"app\"\n[build]\nentry=\"x\"\n",
+        )
+        .unwrap();
+        assert!(super::ensure_ur_toml_present_for_install().is_ok());
+        std::env::set_current_dir(&cwd).unwrap();
+    }
+
+    #[test]
+    fn exec_peer_bin_missing_prints_path_error() {
+        let code = exec_peer_bin("/nonexistent-peer-binary-ur-test", &[]);
+        assert_eq!(code, 1);
+    }
+}

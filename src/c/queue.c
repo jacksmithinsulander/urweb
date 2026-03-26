@@ -11,7 +11,7 @@ typedef struct node {
 
 static node front = NULL, back = NULL;
 
-static int empty() {
+static int empty(void) {
   return front == NULL;
 }
 
@@ -27,7 +27,7 @@ static void enqueue(int fd) {
   back = n;
 }
 
-static int dequeue() {
+static int dequeue(void) {
   int ret = front->fd;
   node n = front->next;
   free(front);
@@ -43,7 +43,7 @@ static int dequeue() {
 static pthread_mutex_t queue_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t queue_cond = PTHREAD_COND_INITIALIZER;
 
-int uw_dequeue() {
+int uw_dequeue(void) {
   int sock;
 
   pthread_mutex_lock(&queue_mutex);
