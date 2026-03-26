@@ -244,12 +244,43 @@ urweb daemon restart
 \end{verbatim}
 Communication happens via a UNIX domain socket in file \cd{.urweb\_daemon} in the working directory.
 
-Bundled with the compiler is an LSP or Language Server Protocol server. This is a program that allows various editors to request information about Ur/Web code via a standardized messaging protocol. The Ur/Web LSP server currently provides basic implementations for autocompletion, hover and compiler errors.
+Bundled with the compiler is an LSP or Language Server Protocol server. This is a program that allows various editors to request information about Ur/Web code via a standardized messaging protocol. The Rust \cd{ur-lsp} implementation aims for a rich editing experience comparable in scope to mainstream language servers: diagnostics from parsing and elaboration (with warnings where the compiler distinguishes them), hover with pretty-printed types, go to definition, completion, signature help, document highlights, find references (same-file text search), document and workspace symbols, rename (same-file), folding ranges, selection ranges, inlay hints, and semantic token highlighting. Open the editor workspace folder that contains exactly one \cd{.urp} file so the server can load the project and type-check overlayed unsaved buffers; unsupported JSON-RPC methods return LSP \texttt{Method not found} (\texttt{-32601}) rather than a silent \texttt{null} success.
 With the Rust toolchain, the server is the \cd{ur-lsp} executable (on PATH after install). Run \cd{ur lsp} from the orchestrator, run \cd{ur-lsp} directly, or pass \cd{-startLspServer} to \cd{ur-compile} (which runs \cd{ur-lsp}). The legacy SML driver starts it with \cd{urweb -startLspServer}.
 \begin{verbatim}
 ur lsp
 \end{verbatim}
-Currently there are no prebuilt editor plugins to register this server with your editor of choice but it should be fairly simple to do so. For example in Emacs using the lsp-mode, all you need to make this connect to the Rust server is the following configuration (assuming you use the urweb-mode bundled with the compiler):
+There are no official editor-specific plugins yet, but registering \cd{ur-lsp} as a stdio language server is straightforward. Below are minimal examples; adjust paths and language identifiers to match your file associations (\cd{ur}, \cd{urweb}, etc.).
+
+\paragraph{VS Code.}
+VS Code does not ship Ur/Web built-in; use a user-defined or third-party stdio LSP integration (or a tiny workspace extension) that launches \cd{ur-lsp} with no arguments and associates it with \cd{*.ur} / \cd{*.urs}. Point the client's workspace root at the folder containing your single \cd{.urp} so initialization passes a \cd{file:} root the server understands.
+
+\paragraph{Neovim (\texttt{vim.lsp.start}).}
+Example using Neovim's built-in LSP (set \texttt{root\_dir} to the directory that contains your \cd{.urp}):
+\begin{verbatim}
+vim.lsp.start({
+  name = 'ur-lsp',
+  cmd = { 'ur-lsp' },
+  root_dir = vim.fs.dirname(vim.api.nvim_buf_get_name(0)),
+})
+\end{verbatim}
+Adjust \texttt{root\_dir} if you opened a file outside the project root (e.g.\ resolve upward to the folder with the \cd{.urp}).
+
+\paragraph{Helix.}
+In \cd{languages.toml}, register a language server block, for example:
+\begin{verbatim}
+[[language]]
+name = "ur"
+language-servers = [ "ur-lsp" ]
+
+[language-server.ur-lsp]
+command = "ur-lsp"
+\end{verbatim}
+
+\paragraph{Zed.}
+Add a custom binary language server in Zed settings that runs \cd{ur-lsp} over stdio and bind it to Ur/Web file types; exact JSON keys vary by Zed release, so follow the ``custom language server'' / extension docs for your version.
+
+\paragraph{Emacs (\texttt{lsp-mode}).}
+For example using the urweb-mode bundled with the compiler:
 \begin{verbatim}
 (require 'lsp)
 (setq lsp-language-id-configuration '((urweb-mode . "urweb")))
@@ -271,7 +302,7 @@ Some other command-line parameters are accepted:
 
 \item \texttt{-db <DBSTRING>}: Set database connection information, using the format expected by Postgres's \texttt{PQconnectdb()}, which is \texttt{name1=value1 ... nameN=valueN}.  The same format is also parsed and used to discover connection parameters for MySQL and SQLite.  The only significant settings for MySQL are \texttt{host}, \texttt{hostaddr}, \texttt{port}, \texttt{dbname}, \texttt{user}, and \texttt{password}.  The only significant setting for SQLite is \texttt{dbname}, which is interpreted as the filesystem path to the database.  Additionally, when using SQLite, a database string may be just a file path.
 
-\item \texttt{-dbms [postgres|mysql|sqlite]}: Sets the database backend to use.
+\item \texttt{-dbms}: Sets the database backend. Relational: \texttt{postgres}, \texttt{mysql}, \texttt{sqlite}. Native (non-relational SQL DDL; distinct C clients): \texttt{persy}, \texttt{rocksdb}, \texttt{ndb}, \texttt{tigerbeetle}. The project manifest \texttt{ur.toml} \texttt{[build].db} must match the effective backend when a manifest is present.
   \begin{itemize}
   \item \texttt{postgres}: This is PostgreSQL, the default.  Among the supported engines, Postgres best matches the design philosophy behind Ur, with a focus on consistent views of data, even in the face of much concurrency.  Different database engines have different quirks of SQL syntax.  Ur/Web tends to use Postgres idioms where there are choices to be made, though the compiler translates SQL as needed to support other backends.
 

@@ -129,6 +129,9 @@ pub enum CompileError {
     #[error("Type error at {span}: {message}")]
     TypeError { span: Span, message: String },
 
+    #[error("Warning at {span}: {message}")]
+    WarningAt { span: Span, message: String },
+
     #[error(transparent)]
     Io(#[from] std::io::Error),
 }
@@ -161,17 +164,36 @@ impl CompileError {
     pub fn span(&self) -> Option<&Span> {
         match self {
             CompileError::AtSpan { span, .. }
+            | CompileError::WarningAt { span, .. }
             | CompileError::ParseError { span, .. }
             | CompileError::TypeError { span, .. } => Some(span),
             _ => None,
         }
     }
+
+    pub fn warning_at(span: Span, message: impl Into<String>) -> Self {
+        CompileError::WarningAt {
+            span,
+            message: message.into(),
+        }
+    }
 }
 
 /// Accumulates compile errors (mirrors SML's global error ref + errorLog).
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct ErrorReporter {
     pub errors: Vec<CompileError>,
+    /// When false, errors are only collected (used by LSP / batch analysis).
+    pub eprint: bool,
+}
+
+impl Default for ErrorReporter {
+    fn default() -> Self {
+        ErrorReporter {
+            errors: Vec::new(),
+            eprint: true,
+        }
+    }
 }
 
 impl ErrorReporter {
@@ -179,8 +201,18 @@ impl ErrorReporter {
         ErrorReporter::default()
     }
 
+    /// Collect diagnostics without printing to stderr (language servers, tests).
+    pub fn new_silent() -> Self {
+        ErrorReporter {
+            errors: Vec::new(),
+            eprint: false,
+        }
+    }
+
     pub fn report(&mut self, error: CompileError) {
-        eprintln!("{error}");
+        if self.eprint {
+            eprintln!("{error}");
+        }
         self.errors.push(error);
     }
 

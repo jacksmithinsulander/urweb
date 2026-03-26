@@ -31,6 +31,12 @@ pub mod cli_common;
 pub mod compiler;
 /// Shared compiler diagnostics (locks, ICE messages).
 pub mod compiler_diagnostics;
+/// Project database choice (`ProjectDb`, SQL flavors, reserved backends, mangling, codegen gates).
+pub mod db;
+/// Re-exports [`db`] for older `ur::dbms` paths.
+pub mod dbms {
+    pub use super::db::*;
+}
 /// Core AST — simplified IR before monomorphization.
 pub mod core;
 /// Datatype representation kind (Enum, Option, Default).
@@ -49,8 +55,16 @@ pub mod explicit;
 pub mod export;
 /// File I/O and path resolution.
 pub mod file_io;
+/// Full-project parse + elaborate with overlay (LSP analysis).
+pub mod lsp_analysis;
+/// Semantic queries: hover, symbols, completion, tokens.
+pub mod lsp_semantics;
 /// Helpers for the `ur-lsp` binary (disconnect detection, etc.).
 pub mod lsp_support;
+/// Unused top-level value analysis for LSP warnings.
+pub mod lsp_unused;
+/// Workspace `.urp` discovery and URI → path for ur-lsp.
+pub mod lsp_workspace;
 /// Mono AST — monomorphised IR for code generation.
 pub mod monomorphized;
 /// Parser (lexer + LALRPOP grammar).
@@ -61,5 +75,7 @@ pub mod primitives;
 pub mod settings;
 /// Source AST — surface syntax from the parser.
 pub mod source;
+/// Parse-validated whitespace layout for `ur-fmt` / LSP formatting.
+pub mod ur_format;
 /// Parser for `.urp` project files.
 pub mod urp_parser;

@@ -8,6 +8,10 @@
 use std::fmt::Display;
 use std::sync::{Mutex, MutexGuard};
 
+#[cfg(test)]
+/// Serializes [`std::env::set_current_dir`] across unit tests (cwd is process-global).
+pub static TEST_CWD_LOCK: Mutex<()> = Mutex::new(());
+
 /// Lock a mutex used during compilation. On poison, explain to stderr and recover via
 /// [`PoisonError::into_inner`](std::sync::PoisonError::into_inner).
 pub fn lock_for_compile<'a, T>(mutex: &'a Mutex<T>, context: &str) -> MutexGuard<'a, T> {

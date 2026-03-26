@@ -1,5 +1,6 @@
 //! Integration tests for the preprocess ∘ parse pipeline (LangSec composed surface language).
 
+use ur::db::ProjectDb;
 use ur::error_types::ErrorReporter;
 use ur::parse::{
     parse_ur, parse_urs, preprocess_urs, rewrite_case_expressions, rewrite_datatype_constructors,
@@ -33,10 +34,23 @@ fn rewrite_sgn_where_splits_top_level_and_nested_where() {
 }
 
 #[test]
+fn langsec_parse_profile_follows_db_class() {
+    use ur::db::LangsecParseProfile;
+    assert_eq!(
+        ProjectDb::Tigerbeetle.langsec_parse_profile(),
+        LangsecParseProfile::Ledger
+    );
+    assert_eq!(
+        ProjectDb::Rocksdb.langsec_parse_profile(),
+        LangsecParseProfile::KeyValueStore
+    );
+}
+
+#[test]
 fn ur_roundtrip_minimal_decl_parses_after_rewrites() {
     let mut errors = ErrorReporter::new();
     let src = "val x = 1\n";
-    let out = parse_ur("t.ur", src, &mut errors);
+    let out = parse_ur("t.ur", src, &mut errors, ProjectDb::default());
     assert!(out.is_some(), "parse errors: {:?}", errors.errors);
 }
 

@@ -2308,20 +2308,99 @@ fn elab_exp_inner(
         }
 
         source::Exp::Infix(op, e1, e2) => {
-            // Surface syntax stays `Exp::Infix` after parse; operator structure is fixed there
-            // (see `parse::expr_langsec` / LALRPOP spine). Here we only lower to application for
-            // typechecking — no second recognizer for operators.
-            // Desugar to curried application so elab_head inserts typeclass witnesses when needed.
-            let op_var = Located::new(
-                source::Exp::Var(vec![], op.clone(), source::Inference::Infer),
-                span.clone(),
-            );
-            let app1 = Located::new(source::Exp::App(Box::new(op_var), e1.clone()), span.clone());
-            let desugared =
-                Located::new(source::Exp::App(Box::new(app1), e2.clone()), span.clone());
-            elab_exp(ctx, env, denv, &desugared)
+            // Desugar binary infix operators to curried Basis/Top function calls,
+            // matching the SML grammar's `native_op` / `top_binop` desugaring.
+            match op.as_str() {
+                // Basis arithmetic / comparison operators
+                "+" => desugar_binop(ctx, env, denv, "plus", vec!["Basis".into()], e1, e2, &span),
+                "-" => desugar_binop(ctx, env, denv, "minus", vec!["Basis".into()], e1, e2, &span),
+                "*" => desugar_binop(ctx, env, denv, "times", vec!["Basis".into()], e1, e2, &span),
+                "/" => desugar_binop(
+                    ctx,
+                    env,
+                    denv,
+                    "divide",
+                    vec!["Basis".into()],
+                    e1,
+                    e2,
+                    &span,
+                ),
+                "%" => desugar_binop(ctx, env, denv, "mod", vec!["Basis".into()], e1, e2, &span),
+                "=" => desugar_binop(ctx, env, denv, "eq", vec!["Basis".into()], e1, e2, &span),
+                "<>" => desugar_binop(ctx, env, denv, "ne", vec!["Basis".into()], e1, e2, &span),
+                "<" => desugar_binop(ctx, env, denv, "lt", vec!["Basis".into()], e1, e2, &span),
+                ">" => desugar_binop(ctx, env, denv, "gt", vec!["Basis".into()], e1, e2, &span),
+                "<=" => desugar_binop(ctx, env, denv, "le", vec!["Basis".into()], e1, e2, &span),
+                ">=" => desugar_binop(ctx, env, denv, "ge", vec!["Basis".into()], e1, e2, &span),
+                // `::` is list cons: Basis.Cons {1 = e1, 2 = e2}
+                "::" => {
+                    let record_fields = vec![
+                        (
+                            Located::new(source::Con::Name("1".into()), span.clone()),
+                            *e1.clone(),
+                        ),
+                        (
+                            Located::new(source::Con::Name("2".into()), span.clone()),
+                            *e2.clone(),
+                        ),
+                    ];
+                    let record =
+                        Located::new(source::Exp::Record(record_fields, false), span.clone());
+                    let cons_var = Located::new(
+                        source::Exp::Var(
+                            vec!["Basis".into()],
+                            "Cons".into(),
+                            source::Inference::Infer,
+                        ),
+                        span.clone(),
+                    );
+                    let desugared = Located::new(
+                        source::Exp::App(Box::new(cons_var), Box::new(record)),
+                        span.clone(),
+                    );
+                    elab_exp(ctx, env, denv, &desugared)
+                }
+                // Unknown operator: fall back to bare variable lookup
+                _ => {
+                    let op_var = Located::new(
+                        source::Exp::Var(vec![], op.clone(), source::Inference::Infer),
+                        span.clone(),
+                    );
+                    let app1 =
+                        Located::new(source::Exp::App(Box::new(op_var), e1.clone()), span.clone());
+                    let desugared =
+                        Located::new(source::Exp::App(Box::new(app1), e2.clone()), span.clone());
+                    elab_exp(ctx, env, denv, &desugared)
+                }
+            }
         }
     }
+}
+
+/// Desugar `e1 op e2` to `(module.name e1) e2` (curried Basis/Top function call).
+fn desugar_binop(
+    ctx: &mut ElabCtx,
+    env: &Env,
+    denv: &disjoint::DisjointEnv,
+    name: &str,
+    module: Vec<String>,
+    e1: &source::LocExp,
+    e2: &source::LocExp,
+    span: &Span,
+) -> (elab::LocatedExpression, elab::LocatedConstructor) {
+    let op_var = Located::new(
+        source::Exp::Var(module, name.into(), source::Inference::Infer),
+        span.clone(),
+    );
+    let app1 = Located::new(
+        source::Exp::App(Box::new(op_var), Box::new(e1.clone())),
+        span.clone(),
+    );
+    let desugared = Located::new(
+        source::Exp::App(Box::new(app1), Box::new(e2.clone())),
+        span.clone(),
+    );
+    elab_exp(ctx, env, denv, &desugared)
 }
 
 fn elab_exp_var(

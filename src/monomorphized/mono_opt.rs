@@ -7,6 +7,7 @@
 
 use std::cell::RefCell;
 
+use crate::db::ProjectDbCtx;
 use crate::error_types::{ErrorReporter, Located, Span};
 use crate::monomorphized::{utilities, Exp, LocDecl, LocExp, Typ};
 use crate::primitives::{Prim, StringMode};
@@ -129,7 +130,7 @@ fn urlify_string(s: &str) -> String {
 
 fn sqlify_int(n: i64, settings: &Settings) -> String {
     let s = attrify_int(n);
-    if settings.dbms == "mysql" {
+    if ProjectDbCtx::new(&settings.db_backend).is_mysql() {
         s
     } else {
         // PostgreSQL: cast syntax
@@ -139,7 +140,7 @@ fn sqlify_int(n: i64, settings: &Settings) -> String {
 
 fn sqlify_float(n: f64, settings: &Settings) -> String {
     let s = attrify_float(n);
-    if settings.dbms == "mysql" {
+    if ProjectDbCtx::new(&settings.db_backend).is_mysql() {
         s
     } else {
         format!("{}::float8", s)
@@ -147,7 +148,7 @@ fn sqlify_float(n: f64, settings: &Settings) -> String {
 }
 
 fn sqlify_string(s: &str, settings: &Settings) -> String {
-    if settings.dbms == "mysql" {
+    if ProjectDbCtx::new(&settings.db_backend).is_mysql() {
         // MySQL: escape backslash and single-quote
         let escaped: String = s
             .chars()
@@ -172,7 +173,7 @@ fn sqlify_char(ch: char, settings: &Settings) -> String {
 }
 
 fn sqlify_bool_true(settings: &Settings) -> &'static str {
-    if settings.dbms == "mysql" {
+    if ProjectDbCtx::new(&settings.db_backend).is_mysql() {
         "1"
     } else {
         "TRUE"
@@ -180,7 +181,7 @@ fn sqlify_bool_true(settings: &Settings) -> &'static str {
 }
 
 fn sqlify_bool_false(settings: &Settings) -> &'static str {
-    if settings.dbms == "mysql" {
+    if ProjectDbCtx::new(&settings.db_backend).is_mysql() {
         "0"
     } else {
         "FALSE"
@@ -1592,13 +1593,13 @@ mod tests {
 
     fn settings_mysql() -> Settings {
         let mut s = Settings::default();
-        s.dbms = "mysql".into();
+        s.db_backend = Some(crate::db::ProjectDb::mysql());
         s
     }
 
     fn settings_postgres() -> Settings {
         let mut s = Settings::default();
-        s.dbms = "postgres".into();
+        s.db_backend = Some(crate::db::ProjectDb::postgres());
         s
     }
 

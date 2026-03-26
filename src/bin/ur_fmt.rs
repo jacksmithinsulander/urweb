@@ -1,11 +1,21 @@
-//! ur-fmt — Format Ur/Web source files.
+//! ur-fmt — Format Ur/Web source files (parse-validated layout).
 
+use std::fs;
+use std::path::Path;
 use std::process;
 use ur::cli_common;
+use ur::error_types::CompileError;
+use ur::ur_format::format_source_path;
+
+fn print_errors(errors: &[CompileError]) {
+    for e in errors {
+        eprintln!("{e}");
+    }
+}
 
 fn fmt_command(args: &[String]) -> i32 {
-    let mut _check_mode = false;
-    let mut _width: u32 = 80;
+    let mut check_mode = false;
+    let mut tab_width: usize = 4;
     let mut files: Vec<String> = vec![];
     let mut args_iter = args.iter();
     while let Some(arg) = args_iter.next() {
@@ -18,22 +28,32 @@ fn fmt_command(args: &[String]) -> i32 {
         match flag {
             "-help" | "--help" | "-h" => {
                 println!("ur-fmt [options] [files...]");
-                println!("  If no files: format all .ur/.urs in project (from ur.toml)");
+                println!(
+                    "  If no files: format all .ur/.urs in project (from .urp via ur.toml entry)."
+                );
                 println!("  Otherwise: format the given files.");
-                println!("  -check, --check: check only; exit 1 if would reformat (CI mode)");
-                println!("  -w N, --width N, --width=N: line width (default 80)");
+                println!("  -check, --check: exit 1 if any file would change");
+                println!("  -t N, --tab N, --tab=N: tab width for expansion (default 4)");
+                println!(
+                    "  -w N, --width N: accepted for compatibility (layout is not wrapped yet)"
+                );
                 return 0;
             }
             "-check" | "--check" => {
-                _check_mode = true;
+                check_mode = true;
             }
-            "-w" | "--width" => {
+            "-t" | "--tab" => {
                 if let Some(n) = opt_val
                     .or_else(|| args_iter.next().cloned())
-                    .and_then(|s| s.parse::<u32>().ok())
+                    .and_then(|s| s.parse::<usize>().ok())
                 {
-                    _width = n;
+                    tab_width = n;
                 }
+            }
+            "-w" | "--width" => {
+                let _ = opt_val
+                    .or_else(|| args_iter.next().cloned())
+                    .and_then(|s| s.parse::<u32>().ok());
             }
             f if cli_common::is_file_arg(f) => {
                 files.push(f.to_string());
@@ -62,7 +82,7 @@ fn fmt_command(args: &[String]) -> i32 {
             eprintln!("error: project .urp not found: {}", urp_path);
             return 1;
         }
-        if let Ok(content) = std::fs::read_to_string(&urp_path) {
+        if let Ok(content) = fs::read_to_string(&urp_path) {
             for line in content.lines() {
                 let line = line.trim();
                 if cli_common::should_skip_urp_line(line) {
@@ -76,10 +96,10 @@ fn fmt_command(args: &[String]) -> i32 {
                 }
                 let ur = format!("{}.ur", line);
                 let urs = format!("{}.urs", line);
-                if std::path::Path::new(&ur).exists() {
+                if Path::new(&ur).exists() {
                     files.push(ur);
                 }
-                if std::path::Path::new(&urs).exists() {
+                if Path::new(&urs).exists() {
                     files.push(urs);
                 }
             }
@@ -102,7 +122,31 @@ fn fmt_command(args: &[String]) -> i32 {
             all_ok = false;
             continue;
         }
-        eprintln!("note: formatter not yet implemented; {} skipped", f);
+        let Ok(orig) = fs::read_to_string(f) else {
+            eprintln!("error: cannot read {}", f);
+            all_ok = false;
+            continue;
+        };
+        match format_source_path(f, &orig, tab_width) {
+            Ok(formatted) => {
+                if formatted == orig {
+                    if check_mode {
+                        // unchanged
+                    }
+                } else if check_mode {
+                    eprintln!("check failed (would reformat): {}", f);
+                    all_ok = false;
+                } else if let Err(e) = fs::write(f, &formatted) {
+                    eprintln!("error: write {}: {e}", f);
+                    all_ok = false;
+                }
+            }
+            Err(errs) => {
+                eprintln!("error: cannot format {} (parse failed)", f);
+                print_errors(&errs);
+                all_ok = false;
+            }
+        }
     }
     if all_ok {
         0

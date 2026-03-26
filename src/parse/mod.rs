@@ -15,6 +15,9 @@
 //!   comparison → arithmetic → juxtaposition tier; grammar actions that fold AST
 //!   nodes use explicit [`Result`] paths (e.g. fallible `=>?`) where an invariant
 //!   could be broken instead of panicking in the parser.
+//!   **Regression lock:** after changing `ArithExp` / precedence in `grammar.lalrpop`, extend
+//!   [`expr_langsec`] and `tests::langsec_spine_equiv` in this module so the CFG stays aligned
+//!   with the recognizer (LangSec: one formal language for the spine).
 //!
 //! ## Preprocess ∘ parse (composed surface language)
 //!
@@ -43,6 +46,16 @@ mod grammar {
 
 use crate::error_types::{CompileError, ErrorReporter, Span};
 use crate::source::{File, LocSgnItem};
+
+#[cfg(test)]
+static PREPROCESS_URS_FUEL_TEST_OVERRIDE: std::sync::Mutex<Option<usize>> =
+    std::sync::Mutex::new(None);
+
+/// Test-only: override initial fuel for the next [`preprocess_urs`] call(s). Pass `None` to disable.
+#[cfg(test)]
+pub fn test_set_preprocess_urs_fuel_override(fuel: Option<usize>) {
+    *PREPROCESS_URS_FUEL_TEST_OVERRIDE.lock().unwrap() = fuel;
+}
 
 /// Decrement linear fuel; when exhausted, append the rest of `src` and return (stops Θ(n²) mutants).
 /// Uses `checked_sub` only (no `fuel == 0`) so `==`/`!=` mutants cannot skip the drain path and spin.
@@ -330,113 +343,103 @@ pub fn rewrite_case_arm_separators(input: &str) -> String {
         None
     }
 
-    /// Copy body until `arm_sep` / `|` (NextArm) or `;` / `)` / `}` / `in` / `end` at depth 0
-    /// (CaseDone). Does not consume stop char.
-    /// Tracks `let`/`end` nesting to avoid stopping at `in`/`end` inside nested `let` blocks.
+    /// Scan a case arm body, writing raw text to a local buffer.
+    /// Returns `(stop_pos, stop_reason, body_text)`.
+    ///
+    /// Stops (does NOT consume) at:
+    ///  - `arm_sep` / `|` at depth 0              → NextArm
+    ///  - `)` / `]` / `}` at depth 0             → CaseDone (closes enclosing bracket)
+    ///  - `in` / `end` of enclosing `let`         → CaseDone
+    ///  - `fun` / `val` / `and` at depth 0        → CaseDone (new top-level decl)
+    ///
+    /// `;` is NOT a stop — it sequences monadic actions within an arm body.
+    /// Nested case expressions' `|` separators are inside bracketed subterms or
+    /// will be handled by the recursive rewrite applied to the returned body.
     fn scan_body(
-        out: &mut String,
         input: &str,
         b: &[u8],
         mut i: usize,
         n: usize,
-    ) -> Option<(usize, BodyStop)> {
+    ) -> Option<(usize, BodyStop, String)> {
+        let mut body = String::new();
         let mut depth = 0i32;
         let mut let_depth = 0i32; // tracks open `let` keywords
         while i < n {
             if i + 1 < n && b[i] == b'(' && b[i + 1] == b'*' {
-                i = copy_ml_comment(out, input, b, i, n);
+                i = copy_ml_comment(&mut body, input, b, i, n);
                 continue;
             }
             if b[i] == b'"' {
-                i = copy_string(out, input, b, i, n);
+                i = copy_string(&mut body, input, b, i, n);
                 continue;
             }
             if depth == 0 && arm_sep_at(b, i, n) {
-                return Some((i, BodyStop::NextArm));
+                return Some((i, BodyStop::NextArm, body));
             }
             if depth == 0 && case_end_at(b, i, n) {
-                return Some((i, BodyStop::CaseDone));
+                return Some((i, BodyStop::CaseDone, body));
             }
             if depth == 0 && b[i] == b'|' {
-                return Some((i, BodyStop::NextArm));
+                return Some((i, BodyStop::NextArm, body));
             }
-            if depth == 0 && matches!(b[i], b';' | b')' | b'}') {
-                return Some((i, BodyStop::CaseDone));
+            // `)` / `]` / `}` at depth 0 close an enclosing bracket → arm ends
+            if depth == 0 && matches!(b[i], b')' | b']' | b'}') {
+                return Some((i, BodyStop::CaseDone, body));
             }
             // Keyword tracking at bracket depth 0
             if depth == 0 && pp_kw_word_at(b, i, n, b"let") {
-                out.push_str("let");
+                body.push_str("let");
                 i += 3;
                 let_depth += 1;
                 continue;
             }
             if depth == 0 && pp_kw_word_at(b, i, n, b"in") {
                 if let_depth > 0 {
-                    // `in` of a nested `let...in...end`; copy and continue
-                    out.push_str("in");
+                    body.push_str("in");
                     i += 2;
                 } else {
-                    // `in` of the enclosing `let` → case arm ends here
-                    return Some((i, BodyStop::CaseDone));
+                    return Some((i, BodyStop::CaseDone, body));
                 }
                 continue;
             }
             if depth == 0 && pp_kw_word_at(b, i, n, b"end") {
                 if let_depth > 0 {
-                    out.push_str("end");
+                    body.push_str("end");
                     i += 3;
                     let_depth -= 1;
                 } else {
-                    // `end` of the enclosing `let` → case arm ends here
-                    return Some((i, BodyStop::CaseDone));
+                    return Some((i, BodyStop::CaseDone, body));
                 }
                 continue;
             }
-            // Declaration keywords at top level (let_depth == 0) → case arm ends
+            // Top-level declaration keywords (only safe ones unlikely to appear in XML text)
             if depth == 0 && let_depth == 0 {
-                for kw in &[
-                    b"fun" as &[u8],
-                    b"val",
-                    b"and",
-                    b"open",
-                    b"structure",
-                    b"functor",
-                    b"signature",
-                    b"datatype",
-                    b"type",
-                    b"class",
-                    b"con",
-                    b"table",
-                    b"sequence",
-                    b"view",
-                    b"cookie",
-                    b"style",
-                    b"task",
-                ] {
+                for kw in &[b"fun" as &[u8], b"val", b"and"] {
                     if pp_kw_word_at(b, i, n, kw) {
-                        return Some((i, BodyStop::CaseDone));
+                        return Some((i, BodyStop::CaseDone, body));
                     }
                 }
             }
             match b[i] {
                 b'(' | b'[' | b'{' => {
-                    out.push(b[i] as char);
+                    body.push(b[i] as char);
                     depth += 1;
                     i += 1;
                 }
                 b')' | b']' | b'}' => {
-                    out.push(b[i] as char);
-                    depth = (depth - 1).max(0);
+                    // depth > 0 here (checked depth==0 above); decrement
+                    body.push(b[i] as char);
+                    depth -= 1;
                     i += 1;
                 }
                 _ => {
                     let ch = input[i..].chars().next()?;
-                    out.push(ch);
+                    body.push(ch);
                     i += ch.len_utf8();
                 }
             }
         }
-        Some((i, BodyStop::CaseDone))
+        Some((i, BodyStop::CaseDone, body))
     }
 
     let b = input.as_bytes();
@@ -484,11 +487,13 @@ pub fn rewrite_case_arm_separators(input: &str) -> String {
                         return out;
                     };
                     j = after_arrow;
-                    let Some((stop_i, stop)) = scan_body(&mut out, input, b, j, n) else {
+                    let Some((stop_i, stop, raw_body)) = scan_body(input, b, j, n) else {
                         out.push_str(&input[j..]);
                         return out;
                     };
                     j = stop_i;
+                    // Recursively preprocess nested case expressions within the arm body
+                    out.push_str(&rewrite_case_arm_separators(&raw_body));
                     match stop {
                         BodyStop::CaseDone => {
                             if case_end_at(b, j, n) {
@@ -719,6 +724,132 @@ fn pp_kw_word_at(b: &[u8], i: usize, n: usize, word: &[u8]) -> bool {
         return false;
     }
     true
+}
+
+/// Rewrite SQL-context expression splices `{expr}` → `(expr)` when the content is NOT a record.
+///
+/// Ur/Web allows `{expr}` inside SQL expressions (SELECT/WHERE/etc.) to splice a Ur/Web value.
+/// The LR(1) grammar can't distinguish `{field = val}` (record) from `{expr}` (SQL splice)
+/// in a single lookahead. This pass converts the SQL-splice form to `(expr)` which is
+/// unambiguously a parenthesized expression.
+///
+/// Heuristic: a `{...}` block is a SQL splice if, after skipping whitespace/comments, the first
+/// non-ws token is NOT followed by `=` (record field separator) and is NOT `...` or `}`.
+pub fn rewrite_sql_brace_splices(input: &str) -> String {
+    let b = input.as_bytes();
+    let n = b.len();
+    let mut out = String::with_capacity(n);
+    let mut i = 0usize;
+    while i < n {
+        // Skip comments
+        if i + 1 < n && b[i] == b'(' && b[i + 1] == b'*' {
+            let start = i;
+            i = skip_ml_comment_bytes(b, i + 2, n);
+            out.push_str(&input[start..i]);
+            continue;
+        }
+        // Skip strings
+        if b[i] == b'"' {
+            let start = i;
+            i = skip_string_bytes(b, i + 1, n);
+            out.push_str(&input[start..i]);
+            continue;
+        }
+        if b[i] != b'{' {
+            let ch = input[i..].chars().next().unwrap_or('\0');
+            out.push(ch);
+            i += ch.len_utf8();
+            continue;
+        }
+        // Found `{`. Check what follows to decide if it's a SQL splice.
+        // If next non-ws is `[` → SQL text splice `{[...]}` handled by grammar, leave alone.
+        // If next non-ws is `}` → empty record, leave alone.
+        // If next non-ws is `...` → spread record, leave alone.
+        // If next non-ws is ident/UIDENT followed by `=` → record field, leave alone.
+        // Otherwise → SQL splice: emit `(` instead of `{` and `)` instead of matching `}`.
+        let mut j = i + 1;
+        while j < n && pp_urs_is_ws!(b[j]) {
+            j += 1;
+        }
+        // Skip comment
+        if j + 1 < n && b[j] == b'(' && b[j + 1] == b'*' {
+            j = skip_ml_comment_bytes(b, j + 2, n);
+            while j < n && pp_urs_is_ws!(b[j]) {
+                j += 1;
+            }
+        }
+        let is_sql_splice = if j >= n {
+            false
+        } else if b[j] == b'[' {
+            // `{[...]}` — text splice, leave alone
+            false
+        } else if b[j] == b'}' {
+            // empty record
+            false
+        } else if j + 2 < n && &b[j..j + 3] == b"..." {
+            // spread record
+            false
+        } else {
+            // Check if it's `ident =` (record field)
+            let ident_start = j;
+            if b[ident_start].is_ascii_alphabetic() || b[ident_start] == b'_' {
+                let mut k = ident_start + 1;
+                while k < n && (b[k].is_ascii_alphanumeric() || b[k] == b'_' || b[k] == b'\'') {
+                    k += 1;
+                }
+                // Skip whitespace after ident
+                while k < n && pp_urs_is_ws!(b[k]) {
+                    k += 1;
+                }
+                // If followed by `=` (but not `=>` or `==`), it's a record field
+                if k < n && b[k] == b'=' && (k + 1 >= n || (b[k + 1] != b'>' && b[k + 1] != b'=')) {
+                    false // record field
+                } else {
+                    true // SQL splice
+                }
+            } else {
+                // Starts with something other than ident → likely an expression
+                true
+            }
+        };
+        if !is_sql_splice {
+            out.push('{');
+            i += 1;
+            continue;
+        }
+        // It's a SQL splice: find matching `}` and replace `{` → `(`, `}` → `)`
+        out.push('(');
+        i += 1;
+        let mut depth = 1i32;
+        while i < n && depth > 0 {
+            if i + 1 < n && b[i] == b'(' && b[i + 1] == b'*' {
+                let start = i;
+                i = skip_ml_comment_bytes(b, i + 2, n);
+                out.push_str(&input[start..i]);
+            } else if b[i] == b'"' {
+                let start = i;
+                i = skip_string_bytes(b, i + 1, n);
+                out.push_str(&input[start..i]);
+            } else if b[i] == b'{' {
+                out.push('(');
+                depth += 1;
+                i += 1;
+            } else if b[i] == b'}' {
+                depth -= 1;
+                if depth > 0 {
+                    out.push(')');
+                } else {
+                    out.push(')');
+                }
+                i += 1;
+            } else {
+                let ch = input[i..].chars().next().unwrap_or('\0');
+                out.push(ch);
+                i += ch.len_utf8();
+            }
+        }
+    }
+    out
 }
 
 /// After `datatype` … `=`, rewrite constructor-list `|` and payload `of` to magic tokens so the
@@ -1193,6 +1324,14 @@ pub fn preprocess_urs(src: &str) -> String {
         .saturating_mul(1024)
         .saturating_add(65536)
         .min(PP_URS_MAX_FUEL);
+    #[cfg(test)]
+    {
+        if let Ok(guard) = PREPROCESS_URS_FUEL_TEST_OVERRIDE.lock() {
+            if let Some(f) = *guard {
+                fuel = f;
+            }
+        }
+    }
     let mut out = String::with_capacity(n + 128);
     let mut i = 0;
     // Track the last non-whitespace, non-comment token we emitted so we can
@@ -1664,15 +1803,234 @@ pub fn basis_urs_preprocessed_window(
     Ok(pp[start..end].to_string())
 }
 
+/// Replace `( * )` (SQL aggregate wildcard) with `( sql_star )` so the grammar doesn't need
+/// `"*"` as an expression token (which conflicts with multiplication).
+/// Only replaces `*` when it is the sole non-whitespace content between a matching `(…)` pair
+/// (and the `(` is NOT the start of a comment `(*`).
+pub fn rewrite_sql_star(input: &str) -> String {
+    let b = input.as_bytes();
+    let n = b.len();
+    let mut out = String::with_capacity(n);
+    let mut i = 0usize;
+    while i < n {
+        // Skip ML comments `(* ... *)`
+        if i + 1 < n && b[i] == b'(' && b[i + 1] == b'*' {
+            let start = i;
+            i = skip_ml_comment_bytes(b, i + 2, n);
+            out.push_str(&input[start..i]);
+            continue;
+        }
+        // Skip strings
+        if b[i] == b'"' {
+            let start = i;
+            i = skip_string_bytes(b, i + 1, n);
+            out.push_str(&input[start..i]);
+            continue;
+        }
+        // Look for `(` followed by optional whitespace + `*` + optional whitespace + `)`
+        if b[i] == b'(' {
+            let mut j = i + 1;
+            while j < n && (b[j] == b' ' || b[j] == b'\t' || b[j] == b'\n' || b[j] == b'\r') {
+                j += 1;
+            }
+            if j < n && b[j] == b'*' {
+                let mut k = j + 1;
+                while k < n && (b[k] == b' ' || b[k] == b'\t' || b[k] == b'\n' || b[k] == b'\r') {
+                    k += 1;
+                }
+                if k < n && b[k] == b')' {
+                    // `( ws* * ws* )` — replace with `( sql_star )`
+                    out.push_str("( sql_star )");
+                    i = k + 1;
+                    continue;
+                }
+            }
+        }
+        let ch = input[i..].chars().next().unwrap_or('\0');
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    out
+}
+
+/// Convert `{expr}` → `(expr)` when the `{` immediately follows a SQL keyword that introduces
+/// a boolean or expression context: `WHERE`, `HAVING`, `ON` (case-sensitive, as Ur/Web SQL uses
+/// uppercase).  Only the outermost braces are rewritten; inner `{...}` remains untouched.
+/// Record literals (`{field = ...}`) and text-splices (`{[...]}`) are never touched.
+pub fn rewrite_sql_keyword_brace_splices(input: &str) -> String {
+    let b = input.as_bytes();
+    let n = b.len();
+    let mut out = String::with_capacity(n);
+    let mut i = 0usize;
+
+    // SQL keywords after which `{expr}` is a splice, not a record
+    const SQL_KEYWORDS: &[&[u8]] = &[b"WHERE", b"HAVING", b"ON"];
+
+    while i < n {
+        // Skip ML comments
+        if i + 1 < n && b[i] == b'(' && b[i + 1] == b'*' {
+            let start = i;
+            i = skip_ml_comment_bytes(b, i + 2, n);
+            out.push_str(&input[start..i]);
+            continue;
+        }
+        // Skip strings
+        if b[i] == b'"' {
+            let start = i;
+            i = skip_string_bytes(b, i + 1, n);
+            out.push_str(&input[start..i]);
+            continue;
+        }
+        // Check for SQL keywords at word boundary
+        let mut found_keyword = false;
+        for kw in SQL_KEYWORDS {
+            let klen = kw.len();
+            if i + klen <= n && b[i..i + klen].eq_ignore_ascii_case(kw) {
+                // Must be at a word boundary (not preceded by alnum/_)
+                let at_word_start = i == 0 || {
+                    let pb = b[i - 1];
+                    !pb.is_ascii_alphanumeric() && pb != b'_'
+                };
+                // And followed by non-alnum (word boundary)
+                let at_word_end = i + klen >= n || {
+                    let nb = b[i + klen];
+                    !nb.is_ascii_alphanumeric() && nb != b'_'
+                };
+                if at_word_start && at_word_end {
+                    // Emit the keyword
+                    out.push_str(&input[i..i + klen]);
+                    i += klen;
+                    // Skip whitespace after keyword
+                    let ws_start = i;
+                    while i < n && (b[i] == b' ' || b[i] == b'\t' || b[i] == b'\n' || b[i] == b'\r')
+                    {
+                        i += 1;
+                    }
+                    out.push_str(&input[ws_start..i]);
+                    // If next non-whitespace is `{`, check if it's a splice or record
+                    if i < n && b[i] == b'{' {
+                        // Skip `(*...)` comments before peeking inside
+                        let mut j = i + 1;
+                        while j + 1 < n && b[j] == b'(' && b[j + 1] == b'*' {
+                            j = skip_ml_comment_bytes(b, j + 2, n);
+                            while j < n
+                                && (b[j] == b' ' || b[j] == b'\t' || b[j] == b'\n' || b[j] == b'\r')
+                            {
+                                j += 1;
+                            }
+                        }
+                        // Advance past whitespace inside `{`
+                        while j < n
+                            && (b[j] == b' ' || b[j] == b'\t' || b[j] == b'\n' || b[j] == b'\r')
+                        {
+                            j += 1;
+                        }
+                        // `{[...]}` — text splice: leave alone
+                        // `{}` — empty record: leave alone
+                        // `{...}` — spread: leave alone
+                        // `{ident =` — record field: leave alone
+                        // `{ident non-eq}` — SQL splice: convert to `(...)`
+                        let is_sql_splice = if j >= n || b[j] == b'}' || b[j] == b'[' {
+                            false
+                        } else if j + 2 < n && &b[j..j + 3] == b"..." {
+                            false
+                        } else if b[j].is_ascii_alphabetic() || b[j] == b'_' {
+                            let mut k = j + 1;
+                            while k < n
+                                && (b[k].is_ascii_alphanumeric() || b[k] == b'_' || b[k] == b'\'')
+                            {
+                                k += 1;
+                            }
+                            // Skip whitespace
+                            while k < n && (b[k] == b' ' || b[k] == b'\t') {
+                                k += 1;
+                            }
+                            // If followed by `=` (but not `=>` or `==`) → record field
+                            !(k < n
+                                && b[k] == b'='
+                                && (k + 1 >= n || (b[k + 1] != b'>' && b[k + 1] != b'=')))
+                        } else {
+                            true
+                        };
+                        if is_sql_splice {
+                            // Convert only the outermost { → ( and matching } → )
+                            // Inner braces are emitted verbatim so grammar rules handle them.
+                            out.push('(');
+                            i += 1; // skip `{`
+                            let mut depth = 1i32;
+                            while i < n && depth > 0 {
+                                if i + 1 < n && b[i] == b'(' && b[i + 1] == b'*' {
+                                    let start = i;
+                                    i = skip_ml_comment_bytes(b, i + 2, n);
+                                    out.push_str(&input[start..i]);
+                                } else if b[i] == b'"' {
+                                    let start = i;
+                                    i = skip_string_bytes(b, i + 1, n);
+                                    out.push_str(&input[start..i]);
+                                } else if b[i] == b'{' {
+                                    out.push('{');
+                                    depth += 1;
+                                    i += 1;
+                                } else if b[i] == b'}' {
+                                    depth -= 1;
+                                    if depth > 0 {
+                                        out.push('}');
+                                    } else {
+                                        out.push(')'); // closing outer splice
+                                    }
+                                    i += 1;
+                                } else {
+                                    let ch = input[i..].chars().next().unwrap_or('\0');
+                                    out.push(ch);
+                                    i += ch.len_utf8();
+                                }
+                            }
+                        }
+                        // else: leave as-is (will be handled normally below)
+                    }
+                    found_keyword = true;
+                    break;
+                }
+            }
+        }
+        if found_keyword {
+            continue;
+        }
+        let ch = input[i..].chars().next().unwrap_or('\0');
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    out
+}
+
+/// Preprocess `.ur` source exactly like [`parse_ur`] before the lexer runs (rewrites only).
+/// Used by LSP semantic highlighting and other tools that need the same surface as the parser.
+pub fn preprocess_ur_for_parse(src: &str) -> String {
+    rewrite_case_expressions(&rewrite_sgn_where(&rewrite_datatype_constructors(
+        &rewrite_bare_kind_binders(&rewrite_sql_star(&rewrite_sql_keyword_brace_splices(
+            &strip_table_constraints(src),
+        ))),
+    )))
+}
+
 /// Parse a single `.ur` source file.
 ///
+/// `project_db` is the effective [`crate::db::ProjectDb`] for this compile (from `ur.toml` /
+/// `.urp` / CLI). It selects LangSec / future backend-specific surface rules; the LALRPOP parser
+/// is shared, but preprocess and recognizers can branch on it.
+///
 /// Returns `None` and records an error in `errors` on parse failure.
-pub fn parse_ur(_filename: &str, source: &str, errors: &mut ErrorReporter) -> Option<File> {
+pub fn parse_ur(
+    _filename: &str,
+    source: &str,
+    errors: &mut ErrorReporter,
+    project_db: crate::db::ProjectDb,
+) -> Option<File> {
     #[cfg(generated_parser)]
     {
-        let pre = rewrite_case_expressions(&rewrite_sgn_where(&rewrite_datatype_constructors(
-            &rewrite_bare_kind_binders(&strip_table_constraints(source)),
-        )));
+        let _parse_profile = project_db.langsec_parse_profile();
+        let _ = (_parse_profile, project_db); // LangSec tiers branch on profile + db
+        let pre = preprocess_ur_for_parse(source);
         let lexer = lexical_analyzer::XmlAwareLexer::new(&pre);
         match grammar::FileParser::new().parse(lexer) {
             Ok(file) => Some(file),
@@ -1686,7 +2044,7 @@ pub fn parse_ur(_filename: &str, source: &str, errors: &mut ErrorReporter) -> Op
     }
     #[cfg(not(generated_parser))]
     {
-        let _ = (_filename, source);
+        let _ = (_filename, source, project_db);
         errors.report(CompileError::Plain(
             "parse_ur: parser not available — rebuild with URWEB_GEN_PARSER=1".into(),
         ));
@@ -1702,7 +2060,13 @@ pub fn parse_top_level_decl_count(
     source: &str,
     errors: &mut ErrorReporter,
 ) -> Option<usize> {
-    parse_ur(virtual_path, source, errors).map(|f| f.len())
+    parse_ur(
+        virtual_path,
+        source,
+        errors,
+        crate::db::ProjectDb::default(),
+    )
+    .map(|f| f.len())
 }
 
 /// Parse a `.urs` signature file.
@@ -1744,9 +2108,30 @@ mod tests {
     use super::*;
 
     #[test]
+    fn preprocess_urs_low_fuel_appends_remainder_without_panic() {
+        let src = "val f : nm :: Type -> int -> int\n";
+        test_set_preprocess_urs_fuel_override(Some(8));
+        let out = preprocess_urs(src);
+        test_set_preprocess_urs_fuel_override(None);
+        assert!(
+            !out.is_empty(),
+            "fuel exhaustion must return partial output + suffix, not panic"
+        );
+        assert!(
+            out.contains("nm") || out.contains("val"),
+            "output should retain source text: {out:?}"
+        );
+    }
+
+    #[test]
     fn parse_ur_returns_none_without_generated_parser() {
         let mut errors = ErrorReporter::new();
-        let result = parse_ur("test.ur", "val x = 1", &mut errors);
+        let result = parse_ur(
+            "test.ur",
+            "val x = 1",
+            &mut errors,
+            crate::db::ProjectDb::default(),
+        );
         #[cfg(not(generated_parser))]
         {
             assert!(result.is_none());
@@ -1757,6 +2142,23 @@ mod tests {
             let file = result.expect("val x = 1 should parse");
             assert_eq!(file.len(), 1, "single top-level val decl");
         }
+    }
+
+    #[test]
+    fn debug_cookie_bars() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/demo/cookie.ur");
+        let Ok(src) = std::fs::read_to_string(path) else {
+            return;
+        };
+        let pp = preprocess_ur_for_parse(&src);
+        for (i, c) in pp.char_indices() {
+            if c == '|' {
+                let s = i.saturating_sub(40);
+                let e = (i + 40).min(pp.len());
+                eprintln!("|@{}: {:?}", i, &pp[s..e]);
+            }
+        }
+        eprintln!("total len={}", pp.len());
     }
 
     #[test]
@@ -1804,7 +2206,13 @@ mod tests {
     #[test]
     fn parse_ur_two_vals_requires_two_decls() {
         let mut errors = ErrorReporter::new();
-        let n = parse_ur("t.ur", "val a = 1\nval b = 2", &mut errors).map(|f| f.len());
+        let n = parse_ur(
+            "t.ur",
+            "val a = 1\nval b = 2",
+            &mut errors,
+            crate::db::ProjectDb::default(),
+        )
+        .map(|f| f.len());
         #[cfg(generated_parser)]
         {
             assert_eq!(
@@ -1825,7 +2233,7 @@ mod tests {
         let mut e2 = ErrorReporter::new();
         let src = "val p = 1\nval q = 2\nval r = 3";
         let a = parse_top_level_decl_count("m.ur", src, &mut e1);
-        let b = parse_ur("m.ur", src, &mut e2).map(|f| f.len());
+        let b = parse_ur("m.ur", src, &mut e2, crate::db::ProjectDb::default()).map(|f| f.len());
         assert_eq!(a, b);
         #[cfg(generated_parser)]
         assert_eq!(a, Some(3));
@@ -1882,6 +2290,39 @@ mod tests {
                 return Err(ExprRecognizeError::UnexpectedEof);
             };
             match &tok {
+                Token::UrwebPut => {
+                    cur.bump();
+                    Ok(Located::new(
+                        Exp::Var(
+                            vec!["UrwebNative".into()],
+                            "urweb_put".into(),
+                            Inference::DontInfer,
+                        ),
+                        span_at(cur.file, cur.line_starts, l, r),
+                    ))
+                }
+                Token::UrwebGet => {
+                    cur.bump();
+                    Ok(Located::new(
+                        Exp::Var(
+                            vec!["UrwebNative".into()],
+                            "urweb_get".into(),
+                            Inference::DontInfer,
+                        ),
+                        span_at(cur.file, cur.line_starts, l, r),
+                    ))
+                }
+                Token::UrwebTbTransfer => {
+                    cur.bump();
+                    Ok(Located::new(
+                        Exp::Var(
+                            vec!["UrwebNative".into()],
+                            "urweb_tb_transfer".into(),
+                            Inference::DontInfer,
+                        ),
+                        span_at(cur.file, cur.line_starts, l, r),
+                    ))
+                }
                 Token::Ident(name) | Token::UpperIdent(name) => {
                     let name = name.clone();
                     cur.bump();
@@ -1965,7 +2406,12 @@ mod tests {
             for expr in cases {
                 let file_src = format!("val _ = {}\n", expr);
                 let mut errs = ErrorReporter::new();
-                let Some(file) = parse_ur("equiv.ur", &file_src, &mut errs) else {
+                let Some(file) = parse_ur(
+                    "equiv.ur",
+                    &file_src,
+                    &mut errs,
+                    crate::db::ProjectDb::default(),
+                ) else {
                     panic!("parse_ur failed for {:?}: {:?}", expr, errs.errors);
                 };
                 let Some(got) = file.iter().find_map(|d| {

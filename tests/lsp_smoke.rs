@@ -121,6 +121,14 @@ fn ur_lsp_initialize_reports_text_document_sync() {
         caps.get("textDocumentSync").is_some(),
         "capabilities must advertise text sync, got {caps:?}"
     );
+    assert!(
+        caps.get("hoverProvider").is_some(),
+        "capabilities should advertise hover, got {caps:?}"
+    );
+    assert!(
+        caps.get("definitionProvider").is_some(),
+        "capabilities should advertise definition, got {caps:?}"
+    );
 
     write_msg(
         &mut stdin,
@@ -330,6 +338,69 @@ fn ur_lsp_did_change_replaces_text_and_clears_diagnostics() {
         saw_clear,
         "didChange should re-parse and publish empty diagnostics for valid source (catches delete DidChange arm)"
     );
+}
+
+#[test]
+fn ur_lsp_unknown_method_returns_method_not_found() {
+    let mut child = Command::new(cargo_bin("ur-lsp"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn ur-lsp");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let mut stdout = child.stdout.take().expect("stdout");
+
+    write_msg(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "processId": null,
+                "capabilities": {},
+                "clientInfo": {"name": "ur-lsp-test", "version": "0"}
+            }
+        }),
+    );
+    let _ = read_one_message(&mut stdout).expect("initialize response");
+
+    write_msg(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "initialized",
+            "params": {}
+        }),
+    );
+
+    write_msg(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 42,
+            "method": "textDocument/noSuchMethod",
+            "params": {
+                "textDocument": {"uri": SMOKE_DOC_URI},
+                "position": {"line": 0, "character": 0}
+            }
+        }),
+    );
+
+    let body = read_one_message(&mut stdout).expect("error response");
+    let msg: Value = serde_json::from_slice(&body).expect("parse json");
+    assert_eq!(msg.get("id"), Some(&json!(42)));
+    let err = msg.get("error").expect("JSON-RPC error object");
+    assert_eq!(
+        err.get("code").and_then(|c| c.as_i64()),
+        Some(-32601),
+        "unsupported methods must use Method not found (-32601), got {msg:?}"
+    );
+
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 #[test]

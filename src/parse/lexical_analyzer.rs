@@ -4,6 +4,12 @@
 //! The Token enum is intended to be driven by the LALRPOP grammar in
 //! `grammar.lalrpop`.
 //!
+//! **`#[regex(...)]` on tokens** is Logos’s way to specify lexer *classes*
+//! (compiled to a DFA). It is not application-level parsing with the `regex`
+//! crate: there is no `regex::Regex` here. Full parsing is LALRPOP → AST;
+//! transitive `regex-syntax` / `regex` in the lockfile come from Logos/LALRPOP
+//! codegen only.
+//!
 //! NOTE: The SML lexer has multiple lexer states (Regular / XML / String /
 //! Comment).  The logos-based lexer here handles the Regular mode; XML-mode
 //! tokens (`Notags`, `BeginTag`, `EndTag`) are produced by a separate
@@ -361,6 +367,13 @@ pub enum Token {
     Val,
     #[token("view", priority = 2)]
     View,
+    /// Native KV / ledger surface (`compiler`-injected `UrwebNative` shims).
+    #[token("urweb_put", priority = 2)]
+    UrwebPut,
+    #[token("urweb_get", priority = 2)]
+    UrwebGet,
+    #[token("urweb_tb_transfer", priority = 2)]
+    UrwebTbTransfer,
     /// Signature `where` at paren depth 0 (`rewrite_sgn_where`).
     #[token("sgn_where", priority = 6)]
     Where,
@@ -957,6 +970,9 @@ impl<'a> XmlAwareLexer<'a> {
             "type" => Token::Type,
             "val" => Token::Val,
             "view" => Token::View,
+            "urweb_put" => Token::UrwebPut,
+            "urweb_get" => Token::UrwebGet,
+            "urweb_tb_transfer" => Token::UrwebTbTransfer,
             "sgn_abs" => Token::SgnAbs,
             "sgn_def_con" => Token::SgnDefCon,
             "case_bar" => Token::CaseBar,

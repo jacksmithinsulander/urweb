@@ -8,9 +8,12 @@
 //! - **stdio JSON-RPC**: LSP handshake and notifications. Params are deserialized with
 //!   `serde_json` into `lsp-types` structs (`DidOpenTextDocumentParams`, etc.); treat those
 //!   as the schema boundary for RPC payloads.
-//! - **Document text**: Passed to [`crate::parse::parse_ur`], which runs the composed pipeline
+//! - **Document text**: Passed to [`crate::parse::parse_ur`] or full-project
+//!   [`crate::compiler::parse_sources_with_overlay`], which run the composed pipeline
 //!   (rewrites → [`crate::parse::lexical_analyzer::XmlAwareLexer`] → LALRPOP). Errors are reported
 //!   through [`crate::error_types::ErrorReporter`], not panics.
+//! - **RPC requests** (LSP methods): Params deserialized into `lsp-types` structs in the binary;
+//!   extend this list when adding handlers (`textDocument/hover`, `textDocument/formatting`, etc.).
 //!
 //! There is no secondary “shotgun” rescan of the same buffer for structure beyond this path.
 
@@ -21,6 +24,7 @@ use lsp_types::{
     Diagnostic, DiagnosticSeverity, Position, PublishDiagnosticsParams, Range, Uri,
 };
 
+use crate::db::ProjectDb;
 use crate::error_types::{CompileError, ErrorReporter};
 use crate::parse::parse_ur;
 
@@ -46,45 +50,61 @@ pub fn compile_error_to_diagnostic(e: &CompileError) -> Diagnostic {
         None => Range::new(Position::new(0, 0), Position::new(0, 0)),
     };
 
+    let severity = match e {
+        CompileError::WarningAt { .. } => Some(DiagnosticSeverity::WARNING),
+        _ => Some(DiagnosticSeverity::ERROR),
+    };
+    let message = match e {
+        CompileError::WarningAt { message, .. } => message.clone(),
+        _ => e.to_string(),
+    };
     Diagnostic {
         range,
-        severity: Some(DiagnosticSeverity::ERROR),
+        severity,
         code: None,
         code_description: None,
         source: Some("ur-lsp".into()),
-        message: e.to_string(),
+        message,
         related_information: None,
         tags: None,
         data: None,
     }
 }
 
-/// Parse `text` as Ur/Web under `uri` and publish diagnostics to the LSP client.
-pub fn publish_parse_diagnostics(connection: &Connection, uri: &Uri, text: &str) -> Result<()> {
-    let file_name = uri.as_str();
-    let mut errors = ErrorReporter::new();
-    let _ = parse_ur(file_name, text, &mut errors);
-
+fn publish_diagnostics_params(uri: &Uri, errors: &ErrorReporter) -> PublishDiagnosticsParams {
     let diagnostics: Vec<Diagnostic> = errors
         .errors
         .iter()
         .map(compile_error_to_diagnostic)
         .collect();
-
-    let params = PublishDiagnosticsParams {
+    PublishDiagnosticsParams {
         uri: uri.clone(),
         diagnostics,
         version: None,
-    };
+    }
+}
 
+pub fn publish_diagnostics(
+    connection: &Connection,
+    uri: &Uri,
+    errors: &ErrorReporter,
+) -> Result<()> {
+    let params = publish_diagnostics_params(uri, errors);
     connection
         .sender
         .send(Message::Notification(Notification::new(
             <PublishDiagnostics as NotificationTrait>::METHOD.to_owned(),
             params,
         )))?;
-
     Ok(())
+}
+
+/// Parse `text` as Ur/Web under `uri` and publish diagnostics to the LSP client.
+pub fn publish_parse_diagnostics(connection: &Connection, uri: &Uri, text: &str) -> Result<()> {
+    let file_name = uri.as_str();
+    let mut errors = ErrorReporter::new_silent();
+    let _ = parse_ur(file_name, text, &mut errors, ProjectDb::default());
+    publish_diagnostics(connection, uri, &errors)
 }
 
 #[cfg(test)]
@@ -107,7 +127,7 @@ mod tests {
             first: Pos { line: 2, col: 3 },
             last: Pos { line: 2, col: 10 },
         };
-        let e = CompileError::at(span, "bad");
+        let e = CompileError::at(span.clone(), "bad");
         let d = compile_error_to_diagnostic(&e);
         assert_eq!(d.range.start.line, 1);
         assert_eq!(d.range.start.character, 3);
@@ -115,6 +135,11 @@ mod tests {
         assert_eq!(d.range.end.character, 10);
         assert_eq!(d.source.as_deref(), Some("ur-lsp"));
         assert_eq!(d.severity, Some(DiagnosticSeverity::ERROR));
+        let w = CompileError::warning_at(span, "unused");
+        assert_eq!(
+            compile_error_to_diagnostic(&w).severity,
+            Some(DiagnosticSeverity::WARNING)
+        );
     }
 
     #[test]

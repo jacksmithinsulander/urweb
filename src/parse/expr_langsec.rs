@@ -155,6 +155,11 @@ pub enum ExpPostfixOp {
     DotIdent(String),
     DotHash(String),
     DotUident(String),
+    DotInt(i64),
+    /// `tab.{field_var}` — SQL field access via constructor variable
+    DotCon(LocCon),
+    /// `tab.{{fields_var}}` — SQL multi-field access via constructor
+    DotCons(LocCon),
 }
 
 fn apply_postfix(base: LocExp, op: ExpPostfixOp) -> LocExp {
@@ -202,6 +207,12 @@ fn apply_postfix(base: LocExp, op: ExpPostfixOp) -> LocExp {
             Exp::Field(Box::new(base), Located::dummy(Con::Name(name))),
             fspan,
         ),
+        ExpPostfixOp::DotInt(n) => Located::new(
+            Exp::Field(Box::new(base), Located::dummy(Con::Name(n.to_string()))),
+            fspan,
+        ),
+        ExpPostfixOp::DotCon(c) => Located::new(Exp::Field(Box::new(base), c), fspan),
+        ExpPostfixOp::DotCons(c) => Located::new(Exp::CApp(Box::new(base), c), fspan),
         ExpPostfixOp::DotUident(name) => {
             let exp = match base.node {
                 Exp::Var(mut quals, last, inf) => {
@@ -262,6 +273,7 @@ pub fn token_starts_primary(t: &Token) -> bool {
         | Token::BeginTag(_)
         | Token::XmlBeginEnd => true,
         Token::Ident(_) | Token::UpperIdent(_) => true,
+        Token::UrwebPut | Token::UrwebGet | Token::UrwebTbTransfer => true,
         _ => false,
     }
 }

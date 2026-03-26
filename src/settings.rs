@@ -2,9 +2,11 @@
 //!
 //! - **Job** / **Settings**: URL prefix, database, FFI mappings, effectful annotations
 //! - **Rewrite**, **Rule**: URL/mime/request filters
-//! - SQL mangling, timeouts, protocol, dbms, etc.
+//! - SQL mangling, timeouts, protocol, `db_backend`, etc.
 
 use std::collections::{BTreeMap, BTreeSet};
+
+use crate::db::{ProjectDb, ProjectDbCtx};
 
 /// An FFI function identifier: `(module_name, function_name)`.
 pub type Ffi = (String, String);
@@ -183,9 +185,9 @@ pub struct Settings {
     pub env_rules: Vec<Rule>,
     pub meta_rules: Vec<Rule>,
 
-    // Current protocol / DBMS names
+    // Current protocol / database backend (`None` = legacy unset → Postgres family at resolve)
     pub protocol: String,
-    pub dbms: String,
+    pub db_backend: Option<ProjectDb>,
 
     // Output targets
     pub dbstring: Option<String>,
@@ -586,7 +588,7 @@ impl Settings {
             env_rules: vec![],
             meta_rules: vec![],
             protocol: String::new(),
-            dbms: String::new(),
+            db_backend: None,
             dbstring: None,
             exe: None,
             sql: None,
@@ -659,49 +661,17 @@ impl Settings {
     // SQL name mangling
     // -----------------------------------------------------------------------
 
+    /// Effective backend: CLI / `.urp` value, or default Postgres-style (legacy empty `dbms`).
+    pub fn resolved_db_backend(&self) -> ProjectDb {
+        ProjectDbCtx::new(&self.db_backend).resolved()
+    }
+
     pub fn mangle_sql_table(&self, s: &str) -> String {
-        if self.dbms == "mysql" {
-            if self.mangle {
-                format!("uw_{}", s.to_lowercase())
-            } else {
-                s.to_lowercase()
-            }
-        } else if self.mangle {
-            let capitalized = Self::capitalize(s);
-            format!("uw_{}", capitalized)
-        } else {
-            Self::lowercase(s)
-        }
+        ProjectDbCtx::new(&self.db_backend).mangle_sql_table(self.mangle, s)
     }
 
     pub fn mangle_sql(&self, s: &str) -> String {
-        if self.dbms == "mysql" {
-            if self.mangle {
-                format!("uw_{}", s.to_lowercase())
-            } else {
-                s.to_lowercase()
-            }
-        } else if self.mangle {
-            format!("uw_{}", s)
-        } else {
-            Self::lowercase(s)
-        }
-    }
-
-    fn capitalize(s: &str) -> String {
-        let mut chars = s.chars();
-        match chars.next() {
-            None => String::new(),
-            Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
-        }
-    }
-
-    fn lowercase(s: &str) -> String {
-        let mut chars = s.chars();
-        match chars.next() {
-            None => String::new(),
-            Some(c) => c.to_lowercase().collect::<String>() + chars.as_str(),
-        }
+        ProjectDbCtx::new(&self.db_backend).mangle_sql_ident(self.mangle, s)
     }
 
     // -----------------------------------------------------------------------
@@ -937,21 +907,21 @@ mod tests {
     #[test]
     fn mangle_sql_table_postgres() {
         let mut s = Settings::new();
-        s.dbms = "postgres".into();
+        s.db_backend = Some(ProjectDb::postgres());
         assert_eq!(s.mangle_sql_table("users"), "uw_Users");
     }
 
     #[test]
     fn mangle_sql_table_mysql() {
         let mut s = Settings::new();
-        s.dbms = "mysql".into();
+        s.db_backend = Some(ProjectDb::mysql());
         assert_eq!(s.mangle_sql_table("Users"), "uw_users");
     }
 
     #[test]
     fn mangle_no_mangle() {
         let mut s = Settings::new();
-        s.dbms = "postgres".into();
+        s.db_backend = Some(ProjectDb::postgres());
         s.mangle = false;
         assert_eq!(s.mangle_sql_table("FooBar"), "fooBar");
     }
@@ -959,10 +929,10 @@ mod tests {
     #[test]
     fn mangle_sql_mysql_vs_postgres() {
         let mut s_mysql = Settings::new();
-        s_mysql.dbms = "mysql".into();
+        s_mysql.db_backend = Some(ProjectDb::mysql());
         s_mysql.mangle = true;
         let mut s_pg = Settings::new();
-        s_pg.dbms = "postgres".into();
+        s_pg.db_backend = Some(ProjectDb::postgres());
         s_pg.mangle = true;
         assert_eq!(s_mysql.mangle_sql("Foo"), "uw_foo");
         assert_eq!(s_pg.mangle_sql("Foo"), "uw_Foo");
@@ -1293,7 +1263,7 @@ mod tests {
     #[test]
     fn mangle_sql_mysql() {
         let mut s = Settings::new();
-        s.dbms = "mysql".into();
+        s.db_backend = Some(ProjectDb::mysql());
         s.mangle = true;
         assert!(s.mangle_sql("Foo").contains("uw_"));
     }

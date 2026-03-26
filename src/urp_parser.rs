@@ -1,5 +1,13 @@
 //! Parser for `.urp` (Ur/Web project) files.
 //!
+//! ## LangSec inventory (`.urp`)
+//!
+//! | Input | Recognizer | Notes |
+//! |-------|------------|--------|
+//! | Whole file | Line-oriented state machine in [`parse_urp`] | Comments (`#` after optional WS only), blank line → source section; malformed directives return [`anyhow::Error`]. |
+//! | FFI / effect directives | [`parse_ffi`], [`parse_ffi_map`] | Strict `Module.ident` shape. |
+//! | `allow` / `deny` | Token split + [`push_filter_rule`] | Unknown filter kind is an error. |
+//!
 //! A `.urp` file has two sections separated by a blank line:
 //!   1. **Directive section**: `key [value]` lines (e.g., `database mydb`, `debug`).
 //!   2. **Source section**: one Ur/Web module filename per line (without extension).
@@ -1236,6 +1244,60 @@ mod tests {
             shared_count == 1,
             "shared must appear exactly once (catches merge_library dedup mutant), got {}",
             shared_count
+        );
+    }
+
+    #[test]
+    fn parse_timeout_non_numeric_errors() {
+        let dir = tempdir().unwrap();
+        let urp = write_urp(dir.path(), "app.urp", "timeout not_a_number\n\nmod1\n");
+        assert!(parse_urp(&urp).is_err(), "invalid timeout must be rejected");
+    }
+
+    #[test]
+    fn parse_minheap_non_numeric_errors() {
+        let dir = tempdir().unwrap();
+        let urp = write_urp(dir.path(), "app.urp", "minHeap xy\n\nmod1\n");
+        assert!(parse_urp(&urp).is_err(), "invalid minHeap must be rejected");
+    }
+
+    #[test]
+    fn parse_allow_wrong_token_count_errors() {
+        let dir = tempdir().unwrap();
+        let urp = write_urp(dir.path(), "app.urp", "allow url\n\nmod1\n");
+        assert!(parse_urp(&urp).is_err(), "allow requires kind + pattern");
+    }
+
+    #[test]
+    fn parse_rewrite_unknown_path_kind_errors() {
+        let dir = tempdir().unwrap();
+        let urp = write_urp(dir.path(), "app.urp", "rewrite nosuchkind * /\n\nmod1\n");
+        assert!(
+            parse_urp(&urp).is_err(),
+            "unknown rewrite path kind must be rejected"
+        );
+    }
+
+    #[test]
+    fn parse_source_line_preserves_utf8_module_name() {
+        let dir = tempdir().unwrap();
+        let urp = write_urp(dir.path(), "app.urp", "\nテスト\n");
+        let job = parse_urp(&urp).unwrap();
+        assert_eq!(job.sources.len(), 1);
+        assert!(
+            job.sources[0].contains("テスト"),
+            "UTF-8 module name must be preserved in path: {:?}",
+            job.sources[0]
+        );
+    }
+
+    #[test]
+    fn parse_deny_unknown_filter_kind_errors() {
+        let dir = tempdir().unwrap();
+        let urp = write_urp(dir.path(), "app.urp", "deny nosuch thing\n\nmod1\n");
+        assert!(
+            parse_urp(&urp).is_err(),
+            "unknown filter kind must be rejected"
         );
     }
 }

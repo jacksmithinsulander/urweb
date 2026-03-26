@@ -292,6 +292,7 @@ fn elaborated_file_max_name_valrec() {
 
 use ur::elaborated::{Explicitness, Expression as ElabExpr};
 
+/// Core elaboration: module projection in constructor equality (manual — module typing / projection).
 #[test]
 fn elaborated_cons_eq_simple_modproj() {
     let mp = Located::dummy(Constructor::ModProj(1, vec!["M".into()], "T".into()));
@@ -459,6 +460,7 @@ fn elaborated_disjointness_prove1_namec() {
 
 #[test]
 fn elaborated_disjointness_prove1_namec_same_false() {
+    // Manual static semantics (record disjointness): duplicate field names are not disjoint.
     let env = disjointness_analysis::empty_env();
     let p1: disjointness_analysis::Piece =
         (disjointness_analysis::PieceFst::NameC("a".into()), vec![]);

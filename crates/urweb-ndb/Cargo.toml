@@ -1,0 +1,10 @@
+[package]
+name = "urweb-ndb"
+version = "0.1.0"
+edition = "2021"
+description = "C ABI staticlib: ndb-style line file KV for Ur/Web dbms=ndb (ISO C, no plan9port)"
+license = "MIT"
+
+[lib]
+name = "urweb_ndb"
+crate-type = ["staticlib", "rlib"]

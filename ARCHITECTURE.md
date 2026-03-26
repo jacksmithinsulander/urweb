@@ -76,6 +76,17 @@ The compiler transforms Ur/Web source code through several intermediate represen
 | **parse::lexer** | Lexer (Logos) — tokens for identifiers, keywords, operators, literals. |
 | **source** | `source::File` — surface syntax AST. Kinds, constructors, expressions, signatures. Mirrors `source.sml`. |
 
+### LangSec: untrusted inputs (recognizer inventory)
+
+Treat each external input as its own formal language; do not use arbitrary URI schemes’ `path` segments as local filesystem paths.
+
+| Surface | Canonical recognizer | Location |
+|---------|---------------------|----------|
+| `.ur` / `.urs` token stream | Logos lexer + conflict-free LALRPOP; expression spine reference | `parse::lexical_analyzer`, `parse::grammar`, `parse::expr_langsec` |
+| Preprocess ∘ parse (composed) | Fuel-bounded `preprocess_urs` + same parser | `parse::preprocess_urs`, `tests/langsec_preprocess.rs` |
+| `.urp` project lines | Line/state directive parser | `urp_parser::parse_urp` |
+| LSP `DocumentUri` | `file:` only → local path | `lsp_workspace::uri_to_file_path`, `uri_local_path_for_tooling` |
+
 ### Elaboration (type inference)
 
 | Module | Purpose |
@@ -117,6 +128,8 @@ The compiler transforms Ur/Web source code through several intermediate represen
 | Module | Purpose |
 |--------|---------|
 | **c_like_representation** | C-like IR. `Typ` uses struct ids, `PreparedQuery`, `PreparedDml`, `PreparedNextval` for SQL. Emits C code and SQL. Mirrors `cjr.sml`. |
+
+**Backends:** Relational engines (`ProjectDb::Sql`: sqlite / mysql / postgres) keep the historical DDL + prepared-statement pipeline. Native engines (`persy`, `rocksdb`, `ndb`, `tigerbeetle`) use `c_like_representation::native_db_runtime` for distinct C headers and link lines; `sql_generate` emits a placeholder instead of `CREATE TABLE` DDL. The prepare pass still collects SQL strings for the CJR layer; generated native C calls `uw_error` if relational tables or prepared statements are present, until surface syntax and elaboration grow ledger/KV-specific forms. `parse_ur` receives `ProjectDb` so LangSec and preprocess tiers can branch on `LangsecParseProfile`. Batch compile, LSP (`lsp_analysis::ProjectState::open`), and the debugger (`compiler::effective_project_db_for_workspace_root`) share the same merge of `ur.toml` `[build].db`, `.urp`, and CLI.
 
 ### Pipeline orchestration
 

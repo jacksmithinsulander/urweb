@@ -19,7 +19,9 @@ fn print_usage(_settings: &Settings) {
     println!("  -h, -help, --help    print this overview");
     println!("  -V, -version         print version and exit");
     println!("  -ccompiler <prog>    set C compiler");
-    println!("  -dbms <engine>       select database engine [sqlite|mysql|postgres]");
+    println!(
+        "  -dbms <engine>       select database engine [sqlite|mysql|postgres|persy|rocksdb|ndb|tigerbeetle]"
+    );
     println!("  -db <connstr>        database connection string");
     println!("  -prefix <prefix>     URL prefix");
     println!("  -sql <file>          output SQL DDL to <file>");
@@ -97,7 +99,10 @@ pub fn run_compiler_args(args: &[String]) -> i32 {
             }
             "dbms" => {
                 if let Some(db) = opt_val.or_else(|| args_iter.next().cloned()) {
-                    settings.dbms = db;
+                    if let Err(e) = ur::db::set_backend_from_cli_token(&mut settings, &db) {
+                        eprintln!("error: {}", e);
+                        return 1;
+                    }
                 }
             }
             "debug" => {

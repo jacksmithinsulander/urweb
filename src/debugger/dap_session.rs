@@ -53,6 +53,8 @@ enum VarRefKind {
 struct Server {
     dap: Arc<Mutex<DapState>>,
     launch: Option<LaunchConfig>,
+    /// Same effective DB as LSP/compiler when the workspace contains a unique `.urp` + `ur.toml`.
+    resolved_project_db: Option<crate::db::ProjectDb>,
     gdb: Option<GdbSession>,
     /// Source path (client) → GDB breakpoint numbers to delete on refresh
     bkpt_by_source: HashMap<String, Vec<String>>,
@@ -93,6 +95,7 @@ impl Server {
         Self {
             dap,
             launch: None,
+            resolved_project_db: None,
             gdb: None,
             bkpt_by_source: HashMap::new(),
             pending_by_source: HashMap::new(),
@@ -770,6 +773,19 @@ impl Server {
                     )?;
                     return Ok(true);
                 }
+                let cwd = lc
+                    .cwd
+                    .as_deref()
+                    .map(std::path::Path::new)
+                    .map(std::path::Path::to_path_buf)
+                    .or_else(|| {
+                        std::path::Path::new(&lc.program)
+                            .parent()
+                            .map(|p| p.to_path_buf())
+                    })
+                    .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+                self.resolved_project_db =
+                    crate::compiler::effective_project_db_for_workspace_root(&cwd).ok();
                 self.launch = Some(lc);
                 self.send_response(req_id, command, true, None, None)?;
                 Ok(true)

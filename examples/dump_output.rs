@@ -24,7 +24,7 @@ fn main() {
     }
 
     let mut settings = ur::settings::Settings::default();
-    settings.dbms = "sqlite".to_string();
+    settings.db_backend = Some(ur::db::ProjectDb::sqlite());
     settings.boot_linking = true;
 
     match ur::compiler::compile_to_outputs(urp_path, &mut settings) {

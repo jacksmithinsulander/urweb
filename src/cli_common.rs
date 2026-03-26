@@ -231,6 +231,8 @@ fn default_pkg_kind() -> String {
 #[serde(deny_unknown_fields)]
 pub struct UrTomlBuildStrict {
     pub entry: String,
+    /// Database **engine** for `ur build` → passed as `-dbms` (same names as `.urp` `dbms`: sqlite, mysql, postgres, …).
+    /// Validated by [`crate::db::validate_manifest_db_engine`] in the orchestrator. Not the SQL connection string (`-db` / `.urp` `database`).
     #[serde(default = "default_build_db")]
     pub db: String,
     #[serde(default)]
@@ -369,10 +371,7 @@ pub fn has_sass_or_sassc() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::compiler_diagnostics::lock_for_compile;
-    use std::sync::Mutex;
-
-    static CWD_LOCK: Mutex<()> = Mutex::new(());
+    use crate::compiler_diagnostics::{lock_for_compile, TEST_CWD_LOCK};
 
     #[test]
     fn validate_name_empty() {
@@ -570,7 +569,7 @@ k = "hello""#;
 
     #[test]
     fn file_exists_detects_present_and_absent() {
-        let _guard = lock_for_compile(&CWD_LOCK, "cli_common file_exists test");
+        let _guard = lock_for_compile(&TEST_CWD_LOCK, "cli_common file_exists test");
         let dir = tempfile::tempdir().unwrap();
         let cwd = std::env::current_dir().unwrap();
         std::env::set_current_dir(dir.path()).unwrap();
@@ -623,7 +622,7 @@ k = "hello""#;
 
     #[test]
     fn load_ur_manifest_cwd_ok_and_entry() {
-        let _guard = lock_for_compile(&CWD_LOCK, "cli_common manifest load");
+        let _guard = lock_for_compile(&TEST_CWD_LOCK, "cli_common manifest load");
         let dir = tempfile::tempdir().unwrap();
         let cwd = std::env::current_dir().unwrap();
         std::env::set_current_dir(dir.path()).unwrap();
@@ -655,7 +654,7 @@ entry = ""
 
     #[test]
     fn ensure_ur_toml_present_for_install_checks_file() {
-        let _guard = lock_for_compile(&CWD_LOCK, "cli_common install manifest");
+        let _guard = lock_for_compile(&TEST_CWD_LOCK, "cli_common install manifest");
         let dir = tempfile::tempdir().unwrap();
         let cwd = std::env::current_dir().unwrap();
         std::env::set_current_dir(dir.path()).unwrap();

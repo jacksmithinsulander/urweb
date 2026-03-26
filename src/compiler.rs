@@ -176,30 +176,81 @@ pub fn parse_urp(path: &Path) -> Result<Job> {
 // Boot path resolution
 // ---------------------------------------------------------------------------
 
+fn boot_root_from(start: PathBuf) -> Option<PathBuf> {
+    let mut cur = start;
+    loop {
+        if cur.join("lib/ur/basis.urs").is_file() {
+            return Some(cur);
+        }
+        cur = cur.parent()?.to_path_buf();
+    }
+}
+
+/// Project root containing `lib/ur/basis.urs`: walk up from the test binary / `ur-compile`
+/// executable first, then from [`std::env::current_dir`] (supports temp-project tests that symlink
+/// `lib/ur` into an isolated directory).
+fn resolve_boot_root() -> Option<PathBuf> {
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(p) = exe.parent() {
+            if let Some(r) = boot_root_from(p.to_path_buf()) {
+                return Some(r);
+            }
+        }
+    }
+    let cwd = std::env::current_dir().ok()?;
+    boot_root_from(cwd)
+}
+
+/// If `URWEB_NATIVE_LIB_DIR` is unset, use checkout-relative `crates/urweb-{persy,ndb}/include` for `-I`.
+fn append_urweb_native_include_fallback(compile_cmd: &mut std::process::Command) {
+    let env_set = std::env::var("URWEB_NATIVE_LIB_DIR")
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false);
+    if env_set {
+        return;
+    }
+    let Some(root) = resolve_boot_root() else {
+        return;
+    };
+    for rel in ["crates/urweb-persy/include", "crates/urweb-ndb/include"] {
+        let p = root.join(rel);
+        if p.is_dir() {
+            compile_cmd.arg("-I").arg(p);
+        }
+    }
+}
+
+/// If `URWEB_NATIVE_LIB_DIR` is unset, link against workspace `target/{release,debug}` when staticlibs exist.
+fn append_urweb_native_libdir_fallback(link_cmd: &mut std::process::Command) {
+    let env_set = std::env::var("URWEB_NATIVE_LIB_DIR")
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false);
+    if env_set {
+        return;
+    }
+    let Some(root) = resolve_boot_root() else {
+        return;
+    };
+    for profile in ["release", "debug"] {
+        let td = root.join("target").join(profile);
+        if td.join("liburweb_persy.a").exists() || td.join("liburweb_ndb.a").exists() {
+            link_cmd.arg("-L").arg(td);
+            return;
+        }
+    }
+}
+
 /// When `settings.boot_linking` is set, walk up from the current executable to
 /// find the project root (the directory containing `lib/ur/basis.urs`) and
 /// populate `job.basis_lib_dir` and the `config_*` settings.
-fn apply_boot_settings(job: &mut Job, settings: &mut Settings) {
+pub fn apply_boot_settings(job: &mut Job, settings: &mut Settings) {
     #[cfg(test)]
     APPLY_BOOT_SETTINGS_CALLS.fetch_add(1, Ordering::SeqCst);
     if !settings.boot_linking {
         return;
     }
-    let exe = match std::env::current_exe() {
-        Ok(e) => e,
-        Err(_) => return,
-    };
-    let mut candidate = exe.parent().map(|p| p.to_path_buf());
-    let root = loop {
-        match candidate {
-            None => return,
-            Some(ref dir) => {
-                if dir.join("lib/ur/basis.urs").exists() {
-                    break dir.clone();
-                }
-                candidate = dir.parent().map(|p| p.to_path_buf());
-            }
-        }
+    let Some(root) = resolve_boot_root() else {
+        return;
     };
     if job.basis_lib_dir.is_none() {
         job.basis_lib_dir = Some(root.join("lib/ur"));
@@ -236,7 +287,89 @@ fn apply_boot_settings(job: &mut Job, settings: &mut Settings) {
 // Phase 2: Parse source files
 // ---------------------------------------------------------------------------
 
-pub fn parse_sources(job: &Job, errors: &mut ErrorReporter) -> Option<crate::source::File> {
+/// Synthetic `UrwebNative` signature (no `parse_urs`: `urweb_*` spellings are expression keywords).
+fn urweb_native_ffi_sgn_items() -> Vec<crate::source::LocSgnItem> {
+    use crate::error_types::{Located, Span};
+    use crate::source::{Con, SgnItem};
+    let sp = Span::dummy();
+    let lc = |c: Con| Located::new(c, sp.clone());
+    let b = |name: &str| lc(Con::Var(vec!["Basis".into()], name.into()));
+    let string = b("string");
+    let int = b("int");
+    let unit = b("unit");
+    let transaction = b("transaction");
+    let transaction_unit = lc(Con::App(Box::new(transaction.clone()), Box::new(unit)));
+    let transaction_string = lc(Con::App(Box::new(transaction), Box::new(string.clone())));
+    let put_ty = lc(Con::TFun(
+        Box::new(string.clone()),
+        Box::new(lc(Con::TFun(
+            Box::new(string.clone()),
+            Box::new(transaction_unit.clone()),
+        ))),
+    ));
+    let get_ty = lc(Con::TFun(
+        Box::new(string.clone()),
+        Box::new(transaction_string),
+    ));
+    let tb_ty = lc(Con::TFun(
+        Box::new(int.clone()),
+        Box::new(lc(Con::TFun(
+            Box::new(int.clone()),
+            Box::new(lc(Con::TFun(
+                Box::new(int.clone()),
+                Box::new(lc(Con::TFun(Box::new(int), Box::new(transaction_unit)))),
+            ))),
+        ))),
+    ));
+    vec![
+        Located::new(SgnItem::Val("urweb_put".into(), put_ty), sp.clone()),
+        Located::new(SgnItem::Val("urweb_get".into(), get_ty), sp.clone()),
+        Located::new(SgnItem::Val("urweb_tb_transfer".into(), tb_ty), sp),
+    ]
+}
+
+fn ur_disk_paths_same(a: &Path, b: &Path) -> bool {
+    if a == b {
+        return true;
+    }
+    match (a.canonicalize(), b.canonicalize()) {
+        (Ok(x), Ok(y)) => x == y,
+        _ => a.components().eq(b.components()),
+    }
+}
+
+/// When `overlay` is ` Some((disk_path, text))`, the `.ur` module whose on-disk path matches
+/// `disk_path` is parsed from `text` instead of reading the file. Intended for LSP buffers.
+/// Caller should set process cwd to the project root (same as `ur-compile`).
+pub fn parse_sources_with_overlay(
+    job: &Job,
+    overlay_disk_path: &Path,
+    overlay_text: &str,
+    settings: &Settings,
+    errors: &mut ErrorReporter,
+) -> Option<crate::source::File> {
+    parse_sources_inner(
+        job,
+        Some((overlay_disk_path, overlay_text)),
+        settings,
+        errors,
+    )
+}
+
+pub fn parse_sources(
+    job: &Job,
+    settings: &Settings,
+    errors: &mut ErrorReporter,
+) -> Option<crate::source::File> {
+    parse_sources_inner(job, None, settings, errors)
+}
+
+fn parse_sources_inner(
+    job: &Job,
+    overlay: Option<(&Path, &str)>,
+    settings: &Settings,
+    errors: &mut ErrorReporter,
+) -> Option<crate::source::File> {
     use crate::error_types::{CompileError, Located, Span};
     use crate::source;
     use std::path::Path;
@@ -279,7 +412,93 @@ pub fn parse_sources(job: &Job, errors: &mut ErrorReporter) -> Option<crate::sou
         ));
     }
 
+    // Load the Top library module (top.ur / top.urs) when basis_lib_dir is set.
+    // This provides `folder`, `queryX`, `txt`, `eqNullable'`, etc. used by user code.
+    // Matches the SML compiler's `elaborate` phase which also elaborates top.ur.
+    if let Some(ref lib_dir) = job.basis_lib_dir {
+        let top_urs_path = lib_dir.join("top.urs");
+        let top_ur_path = lib_dir.join("top.ur");
+        let top_span = Span {
+            file: "<top>".into(),
+            ..Span::dummy()
+        };
+
+        let top_sgn = match std::fs::read_to_string(&top_urs_path) {
+            Ok(src) => match crate::parse::parse_urs(&top_urs_path.to_string_lossy(), &src, errors)
+            {
+                Some(items) => Some(Located::new(source::Sgn::Const(items), top_span.clone())),
+                None => return None,
+            },
+            Err(e) => {
+                errors.report(CompileError::Plain(format!(
+                    "cannot read top library {}: {}",
+                    top_urs_path.display(),
+                    e
+                )));
+                return None;
+            }
+        };
+
+        match std::fs::read_to_string(&top_ur_path) {
+            Ok(src) => {
+                match crate::parse::parse_ur(
+                    &top_ur_path.to_string_lossy(),
+                    &src,
+                    errors,
+                    crate::db::ProjectDb::default(),
+                ) {
+                    Some(ds) => {
+                        let str_node = Located::new(source::Str::Const(ds), top_span.clone());
+                        decls.push(Located::new(
+                            source::Decl::Str("Top".into(), top_sgn, None, str_node, false),
+                            top_span,
+                        ));
+                    }
+                    None => return None,
+                }
+            }
+            Err(e) => {
+                errors.report(CompileError::Plain(format!(
+                    "cannot read top library {}: {}",
+                    top_ur_path.display(),
+                    e
+                )));
+                return None;
+            }
+        }
+    }
+
+    if let Some(ref db_path) = job.database {
+        let db_span = Span {
+            file: "<project>".into(),
+            ..Span::dummy()
+        };
+        decls.push(Located::new(
+            source::Decl::Database(db_path.clone()),
+            db_span,
+        ));
+    }
+
     let mut had_errors = false;
+    let project_db = crate::db::effective_project_db(settings);
+
+    // Needs real `basis.urs` so `Basis.string` / `transaction` resolve when elaborating the shim FFI.
+    if project_db.exposes_urweb_native_surface() && job.basis_lib_dir.is_some() {
+        let span = Span {
+            file: "<urweb_native>.urs".into(),
+            ..Span::dummy()
+        };
+        let sgis = urweb_native_ffi_sgn_items();
+        let sgn = Located::new(source::Sgn::Const(sgis), span.clone());
+        decls.push(Located::new(
+            source::Decl::FfiStr("UrwebNative".into(), sgn, None),
+            span.clone(),
+        ));
+        decls.push(Located::new(
+            source::Decl::Open("UrwebNative".into(), vec![]),
+            span,
+        ));
+    }
 
     // Parse C FFI modules (job.ffi): each provides a .urs signature file.
     for ffi_base in &job.ffi {
@@ -320,13 +539,28 @@ pub fn parse_sources(job: &Job, errors: &mut ErrorReporter) -> Option<crate::sou
             ..Span::dummy()
         };
 
-        // Read .ur source
-        let ur_src = match std::fs::read_to_string(&ur_path) {
-            Ok(s) => s,
-            Err(e) => {
-                errors.report(CompileError::Plain(format!("cannot read {ur_path}: {e}")));
-                had_errors = true;
-                continue;
+        // Read .ur source (optional LSP overlay for one open buffer)
+        let ur_src = if let Some((op, ot)) = overlay {
+            if ur_disk_paths_same(op, Path::new(&ur_path)) {
+                ot.to_string()
+            } else {
+                match std::fs::read_to_string(&ur_path) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        errors.report(CompileError::Plain(format!("cannot read {ur_path}: {e}")));
+                        had_errors = true;
+                        continue;
+                    }
+                }
+            }
+        } else {
+            match std::fs::read_to_string(&ur_path) {
+                Ok(s) => s,
+                Err(e) => {
+                    errors.report(CompileError::Plain(format!("cannot read {ur_path}: {e}")));
+                    had_errors = true;
+                    continue;
+                }
             }
         };
 
@@ -357,7 +591,7 @@ pub fn parse_sources(job: &Job, errors: &mut ErrorReporter) -> Option<crate::sou
         };
 
         // Parse .ur body
-        match crate::parse::parse_ur(&ur_path, &ur_src, errors) {
+        match crate::parse::parse_ur(&ur_path, &ur_src, errors, project_db) {
             None => had_errors = true,
             Some(ds) => {
                 let str_node = Located::new(source::Str::Const(ds), span.clone());
@@ -829,6 +1063,15 @@ pub fn cc_and_link(c_source: &str, output: &Path, job: &Job, settings: &Settings
             compile_cmd.arg("-I").arg(&settings.config_include);
         }
     }
+    if let Ok(dir) = std::env::var("URWEB_NATIVE_LIB_DIR") {
+        if !dir.is_empty() {
+            let inc = std::path::Path::new(&dir).join("include");
+            if inc.is_dir() {
+                compile_cmd.arg("-I").arg(&inc);
+            }
+        }
+    }
+    append_urweb_native_include_fallback(&mut compile_cmd);
     #[cfg(test)]
     {
         compile_cmd
@@ -860,6 +1103,12 @@ pub fn cc_and_link(c_source: &str, output: &Path, job: &Job, settings: &Settings
             .stdout(Stdio::null());
     }
     link_cmd.arg(&o_file);
+    if let Ok(dir) = std::env::var("URWEB_NATIVE_LIB_DIR") {
+        if !dir.is_empty() {
+            link_cmd.arg(format!("-L{}", dir));
+        }
+    }
+    append_urweb_native_libdir_fallback(&mut link_cmd);
     // Protocol-specific runtime library (provides main())
     match settings.config_lib.is_empty() {
         true => {}
@@ -877,9 +1126,12 @@ pub fn cc_and_link(c_source: &str, output: &Path, job: &Job, settings: &Settings
         }
     }
     link_cmd.arg("-lurweb").arg("-lm");
-    // DBMS-specific library (factored for unit tests; `match` avoids `==`/`!=` mutants in `cc_and_link`).
-    let dbms = settings.dbms.as_str();
-    link_cmd.arg(dbms_link_library_flag(dbms));
+    let db_link = dbms_link_library_flag(settings);
+    for token in db_link.split_whitespace() {
+        if !token.is_empty() {
+            link_cmd.arg(token);
+        }
+    }
     // BearSSL (crypto)
     match settings.config_bearssl_libs.is_empty() {
         true => {}
@@ -932,12 +1184,47 @@ pub(crate) fn resolve_urp_project_path(urp_path: &Path) -> PathBuf {
 }
 
 /// Linker flag for the configured DBMS (unit-tested; `cc_and_link` delegates here).
-pub(crate) fn dbms_link_library_flag(dbms: &str) -> &'static str {
-    match dbms {
-        "sqlite" => "-lsqlite3",
-        "mysql" => "-lmysqlclient",
-        _ => "-lpq",
-    }
+pub(crate) fn dbms_link_library_flag(settings: &crate::settings::Settings) -> &'static str {
+    crate::db::link_library_flag_from_option(&settings.db_backend)
+}
+
+/// Copy `.urp` `database` / `dbms` into `settings` when the CLI did not set them.
+pub(crate) fn apply_job_db_settings(
+    job: &Job,
+    settings: &mut crate::settings::Settings,
+) -> Result<(), String> {
+    crate::db::apply_urp_job_db_fields(settings, job.dbms.as_deref(), job.database.as_deref())
+}
+
+/// Parse `.urp` and build [`Job`] + [`Settings`] like the start of `run_compile` (boot path,
+/// `dbms`/`database` merge, `ur.toml` `[build].db` default, manifest reconciliation).
+pub fn resolve_project_job_and_settings(urp_path: &Path) -> Result<(Job, Settings), String> {
+    let mut job = parse_urp(urp_path).map_err(|e| e.to_string())?;
+    let mut settings = Settings::new();
+    settings.boot_linking = true;
+    apply_boot_settings(&mut job, &mut settings);
+    apply_job_db_settings(&job, &mut settings).map_err(|e| e.to_string())?;
+    let urp = resolve_urp_project_path(urp_path);
+    crate::db::apply_urp_manifest_db_defaults(&urp, &mut settings)?;
+    crate::db::reconcile_ur_manifest_with_resolved_db(&urp, &settings)?;
+    Ok((job, settings))
+}
+
+/// [`Settings`] only — see [`resolve_project_job_and_settings`].
+pub fn resolve_project_settings_for_urp(urp_path: &Path) -> Result<Settings, String> {
+    Ok(resolve_project_job_and_settings(urp_path)?.1)
+}
+
+/// Effective [`crate::db::ProjectDb`] for a workspace folder (unique `.urp` + `ur.toml` merge).
+///
+/// Batch compile, LSP [`crate::lsp_analysis::ProjectState::open`], and the debugger should all
+/// agree on this value for the same tree.
+pub fn effective_project_db_for_workspace_root(
+    workspace_root: &std::path::Path,
+) -> Result<crate::db::ProjectDb, String> {
+    let urp_path = crate::lsp_workspace::discover_unique_urp(workspace_root)?;
+    let (_, settings) = resolve_project_job_and_settings(&urp_path)?;
+    Ok(crate::db::effective_project_db(&settings))
 }
 
 /// Run the complete compilation pipeline for a `.urp` project.
@@ -955,6 +1242,11 @@ fn run_compile(urp_path: &Path, settings: &mut Settings) -> Result<PathBuf> {
     let mut job = parse_urp(&urp_path_buf)?;
 
     apply_boot_settings(&mut job, settings);
+    apply_job_db_settings(&job, settings).map_err(|e| anyhow::anyhow!("{}", e))?;
+    crate::db::apply_urp_manifest_db_defaults(&urp_path_buf, settings)
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    crate::db::reconcile_ur_manifest_with_resolved_db(&urp_path_buf, settings)
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
 
     // Apply job settings globally
     settings.set_url_prefix(&job.prefix);
@@ -964,8 +1256,8 @@ fn run_compile(urp_path: &Path, settings: &mut Settings) -> Result<PathBuf> {
     settings.debug = job.debug;
 
     // Phase 2: parse sources
-    let source_file =
-        parse_sources(&job, &mut errors).ok_or_else(|| anyhow::anyhow!("Parse failed"))?;
+    let source_file = parse_sources(&job, settings, &mut errors)
+        .ok_or_else(|| anyhow::anyhow!("Parse failed"))?;
     bail_if_errors_reported(&errors, "Parsing")?;
 
     // Phase 3: elaborate
@@ -1063,6 +1355,7 @@ fn run_compile(urp_path: &Path, settings: &mut Settings) -> Result<PathBuf> {
     let cjr_file = cjr_check_nest(cjr_file);
 
     // Generate C code
+    crate::db::require_sql_codegen_from_option(&settings.db_backend)?;
     let c_code = cjr_print(&cjr_file, settings);
     let sql_ddl = sql_generate(&cjr_file, settings);
 
@@ -1087,16 +1380,22 @@ fn run_compile(urp_path: &Path, settings: &mut Settings) -> Result<PathBuf> {
 pub fn compile_to_outputs(urp_path: &Path, settings: &mut Settings) -> Result<(String, String)> {
     let mut errors = ErrorReporter::new();
 
-    let mut job = parse_urp(urp_path)?;
+    let urp_path_buf = resolve_urp_project_path(urp_path);
+    let mut job = parse_urp(&urp_path_buf)?;
     apply_boot_settings(&mut job, settings);
+    apply_job_db_settings(&job, settings).map_err(|e| anyhow::anyhow!("{}", e))?;
+    crate::db::apply_urp_manifest_db_defaults(&urp_path_buf, settings)
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    crate::db::reconcile_ur_manifest_with_resolved_db(&urp_path_buf, settings)
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
     settings.set_url_prefix(&job.prefix);
     settings.timeout = job.timeout;
     settings.headers = job.headers.clone();
     settings.scripts = job.scripts.clone();
     settings.debug = job.debug;
 
-    let source_file =
-        parse_sources(&job, &mut errors).ok_or_else(|| anyhow::anyhow!("Parse failed"))?;
+    let source_file = parse_sources(&job, settings, &mut errors)
+        .ok_or_else(|| anyhow::anyhow!("Parse failed"))?;
     bail_if_errors_reported(&errors, "Parsing")?;
 
     let elab_file = elaborate(source_file, settings, &mut errors)
@@ -1166,6 +1465,7 @@ pub fn compile_to_outputs(urp_path: &Path, settings: &mut Settings) -> Result<(S
     let cjr_file = cjr_prepare(cjr_file, settings);
     let cjr_file = cjr_check_nest(cjr_file);
 
+    crate::db::require_sql_codegen_from_option(&settings.db_backend)?;
     let c_code = cjr_print(&cjr_file, settings);
     let sql_ddl = sql_generate(&cjr_file, settings);
     Ok((c_code, sql_ddl))
@@ -1195,21 +1495,32 @@ pub fn module_of(filename: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db::ProjectDb;
     use std::path::Path;
     use std::sync::atomic::Ordering;
 
-    /// Save the current directory, then `chdir` into `dir`.
-    ///
-    /// If `current_dir` fails (e.g. sandbox or deleted cwd), reset to [`std::env::temp_dir`] first
-    /// so tests do not panic on `ENOENT`.
-    fn pushd_for_parse_test(dir: &Path) -> PathBuf {
+    fn settings_with_db(db: ProjectDb) -> Settings {
+        let mut s = Settings::default();
+        s.db_backend = Some(db);
+        s
+    }
+
+    /// Run `f` with process cwd set to `dir`, holding [`TEST_CWD_LOCK`] so parallel tests
+    /// do not clobber each other’s working directory.
+    fn with_parse_test_cwd<R, F: FnOnce() -> R>(dir: &Path, f: F) -> R {
+        let _guard = crate::compiler_diagnostics::lock_for_compile(
+            &crate::compiler_diagnostics::TEST_CWD_LOCK,
+            "compiler tests cwd",
+        );
         let prev = std::env::current_dir().unwrap_or_else(|_| {
             let t = std::env::temp_dir();
             std::env::set_current_dir(&t).expect("chdir to temp_dir");
             t
         });
         std::env::set_current_dir(dir).expect("chdir to test project directory");
-        prev
+        let out = f();
+        std::env::set_current_dir(&prev).expect("restore cwd");
+        out
     }
 
     fn minimal_mono_file() -> crate::monomorphized::File {
@@ -1291,7 +1602,8 @@ mod tests {
         // With no sources and no ffi, parse_sources returns Some([Basis]) —
         // the synthetic Basis FfiStr is always prepended.
         let mut errors = ErrorReporter::new();
-        let result = parse_sources(&Job::default(), &mut errors);
+        let settings = Settings::new();
+        let result = parse_sources(&Job::default(), &settings, &mut errors);
         assert!(result.is_some());
         // Only the synthetic Basis decl is present (no user sources).
         assert_eq!(result.unwrap().len(), 1);
@@ -1307,24 +1619,27 @@ mod tests {
         std::fs::write(dir.path().join("x.ur"), "val x = 1").unwrap();
         let job = parse_urp(&urp_path).unwrap();
         let mut errors = ErrorReporter::new();
-        let prev = pushd_for_parse_test(dir.path());
-        let result = parse_sources(&job, &mut errors);
-        std::env::set_current_dir(&prev).expect("restore cwd");
+        let settings = Settings::new();
+        let result =
+            with_parse_test_cwd(dir.path(), || parse_sources(&job, &settings, &mut errors));
         assert!(
             result.is_some(),
             "parse_sources must return Some (catches replace with None)"
         );
         let source_file = result.unwrap();
-        // source_file[0] is the synthetic Basis FfiStr; user modules start at index 1.
+        // source_file[0] is the synthetic Basis FfiStr; optional project `database` line adds Decl::Database next.
         assert!(
-            source_file.len() >= 2,
-            "parse_sources must return Basis + at least one user module (catches Some(Default::default()))"
+            source_file.iter().any(|d| d.span.file.ends_with("x.ur")),
+            "parse_sources must include x.ur module (catches Some(Default::default()))"
         );
         assert_eq!(
             source_file[0].span.file, "<basis>",
             "Basis wrapper span.file must be set (catches delete field file in basis Span literal)"
         );
-        let user_module = &source_file[1];
+        let user_module = source_file
+            .iter()
+            .find(|d| d.span.file.ends_with("x.ur"))
+            .expect("x.ur Str decl");
         assert!(
             user_module.span.file.ends_with("x.ur"),
             "span.file must be set to source path (catches delete field file mutant): {}",
@@ -1341,13 +1656,16 @@ mod tests {
         std::fs::write(dir.path().join("x.urs"), "val x : int").unwrap();
         let job = parse_urp(&urp_path).unwrap();
         let mut errors = ErrorReporter::new();
-        let prev = pushd_for_parse_test(dir.path());
-        let result = parse_sources(&job, &mut errors);
-        std::env::set_current_dir(&prev).expect("restore cwd");
+        let settings = Settings::new();
+        let result =
+            with_parse_test_cwd(dir.path(), || parse_sources(&job, &settings, &mut errors));
         let source_file = result.unwrap_or_else(|| {
             panic!("parse_sources: {:?}", errors);
         });
-        let user_module = &source_file[1];
+        let user_module = source_file
+            .iter()
+            .find(|d| d.span.file.ends_with("x.ur"))
+            .expect("x.ur Str decl");
         let crate::source::Decl::Str(_, Some(sgn), _, _, _) = &user_module.node else {
             panic!(
                 "expected Str decl with signature, got {:?}",
@@ -1369,10 +1687,9 @@ mod tests {
         std::fs::write(&urp_path, "database dbname=test\nsql out.sql\n\nx\n").unwrap();
         std::fs::write(dir.path().join("x.ur"), "val x = 1").unwrap();
         let mut settings = Settings::default();
-        settings.dbms = "sqlite".to_string();
-        let prev = pushd_for_parse_test(dir.path());
-        let result = compile_to_outputs(&urp_path, &mut settings);
-        std::env::set_current_dir(&prev).expect("restore cwd");
+        settings.db_backend = Some(ProjectDb::sqlite());
+        let result =
+            with_parse_test_cwd(dir.path(), || compile_to_outputs(&urp_path, &mut settings));
         let (c_code, _sql_ddl) = result.expect("compile_to_outputs must succeed");
         assert!(
             c_code.contains("#include"),
@@ -2202,7 +2519,7 @@ mod tests {
     #[test]
     fn sql_generate_produces_sql_for_table() {
         let mut settings = Settings::default();
-        settings.dbms = "postgres".to_string();
+        settings.db_backend = Some(ProjectDb::postgres());
         let xts = vec![(
             "Id".to_string(),
             crate::error_types::Located::dummy(crate::c_like_representation::Typ::Ffi(
@@ -2285,9 +2602,31 @@ mod tests {
 
     #[test]
     fn dbms_link_library_flag_sqlite_is_sqlite3() {
-        assert_eq!(dbms_link_library_flag("sqlite"), "-lsqlite3");
-        assert_eq!(dbms_link_library_flag("mysql"), "-lmysqlclient");
-        assert_eq!(dbms_link_library_flag(""), "-lpq");
+        assert_eq!(
+            dbms_link_library_flag(&settings_with_db(ProjectDb::sqlite())),
+            "-lsqlite3"
+        );
+        assert_eq!(
+            dbms_link_library_flag(&settings_with_db(ProjectDb::mysql())),
+            "-lmysqlclient"
+        );
+        assert_eq!(dbms_link_library_flag(&Settings::default()), "-lpq");
+        assert_eq!(
+            dbms_link_library_flag(&settings_with_db(ProjectDb::Rocksdb)),
+            "-lrocksdb -lstdc++"
+        );
+        assert_eq!(
+            dbms_link_library_flag(&settings_with_db(ProjectDb::Persy)),
+            "-lurweb_persy"
+        );
+        assert_eq!(
+            dbms_link_library_flag(&settings_with_db(ProjectDb::Ndb)),
+            "-lurweb_ndb"
+        );
+        assert_eq!(
+            dbms_link_library_flag(&settings_with_db(ProjectDb::Tigerbeetle)),
+            "-ltb_client"
+        );
     }
 
     #[test]
@@ -2327,10 +2666,10 @@ mod tests {
         std::fs::write(dir.path().join("x.ur"), "val x = 1").unwrap();
         let job = parse_urp(&urp_path).unwrap();
         let mut errors = ErrorReporter::new();
-        let prev = pushd_for_parse_test(dir.path());
-        let result = parse_sources(&job, &mut errors);
-        std::env::set_current_dir(&prev).expect("restore cwd");
-        let source_file = result.expect("parse_sources");
+        let settings = Settings::new();
+        let source_file =
+            with_parse_test_cwd(dir.path(), || parse_sources(&job, &settings, &mut errors))
+                .expect("parse_sources");
         let ffi_decl = source_file.iter().find(|d| {
             matches!(
                 &d.node,

@@ -19,6 +19,10 @@ fn build_project() -> i32 {
     let kind = cfg.package.kind.as_str();
     let entry = cfg.build.entry.as_str();
     let db = cfg.build.db.as_str();
+    if let Err(e) = ur::db::validate_manifest_db_engine(db) {
+        eprintln!("error: ur.toml [build].db: {}", e);
+        return 1;
+    }
     let cc = cfg.build.ccompiler.as_str();
     let is_lib = cli_common::is_lib_project(kind);
     let boot = cfg.build.boot;

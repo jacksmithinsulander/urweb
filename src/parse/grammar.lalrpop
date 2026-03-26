@@ -76,6 +76,9 @@ extern {
         "type"      => crate::parse::lexical_analyzer::Token::Type,  // ltype in SML grammar
         "val"       => crate::parse::lexical_analyzer::Token::Val,
         "view"      => crate::parse::lexical_analyzer::Token::View,
+        "urweb_put" => crate::parse::lexical_analyzer::Token::UrwebPut,
+        "urweb_get" => crate::parse::lexical_analyzer::Token::UrwebGet,
+        "urweb_tb_transfer" => crate::parse::lexical_analyzer::Token::UrwebTbTransfer,
         "sgn_where" => crate::parse::lexical_analyzer::Token::Where,
         "sgn_subwhere" => crate::parse::lexical_analyzer::Token::SgnSubwhere,
         "Name"      => crate::parse::lexical_analyzer::Token::Name,
@@ -365,6 +368,10 @@ Kind: LocKind = {
 };
 
 KindNode: Kind = {
+    // Kind-level universal quantification: `K --> kind` (KFun in the elaborated form).
+    // Used in top.urs for polymorphic kinds like `con folder :: K --> {K} -> Type`.
+    <name:"UIDENT"> "-->" <k:Kind> => Kind::Fun(name, Box::new(k)),
+    <name:"IDENT">  "-->" <k:Kind> => Kind::Fun(name, Box::new(k)),
     <k1:KindApp> "->" <k2:Kind> => Kind::Arrow(Box::new(k1), Box::new(k2)),
     // Kind product: `K1 * K2` (e.g. `{Type} * {Type}`)
     // Right-associative; flatten nested tuples.
@@ -506,6 +513,50 @@ ConFnRest: Box<LocCon> = {
 
 AppCon: LocCon = {
     <l:@L> <c:AppConInner> <r:@R> => Located::new(c, Span::from_offsets("", l, r, &[])),
+};
+
+// Non-brace constructor variants: identical to AppCon/DotCon/AtomCon but the atom level
+// excludes `{…}` forms.  Used inside `tab.{{…}}` PostfixOp so `}` is unambiguous as
+// the terminator and does not conflict with row-type-constructor atoms.
+NbAtomConNode: Con = {
+    "()" => Con::Unit,
+    "_"  => Con::Wild(Box::new(Located::dummy(Kind::Wild))),
+    "$" <c:NbAtomCon> => Con::TRecord(Box::new(c)),
+    "#" <name:"IDENT"> => Con::Name(name),
+    "#" <name:"UIDENT"> => Con::Name(name),
+    "map" => Con::Map,
+    <name:"IDENT">  => Con::Var(vec![], name),
+    <name:"UIDENT"> => Con::Var(vec![], name),
+    "[" "]"              => Con::Record(vec![]),
+    "[" <fields:ConFieldList> "]" => Con::Record(fields),
+    "(" <c:ConInParen> ")" => c,
+};
+NbAtomCon: LocCon = {
+    <l:@L> <c:NbAtomConNode> <r:@R> => Located::new(c, Span::from_offsets("", l, r, &[])),
+};
+NbDotCon: LocCon = {
+    <c:NbAtomCon> => c,
+    <l:@L> <f:NbDotCon> "." <n:"INT"> <r:@R> =>
+        Located::new(Con::Proj(Box::new(f), n as usize), Span::from_offsets("", l, r, &[])),
+    <l:@L> <f:NbDotCon> "." <name:"IDENT"> <r:@R> => {
+        Located::new(match f.node.clone() {
+            Con::Var(mut quals, last) => { quals.push(last); Con::Var(quals, name) }
+            _ => Con::Var(vec![], name)
+        }, Span::from_offsets("", l, r, &[]))
+    },
+    <l:@L> <f:NbDotCon> "." <name:"UIDENT"> <r:@R> => {
+        Located::new(match f.node.clone() {
+            Con::Var(mut quals, last) => { quals.push(last); Con::Var(quals, name) }
+            _ => Con::Var(vec![], name)
+        }, Span::from_offsets("", l, r, &[]))
+    },
+};
+NbAppConInner: Con = {
+    <f:NbAppCon> <x:NbDotCon> => Con::App(Box::new(f), Box::new(x)),
+    <c:NbDotCon> => c.node,
+};
+NbAppCon: LocCon = {
+    <l:@L> <c:NbAppConInner> <r:@R> => Located::new(c, Span::from_offsets("", l, r, &[])),
 };
 
 AppConInner: Con = {
@@ -889,6 +940,18 @@ PostfixOp: crate::parse::expr_langsec::ExpPostfixOp = {
     "." <name:"IDENT"> => crate::parse::expr_langsec::ExpPostfixOp::DotIdent(name),
     "." "#" <name:"IDENT"> => crate::parse::expr_langsec::ExpPostfixOp::DotHash(name),
     "." <name:"UIDENT"> => crate::parse::expr_langsec::ExpPostfixOp::DotUident(name),
+    "." <n:"INT"> => crate::parse::expr_langsec::ExpPostfixOp::DotInt(n),
+    // Allow certain keyword tokens as field names after `.`
+    "." "Name" => crate::parse::expr_langsec::ExpPostfixOp::DotUident("Name".to_string()),
+    "." "Type" => crate::parse::expr_langsec::ExpPostfixOp::DotUident("Type".to_string()),
+    // `tab.{field_var}` — SQL field access via a simple constructor variable (fident: `{cexp}`)
+    // Restricted to IDENT/UIDENT to avoid conflict with DotCons `{{…}}`
+    "." "{" <name:"IDENT"> "}" => crate::parse::expr_langsec::ExpPostfixOp::DotCon(
+        Located::dummy(Con::Var(vec![], name))),
+    "." "{" <name:"UIDENT"> "}" => crate::parse::expr_langsec::ExpPostfixOp::DotCon(
+        Located::dummy(Con::Var(vec![], name))),
+    // `tab.{{fields_var}}` — SQL multi-field access; uses NbAppCon to avoid `}` conflict
+    "." "{" "{" <c:NbAppCon> "}" "}" => crate::parse::expr_langsec::ExpPostfixOp::DotCons(c),
 };
 
 // Application-only expressions — used exclusively in `task` to prevent `=` ambiguity.
@@ -950,35 +1013,49 @@ ArithExp: LocExp = {
         let app1 = Located::new(Exp::App(Box::new(strcat), Box::new(e1)), pos.clone());
         Located::new(Exp::App(Box::new(app1), Box::new(e2)), pos)
     },
+    // Row operators (level 5 — looser than additive, tighter than cons/comparison)
+    #[precedence(level="5")] #[assoc(side="left")]
+    <l:@L> <e1:ArithExp> "++" <e2:ArithExp> <r:@R> => Located::new(
+        Exp::Concat(Box::new(e1), Box::new(e2)),
+        Span::from_offsets("", l, r, &[])),
+    #[precedence(level="5")] #[assoc(side="left")]
+    <l:@L> <e:ArithExp> "--" <c:AppCon> <r:@R> => Located::new(
+        Exp::Cut(Box::new(e), c),
+        Span::from_offsets("", l, r, &[])),
+    #[precedence(level="5")] #[assoc(side="left")]
+    <l:@L> <e:ArithExp> "---" <c:AppCon> <r:@R> => Located::new(
+        Exp::CutMulti(Box::new(e), c),
+        Span::from_offsets("", l, r, &[])),
+
     // `::` is right-associative (cons): `a :: b :: c` = `a :: (b :: c)`
-    // Level 5 — looser than additive (+/-/^) but tighter than comparison
-    #[precedence(level="5")] #[assoc(side="right")]
+    // Level 6 — looser than row ops but tighter than comparison
+    #[precedence(level="6")] #[assoc(side="right")]
     <l:@L> <e1:ArithExp> "::" <e2:ArithExp> <r:@R> => Located::new(
         Exp::Infix("::".into(), Box::new(e1), Box::new(e2)),
         Span::from_offsets("", l, r, &[])),
 
-    // Comparison operators (level 6 — loosest)
-    #[precedence(level="6")] #[assoc(side="left")]
+    // Comparison operators (level 7 — loosest)
+    #[precedence(level="7")] #[assoc(side="left")]
     <l:@L> <e1:ArithExp> "=" <e2:ArithExp> <r:@R> => Located::new(
         Exp::Infix("=".into(), Box::new(e1), Box::new(e2)),
         Span::from_offsets("", l, r, &[])),
-    #[precedence(level="6")] #[assoc(side="left")]
+    #[precedence(level="7")] #[assoc(side="left")]
     <l:@L> <e1:ArithExp> "<>" <e2:ArithExp> <r:@R> => Located::new(
         Exp::Infix("<>".into(), Box::new(e1), Box::new(e2)),
         Span::from_offsets("", l, r, &[])),
-    #[precedence(level="6")] #[assoc(side="left")]
+    #[precedence(level="7")] #[assoc(side="left")]
     <l:@L> <e1:ArithExp> "<" <e2:ArithExp> <r:@R> => Located::new(
         Exp::Infix("<".into(), Box::new(e1), Box::new(e2)),
         Span::from_offsets("", l, r, &[])),
-    #[precedence(level="6")] #[assoc(side="left")]
+    #[precedence(level="7")] #[assoc(side="left")]
     <l:@L> <e1:ArithExp> ">" <e2:ArithExp> <r:@R> => Located::new(
         Exp::Infix(">".into(), Box::new(e1), Box::new(e2)),
         Span::from_offsets("", l, r, &[])),
-    #[precedence(level="6")] #[assoc(side="left")]
+    #[precedence(level="7")] #[assoc(side="left")]
     <l:@L> <e1:ArithExp> "<=" <e2:ArithExp> <r:@R> => Located::new(
         Exp::Infix("<=".into(), Box::new(e1), Box::new(e2)),
         Span::from_offsets("", l, r, &[])),
-    #[precedence(level="6")] #[assoc(side="left")]
+    #[precedence(level="7")] #[assoc(side="left")]
     <l:@L> <e1:ArithExp> ">=" <e2:ArithExp> <r:@R> => Located::new(
         Exp::Infix(">=".into(), Box::new(e1), Box::new(e2)),
         Span::from_offsets("", l, r, &[])),
@@ -1057,6 +1134,9 @@ AtomExpNode: Exp = {
     <ch:"CHAR">  => Exp::Prim(crate::primitives::Prim::Char(ch)),
     "true"  => Exp::Var(vec!["Basis".into()], "True".into(), Inference::DontInfer),
     "false" => Exp::Var(vec!["Basis".into()], "False".into(), Inference::DontInfer),
+    "urweb_put" => Exp::Var(vec!["UrwebNative".into()], "urweb_put".into(), Inference::DontInfer),
+    "urweb_get" => Exp::Var(vec!["UrwebNative".into()], "urweb_get".into(), Inference::DontInfer),
+    "urweb_tb_transfer" => Exp::Var(vec!["UrwebNative".into()], "urweb_tb_transfer".into(), Inference::DontInfer),
     // Simple identifier (no dots — dots handled in PostfixOp)
     <name:"IDENT">  => Exp::Var(vec![], name, Inference::DontInfer),
     <name:"UIDENT"> => Exp::Var(vec![], name, Inference::DontInfer),
@@ -1225,7 +1305,16 @@ XmlOne: LocExp = {
 TagHead: (String, LocExp) = {
     <l:@L> <name:"BEGIN_TAG"> <r:@R> => {
         let pos = Span::from_offsets("", l, r, &[]);
-        let exp = Located::new(Exp::Var(vec![], name.clone(), Inference::Infer), pos);
+        // Apply tagIn mapping: HTML tag names that clash with Ur/Web keywords
+        // get renamed so the elaborator looks up the right Basis function.
+        let ur_name = match name.as_str() {
+            "table"            => "tabl".to_string(),
+            "url"              => "url_".to_string(),
+            "datetime-local"   => "datetime_local".to_string(),
+            "cdatetime-local"  => "cdatetime_local".to_string(),
+            _                  => name.clone(),
+        };
+        let exp = Located::new(Exp::Var(vec![], ur_name, Inference::Infer), pos);
         (name, exp)
     },
     <l:@L> <head:TagHead> "{" <c:Con> "}" <r:@R> => {
