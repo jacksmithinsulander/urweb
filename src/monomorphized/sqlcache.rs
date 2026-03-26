@@ -896,8 +896,10 @@ mod tests {
     #[test]
     fn go_empty_file_no_panic() {
         let file: File = (vec![], vec![]);
-        let mut settings = Settings::default();
-        settings.sqlcache = true;
+        let settings = Settings {
+            sqlcache: true,
+            ..Default::default()
+        };
         let result = go(file, &settings);
         assert!(result.0.is_empty());
     }
@@ -915,8 +917,10 @@ mod tests {
             ))],
             vec![],
         );
-        let mut settings = Settings::default();
-        settings.sqlcache = true;
+        let settings = Settings {
+            sqlcache: true,
+            ..Default::default()
+        };
         let result = go(file, &settings);
         assert_eq!(result.0.len(), 1);
         match &result.0[0].node {
@@ -987,8 +991,10 @@ mod tests {
             ],
             vec![],
         );
-        let mut settings = Settings::default();
-        settings.sqlcache = true;
+        let settings = Settings {
+            sqlcache: true,
+            ..Default::default()
+        };
         let result = go(file, &settings);
         // The second decl should now start with a Seq (flush; dml).
         match &result.0[1].node {

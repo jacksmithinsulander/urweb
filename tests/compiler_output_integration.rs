@@ -3,7 +3,7 @@
 //! and mutants in cjr_print, sql_generate, cjrize, prepare that corrupt output.
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use tempfile::tempdir;
 use ur::compiler;
@@ -14,7 +14,7 @@ static CWD_LOCK: Mutex<()> = Mutex::new(());
 /// Attempt compilation; return None if the compiler doesn't yet support the
 /// construct (parse/elaboration failure). Tests use this to skip gracefully
 /// for features not yet fully implemented.
-fn try_compile(urp: &PathBuf) -> Option<(String, String)> {
+fn try_compile(urp: &Path) -> Option<(String, String)> {
     let mut settings = Settings::new();
     compiler::compile_to_outputs(urp, &mut settings).ok()
 }

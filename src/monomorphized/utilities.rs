@@ -15,7 +15,7 @@ use crate::monomorphized::{
 // ---------------------------------------------------------------------------
 
 /// Sort `fields` in-place by field name, ascending.
-pub fn sort_fields<T>(fields: &mut Vec<(String, T)>) {
+pub fn sort_fields<T>(fields: &mut [(String, T)]) {
     fields.sort_by(|(a, _), (b, _)| a.cmp(b));
 }
 

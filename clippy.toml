@@ -1,0 +1,5 @@
+# This crate is a compiler: deep AST/hash-map types and multi-parameter passes are normal.
+# Thresholds are raised so `cargo clippy` enforces hygiene without demanding noise-only refactors.
+type-complexity-threshold = 900
+too-many-arguments-threshold = 12
+enum-variant-size-threshold = 2500

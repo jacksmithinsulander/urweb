@@ -1157,14 +1157,9 @@ fn desugar_tag(
 fn peel_capp(e: &LocatedExpression) -> (&LocatedExpression, Vec<&LocatedConstructor>) {
     let mut inner = e;
     let mut args = Vec::new();
-    loop {
-        match &inner.node {
-            CE::CApp(inner_e, c) => {
-                args.push(c as &LocatedConstructor);
-                inner = inner_e;
-            }
-            _ => break,
-        }
+    while let CE::CApp(inner_e, c) = &inner.node {
+        args.push(c as &LocatedConstructor);
+        inner = inner_e;
     }
     // args is [outermost_type_arg, ..., innermost_type_arg] — reverse so [0] = first applied
     args.reverse();

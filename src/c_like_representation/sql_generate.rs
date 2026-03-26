@@ -477,8 +477,10 @@ mod tests {
 
     #[test]
     fn sequence_postgres() {
-        let mut settings = Settings::default();
-        settings.db_backend = Some(crate::db::ProjectDb::postgres());
+        let settings = Settings {
+            db_backend: Some(crate::db::ProjectDb::postgres()),
+            ..Default::default()
+        };
         let decls = vec![Located::new(
             Decl::Sequence("uw_seq".to_string()),
             Span::dummy(),
@@ -489,8 +491,10 @@ mod tests {
 
     #[test]
     fn sequence_mysql() {
-        let mut settings = Settings::default();
-        settings.db_backend = Some(crate::db::ProjectDb::mysql());
+        let settings = Settings {
+            db_backend: Some(crate::db::ProjectDb::mysql()),
+            ..Default::default()
+        };
         let decls = vec![Located::new(
             Decl::Sequence("uw_seq".to_string()),
             Span::dummy(),
@@ -501,8 +505,10 @@ mod tests {
 
     #[test]
     fn table_basic_postgres() {
-        let mut settings = Settings::default();
-        settings.db_backend = Some(crate::db::ProjectDb::postgres());
+        let settings = Settings {
+            db_backend: Some(crate::db::ProjectDb::postgres()),
+            ..Default::default()
+        };
         let xts = vec![
             ("Id".to_string(), ffi_typ("Basis", "int")),
             ("Name".to_string(), ffi_typ("Basis", "string")),
@@ -535,8 +541,10 @@ mod tests {
 
     #[test]
     fn sqlite_prefix() {
-        let mut settings = Settings::default();
-        settings.db_backend = Some(crate::db::ProjectDb::sqlite());
+        let settings = Settings {
+            db_backend: Some(crate::db::ProjectDb::sqlite()),
+            ..Default::default()
+        };
         let result = sql_generate(&(vec![], vec![]), &settings);
         assert!(result.contains("PRAGMA foreign_keys"), "got: {}", result);
     }
@@ -544,8 +552,10 @@ mod tests {
     #[test]
     fn database_uses_similar_produces_pg_trgm() {
         // Catches mutant: delete match arm Decl::Database in sql_generate.
-        let mut settings = Settings::default();
-        settings.db_backend = Some(crate::db::ProjectDb::postgres());
+        let settings = Settings {
+            db_backend: Some(crate::db::ProjectDb::postgres()),
+            ..Default::default()
+        };
         let decls = vec![Located::new(
             Decl::Database {
                 name: "db".into(),
@@ -565,8 +575,10 @@ mod tests {
 
     #[test]
     fn table_mysql_uses_mysql_sql_types() {
-        let mut settings = Settings::default();
-        settings.db_backend = Some(crate::db::ProjectDb::mysql());
+        let settings = Settings {
+            db_backend: Some(crate::db::ProjectDb::mysql()),
+            ..Default::default()
+        };
         let xts = vec![
             ("Id".to_string(), ffi_typ("Basis", "int")),
             ("Name".to_string(), ffi_typ("Basis", "string")),
@@ -590,8 +602,10 @@ mod tests {
 
     #[test]
     fn table_sqlite_uses_sqlite_sql_types() {
-        let mut settings = Settings::default();
-        settings.db_backend = Some(crate::db::ProjectDb::sqlite());
+        let settings = Settings {
+            db_backend: Some(crate::db::ProjectDb::sqlite()),
+            ..Default::default()
+        };
         let xts = vec![
             ("Id".to_string(), ffi_typ("Basis", "int")),
             ("Name".to_string(), ffi_typ("Basis", "string")),
@@ -630,8 +644,10 @@ mod tests {
         ] {
             use crate::db::DatabaseBackend;
             let name = alt.canonical_name();
-            let mut s = Settings::default();
-            s.db_backend = Some(alt);
+            let s = Settings {
+                db_backend: Some(alt),
+                ..Default::default()
+            };
             let out = sql_generate(&cjr, &s);
             assert!(
                 !out.contains("CREATE TABLE") && out.contains(name),
@@ -642,8 +658,10 @@ mod tests {
 
     #[test]
     fn sequence_sqlite_uses_autoincrement() {
-        let mut settings = Settings::default();
-        settings.db_backend = Some(crate::db::ProjectDb::sqlite());
+        let settings = Settings {
+            db_backend: Some(crate::db::ProjectDb::sqlite()),
+            ..Default::default()
+        };
         let decls = vec![Located::new(
             Decl::Sequence("uw_seq".to_string()),
             Span::dummy(),
@@ -658,8 +676,10 @@ mod tests {
 
     #[test]
     fn postgres_sql_type_produces_non_empty() {
-        let mut settings = Settings::default();
-        settings.db_backend = Some(crate::db::ProjectDb::postgres());
+        let settings = Settings {
+            db_backend: Some(crate::db::ProjectDb::postgres()),
+            ..Default::default()
+        };
         let xts = vec![("x".to_string(), ffi_typ("Basis", "float"))];
         let decls = vec![Located::new(
             Decl::Table("t".to_string(), xts, "".to_string(), vec![]),
@@ -676,8 +696,10 @@ mod tests {
     #[test]
     fn sql_type_in_basis_types() {
         // Catches mutants: delete match arms in sql_type_in for int, char, bool, time, etc.
-        let mut settings = Settings::default();
-        settings.db_backend = Some(crate::db::ProjectDb::postgres());
+        let settings = Settings {
+            db_backend: Some(crate::db::ProjectDb::postgres()),
+            ..Default::default()
+        };
         for (name, typ, expected) in [
             ("int", "int", "int8"),
             ("char", "char", "char"),
@@ -709,8 +731,10 @@ mod tests {
     fn sql_type_option_produces_nullable() {
         // Catches mutant: delete Typ::Option arm in sql_type_in.
         // Option int -> Nullable(Int) -> no NOT NULL; without Option arm we'd get Int -> NOT NULL.
-        let mut settings = Settings::default();
-        settings.db_backend = Some(crate::db::ProjectDb::postgres());
+        let settings = Settings {
+            db_backend: Some(crate::db::ProjectDb::postgres()),
+            ..Default::default()
+        };
         let opt_int = crate::c_like_representation::Located::new(
             crate::c_like_representation::Typ::Option(Box::new(ffi_typ("Basis", "int"))),
             crate::error_types::Span::dummy(),
@@ -731,9 +755,11 @@ mod tests {
     #[test]
     fn supports_sha512_postgres() {
         // Catches mutant: delete match arm in supports_sha512 for postgres.
-        let mut settings = Settings::default();
-        settings.db_backend = Some(crate::db::ProjectDb::postgres());
-        settings.file_cache = Some("cache".to_string());
+        let settings = Settings {
+            db_backend: Some(crate::db::ProjectDb::postgres()),
+            file_cache: Some("cache".to_string()),
+            ..Default::default()
+        };
         let decls = vec![Located::new(
             Decl::Database {
                 name: "db".into(),
@@ -755,8 +781,10 @@ mod tests {
     fn index_generates_create_index() {
         // Catches mutant: delete match arm Decl::Index in sql_generate.
         use crate::monomorphized::IndexMode;
-        let mut settings = Settings::default();
-        settings.db_backend = Some(crate::db::ProjectDb::postgres());
+        let settings = Settings {
+            db_backend: Some(crate::db::ProjectDb::postgres()),
+            ..Default::default()
+        };
         let xts = vec![
             ("id".to_string(), ffi_typ("Basis", "int")),
             ("name".to_string(), ffi_typ("Basis", "string")),
@@ -786,9 +814,11 @@ mod tests {
     fn text_keys_need_lengths_mysql_string_fk_gets_varchar() {
         // Catches mutant: text_keys_need_lengths, is_text, declares_as_foreign_key.
         // MySQL + string column in FOREIGN KEY -> varchar(255).
-        let mut settings = Settings::default();
-        settings.db_backend = Some(crate::db::ProjectDb::mysql());
-        settings.mangle = true;
+        let settings = Settings {
+            db_backend: Some(crate::db::ProjectDb::mysql()),
+            mangle: true,
+            ..Default::default()
+        };
         let xts = vec![
             ("Id".to_string(), ffi_typ("Basis", "int")),
             ("Ref".to_string(), ffi_typ("Basis", "string")),
@@ -812,8 +842,10 @@ mod tests {
     #[test]
     fn requires_timestamp_defaults_mysql() {
         // Catches mutant: requires_timestamp_defaults.
-        let mut settings = Settings::default();
-        settings.db_backend = Some(crate::db::ProjectDb::mysql());
+        let settings = Settings {
+            db_backend: Some(crate::db::ProjectDb::mysql()),
+            ..Default::default()
+        };
         let xts = vec![
             ("id".to_string(), ffi_typ("Basis", "int")),
             ("ts".to_string(), ffi_typ("Basis", "time")),
@@ -833,9 +865,11 @@ mod tests {
     #[test]
     fn supports_sha512_mysql_with_file_cache() {
         // Catches mutant: delete "mysql" arm in supports_sha512.
-        let mut settings = Settings::default();
-        settings.db_backend = Some(crate::db::ProjectDb::mysql());
-        settings.file_cache = Some("/tmp".into());
+        let settings = Settings {
+            db_backend: Some(crate::db::ProjectDb::mysql()),
+            file_cache: Some("/tmp".into()),
+            ..Default::default()
+        };
         let decls = vec![Located::new(
             Decl::Database {
                 name: "db".into(),
@@ -856,8 +890,10 @@ mod tests {
     #[test]
     fn sql_type_in_clocktime_and_calendardate() {
         // Catches mutant: delete "clocktime"/"calendardate" arms in sql_type_in.
-        let mut settings = Settings::default();
-        settings.db_backend = Some(crate::db::ProjectDb::postgres());
+        let settings = Settings {
+            db_backend: Some(crate::db::ProjectDb::postgres()),
+            ..Default::default()
+        };
         let xts = vec![
             ("id".to_string(), ffi_typ("Basis", "int")),
             ("ct".to_string(), ffi_typ("Basis", "clocktime")),
@@ -878,8 +914,10 @@ mod tests {
     #[test]
     fn dbms_empty_uses_postgres_types() {
         // Catches mutant: dbms "" not matching postgres branch.
-        let mut settings = Settings::default();
-        settings.db_backend = None;
+        let settings = Settings {
+            db_backend: None,
+            ..Default::default()
+        };
         let xts = vec![("x".to_string(), ffi_typ("Basis", "int"))];
         let decls = vec![Located::new(
             Decl::Table("t".to_string(), xts, "".to_string(), vec![]),
@@ -895,10 +933,14 @@ mod tests {
 
     #[test]
     fn native_backend_skips_relational_ddl() {
-        let mut native = Settings::default();
-        native.db_backend = Some(crate::db::ProjectDb::Rocksdb);
-        let mut pg = Settings::default();
-        pg.db_backend = Some(crate::db::ProjectDb::postgres());
+        let native = Settings {
+            db_backend: Some(crate::db::ProjectDb::Rocksdb),
+            ..Default::default()
+        };
+        let pg = Settings {
+            db_backend: Some(crate::db::ProjectDb::postgres()),
+            ..Default::default()
+        };
         let xts = vec![("id".to_string(), ffi_typ("Basis", "int"))];
         let decls = vec![Located::new(
             Decl::Table("uw_t".to_string(), xts, "id".to_string(), vec![]),
@@ -922,9 +964,11 @@ mod tests {
     fn index_dedup_does_not_drop() {
         // Kills: delete Decl::Index arm, dedup logic. Table with PK "a,b" plus explicit Index on same columns: no extra CREATE INDEX (dedup).
         use crate::monomorphized::IndexMode;
-        let mut settings = Settings::default();
-        settings.db_backend = Some(crate::db::ProjectDb::postgres());
-        settings.mangle = false; // PK cols stored unmangled; index_key mangles - use mangle=false so keys match
+        let settings = Settings {
+            db_backend: Some(crate::db::ProjectDb::postgres()),
+            mangle: false, // PK cols stored unmangled; index_key mangles - use mangle=false so keys match
+            ..Default::default()
+        };
         let xts = vec![
             ("a".to_string(), ffi_typ("Basis", "int")),
             ("b".to_string(), ffi_typ("Basis", "int")),
@@ -958,8 +1002,10 @@ mod tests {
     fn index_with_skipped_column_keeps_non_skipped() {
         // Kills: !matches!(m, IndexMode::Skipped) filter. Index with Skipped + Equality: CREATE INDEX with one col.
         use crate::monomorphized::IndexMode;
-        let mut settings = Settings::default();
-        settings.db_backend = Some(crate::db::ProjectDb::postgres());
+        let settings = Settings {
+            db_backend: Some(crate::db::ProjectDb::postgres()),
+            ..Default::default()
+        };
         let xts = vec![
             ("id".to_string(), ffi_typ("Basis", "int")),
             ("name".to_string(), ffi_typ("Basis", "string")),
@@ -993,8 +1039,10 @@ mod tests {
     fn index_all_skipped_produces_no_create_index() {
         // Kills: active.is_empty() / filter. Index with all Skipped -> no CREATE INDEX.
         use crate::monomorphized::IndexMode;
-        let mut settings = Settings::default();
-        settings.db_backend = Some(crate::db::ProjectDb::postgres());
+        let settings = Settings {
+            db_backend: Some(crate::db::ProjectDb::postgres()),
+            ..Default::default()
+        };
         let xts = vec![
             ("id".to_string(), ffi_typ("Basis", "int")),
             ("x".to_string(), ffi_typ("Basis", "int")),
@@ -1024,8 +1072,10 @@ mod tests {
     fn index_trigram_produces_gist() {
         // Kills: Trigram branch. Index with Trigram on Postgres: USING gist and gist_trgm_ops.
         use crate::monomorphized::IndexMode;
-        let mut settings = Settings::default();
-        settings.db_backend = Some(crate::db::ProjectDb::postgres());
+        let settings = Settings {
+            db_backend: Some(crate::db::ProjectDb::postgres()),
+            ..Default::default()
+        };
         let xts = vec![
             ("id".to_string(), ffi_typ("Basis", "int")),
             ("name".to_string(), ffi_typ("Basis", "string")),
@@ -1068,8 +1118,10 @@ mod tests {
     #[test]
     fn pk_with_multiple_columns_parsed() {
         // Kills: split/filter !s.is_empty(). Table with PK "id,name": both cols in PRIMARY KEY.
-        let mut settings = Settings::default();
-        settings.db_backend = Some(crate::db::ProjectDb::postgres());
+        let settings = Settings {
+            db_backend: Some(crate::db::ProjectDb::postgres()),
+            ..Default::default()
+        };
         let xts = vec![
             ("id".to_string(), ffi_typ("Basis", "int")),
             ("name".to_string(), ffi_typ("Basis", "string")),
@@ -1087,9 +1139,11 @@ mod tests {
     #[test]
     fn file_cache_sha512_init_non_empty() {
         // Kills: !init.is_empty() guard. Postgres + file_cache -> pgcrypto init.
-        let mut settings = Settings::default();
-        settings.db_backend = Some(crate::db::ProjectDb::postgres());
-        settings.file_cache = Some("cache".to_string());
+        let settings = Settings {
+            db_backend: Some(crate::db::ProjectDb::postgres()),
+            file_cache: Some("cache".to_string()),
+            ..Default::default()
+        };
         let decls = vec![Located::new(
             Decl::Database {
                 name: "db".into(),
@@ -1110,8 +1164,10 @@ mod tests {
     #[test]
     fn similar_init_non_empty() {
         // Kills: supports_similar !init.is_empty() guard.
-        let mut settings = Settings::default();
-        settings.db_backend = Some(crate::db::ProjectDb::postgres());
+        let settings = Settings {
+            db_backend: Some(crate::db::ProjectDb::postgres()),
+            ..Default::default()
+        };
         let decls = vec![Located::new(
             Decl::Database {
                 name: "db".into(),
@@ -1133,8 +1189,10 @@ mod tests {
     fn exact_index_name_format() {
         // Kills: name-building, column list. Index on "uw_tab" with "col" -> CREATE INDEX uw_tab_col ON ...
         use crate::monomorphized::IndexMode;
-        let mut settings = Settings::default();
-        settings.db_backend = Some(crate::db::ProjectDb::postgres());
+        let settings = Settings {
+            db_backend: Some(crate::db::ProjectDb::postgres()),
+            ..Default::default()
+        };
         let xts = vec![
             ("id".to_string(), ffi_typ("Basis", "int")),
             ("col".to_string(), ffi_typ("Basis", "string")),
@@ -1163,8 +1221,10 @@ mod tests {
     #[test]
     fn index_trigram_uses_gist_postgres() {
         use crate::monomorphized::IndexMode;
-        let mut settings = Settings::default();
-        settings.db_backend = Some(crate::db::ProjectDb::postgres());
+        let settings = Settings {
+            db_backend: Some(crate::db::ProjectDb::postgres()),
+            ..Default::default()
+        };
         let xts = vec![
             ("id".to_string(), ffi_typ("Basis", "int")),
             ("name".to_string(), ffi_typ("Basis", "string")),

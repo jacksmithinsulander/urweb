@@ -1,3 +1,47 @@
+/// Normalize LALRPOP output so `clippy` stays clean without crate-level lint suppressions.
+fn postprocess_grammar_rs(path: &std::path::Path) {
+    let Ok(mut s) = std::fs::read_to_string(path) else {
+        return;
+    };
+
+    // `clippy::empty_line_after_outer_attr`: lalrpop can insert an extra newline after allow attrs.
+    for (pat, rep) in [
+        (
+            "#![allow(clippy::type_complexity, dead_code)]\r\n\r\n",
+            "#![allow(clippy::type_complexity, dead_code)]\r\n",
+        ),
+        (
+            "#![allow(clippy::type_complexity, dead_code)]\n\n",
+            "#![allow(clippy::type_complexity, dead_code)]\n",
+        ),
+        (
+            "#[allow(clippy::type_complexity, dead_code)]\r\n\r\n",
+            "#[allow(clippy::type_complexity, dead_code)]\r\n",
+        ),
+        (
+            "#[allow(clippy::type_complexity, dead_code)]\n\n",
+            "#[allow(clippy::type_complexity, dead_code)]\n",
+        ),
+    ] {
+        s = s.replace(pat, rep);
+    }
+
+    // `clippy::type_complexity`: repeated reduce stack tuples → alias in `parse` module.
+    s = s.replace(
+        "(usize, Vec<(String, Option<LocCon>, LocExp)>, usize)",
+        "crate::parse::GrammarConLamTriple",
+    );
+    // Nested modules in the generated file use `super::` incorrectly for this path.
+    s = s.replace(
+        "super::GrammarConLamTriple",
+        "crate::parse::GrammarConLamTriple",
+    );
+    // `clippy::explicit_auto_deref`
+    s = s.replace("(*rest).node", "rest.node");
+
+    let _ = std::fs::write(path, s);
+}
+
 fn main() {
     // Always generate the parser from the LALRPOP grammar. Conflicts are hard
     // errors (no yacc-style default resolution) — keep the CFG LangSec-strict.
@@ -13,19 +57,9 @@ fn main() {
         std::process::exit(1);
     }
 
-    // LALRPOP emits a blank line after `#![allow(...)]` on the fallback `ToTriple`
-    // trait; clippy::empty_line_after_outer_attr flags that. Collapse to one newline.
-    let grammar_rs =
-        std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap()).join("parse/grammar.rs");
-    if let Ok(raw) = std::fs::read_to_string(&grammar_rs) {
-        let fixed = raw.replace(
-            "#![allow(clippy::type_complexity, dead_code)]\n\npub ",
-            "#![allow(clippy::type_complexity, dead_code)]\npub ",
-        );
-        if fixed != raw {
-            let _ = std::fs::write(&grammar_rs, fixed);
-        }
-    }
+    postprocess_grammar_rs(
+        &std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap()).join("parse/grammar.rs"),
+    );
 
     println!("cargo:rustc-cfg=generated_parser");
 }

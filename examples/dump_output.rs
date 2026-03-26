@@ -23,9 +23,11 @@ fn main() {
         std::process::exit(1);
     }
 
-    let mut settings = ur::settings::Settings::default();
-    settings.db_backend = Some(ur::db::ProjectDb::sqlite());
-    settings.boot_linking = true;
+    let mut settings = ur::settings::Settings {
+        db_backend: Some(ur::db::ProjectDb::sqlite()),
+        boot_linking: true,
+        ..Default::default()
+    };
 
     match ur::compiler::compile_to_outputs(urp_path, &mut settings) {
         Ok((c_code, sql_ddl)) => {

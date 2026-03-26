@@ -189,8 +189,8 @@ fn parse_ffi_map(cmd: &str, arg: &str) -> Result<((String, String), String)> {
 // ---------------------------------------------------------------------------
 
 fn parse_pattern(s: &str) -> (PatternKind, String) {
-    if s.ends_with('*') {
-        (PatternKind::Prefix, s[..s.len() - 1].to_string())
+    if let Some(p) = s.strip_suffix('*') {
+        (PatternKind::Prefix, p.to_string())
     } else {
         (PatternKind::Exact, s.to_string())
     }

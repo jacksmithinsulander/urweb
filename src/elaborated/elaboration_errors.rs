@@ -362,8 +362,8 @@ pub fn exp_error(err: &ExpError) -> CompileError {
 
 #[derive(Debug, Clone)]
 pub enum DeclError {
-    KunifsRemain(Vec<LocatedDeclaration>),
-    CunifsRemain(Vec<LocatedDeclaration>),
+    KunifsRemain(Box<Vec<LocatedDeclaration>>),
+    CunifsRemain(Box<Vec<LocatedDeclaration>>),
     Nonpositive(LocatedDeclaration),
     Hole(LocatedConstructor),
 }

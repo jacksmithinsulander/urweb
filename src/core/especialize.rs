@@ -1890,7 +1890,13 @@ mod tests {
         let typ = dummy(Constructor::TFun(Box::new(dom), Box::new(dummy_con())));
         let arg = dummy(Expression::Prim(crate::primitives::Prim::Int(1)));
         let known = HashSet::new();
-        let (fxs, remaining, _fvs) = find_split(&typ, 1, &[arg.clone()], &known, vec![arg.clone()]);
+        let (fxs, remaining, _fvs) = find_split(
+            &typ,
+            1,
+            std::slice::from_ref(&arg),
+            &known,
+            vec![arg.clone()],
+        );
         assert_eq!(fxs.len(), 1, "function domain should collect one arg");
         assert!(remaining.is_empty());
     }

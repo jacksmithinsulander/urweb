@@ -543,9 +543,9 @@ fn squish_c(
 }
 
 fn squish_c_bound(
-    kb: usize,
+    _kb: usize,
     cb: usize,
-    kfv: &[usize],
+    _kfv: &[usize],
     cfv: &[usize],
     c: LocatedConstructor,
     errors: &mut ErrorReporter,
@@ -556,42 +556,42 @@ fn squish_c_bound(
             Constructor::Rel(position_of(n - cb, cfv, &span, errors) + cb)
         }
         Constructor::TFun(a, b) => Constructor::TFun(
-            Box::new(squish_c_bound(kb, cb, kfv, cfv, *a, errors)),
-            Box::new(squish_c_bound(kb, cb, kfv, cfv, *b, errors)),
+            Box::new(squish_c_bound(_kb, cb, _kfv, cfv, *a, errors)),
+            Box::new(squish_c_bound(_kb, cb, _kfv, cfv, *b, errors)),
         ),
         Constructor::TCFun(expl, name, k, body) => Constructor::TCFun(
             expl,
             name,
             k,
-            Box::new(squish_c_bound(kb, cb + 1, kfv, cfv, *body, errors)),
+            Box::new(squish_c_bound(_kb, cb + 1, _kfv, cfv, *body, errors)),
         ),
         Constructor::TRecord(c2) => {
-            Constructor::TRecord(Box::new(squish_c_bound(kb, cb, kfv, cfv, *c2, errors)))
+            Constructor::TRecord(Box::new(squish_c_bound(_kb, cb, _kfv, cfv, *c2, errors)))
         }
         Constructor::TDisjoint(a, b, c2) => Constructor::TDisjoint(
-            Box::new(squish_c_bound(kb, cb, kfv, cfv, *a, errors)),
-            Box::new(squish_c_bound(kb, cb, kfv, cfv, *b, errors)),
-            Box::new(squish_c_bound(kb, cb, kfv, cfv, *c2, errors)),
+            Box::new(squish_c_bound(_kb, cb, _kfv, cfv, *a, errors)),
+            Box::new(squish_c_bound(_kb, cb, _kfv, cfv, *b, errors)),
+            Box::new(squish_c_bound(_kb, cb, _kfv, cfv, *c2, errors)),
         ),
         Constructor::App(f, x) => Constructor::App(
-            Box::new(squish_c_bound(kb, cb, kfv, cfv, *f, errors)),
-            Box::new(squish_c_bound(kb, cb, kfv, cfv, *x, errors)),
+            Box::new(squish_c_bound(_kb, cb, _kfv, cfv, *f, errors)),
+            Box::new(squish_c_bound(_kb, cb, _kfv, cfv, *x, errors)),
         ),
         Constructor::Abs(name, k, body) => Constructor::Abs(
             name,
             k,
-            Box::new(squish_c_bound(kb, cb + 1, kfv, cfv, *body, errors)),
+            Box::new(squish_c_bound(_kb, cb + 1, _kfv, cfv, *body, errors)),
         ),
         Constructor::KAbs(name, body) => Constructor::KAbs(
             name,
-            Box::new(squish_c_bound(kb, cb, kfv, cfv, *body, errors)),
+            Box::new(squish_c_bound(_kb, cb, _kfv, cfv, *body, errors)),
         ),
         Constructor::KApp(f, k) => {
-            Constructor::KApp(Box::new(squish_c_bound(kb, cb, kfv, cfv, *f, errors)), k)
+            Constructor::KApp(Box::new(squish_c_bound(_kb, cb, _kfv, cfv, *f, errors)), k)
         }
         Constructor::TKFun(name, body) => Constructor::TKFun(
             name,
-            Box::new(squish_c_bound(kb, cb, kfv, cfv, *body, errors)),
+            Box::new(squish_c_bound(_kb, cb, _kfv, cfv, *body, errors)),
         ),
         Constructor::Record(k, fields) => Constructor::Record(
             k,
@@ -599,23 +599,23 @@ fn squish_c_bound(
                 .into_iter()
                 .map(|(n, v)| {
                     (
-                        squish_c_bound(kb, cb, kfv, cfv, n, errors),
-                        squish_c_bound(kb, cb, kfv, cfv, v, errors),
+                        squish_c_bound(_kb, cb, _kfv, cfv, n, errors),
+                        squish_c_bound(_kb, cb, _kfv, cfv, v, errors),
                     )
                 })
                 .collect(),
         ),
         Constructor::Concat(a, b) => Constructor::Concat(
-            Box::new(squish_c_bound(kb, cb, kfv, cfv, *a, errors)),
-            Box::new(squish_c_bound(kb, cb, kfv, cfv, *b, errors)),
+            Box::new(squish_c_bound(_kb, cb, _kfv, cfv, *a, errors)),
+            Box::new(squish_c_bound(_kb, cb, _kfv, cfv, *b, errors)),
         ),
         Constructor::Tuple(cs) => Constructor::Tuple(
             cs.into_iter()
-                .map(|c2| squish_c_bound(kb, cb, kfv, cfv, c2, errors))
+                .map(|c2| squish_c_bound(_kb, cb, _kfv, cfv, c2, errors))
                 .collect(),
         ),
         Constructor::Proj(c2, n) => {
-            Constructor::Proj(Box::new(squish_c_bound(kb, cb, kfv, cfv, *c2, errors)), n)
+            Constructor::Proj(Box::new(squish_c_bound(_kb, cb, _kfv, cfv, *c2, errors)), n)
         }
         other => other,
     };

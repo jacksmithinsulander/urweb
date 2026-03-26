@@ -329,7 +329,7 @@ fn quote_exp(
     t: &LocTyp,
     e: LocExp,
     st: &mut State,
-    settings: &Settings,
+    _settings: &Settings,
 ) -> Result<LocExp, CantEmbed> {
     let s = span;
     match &t.node.clone() {
@@ -343,7 +343,7 @@ fn quote_exp(
         Typ::Record(fields) if fields.len() == 1 => {
             let (x, ft) = &fields[0].clone();
             let inner_e = field(s, e.clone(), x);
-            let quoted = quote_exp(s, ft, inner_e, st, settings)?;
+            let quoted = quote_exp(s, ft, inner_e, st, _settings)?;
             let parts = vec![str_lit(s, &format!("{{_{x}:")), quoted, str_lit(s, "}")];
             Ok(strcat_exp(s, parts))
         }
@@ -352,12 +352,12 @@ fn quote_exp(
             let fields = fields.clone();
             let (first_x, first_t) = &fields[0];
             let first_e = field(s, e.clone(), first_x);
-            let first_q = quote_exp(s, first_t, first_e, st, settings)?;
+            let first_q = quote_exp(s, first_t, first_e, st, _settings)?;
 
             let mut parts = vec![str_lit(s, &format!("{{_{first_x}:")), first_q];
             for (x, ft) in &fields[1..] {
                 let fe = field(s, e.clone(), x);
-                let fq = quote_exp(s, ft, fe, st, settings)?;
+                let fq = quote_exp(s, ft, fe, st, _settings)?;
                 parts.push(str_lit(s, &format!(",_{x}:")));
                 parts.push(fq);
             }
@@ -440,7 +440,7 @@ fn quote_exp(
         Typ::Option(inner) => {
             let inner = (**inner).clone();
             // quoteExp for ERel(0) under a PSome binder
-            let inner_e = quote_exp(s, &inner, rel(s, 0), st, settings)?;
+            let inner_e = quote_exp(s, &inner, rel(s, 0), st, _settings)?;
 
             let nullable = is_nullable(&inner);
             let some_body = if nullable {
@@ -486,7 +486,7 @@ fn quote_exp(
 
             // quote field "1" of ERel(0)
             let e_field1 = field(s, rel(s, 0), "1");
-            let e_prime = quote_exp(s, &inner, e_field1, st, settings)?;
+            let e_prime = quote_exp(s, &inner, e_field1, st, _settings)?;
 
             // The body: case ERel(0) of
             //   PNone rt => "null"
@@ -553,7 +553,7 @@ fn quote_exp(
                     }
                     Some(ct_inner) => {
                         let ct_inner = ct_inner.clone();
-                        let inner_q = quote_exp(s, &ct_inner, rel(s, 0), st, settings)?;
+                        let inner_q = quote_exp(s, &ct_inner, rel(s, 0), st, _settings)?;
 
                         let body = match dk {
                             DatatypeKind::Option => {
@@ -603,24 +603,24 @@ fn quote_exp(
 // unurlifyExp — produce a JavaScript *string* snippet that unurlifies a type
 // ---------------------------------------------------------------------------
 
-fn unurlify_exp(span: &Span, t: &LocTyp, st: &mut State, settings: &Settings) -> String {
+fn unurlify_exp(span: &Span, t: &LocTyp, st: &mut State, _settings: &Settings) -> String {
     match &t.node.clone() {
         Typ::Record(fields) if fields.is_empty() => "(i++,null)".to_string(),
         Typ::Ffi(m, f) if m == "Basis" && f == "unit" => "(i++,null)".to_string(),
 
         Typ::Record(fields) if fields.len() == 1 => {
             let (x, ft) = &fields[0].clone();
-            let e = unurlify_exp(span, ft, st, settings);
+            let e = unurlify_exp(span, ft, st, _settings);
             format!("{{_{x}:{e}}}")
         }
 
         Typ::Record(fields) => {
             let fields = fields.clone();
             let (first_x, first_t) = &fields[0];
-            let e0 = unurlify_exp(span, first_t, st, settings);
+            let e0 = unurlify_exp(span, first_t, st, _settings);
             let mut out = format!("{{_{first_x}:{e0}");
             for (x, ft) in &fields[1..] {
-                let e = unurlify_exp(span, ft, st, settings);
+                let e = unurlify_exp(span, ft, st, _settings);
                 out.push_str(&format!(",_{x}:{e}"));
             }
             out.push('}');
@@ -647,7 +647,7 @@ fn unurlify_exp(span: &Span, t: &LocTyp, st: &mut State, settings: &Settings) ->
 
         Typ::Option(inner) => {
             let inner = (**inner).clone();
-            let e = unurlify_exp(span, &inner, st, settings);
+            let e = unurlify_exp(span, &inner, st, _settings);
             let e2 = if is_nullable(&inner) {
                 format!("{{v:{e}}}")
             } else {
@@ -658,7 +658,7 @@ fn unurlify_exp(span: &Span, t: &LocTyp, st: &mut State, settings: &Settings) ->
 
         Typ::List(inner) => {
             let inner = (**inner).clone();
-            let e = unurlify_exp(span, &inner, st, settings);
+            let e = unurlify_exp(span, &inner, st, _settings);
             format!("uul(function(){{return t[i++];}},function(){{return {e}}})")
         }
 
@@ -692,7 +692,7 @@ fn unurlify_exp(span: &Span, t: &LocTyp, st: &mut State, settings: &Settings) ->
                         format!("x==\"{x}\"?{val}:{expr}")
                     }
                     Some(ct_inner) => {
-                        let e = unurlify_exp(span, ct_inner, st, settings);
+                        let e = unurlify_exp(span, ct_inner, st, _settings);
                         let val = match dk {
                             DatatypeKind::Option => {
                                 if is_nullable(ct_inner) {
@@ -1615,7 +1615,7 @@ fn seek_field(
     inner: usize,
     base: &LocExp,
     xs: &[&str],
-    original: &LocExp,
+    _original: &LocExp,
     s: &Span,
     st: &mut State,
     settings: &Settings,
@@ -1703,7 +1703,7 @@ fn seek_field(
                 inner,
                 inner_base,
                 &new_xs,
-                original,
+                _original,
                 s,
                 st,
                 settings,

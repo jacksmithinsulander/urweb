@@ -40,15 +40,15 @@ fn uri_file_scheme_maps_to_local_path() {
 
 #[test]
 fn workspace_root_prefers_workspace_folder_over_root_uri() {
-    let mut params = InitializeParams::default();
-    params.workspace_folders = Some(vec![WorkspaceFolder {
-        uri: "file:///first/folder".parse().expect("uri"),
-        name: "first".into(),
-    }]);
     #[allow(deprecated)]
-    {
-        params.root_uri = Some("file:///other/root".parse().expect("uri"));
-    }
+    let params = InitializeParams {
+        workspace_folders: Some(vec![WorkspaceFolder {
+            uri: "file:///first/folder".parse().expect("uri"),
+            name: "first".into(),
+        }]),
+        root_uri: Some("file:///other/root".parse().expect("uri")),
+        ..Default::default()
+    };
 
     let got = workspace_root_from_initialize(&params).expect("root");
     #[cfg(unix)]

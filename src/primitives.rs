@@ -2,9 +2,11 @@
 //!
 //! - **Prim**: Int, Float, String(StringMode, _), Char
 //! - **StringMode**: Normal vs Html (different escaping for codegen)
-//! - Methods: to_c_literal, to_string, float_to_string
+//! - Methods: to_c_literal, float_to_string; runtime text via `Display` (`ToString`)
 //!
 //! Mirrors SML's `Prim.t`.
+
+use std::fmt;
 
 /// Primitive literals (mirrors SML's `Prim.t`).
 #[derive(Debug, Clone, PartialEq)]
@@ -37,10 +39,7 @@ impl Prim {
                     format!("{}LL", n)
                 }
             }
-            Prim::Float(n) => {
-                let s = Self::float_to_string(*n);
-                s.replace('e', "e").replace('-', "-")
-            }
+            Prim::Float(n) => Self::float_to_string(*n),
             Prim::String(_, s) => {
                 let escaped = Self::quote_double(s);
                 format!("\"{}\"", escaped)
@@ -48,16 +47,6 @@ impl Prim {
             Prim::Char(ch) => {
                 format!("'{}'", Self::to_c_char(*ch))
             }
-        }
-    }
-
-    /// Render the primitive as its runtime value (without C suffix).
-    pub fn to_string(&self) -> std::string::String {
-        match self {
-            Prim::Int(n) => n.to_string(),
-            Prim::Float(n) => Self::float_to_string(*n),
-            Prim::String(_, s) => s.clone(),
-            Prim::Char(ch) => ch.to_string(),
         }
     }
 
@@ -103,6 +92,17 @@ impl Prim {
             Prim::Float(_) => 1,
             Prim::String(_, _) => 2,
             Prim::Char(_) => 3,
+        }
+    }
+}
+
+impl fmt::Display for Prim {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Prim::Int(n) => write!(f, "{n}"),
+            Prim::Float(n) => write!(f, "{}", Self::float_to_string(*n)),
+            Prim::String(_, s) => write!(f, "{s}"),
+            Prim::Char(ch) => write!(f, "{ch}"),
         }
     }
 }

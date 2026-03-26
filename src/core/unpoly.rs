@@ -1092,14 +1092,9 @@ fn walk_decl(d: LocatedDeclaration, state: &mut State) -> LocatedDeclaration {
 fn collect_cabs_kinds(e: &LocatedExpression) -> Vec<LocatedKind> {
     let mut kinds = Vec::new();
     let mut cur = e;
-    loop {
-        match &cur.node {
-            Expression::CAbs(_, k, body) => {
-                kinds.push(*k.clone());
-                cur = body;
-            }
-            _ => break,
-        }
+    while let Expression::CAbs(_, k, body) = &cur.node {
+        kinds.push(*k.clone());
+        cur = body;
     }
     kinds
 }

@@ -1175,11 +1175,10 @@ fn eval_exp(
                 let nv = state.fresh_var();
                 if let Atom::Const(Prim::String(_, s)) = &seq_atom {
                     // strip "uw_" prefix if present
-                    let seq_name = if s.starts_with("uw_") {
-                        s[3..].to_string()
-                    } else {
-                        s.clone()
-                    };
+                    let seq_name = s
+                        .strip_prefix("uw_")
+                        .map(|t| t.to_string())
+                        .unwrap_or_else(|| s.clone());
                     state.assert_atoms(&[CondAtom::AReln(Reln::Sql(seq_name), vec![nv.clone()])]);
                 }
                 k(state, errors, nv);
@@ -1241,11 +1240,10 @@ fn process_decl(
             // Register table columns (used in SML's `tabs` map).
             let _col_names: Vec<&String> = fields.iter().map(|(n, _)| n).collect();
             // Strip "uw_" prefix from table name (mirrors SML logic).
-            let _real_name = if tab.starts_with("uw_") {
-                tab[3..].to_string()
-            } else {
-                tab.clone()
-            };
+            let _real_name = tab
+                .strip_prefix("uw_")
+                .map(|t| t.to_string())
+                .unwrap_or_else(|| tab.clone());
         }
 
         Decl::Val(name, n, _, e, _) => {
@@ -1356,11 +1354,10 @@ fn process_policy(pol: &Policy, state: &mut IflowState) {
         Policy::Sequence(e) => {
             // `PolSequence (EPrim (String seq))`: allow sending seq values.
             if let Exp::Prim(Prim::String(_, seq)) = &e.node {
-                let seq_name = if seq.starts_with("uw_") {
-                    seq[3..].to_string()
-                } else {
-                    seq.clone()
-                };
+                let seq_name = seq
+                    .strip_prefix("uw_")
+                    .map(|t| t.to_string())
+                    .unwrap_or_else(|| seq.clone());
                 let lv = Atom::Lvar(0);
                 let p = CondAtom::AReln(Reln::Sql(seq_name), vec![lv.clone()]);
                 state.allow_send(vec![p], vec![lv]);
@@ -1477,8 +1474,10 @@ mod tests {
     #[test]
     fn check_empty_file_no_errors() {
         let file: File = (vec![], vec![]);
-        let mut settings = Settings::default();
-        settings.debug = true;
+        let settings = Settings {
+            debug: true,
+            ..Default::default()
+        };
         let mut errors = ErrorReporter::new();
         check(&file, &settings, &mut errors);
         assert!(!errors.has_errors(), "empty file must not produce errors");
@@ -1497,8 +1496,10 @@ mod tests {
             ))],
             vec![],
         );
-        let mut settings = Settings::default();
-        settings.debug = true;
+        let settings = Settings {
+            debug: true,
+            ..Default::default()
+        };
         let mut errors = ErrorReporter::new();
         check(&file, &settings, &mut errors);
         assert!(
@@ -1524,8 +1525,10 @@ mod tests {
             ],
             vec![],
         );
-        let mut settings = Settings::default();
-        settings.debug = true;
+        let settings = Settings {
+            debug: true,
+            ..Default::default()
+        };
         let mut errors = ErrorReporter::new();
         check(&file, &settings, &mut errors);
         assert!(
@@ -1551,8 +1554,10 @@ mod tests {
             ],
             vec![],
         );
-        let mut settings = Settings::default();
-        settings.debug = true;
+        let settings = Settings {
+            debug: true,
+            ..Default::default()
+        };
         let mut errors = ErrorReporter::new();
         check(&file, &settings, &mut errors);
         assert!(
@@ -1578,8 +1583,10 @@ mod tests {
             ],
             vec![],
         );
-        let mut settings = Settings::default();
-        settings.debug = true;
+        let settings = Settings {
+            debug: true,
+            ..Default::default()
+        };
         let mut errors = ErrorReporter::new();
         check(&file, &settings, &mut errors);
         assert!(

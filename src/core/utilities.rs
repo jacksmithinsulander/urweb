@@ -306,7 +306,7 @@ pub mod constructor {
         constructor: LocatedConstructor,
         context: &mut Vec<Binder>,
         kind_mapper: &dyn Fn(LocatedKind) -> LocatedKind,
-        fold_kind_binder: &dyn Fn(&[Binder], LocatedKind) -> LocatedKind,
+        _fold_kind_binder: &dyn Fn(&[Binder], LocatedKind) -> LocatedKind,
         fold_con_binder: &dyn Fn(&[Binder], LocatedConstructor) -> LocatedConstructor,
     ) -> LocatedConstructor {
         let span = constructor.span.clone();
@@ -326,14 +326,14 @@ pub mod constructor {
                     *left_constructor,
                     context,
                     kind_mapper,
-                    fold_kind_binder,
+                    _fold_kind_binder,
                     fold_con_binder,
                 );
                 let right_mapped = map_b(
                     *right_constructor,
                     context,
                     kind_mapper,
-                    fold_kind_binder,
+                    _fold_kind_binder,
                     fold_con_binder,
                 );
                 Located::new(
@@ -346,7 +346,7 @@ pub mod constructor {
                     *inner,
                     context,
                     kind_mapper,
-                    fold_kind_binder,
+                    _fold_kind_binder,
                     fold_con_binder,
                 );
                 Located::new(Constructor::TRecord(Box::new(inner_mapped)), span)
@@ -358,7 +358,7 @@ pub mod constructor {
                     *body,
                     context,
                     kind_mapper,
-                    fold_kind_binder,
+                    _fold_kind_binder,
                     fold_con_binder,
                 );
                 context.pop();
@@ -372,14 +372,14 @@ pub mod constructor {
                     *function_constructor,
                     context,
                     kind_mapper,
-                    fold_kind_binder,
+                    _fold_kind_binder,
                     fold_con_binder,
                 );
                 let argument_mapped = map_b(
                     *argument_constructor,
                     context,
                     kind_mapper,
-                    fold_kind_binder,
+                    _fold_kind_binder,
                     fold_con_binder,
                 );
                 Located::new(
@@ -394,7 +394,7 @@ pub mod constructor {
                     *body,
                     context,
                     kind_mapper,
-                    fold_kind_binder,
+                    _fold_kind_binder,
                     fold_con_binder,
                 );
                 context.pop();
@@ -409,7 +409,7 @@ pub mod constructor {
                     *body,
                     context,
                     kind_mapper,
-                    fold_kind_binder,
+                    _fold_kind_binder,
                     fold_con_binder,
                 );
                 context.pop();
@@ -423,7 +423,7 @@ pub mod constructor {
                     *constructor_part,
                     context,
                     kind_mapper,
-                    fold_kind_binder,
+                    _fold_kind_binder,
                     fold_con_binder,
                 );
                 let kind_mapped = kind_utilities::map(*kind_part, kind_mapper);
@@ -438,7 +438,7 @@ pub mod constructor {
                     *body,
                     context,
                     kind_mapper,
-                    fold_kind_binder,
+                    _fold_kind_binder,
                     fold_con_binder,
                 );
                 context.pop();
@@ -456,14 +456,14 @@ pub mod constructor {
                             name_constructor,
                             context,
                             kind_mapper,
-                            fold_kind_binder,
+                            _fold_kind_binder,
                             fold_con_binder,
                         );
                         let value_mapped = map_b(
                             value_constructor,
                             context,
                             kind_mapper,
-                            fold_kind_binder,
+                            _fold_kind_binder,
                             fold_con_binder,
                         );
                         (name_mapped, value_mapped)
@@ -479,14 +479,14 @@ pub mod constructor {
                     *left_constructor,
                     context,
                     kind_mapper,
-                    fold_kind_binder,
+                    _fold_kind_binder,
                     fold_con_binder,
                 );
                 let right_mapped = map_b(
                     *right_constructor,
                     context,
                     kind_mapper,
-                    fold_kind_binder,
+                    _fold_kind_binder,
                     fold_con_binder,
                 );
                 Located::new(
@@ -510,7 +510,7 @@ pub mod constructor {
                             constructor_item,
                             context,
                             kind_mapper,
-                            fold_kind_binder,
+                            _fold_kind_binder,
                             fold_con_binder,
                         )
                     })
@@ -522,7 +522,7 @@ pub mod constructor {
                     *inner,
                     context,
                     kind_mapper,
-                    fold_kind_binder,
+                    _fold_kind_binder,
                     fold_con_binder,
                 );
                 Located::new(
@@ -1499,7 +1499,7 @@ pub mod expression {
         context: &mut Vec<Binder>,
         fold_kind_binder: &dyn Fn(&[Binder], LocatedKind) -> LocatedKind,
         fold_con_binder: &dyn Fn(&[Binder], LocatedConstructor) -> LocatedConstructor,
-        fold_exp_binder: &dyn Fn(&[Binder], LocatedExpression) -> LocatedExpression,
+        _fold_exp_binder: &dyn Fn(&[Binder], LocatedExpression) -> LocatedExpression,
     ) -> LocatedPattern {
         let span = pattern.span.clone();
         let node = match pattern.node {
@@ -1526,7 +1526,7 @@ pub mod expression {
                         context,
                         fold_kind_binder,
                         fold_con_binder,
-                        fold_exp_binder,
+                        _fold_exp_binder,
                     ))
                 });
                 Pattern::Constructor(
@@ -1546,7 +1546,7 @@ pub mod expression {
                                 context,
                                 fold_kind_binder,
                                 fold_con_binder,
-                                fold_exp_binder,
+                                _fold_exp_binder,
                             );
                             let type_mapped = do_map_constructor(
                                 field_type,

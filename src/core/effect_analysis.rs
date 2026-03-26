@@ -79,8 +79,7 @@ fn could_read_cookie_node(readers: &EffectMap, expression_node: &Expression) -> 
     match expression_node {
         Expression::Ffi(module, function) => module == "Basis" && function == "getCookie",
         Expression::FfiApp(module, function, _) => {
-            (module == "Basis" && function == "getHeader")
-                || (module == "Basis" && function == "getenv")
+            module == "Basis" && (function == "getHeader" || function == "getenv")
         }
         Expression::Named(name_id) => readers.contains_key(name_id),
         Expression::ServerCall(name_id, _, _, _) => readers.contains_key(name_id),

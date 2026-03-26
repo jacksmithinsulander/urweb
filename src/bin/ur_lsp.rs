@@ -497,11 +497,7 @@ fn handle_request(
         let doc = g.docs.get(uri);
         let text = doc.map(|d| d.text.as_str()).unwrap_or("");
         let pos = &params.text_document_position.position;
-        let locs = if params.context.include_declaration {
-            lsp_semantics::references_in_file(text, pos.line, pos.character, uri.as_str())
-        } else {
-            lsp_semantics::references_in_file(text, pos.line, pos.character, uri.as_str())
-        };
+        let locs = lsp_semantics::references_in_file(text, pos.line, pos.character, uri.as_str());
         connection
             .sender
             .send(Response::new_ok(id, serde_json::to_value(locs)?).into())?;

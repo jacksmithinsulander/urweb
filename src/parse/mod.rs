@@ -38,6 +38,14 @@ pub mod grammar_helpers;
 pub mod lexical_analyzer;
 pub mod xml_helpers;
 
+/// Name for LALRPOP reduce-value tuples (keeps generated `grammar.rs` clippy-clean for `type_complexity`).
+#[cfg(generated_parser)]
+pub type GrammarConLamTriple = (
+    usize,
+    Vec<(String, Option<crate::source::LocCon>, crate::source::LocExp)>,
+    usize,
+);
+
 // `build.rs` always runs LALRPOP and sets `cargo:rustc-cfg=generated_parser` on success.
 #[cfg(generated_parser)]
 mod grammar {
@@ -704,9 +712,9 @@ pub fn strip_table_constraints(src: &str) -> String {
         }
     }
     // Remove the trailing extra newline we added (split produces N+1 pieces for N newlines)
-    if result.ends_with('\n') && !src.ends_with('\n') {
-        result.pop();
-    } else if result.ends_with("\n\n") && src.ends_with('\n') {
+    if (result.ends_with('\n') && !src.ends_with('\n'))
+        || (result.ends_with("\n\n") && src.ends_with('\n'))
+    {
         result.pop();
     }
     result
@@ -836,11 +844,7 @@ pub fn rewrite_sql_brace_splices(input: &str) -> String {
                 i += 1;
             } else if b[i] == b'}' {
                 depth -= 1;
-                if depth > 0 {
-                    out.push(')');
-                } else {
-                    out.push(')');
-                }
+                out.push(')');
                 i += 1;
             } else {
                 let ch = input[i..].chars().next().unwrap_or('\0');
@@ -1458,12 +1462,7 @@ pub fn preprocess_urs(src: &str) -> String {
             }
 
             // Identifier (letters, digits, underscore, apostrophe) — `match` avoids `|`/`!` bool mutants
-            let mut id_word_start = false;
-            if b[i].is_ascii_alphabetic() {
-                id_word_start = true;
-            } else if matches!(b[i], b'_') {
-                id_word_start = true;
-            }
+            let id_word_start = b[i].is_ascii_alphabetic() || b[i] == b'_';
             if id_word_start {
                 let id_start = i;
                 for _ in 0..step_cap {
@@ -1512,12 +1511,7 @@ pub fn preprocess_urs(src: &str) -> String {
                 );
                 if is_decl_name || is_pseudo_token {
                 } else {
-                    let mut allow_quant = false;
-                    if b[id_start].is_ascii_lowercase() {
-                        allow_quant = true;
-                    } else if matches!(b[id_start], b'_') {
-                        allow_quant = true;
-                    }
+                    let allow_quant = b[id_start].is_ascii_lowercase() || b[id_start] == b'_';
                     if allow_quant {
                         // Skip whitespace after the identifier
                         let ws1 = i;
@@ -1661,12 +1655,7 @@ pub fn preprocess_urs(src: &str) -> String {
                                     return out;
                                 }
                             } else {
-                                let mut kind_id = false;
-                                if b[i].is_ascii_alphabetic() {
-                                    kind_id = true;
-                                } else if matches!(b[i], b'_') {
-                                    kind_id = true;
-                                }
+                                let kind_id = b[i].is_ascii_alphabetic() || b[i] == b'_';
                                 if kind_id {
                                     for _ in 0..step_cap {
                                         preprocess_urs_burn_hot!(fuel, out, src, i);
@@ -1930,9 +1919,11 @@ pub fn rewrite_sql_keyword_brace_splices(input: &str) -> String {
                         // `{...}` — spread: leave alone
                         // `{ident =` — record field: leave alone
                         // `{ident non-eq}` — SQL splice: convert to `(...)`
-                        let is_sql_splice = if j >= n || b[j] == b'}' || b[j] == b'[' {
-                            false
-                        } else if j + 2 < n && &b[j..j + 3] == b"..." {
+                        let is_sql_splice = if j >= n
+                            || b[j] == b'}'
+                            || b[j] == b'['
+                            || (j + 2 < n && &b[j..j + 3] == b"...")
+                        {
                             false
                         } else if b[j].is_ascii_alphabetic() || b[j] == b'_' {
                             let mut k = j + 1;

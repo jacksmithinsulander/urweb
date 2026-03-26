@@ -47,6 +47,11 @@ fn open_create_append(path: &Path) -> std::io::Result<()> {
         .map(|_| ())
 }
 
+/// Open or create an NDB-backed line file. Returns an opaque handle or null on error.
+///
+/// # Safety
+///
+/// `path` must be a valid, null-terminated C string pointer, or null.
 #[no_mangle]
 pub unsafe extern "C" fn urweb_ndb_open(path: *const c_char) -> *mut c_void {
     if path.is_null() {
@@ -68,6 +73,11 @@ pub unsafe extern "C" fn urweb_ndb_open(path: *const c_char) -> *mut c_void {
     })) as *mut c_void
 }
 
+/// Release a handle returned by [`urweb_ndb_open`].
+///
+/// # Safety
+///
+/// `h` must be null or a pointer previously returned by `urweb_ndb_open` and not yet closed.
 #[no_mangle]
 pub unsafe extern "C" fn urweb_ndb_close(h: *mut c_void) {
     if h.is_null() {
@@ -76,6 +86,12 @@ pub unsafe extern "C" fn urweb_ndb_close(h: *mut c_void) {
     drop(Box::from_raw(h as *mut Handle));
 }
 
+/// Append one `UrK=... UrV=...` line for `key`/`val`. Returns 0 on success.
+///
+/// # Safety
+///
+/// `h` must be a live handle from `urweb_ndb_open`. `key`/`val` must be valid for `key_len`/`val_len`
+/// bytes and not alias if the contract requires disjoint buffers (callers must ensure validity).
 #[no_mangle]
 pub unsafe extern "C" fn urweb_ndb_put(
     h: *mut c_void,
@@ -118,6 +134,12 @@ pub unsafe extern "C" fn urweb_ndb_put(
     0
 }
 
+/// Look up the last value for `key`. On success sets `*out` and `*out_len` to a `malloc`ed buffer.
+///
+/// # Safety
+///
+/// `h` must be a live handle. `key` must be valid for `key_len` bytes. `out` and `out_len` must be
+/// valid for writes. If this returns 0, the caller must `free` `*out` when done.
 #[no_mangle]
 pub unsafe extern "C" fn urweb_ndb_get(
     h: *mut c_void,

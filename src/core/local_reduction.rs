@@ -4,14 +4,14 @@
 //! unfolding global named definitions. Used as a fast intra-body pass.
 //!
 //! The `Environment` is a stack of items that tracks what is known about each
-//! de Bruijn variable.  Items are:
-//!   - `Unknown`   – an expression variable whose value is not known
-//!   - `Known(e)`  – an expression variable that equals `e`
-//!   - `UnknownC`  – a type variable whose value is not known
-//!   - `KnownC(c)` – a type variable that equals `c`
-//!   - `Lift(lc,le)` – synthetic marker used inside `find_*` to track how many
-//!                     binders have been accumulated so substituted values get
-//!                     their indices shifted correctly
+//! de Bruijn variable. Items are:
+//!
+//! - `Unknown` — expression variable whose value is not known
+//! - `Known(e)` — expression variable that equals `e`
+//! - `UnknownC` — type variable whose value is not known
+//! - `KnownC(c)` — type variable that equals `c`
+//! - `Lift(lc, le)` — synthetic marker used inside `find_*` so substituted values
+//!   get indices shifted after accumulating binders
 //!
 //! Mirrors `reduce_local.sml`.
 
@@ -518,8 +518,8 @@ fn shift_pat_con(pc: PatternConstructor, cutoff_c: usize, delta_c: isize) -> Pat
 
 fn shift_pat(
     p: LocatedPattern,
-    cutoff_e: usize,
-    delta_e: isize,
+    _cutoff_e: usize,
+    _delta_e: isize,
     cutoff_c: usize,
     delta_c: isize,
 ) -> LocatedPattern {
@@ -532,12 +532,18 @@ fn shift_pat(
             dk,
             shift_pat_con(pc, cutoff_c, delta_c),
             cs.into_iter().map(sc).collect(),
-            inner.map(|p| Box::new(shift_pat(*p, cutoff_e, delta_e, cutoff_c, delta_c))),
+            inner.map(|p| Box::new(shift_pat(*p, _cutoff_e, _delta_e, cutoff_c, delta_c))),
         ),
         Pattern::Record(fields) => Pattern::Record(
             fields
                 .into_iter()
-                .map(|(x, p, t)| (x, shift_pat(p, cutoff_e, delta_e, cutoff_c, delta_c), sc(t)))
+                .map(|(x, p, t)| {
+                    (
+                        x,
+                        shift_pat(p, _cutoff_e, _delta_e, cutoff_c, delta_c),
+                        sc(t),
+                    )
+                })
                 .collect(),
         ),
     };

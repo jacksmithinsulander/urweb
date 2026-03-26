@@ -2270,14 +2270,14 @@ fn urlify_enum_stmts(
     level: usize,
     xncs: &[(String, usize, Option<LocTyp>)],
     x: &str,
-    i: usize,
+    _i: usize,
 ) -> String {
     cjr_test_tick();
     match xncs {
         [] => format!("uw_error(ctx, FATAL, \"Error urlifying datatype {x}\");\n"),
         [(x_, n, _), rest @ ..] => {
             let x_ident = ident(x_);
-            let rest_s = urlify_enum_stmts(level, rest, x, i);
+            let rest_s = urlify_enum_stmts(level, rest, x, _i);
             format!(
                 "if (it{level} == __uwc_{x_ident}_{n}) {{\n\
                  uw_write(ctx, \"{x_}\");\n\
@@ -2291,7 +2291,7 @@ fn urlify_enum_stmts(
 fn urlify_default_stmts(
     xncs: &[(String, usize, Option<LocTyp>)],
     x: &str,
-    i: usize,
+    _i: usize,
     env: &CjrEnv,
 ) -> String {
     cjr_test_tick();
@@ -2299,7 +2299,7 @@ fn urlify_default_stmts(
         [] => format!("uw_error(ctx, FATAL, \"Error urlifying datatype {x} (%d)\", it0->data);\n"),
         [(x_, n, to), rest @ ..] => {
             let x_ident = ident(x_);
-            let rest_s = urlify_default_stmts(rest, x, i, env);
+            let rest_s = urlify_default_stmts(rest, x, _i, env);
             let arm = match to {
                 None => format!("uw_write(ctx, \"{x_}\");\n"),
                 Some(t_arg) => {

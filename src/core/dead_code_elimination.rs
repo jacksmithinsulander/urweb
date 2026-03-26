@@ -331,10 +331,11 @@ impl Shaker {
             Pattern::Prim(_) => {}
             Pattern::Constructor(_datatype_kind, pat_con, type_args, sub_pattern) => {
                 // The FFI constructor pattern may carry a constructor argument type.
-                if let PatternConstructor::Ffi { arg, .. } = pat_con {
-                    if let Some(arg_con) = arg {
-                        self.collect_named_from_constructor(arg_con);
-                    }
+                if let PatternConstructor::Ffi {
+                    arg: Some(arg_con), ..
+                } = pat_con
+                {
+                    self.collect_named_from_constructor(arg_con);
                 }
                 for type_arg in type_args {
                     self.collect_named_from_constructor(type_arg);

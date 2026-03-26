@@ -101,7 +101,7 @@ fn postgres_sql_type(t: &SqlType) -> &'static str {
 /// SQL that isn't a simple parameter).
 fn prep_string(
     e: &LocExp,
-    st: &mut PrepareState,
+    _st: &mut PrepareState,
     n: &mut usize,
     parts: &mut Vec<String>,
     settings: &Settings,
@@ -113,7 +113,7 @@ fn prep_string(
         }
         Exp::FfiApp(m, f, args) if m == "Basis" && f == "strcat" => {
             if let [(e1, _), (e2, _)] = args.as_slice() {
-                prep_string(e1, st, n, parts, settings) && prep_string(e2, st, n, parts, settings)
+                prep_string(e1, _st, n, parts, settings) && prep_string(e2, _st, n, parts, settings)
             } else {
                 false
             }
@@ -501,8 +501,10 @@ mod tests {
     #[test]
     fn prep_string_sqlify_int_postgres() {
         let mut st = PrepareState::new();
-        let mut settings = Settings::default();
-        settings.db_backend = Some(crate::db::ProjectDb::postgres());
+        let settings = Settings {
+            db_backend: Some(crate::db::ProjectDb::postgres()),
+            ..Default::default()
+        };
 
         // sqlifyInt(x) → $1::int8
         let arg = Located::dummy(Exp::Rel(0));
@@ -525,8 +527,10 @@ mod tests {
     fn prep_string_sqlify_char() {
         // Catches mutant: delete match arm "sqlifyChar" in sqlify_type.
         let mut st = PrepareState::new();
-        let mut settings = Settings::default();
-        settings.db_backend = Some(crate::db::ProjectDb::postgres());
+        let settings = Settings {
+            db_backend: Some(crate::db::ProjectDb::postgres()),
+            ..Default::default()
+        };
         let arg = Located::dummy(Exp::Rel(0));
         let t = Located::dummy(crate::c_like_representation::Typ::Ffi(
             "Basis".into(),
@@ -554,8 +558,10 @@ mod tests {
     fn prep_string_sqlify_bool() {
         // Catches mutant: delete match arm "sqlifyBool" in sqlify_type.
         let mut st = PrepareState::new();
-        let mut settings = Settings::default();
-        settings.db_backend = Some(crate::db::ProjectDb::postgres());
+        let settings = Settings {
+            db_backend: Some(crate::db::ProjectDb::postgres()),
+            ..Default::default()
+        };
         let arg = Located::dummy(Exp::Rel(0));
         let t = Located::dummy(crate::c_like_representation::Typ::Ffi(
             "Basis".into(),
@@ -583,8 +589,10 @@ mod tests {
     fn prep_string_sqlify_time() {
         // Catches mutant: delete match arm "sqlifyTime" in sqlify_type.
         let mut st = PrepareState::new();
-        let mut settings = Settings::default();
-        settings.db_backend = Some(crate::db::ProjectDb::postgres());
+        let settings = Settings {
+            db_backend: Some(crate::db::ProjectDb::postgres()),
+            ..Default::default()
+        };
         let arg = Located::dummy(Exp::Rel(0));
         let t = Located::dummy(crate::c_like_representation::Typ::Ffi(
             "Basis".into(),
@@ -612,8 +620,10 @@ mod tests {
     fn prep_string_sqlify_clocktime() {
         // Catches mutant: delete match arm "sqlifyClocktime" in sqlify_type.
         let mut st = PrepareState::new();
-        let mut settings = Settings::default();
-        settings.db_backend = Some(crate::db::ProjectDb::postgres());
+        let settings = Settings {
+            db_backend: Some(crate::db::ProjectDb::postgres()),
+            ..Default::default()
+        };
         let arg = Located::dummy(Exp::Rel(0));
         let t = Located::dummy(crate::c_like_representation::Typ::Ffi(
             "Basis".into(),
@@ -641,8 +651,10 @@ mod tests {
     fn prep_string_sqlify_calendardate() {
         // Catches mutant: delete match arm "sqlifyCalendardate" in sqlify_type.
         let mut st = PrepareState::new();
-        let mut settings = Settings::default();
-        settings.db_backend = Some(crate::db::ProjectDb::postgres());
+        let settings = Settings {
+            db_backend: Some(crate::db::ProjectDb::postgres()),
+            ..Default::default()
+        };
         let arg = Located::dummy(Exp::Rel(0));
         let t = Located::dummy(crate::c_like_representation::Typ::Ffi(
             "Basis".into(),
@@ -670,8 +682,10 @@ mod tests {
     fn prep_string_sqlify_blob() {
         // Catches mutant: delete match arm "sqlifyBlob" in sqlify_type.
         let mut st = PrepareState::new();
-        let mut settings = Settings::default();
-        settings.db_backend = Some(crate::db::ProjectDb::postgres());
+        let settings = Settings {
+            db_backend: Some(crate::db::ProjectDb::postgres()),
+            ..Default::default()
+        };
         let arg = Located::dummy(Exp::Rel(0));
         let t = Located::dummy(crate::c_like_representation::Typ::Ffi(
             "Basis".into(),
@@ -699,8 +713,10 @@ mod tests {
     fn prep_string_sqlify_channel() {
         // Catches mutant: delete match arm "sqlifyChannel" in sqlify_type.
         let mut st = PrepareState::new();
-        let mut settings = Settings::default();
-        settings.db_backend = Some(crate::db::ProjectDb::postgres());
+        let settings = Settings {
+            db_backend: Some(crate::db::ProjectDb::postgres()),
+            ..Default::default()
+        };
         let arg = Located::dummy(Exp::Rel(0));
         let t = Located::dummy(crate::c_like_representation::Typ::Ffi(
             "Basis".into(),
@@ -722,8 +738,10 @@ mod tests {
     fn prep_string_sqlify_client() {
         // Catches mutant: delete match arm "sqlifyClient" in sqlify_type.
         let mut st = PrepareState::new();
-        let mut settings = Settings::default();
-        settings.db_backend = Some(crate::db::ProjectDb::postgres());
+        let settings = Settings {
+            db_backend: Some(crate::db::ProjectDb::postgres()),
+            ..Default::default()
+        };
         let arg = Located::dummy(Exp::Rel(0));
         let t = Located::dummy(crate::c_like_representation::Typ::Ffi(
             "Basis".into(),
@@ -745,8 +763,10 @@ mod tests {
     fn prep_string_strcat_requires_both_parts() {
         // Catches mutant: && with || in strcat branch. Both parts must succeed.
         let mut st = PrepareState::new();
-        let mut settings = Settings::default();
-        settings.db_backend = Some(crate::db::ProjectDb::postgres());
+        let settings = Settings {
+            db_backend: Some(crate::db::ProjectDb::postgres()),
+            ..Default::default()
+        };
         let str_t = Located::dummy(crate::c_like_representation::Typ::Ffi(
             "Basis".into(),
             "string".into(),
@@ -768,8 +788,10 @@ mod tests {
     #[test]
     fn prep_string_sqlify_int_mysql() {
         let mut st = PrepareState::new();
-        let mut settings = Settings::default();
-        settings.db_backend = Some(crate::db::ProjectDb::mysql());
+        let settings = Settings {
+            db_backend: Some(crate::db::ProjectDb::mysql()),
+            ..Default::default()
+        };
 
         let arg = Located::dummy(Exp::Rel(0));
         let t = Located::dummy(crate::c_like_representation::Typ::Ffi(
@@ -790,8 +812,10 @@ mod tests {
     #[test]
     fn prep_string_sqlify_float_postgres() {
         let mut st = PrepareState::new();
-        let mut settings = Settings::default();
-        settings.db_backend = Some(crate::db::ProjectDb::postgres());
+        let settings = Settings {
+            db_backend: Some(crate::db::ProjectDb::postgres()),
+            ..Default::default()
+        };
         let arg = Located::dummy(Exp::Rel(0));
         let t = Located::dummy(crate::c_like_representation::Typ::Ffi(
             "Basis".into(),
@@ -811,8 +835,10 @@ mod tests {
     #[test]
     fn prep_string_sqlify_string_postgres() {
         let mut st = PrepareState::new();
-        let mut settings = Settings::default();
-        settings.db_backend = Some(crate::db::ProjectDb::postgres());
+        let settings = Settings {
+            db_backend: Some(crate::db::ProjectDb::postgres()),
+            ..Default::default()
+        };
         let arg = Located::dummy(Exp::Rel(0));
         let t = Located::dummy(crate::c_like_representation::Typ::Ffi(
             "Basis".into(),
@@ -832,8 +858,10 @@ mod tests {
     #[test]
     fn prep_string_strcat_combines() {
         let mut st = PrepareState::new();
-        let mut settings = Settings::default();
-        settings.db_backend = Some(crate::db::ProjectDb::postgres());
+        let settings = Settings {
+            db_backend: Some(crate::db::ProjectDb::postgres()),
+            ..Default::default()
+        };
 
         let str_t = Located::dummy(crate::c_like_representation::Typ::Ffi(
             "Basis".into(),
@@ -909,8 +937,10 @@ mod tests {
         // Catches mutant: match guard m == "Basis" with true. Non-Basis strcat must not match.
         use crate::c_like_representation::Typ;
         let mut st = PrepareState::new();
-        let mut settings = Settings::default();
-        settings.db_backend = Some(crate::db::ProjectDb::postgres());
+        let settings = Settings {
+            db_backend: Some(crate::db::ProjectDb::postgres()),
+            ..Default::default()
+        };
         let str_t = Located::dummy(Typ::Ffi("Basis".into(), "string".into()));
         let lit1 = Located::dummy(Exp::Prim(Prim::String(StringMode::Normal, "a".into())));
         let lit2 = Located::dummy(Exp::Prim(Prim::String(StringMode::Normal, "b".into())));
@@ -931,8 +961,10 @@ mod tests {
         // Catches mutant: delete Case arm. (PNone=>"NULL") | (PSome=>sqlifyInt) must template.
         use crate::c_like_representation::{Pat, Typ};
         let mut st = PrepareState::new();
-        let mut settings = Settings::default();
-        settings.db_backend = Some(crate::db::ProjectDb::postgres());
+        let settings = Settings {
+            db_backend: Some(crate::db::ProjectDb::postgres()),
+            ..Default::default()
+        };
         let opt_int = Located::dummy(Typ::Datatype(
             crate::datatype_kind::DatatypeKind::Option,
             0,
@@ -974,8 +1006,10 @@ mod tests {
         // Catches mutant: delete Case arm for (True=>"TRUE")|(False=>"FALSE").
         use crate::c_like_representation::{Pat, Typ};
         let mut st = PrepareState::new();
-        let mut settings = Settings::default();
-        settings.db_backend = Some(crate::db::ProjectDb::postgres());
+        let settings = Settings {
+            db_backend: Some(crate::db::ProjectDb::postgres()),
+            ..Default::default()
+        };
         let bool_t = Located::dummy(Typ::Ffi("Basis".into(), "bool".into()));
         let scrut = Located::dummy(Exp::Rel(0));
         let arm0_pat = Located::dummy(Pat::Var("_".into(), bool_t.clone()));
@@ -1006,8 +1040,10 @@ mod tests {
         // Catches mutant: += with -= or *=. Param indices must increment.
         // strcat("a=", strcat(sqlifyInt, strcat(" b=", sqlifyString))) => a=$1::int8 b=$2::text
         let mut st = PrepareState::new();
-        let mut settings = Settings::default();
-        settings.db_backend = Some(crate::db::ProjectDb::postgres());
+        let settings = Settings {
+            db_backend: Some(crate::db::ProjectDb::postgres()),
+            ..Default::default()
+        };
         let str_t = Located::dummy(crate::c_like_representation::Typ::Ffi(
             "Basis".into(),
             "string".into(),

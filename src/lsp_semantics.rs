@@ -1,14 +1,14 @@
 //! Semantic LSP helpers: symbols, hover, completion, and token highlighting.
 
-use std::collections::HashMap;
 use std::path::Path;
 
 use lsp_types::{
-    CompletionItem, CompletionItemKind, CompletionResponse, DocumentHighlight,
+    CompletionItem, CompletionItemKind, CompletionResponse, DocumentChanges, DocumentHighlight,
     DocumentHighlightKind, DocumentSymbol, DocumentSymbolResponse, FoldingRange, FoldingRangeKind,
-    InlayHint, InlayHintLabel, Location, MarkupContent, MarkupKind, Position, Range,
-    SelectionRange, SemanticToken, SemanticTokenType, SemanticTokens, SignatureHelp,
-    SignatureInformation, SymbolKind, TextEdit, Uri, WorkspaceEdit,
+    InlayHint, InlayHintLabel, Location, MarkupContent, MarkupKind, OneOf,
+    OptionalVersionedTextDocumentIdentifier, Position, Range, SelectionRange, SemanticToken,
+    SemanticTokenType, SemanticTokens, SignatureHelp, SignatureInformation, SymbolKind,
+    TextDocumentEdit, TextEdit, Uri, WorkspaceEdit,
 };
 
 use crate::elaborated::type_display::format_constructor;
@@ -361,17 +361,15 @@ pub fn references_in_file(text: &str, line: u32, character: u32, uri_str: &str) 
 
 pub fn workspace_edit_rename(uri_str: &str, range: Range, new_name: &str) -> Option<WorkspaceEdit> {
     let uri: Uri = uri_str.parse().ok()?;
-    let mut changes = HashMap::new();
-    changes.insert(
-        uri,
-        vec![TextEdit {
-            range,
-            new_text: new_name.to_string(),
-        }],
-    );
     Some(WorkspaceEdit {
-        changes: Some(changes),
-        document_changes: None,
+        changes: None,
+        document_changes: Some(DocumentChanges::Edits(vec![TextDocumentEdit {
+            text_document: OptionalVersionedTextDocumentIdentifier { uri, version: None },
+            edits: vec![OneOf::Left(TextEdit {
+                range,
+                new_text: new_name.to_string(),
+            })],
+        }])),
         change_annotations: None,
     })
 }

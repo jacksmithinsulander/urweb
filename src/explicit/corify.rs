@@ -25,7 +25,7 @@ fn loc_dummy() -> Span {
 
 fn do_restify(settings: &Settings, kind: &PathKind, mods: &[String], s: &str) -> String {
     // Strip "wrap_" prefix if present
-    let s = if s.starts_with("wrap_") { &s[5..] } else { s };
+    let s = s.strip_prefix("wrap_").unwrap_or(s);
     // Build "mod1/mod2/.../s" with mods in reverse (mods is already in reverse order)
     let mut parts: Vec<&str> = mods.iter().map(|m| m.as_str()).collect();
     parts.insert(0, s);
@@ -2609,13 +2609,13 @@ fn corify_str(
             fn unwind_str(
                 str: &expl::Structure,
                 st: &St,
-                cfx: &mut CorifyCx<'_>,
-                report: &Span,
+                _cfx: &mut CorifyCx<'_>,
+                _report: &Span,
             ) -> Option<St> {
                 match str {
                     expl::Structure::Var(n) => st.lookup_str_by_id_opt(*n),
                     expl::Structure::Proj(inner, x) => {
-                        let inner_st = unwind_str(&inner.node, st, cfx, report)?;
+                        let inner_st = unwind_str(&inner.node, st, _cfx, _report)?;
                         inner_st.lookup_str_by_name_opt(x)
                     }
                     _ => None,

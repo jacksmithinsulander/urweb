@@ -151,7 +151,7 @@ impl Default for CompileResult {
 
 impl CompileResult {
     /// Consume and return the inner `Result` (for `match` / `?`).
-    #[must_use]
+    /// (`Result` is already `#[must_use]`; no extra attribute needed.)
     pub fn into_result(self) -> Result<PathBuf> {
         self.0
     }
@@ -1494,9 +1494,10 @@ mod tests {
     use std::sync::atomic::Ordering;
 
     fn settings_with_db(db: ProjectDb) -> Settings {
-        let mut s = Settings::default();
-        s.db_backend = Some(db);
-        s
+        Settings {
+            db_backend: Some(db),
+            ..Default::default()
+        }
     }
 
     /// Run `f` with process cwd set to `dir`, holding [`TEST_CWD_LOCK`] so parallel tests
@@ -1680,8 +1681,10 @@ mod tests {
         let urp_path = dir.path().join("app.urp");
         std::fs::write(&urp_path, "database dbname=test\nsql out.sql\n\nx\n").unwrap();
         std::fs::write(dir.path().join("x.ur"), "val x = 1").unwrap();
-        let mut settings = Settings::default();
-        settings.db_backend = Some(ProjectDb::sqlite());
+        let mut settings = Settings {
+            db_backend: Some(ProjectDb::sqlite()),
+            ..Default::default()
+        };
         let result =
             with_parse_test_cwd(dir.path(), || compile_to_outputs(&urp_path, &mut settings));
         let (c_code, _sql_ddl) = result.expect("compile_to_outputs must succeed");
@@ -1822,8 +1825,10 @@ mod tests {
             ))],
             vec![],
         );
-        let mut settings = Settings::default();
-        settings.sqlcache = true;
+        let settings = Settings {
+            sqlcache: true,
+            ..Default::default()
+        };
         let mut errors = ErrorReporter::new();
         let result = mono_sqlcache(file, &settings, &mut errors);
         assert!(result.is_some(), "mono_sqlcache must return Some");
@@ -2512,8 +2517,10 @@ mod tests {
 
     #[test]
     fn sql_generate_produces_sql_for_table() {
-        let mut settings = Settings::default();
-        settings.db_backend = Some(ProjectDb::postgres());
+        let settings = Settings {
+            db_backend: Some(ProjectDb::postgres()),
+            ..Default::default()
+        };
         let xts = vec![(
             "Id".to_string(),
             crate::error_types::Located::dummy(crate::c_like_representation::Typ::Ffi(
@@ -2626,8 +2633,10 @@ mod tests {
     #[test]
     fn mono_filecache_invokes_instrument() {
         MONO_FILECACHE_CALLS.store(0, Ordering::SeqCst);
-        let mut settings = Settings::default();
-        settings.file_cache = Some("/tmp/urweb_fc_test".into());
+        let settings = Settings {
+            file_cache: Some("/tmp/urweb_fc_test".into()),
+            ..Default::default()
+        };
         let file: crate::monomorphized::File = (
             vec![crate::error_types::Located::dummy(
                 crate::monomorphized::Decl::JavaScript("/*x*/".into()),

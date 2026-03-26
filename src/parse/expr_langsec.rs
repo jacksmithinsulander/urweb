@@ -257,25 +257,28 @@ pub fn fold_postfixes(
 
 /// True if `t` can begin an `AtomExp` in the surface grammar (FIRST set).
 pub fn token_starts_primary(t: &Token) -> bool {
-    match t {
+    matches!(
+        t,
         Token::Int(_)
-        | Token::Float(_)
-        | Token::String(_)
-        | Token::Char(_)
-        | Token::Unit
-        | Token::True
-        | Token::False
-        | Token::Lparen
-        | Token::Lbrace
-        | Token::At
-        | Token::Under
-        | Token::Underunderunder
-        | Token::BeginTag(_)
-        | Token::XmlBeginEnd => true,
-        Token::Ident(_) | Token::UpperIdent(_) => true,
-        Token::UrwebPut | Token::UrwebGet | Token::UrwebTbTransfer => true,
-        _ => false,
-    }
+            | Token::Float(_)
+            | Token::String(_)
+            | Token::Char(_)
+            | Token::Unit
+            | Token::True
+            | Token::False
+            | Token::Lparen
+            | Token::Lbrace
+            | Token::At
+            | Token::Under
+            | Token::Underunderunder
+            | Token::BeginTag(_)
+            | Token::XmlBeginEnd
+            | Token::Ident(_)
+            | Token::UpperIdent(_)
+            | Token::UrwebPut
+            | Token::UrwebGet
+            | Token::UrwebTbTransfer
+    )
 }
 
 /// Parse `CmpExp` … `PostfixExp` spine: comparisons, then add, mul, juxtaposition.

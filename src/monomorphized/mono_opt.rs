@@ -494,14 +494,11 @@ fn opt_exp_peephole(
             let mut last_space = false;
             let new_s: String = s
                 .chars()
-                .filter_map(|c| {
+                .filter(|&c| {
                     let is_space = c.is_ascii_whitespace();
-                    if is_space && last_space {
-                        None
-                    } else {
-                        last_space = is_space;
-                        Some(c)
-                    }
+                    let skip = is_space && last_space;
+                    last_space = is_space;
+                    !skip
                 })
                 .collect();
             Exp::Prim(Prim::String(StringMode::Html, new_s))
@@ -1592,15 +1589,17 @@ mod tests {
     }
 
     fn settings_mysql() -> Settings {
-        let mut s = Settings::default();
-        s.db_backend = Some(crate::db::ProjectDb::mysql());
-        s
+        Settings {
+            db_backend: Some(crate::db::ProjectDb::mysql()),
+            ..Default::default()
+        }
     }
 
     fn settings_postgres() -> Settings {
-        let mut s = Settings::default();
-        s.db_backend = Some(crate::db::ProjectDb::postgres());
-        s
+        Settings {
+            db_backend: Some(crate::db::ProjectDb::postgres()),
+            ..Default::default()
+        }
     }
 
     fn no_errors() -> ErrorReporter {
