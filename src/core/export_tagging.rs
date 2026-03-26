@@ -128,7 +128,7 @@ fn tag_it(
                 let cn = state.count;
                 state.count += 1;
                 state.tags.insert(f, cn);
-                state.new_tags.push((ek.clone(), f, cn));
+                state.new_tags.push((ek, f, cn));
                 cn
             };
 
@@ -136,7 +136,7 @@ fn tag_it(
             let src_name = source_names.get(&f).cloned().unwrap_or_default();
             match state.by_tag.get(&src_name) {
                 None => {
-                    state.by_tag.insert(src_name.clone(), (ek.clone(), f));
+                    state.by_tag.insert(src_name.clone(), (ek, f));
                 }
                 Some((ek2, f2)) => {
                     if *f2 != f {

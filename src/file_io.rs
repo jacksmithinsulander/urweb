@@ -33,7 +33,7 @@ fn update_mod_time(path: &Path) {
         if let Ok(mtime) = meta.modified() {
             let mut guard =
                 lock_for_compile(&MOST_RECENT_MOD, "file I/O modification time tracker");
-            if guard.map_or(true, |prev| mtime > prev) {
+            if guard.is_none_or(|prev| mtime > prev) {
                 *guard = Some(mtime);
                 UPDATE_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             }

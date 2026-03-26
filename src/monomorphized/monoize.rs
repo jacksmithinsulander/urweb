@@ -1769,7 +1769,7 @@ fn mono_exp(env: &Env, fm: &mut Fm, exp: &LocatedExpression) -> LocExp {
                             let xml2 = mono_exp(env, fm, vargs[n - 1]);
                             return Located::new(Exp::Strcat(Box::new(xml1), Box::new(xml2)), loc);
                         }
-                        "cdata" if vargs.len() >= 1 => {
+                        "cdata" if !vargs.is_empty() => {
                             // cdata has 0 proof args + 1 string arg
                             let str_e = mono_exp(env, fm, vargs[vargs.len() - 1]);
                             let str_t = Located::new(
@@ -2070,7 +2070,7 @@ fn mono_decl(
             let mut dtmap = HashMap::new();
             let (arg_types, ran) = unwind_type(&env, &mut dtmap, &typ, &loc);
             let d = Located::new(
-                Decl::Export(ek.clone(), src.clone(), *n, arg_types, ran, *has_state),
+                Decl::Export(*ek, src.clone(), *n, arg_types, ran, *has_state),
                 loc,
             );
             Some((env, vec![d]))

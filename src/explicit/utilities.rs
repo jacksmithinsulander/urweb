@@ -1238,7 +1238,7 @@ pub mod decl {
         fold_node(&d.node, s, fk, fc, fe)
     }
 
-    fn fc2<'a, S, FK, FC>(c: &'a LocatedConstructor, s: S, fk: &FK, fc: &FC) -> S
+    fn fc2<S, FK, FC>(c: &LocatedConstructor, s: S, fk: &FK, fc: &FC) -> S
     where
         FK: Fn(&Kind, S) -> S,
         FC: Fn(&Constructor, S) -> S,
@@ -1246,7 +1246,7 @@ pub mod decl {
         con::fold(c, s, fk, fc)
     }
 
-    fn fe2<'a, S, FK, FC, FE>(e: &'a LocatedExpression, s: S, fk: &FK, fc: &FC, fe: &FE) -> S
+    fn fe2<S, FK, FC, FE>(e: &LocatedExpression, s: S, fk: &FK, fc: &FC, fe: &FE) -> S
     where
         FK: Fn(&Kind, S) -> S,
         FC: Fn(&Constructor, S) -> S,

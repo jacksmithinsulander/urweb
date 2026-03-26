@@ -1521,8 +1521,7 @@ impl Env {
     /// Currently only handles `Named` and `ModProj` heads.
     pub fn is_class(&self, constructor: &LocatedConstructor) -> bool {
         if let Some(class_name) = class_head_of(constructor) {
-            let result = self.classes.contains_key(&class_name);
-            result
+            self.classes.contains_key(&class_name)
         } else {
             false
         }

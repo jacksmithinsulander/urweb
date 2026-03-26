@@ -45,12 +45,14 @@ pub fn parse_urp(path: &Path) -> Result<Job> {
         .to_string_lossy()
         .into_owned();
 
-    let mut job = Job::default();
     // Default exe is <stem>.exe next to the .urp file
-    job.exe = dir
-        .join(format!("{stem}.exe"))
-        .to_string_lossy()
-        .into_owned();
+    let mut job = Job {
+        exe: dir
+            .join(format!("{stem}.exe"))
+            .to_string_lossy()
+            .into_owned(),
+        ..Default::default()
+    };
 
     let mut sources: Vec<String> = Vec::new();
     let mut in_sources = false;
@@ -835,7 +837,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let subdir = dir.path().join("inc");
         std::fs::create_dir_all(&subdir).unwrap();
-        let urp = write_urp(dir.path(), "app.urp", &format!("include inc\n\nmod1\n"));
+        let urp = write_urp(dir.path(), "app.urp", "include inc\n\nmod1\n");
         let job = parse_urp(&urp).unwrap();
         assert!(!job.headers.is_empty(), "include must use resolve_path_abs");
         assert!(

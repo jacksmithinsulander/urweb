@@ -169,7 +169,7 @@ fn apply_postfix(base: LocExp, op: ExpPostfixOp) -> LocExp {
         ExpPostfixOp::DotIdent(name) => {
             let exp = match base.node {
                 Exp::Var(mut quals, last, inf)
-                    if last.chars().next().map_or(false, |c| c.is_uppercase()) =>
+                    if last.chars().next().is_some_and(|c| c.is_uppercase()) =>
                 {
                     quals.push(last);
                     Exp::Var(quals, name, inf)
@@ -182,7 +182,7 @@ fn apply_postfix(base: LocExp, op: ExpPostfixOp) -> LocExp {
                     match xnode {
                         Exp::Var(mut q, last, inf)
                             if q.is_empty()
-                                && last.chars().next().map_or(false, |c| c.is_uppercase()) =>
+                                && last.chars().next().is_some_and(|c| c.is_uppercase()) =>
                         {
                             q.push(last);
                             Exp::App(f2, Box::new(Located::new(Exp::Var(q, name, inf), xspan)))

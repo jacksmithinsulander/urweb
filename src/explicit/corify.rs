@@ -2514,7 +2514,7 @@ fn is_xml_html(
                                     }
                                     _ => false,
                                 };
-                                return is_html;
+                                is_html
                             } else {
                                 false
                             }

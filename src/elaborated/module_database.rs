@@ -626,7 +626,7 @@ fn contains_unif_exp(e: &crate::elaborated::LocatedExpression) -> bool {
             contains_unif_exp(disc) || arms.iter().any(|(_, arm_e)| contains_unif_exp(arm_e))
         }
         Expression::Let(decls, body, _) => {
-            decls.iter().any(|ed| contains_unif_edecl(ed)) || contains_unif_exp(body)
+            decls.iter().any(contains_unif_edecl) || contains_unif_exp(body)
         }
         _ => false,
     }

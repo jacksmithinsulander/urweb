@@ -243,7 +243,7 @@ fn check_property(s: &str) -> bool {
         return false;
     };
     let rest_ok = s.chars().all(nmchar);
-    rest_ok && (nmstart(first) || (first == '-' && s.chars().nth(1).is_some_and(|c| nmstart(c))))
+    rest_ok && (nmstart(first) || (first == '-' && s.chars().nth(1).is_some_and(nmstart)))
 }
 
 // ---------------------------------------------------------------------------

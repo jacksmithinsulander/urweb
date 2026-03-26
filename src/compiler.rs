@@ -387,12 +387,7 @@ fn parse_sources_inner(
         let sgis = if let Some(ref lib_dir) = job.basis_lib_dir {
             let urs_path = lib_dir.join("basis.urs");
             match std::fs::read_to_string(&urs_path) {
-                Ok(src) => {
-                    match crate::parse::parse_urs(&urs_path.to_string_lossy(), &src, errors) {
-                        Some(items) => items,
-                        None => return None, // parse errors already recorded
-                    }
-                }
+                Ok(src) => crate::parse::parse_urs(&urs_path.to_string_lossy(), &src, errors)?,
                 Err(e) => {
                     errors.report(CompileError::Plain(format!(
                         "cannot read basis library {}: {}",
@@ -977,9 +972,8 @@ fn command_status_deadline(
     let mut child = cmd.spawn().with_context(|| format!("spawn {what}"))?;
     let start = Instant::now();
     loop {
-        match child.try_wait().with_context(|| format!("poll {what}"))? {
-            Some(st) => return Ok(st),
-            None => {}
+        if let Some(st) = child.try_wait().with_context(|| format!("poll {what}"))? {
+            return Ok(st);
         }
         if start.elapsed() > CC_LINK_TEST_DEADLINE {
             let _ = child.kill();
@@ -1176,7 +1170,7 @@ pub fn cc_and_link(c_source: &str, output: &Path, job: &Job, settings: &Settings
 
 /// Resolve a user-given project path to the `.urp` file we open (`foo.ur` → `foo.urp`).
 pub(crate) fn resolve_urp_project_path(urp_path: &Path) -> PathBuf {
-    if urp_path.extension().map_or(true, |e| e != "urp") {
+    if urp_path.extension().is_none_or(|e| e != "urp") {
         urp_path.with_extension("urp")
     } else {
         urp_path.to_path_buf()
@@ -1849,8 +1843,8 @@ mod tests {
     #[test]
     fn elaborate_empty_file_returns_some() {
         let mut errors = ErrorReporter::new();
-        let mut settings = Settings::default();
-        let result = elaborate(Default::default(), &mut settings, &mut errors);
+        let settings = Settings::default();
+        let result = elaborate(Default::default(), &settings, &mut errors);
         // An empty source file should elaborate to an empty elab file without errors.
         assert!(
             result.is_some(),
@@ -2022,8 +2016,8 @@ mod tests {
     fn core_rpcify_passes_through_empty_file() {
         // Catches mutant: core_rpcify panics or returns None on empty input.
         let mut errors = ErrorReporter::new();
-        let mut settings = Settings::default();
-        let result = core_rpcify(Default::default(), &mut settings, &mut errors);
+        let settings = Settings::default();
+        let result = core_rpcify(Default::default(), &settings, &mut errors);
         assert!(result.is_some(), "rpcify of empty file must succeed");
         assert!(
             result.unwrap().is_empty(),
@@ -2035,8 +2029,8 @@ mod tests {
     fn core_tag_passes_through_empty_file() {
         // Catches mutant: core_tag panics or returns None on empty input.
         let mut errors = ErrorReporter::new();
-        let mut settings = Settings::default();
-        let result = core_tag(Default::default(), &mut settings, &mut errors);
+        let settings = Settings::default();
+        let result = core_tag(Default::default(), &settings, &mut errors);
         assert!(result.is_some(), "tag of empty file must succeed");
         assert!(
             result.unwrap().is_empty(),
@@ -2051,8 +2045,8 @@ mod tests {
             crate::core::Declaration::Database("db".into()),
         )];
         let mut errors = ErrorReporter::new();
-        let mut settings = Settings::default();
-        let result = core_tag(file, &mut settings, &mut errors);
+        let settings = Settings::default();
+        let result = core_tag(file, &settings, &mut errors);
         assert!(result.is_some(), "tag of non-empty file must succeed");
         let tagged = result.unwrap();
         assert!(

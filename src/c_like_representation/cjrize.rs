@@ -29,7 +29,7 @@ use crate::primitives::{Prim, StringMode};
 #[cfg(test)]
 thread_local! {
     /// Caps work during `cargo test` / mutation so runaway mutants panic instead of timing out.
-    static CJRIZE_TICKS: Cell<usize> = Cell::new(8_000_000);
+    static CJRIZE_TICKS: Cell<usize> = const { Cell::new(8_000_000) };
 }
 
 #[cfg(test)]
@@ -602,7 +602,7 @@ fn cify_exp(e: &mono::LocExp, sm: &mut Sm, errors: &mut ErrorReporter) -> LocExp
 
             // CJR: table rows get struct ids too
             let mut table_rnums: Vec<(String, usize)> = Vec::new();
-            for (_i, (x, xts)) in qm.tables.iter().enumerate() {
+            for (x, xts) in qm.tables.iter() {
                 let cxts: Vec<(String, LocTyp)> = xts
                     .iter()
                     .map(|(fx, ft)| (fx.clone(), cify_typ(ft, sm)))
@@ -876,7 +876,7 @@ fn cify_decl(
             let ct = cify_typ(t, sm);
             // Prepend "/" to path
             let full_path = format!("/{}", path);
-            (None, Some((ek.clone(), full_path, *n, cts, ct, *b)))
+            (None, Some((*ek, full_path, *n, cts, ct, *b)))
         }
 
         mono::Decl::Table(name, xts, pe, ce) => {
@@ -984,7 +984,7 @@ fn cify_decl(
                                 if m == "Basis" && x == "periodic" && args.len() == 1 =>
                             {
                                 match &args[0].0.node {
-                                    mono::Exp::Prim(Prim::Int(n)) => Task::Periodic(*n as i64),
+                                    mono::Exp::Prim(Prim::Int(n)) => Task::Periodic(*n),
                                     _ => {
                                         errors.report_at(
                                             e1.span.clone(),

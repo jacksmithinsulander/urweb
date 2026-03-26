@@ -541,9 +541,8 @@ impl Server {
                 .map(|p| p.to_string_lossy().into_owned())
                 .unwrap_or_else(|_| path.clone());
             for ln in &lines {
-                match gdb.break_insert(&canon, *ln) {
-                    Ok(Some(n)) => nums.push(n),
-                    Ok(None) | Err(_) => {}
+                if let Ok(Some(n)) = gdb.break_insert(&canon, *ln) {
+                    nums.push(n)
                 }
             }
             self.bkpt_by_source.insert(path, nums);

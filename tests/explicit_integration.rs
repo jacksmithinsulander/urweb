@@ -1514,12 +1514,11 @@ fn explicit_lift_con_in_con_proj() {
     let proj = Located::dummy(ur::explicit::Constructor::Proj(Box::new(tup), 1));
     let out = environment::lift_con_in_con(proj, 0);
     match &out.node {
-        ur::explicit::Constructor::Proj(c, 1) => match &c.node {
-            ur::explicit::Constructor::Tuple(cs) => {
+        ur::explicit::Constructor::Proj(c, 1) => {
+            if let ur::explicit::Constructor::Tuple(cs) = &c.node {
                 assert!(matches!(cs[0].node, ur::explicit::Constructor::Rel(1)));
             }
-            _ => {}
-        },
+        }
         _ => panic!("expected Proj"),
     }
 }
@@ -1539,7 +1538,7 @@ fn explicit_lift_con_in_con_trecord() {
 
 #[test]
 fn explicit_lift_kind_in_con_kabs() {
-    let k_type = Located::dummy(ur::explicit::Kind::Type);
+    let _k_type = Located::dummy(ur::explicit::Kind::Type);
     let unit = Located::dummy(ur::explicit::Constructor::Unit);
     let kabs = Located::dummy(ur::explicit::Constructor::KAbs("a".into(), Box::new(unit)));
     let out = environment::lift_kind_in_con(kabs, 0);

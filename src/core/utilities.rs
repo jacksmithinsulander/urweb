@@ -2175,7 +2175,7 @@ pub mod expression {
                     )
                 }) || optional_argument
                     .as_ref()
-                    .map_or(false, |argument_expression| {
+                    .is_some_and(|argument_expression| {
                         exists(
                             argument_expression,
                             predicate_kind,
@@ -2791,7 +2791,7 @@ pub mod declaration {
                         .any(|(_, _, optional_constructor)| {
                             optional_constructor
                                 .as_ref()
-                                .map_or(false, |constructor| exists_constructor(constructor))
+                                .is_some_and(&exists_constructor)
                         })
                 })
             }

@@ -574,7 +574,7 @@ pub fn mlift_con_in_con(
 pub fn hnorm_con(constructor: LocatedConstructor) -> LocatedConstructor {
     use std::cell::Cell;
     thread_local! {
-        static HNORM_DEPTH: Cell<usize> = Cell::new(0);
+        static HNORM_DEPTH: Cell<usize> = const { Cell::new(0) };
     }
     let d = HNORM_DEPTH.with(|c| {
         let v = c.get();
@@ -933,7 +933,7 @@ pub fn reduce_con(constructor: LocatedConstructor) -> LocatedConstructor {
             match c_prime_norm.node.clone() {
                 Constructor::Abs(_, _, body) => {
                     // Beta step: (λ. body) x → body[x/0]
-                    if let Ok(subst) = sub_con_in_con(0, &*x, *body) {
+                    if let Ok(subst) = sub_con_in_con(0, &x, *body) {
                         reduce_con(subst)
                     } else {
                         r

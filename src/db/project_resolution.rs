@@ -30,9 +30,8 @@ pub fn apply_urp_manifest_db_defaults(
     if settings.db_backend.is_some() {
         return Ok(());
     }
-    match read_manifest_project_db_next_to_urp(urp_path)? {
-        Some(db) => settings.db_backend = Some(db),
-        None => {}
+    if let Some(db) = read_manifest_project_db_next_to_urp(urp_path)? {
+        settings.db_backend = Some(db)
     }
     Ok(())
 }

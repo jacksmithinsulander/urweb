@@ -192,7 +192,7 @@ fun greet (name : string) : string = \"Hello, \" ^ name ^ \"!\"\n",
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status()
-        .map_or(false, |s| s.success());
+        .is_ok_and(|s| s.success());
 
     let kind_str = match kind {
         ProjectKind::App => "app",
@@ -224,7 +224,7 @@ fun greet (name : string) : string = \"Hello, \" ^ name ^ \"!\"\n",
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let rest = &args[1..];
-    let (kind, name) = if rest.first().map_or(false, |s| s == "--lib" || s == "-lib") {
+    let (kind, name) = if rest.first().is_some_and(|s| s == "--lib" || s == "-lib") {
         let n = rest.get(1).map(|s| s.as_str()).unwrap_or("");
         (ProjectKind::Library, n)
     } else {

@@ -710,7 +710,7 @@ impl Settings {
         rules
             .iter()
             .find(|r| r.matches(s))
-            .map_or(false, |r| r.action == Action::Allow)
+            .is_some_and(|r| r.action == Action::Allow)
     }
 
     pub fn check_url(&self, s: &str) -> bool {

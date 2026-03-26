@@ -205,8 +205,8 @@ fn simple_impure_inner(
         Exp::Record(xets) => xets.iter().any(|(_, re, _)| recurse(re)),
         Exp::ReturnBlob {
             blob, mime_type, ..
-        } => blob.as_ref().map_or(false, |b| recurse(b)) || recurse(mime_type),
-        Exp::Closure(_, envs) => envs.iter().any(|ce| recurse(ce)),
+        } => blob.as_ref().is_some_and(|b| recurse(b)) || recurse(mime_type),
+        Exp::Closure(_, envs) => envs.iter().any(recurse),
 
         // Leaves always pure
         Exp::Prim(_) | Exp::Ffi(_, _) | Exp::Con(_, _, None) | Exp::None(_) => false,
@@ -272,7 +272,7 @@ fn impure_rough(e: &LocExp) -> bool {
         }
         Exp::ReturnBlob {
             blob, mime_type, ..
-        } => blob.as_ref().map_or(false, |b| impure_rough(b)) || impure_rough(mime_type),
+        } => blob.as_ref().is_some_and(|b| impure_rough(b)) || impure_rough(mime_type),
         Exp::Closure(_, envs) => envs.iter().any(impure_rough),
     }
 }
@@ -558,7 +558,7 @@ fn free_in_abs_aux(depth: usize, e: &LocExp) -> bool {
         Exp::ReturnBlob {
             blob, mime_type, ..
         } => {
-            blob.as_ref().map_or(false, |b| free_in_abs_aux(depth, b))
+            blob.as_ref().is_some_and(|b| free_in_abs_aux(depth, b))
                 || free_in_abs_aux(depth, mime_type)
         }
         Exp::Closure(_, envs) => envs.iter().any(|ce| free_in_abs_aux(depth, ce)),
@@ -728,7 +728,7 @@ fn swap_exp_vars_pat_node(lower: usize, len: usize, e: &Exp) -> Exp {
             let n = *n;
             if n == lower {
                 Exp::Rel(lower + len)
-            } else if n >= lower + 1 && n < lower + 1 + len {
+            } else if n > lower && n < lower + 1 + len {
                 Exp::Rel(n - 1)
             } else {
                 e.clone()
@@ -1367,7 +1367,7 @@ fn reduce_node(env: &Env, e: Exp, span: &Span, ctx: &ReduceCtx, settings: &Setti
             } else if let Exp::Let(x, t, e, b) = f.node.clone() {
                 // Commutation: App(Let(x, t, e, b), arg) → Let(x, t, e, App(b, lift(arg)))
                 // Mirrors SML: `EApp((ELet(x,t,e,b),loc), e') → ELet(x,t,e, EApp(b, liftExpInExp 0 e'))`
-                let lifted_arg = lift_exp_in_exp(0, &*arg);
+                let lifted_arg = lift_exp_in_exp(0, &arg);
                 let new_app = Located::new(Exp::App(b, Box::new(lifted_arg)), span.clone());
                 let new_let = Located::new(Exp::Let(x, t, e, Box::new(new_app)), span.clone());
                 reduce_exp(env, new_let, ctx, settings).node
@@ -1578,7 +1578,7 @@ fn push_case(
                             Located::new(
                                 Exp::App(
                                     Box::new(lift_exp_in_exp(
-                                        n_binds as usize,
+                                        n_binds,
                                         &Located::new(ae.node, ae_span.clone()),
                                     )),
                                     Box::new(rel),
@@ -1857,7 +1857,7 @@ fn reduce_once(file: File, settings: &Settings, full_mode: bool) -> (File, bool)
                 let any_impure = dts.iter().any(|dt| {
                     dt.constrs.iter().any(|(_, _, ct)| {
                         ct.as_ref()
-                            .map_or(false, |t| simple_type_impure(t, &timpures))
+                            .is_some_and(|t| simple_type_impure(t, &timpures))
                     })
                 });
                 if any_impure {

@@ -308,7 +308,7 @@ pub fn assert(
 
     // For each p1 in ps1, add all of ps2 as known disjoint from p1
     for p1 in &ps1 {
-        let entry = denv.entry(p1.clone()).or_insert_with(BTreeSet::new);
+        let entry = denv.entry(p1.clone()).or_default();
         for p2 in &ps2 {
             // NameC pieces know they're disjoint from other NameC pieces automatically;
             // don't record them to keep the env smaller
@@ -319,7 +319,7 @@ pub fn assert(
     }
     // And vice versa
     for p2 in &ps2 {
-        let entry = denv.entry(p2.clone()).or_insert_with(BTreeSet::new);
+        let entry = denv.entry(p2.clone()).or_default();
         for p1 in &ps1 {
             if !matches!((&p2.0, &p1.0), (PieceFst::NameC(_), PieceFst::NameC(_))) {
                 entry.insert(p1.clone());

@@ -56,7 +56,7 @@ pub fn classify_mi_line(line: &str) -> Option<MiRecord<'_>> {
         (None, line)
     };
     if let Some(r) = rest.strip_prefix('^') {
-        let class = r.split(|c| c == ',' || c == '\n').next().unwrap_or("");
+        let class = r.split([',', '\n']).next().unwrap_or("");
         let mi_class = match class {
             "done" => MiResultClass::Done,
             "running" => MiResultClass::Running,
@@ -78,7 +78,7 @@ pub fn classify_mi_line(line: &str) -> Option<MiRecord<'_>> {
         });
     }
     if let Some(r) = rest.strip_prefix('*') {
-        let class = r.split(|c| c == ',' || c == '\n').next().unwrap_or("");
+        let class = r.split([',', '\n']).next().unwrap_or("");
         let payload = if let Some(pos) = r.find(',') {
             &r[pos + 1..]
         } else {
@@ -87,7 +87,7 @@ pub fn classify_mi_line(line: &str) -> Option<MiRecord<'_>> {
         return Some(MiRecord::ExecAsync { class, payload });
     }
     if let Some(r) = rest.strip_prefix('=') {
-        let class = r.split(|c| c == ',' || c == '\n').next().unwrap_or("");
+        let class = r.split([',', '\n']).next().unwrap_or("");
         let payload = if let Some(pos) = r.find(',') {
             &r[pos + 1..]
         } else {

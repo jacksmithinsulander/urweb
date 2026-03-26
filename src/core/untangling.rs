@@ -232,7 +232,9 @@ fn tarjan_sccs_topological(
 
             // Process the next unvisited or on-stack successor.
             while let Some(successor) = remaining_succs.pop() {
-                if !discovery_index.contains_key(&successor) {
+                if let std::collections::btree_map::Entry::Vacant(e) =
+                    discovery_index.entry(successor)
+                {
                     // Tree edge: recurse into successor.
                     let successor_succs: Vec<usize> = successors
                         .get(&successor)
@@ -240,7 +242,7 @@ fn tarjan_sccs_topological(
                         .iter()
                         .copied()
                         .collect();
-                    discovery_index.insert(successor, index_counter);
+                    e.insert(index_counter);
                     lowlink.insert(successor, index_counter);
                     index_counter += 1;
                     on_stack.insert(successor);

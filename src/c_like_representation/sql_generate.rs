@@ -214,7 +214,7 @@ fn index_key(table: &str, cols: &[(String, IndexMode)], settings: &Settings) -> 
         .iter()
         .map(|(col, m)| {
             let k = settings.mangle_sql(&col.to_lowercase());
-            (k, m.clone())
+            (k, *m)
         })
         .collect();
     (table.to_string(), mangled)

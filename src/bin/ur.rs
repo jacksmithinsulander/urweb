@@ -37,7 +37,7 @@ fn build_project() -> i32 {
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
                 .status()
-                .map_or(false, |s| s.success());
+                .is_ok_and(|s| s.success());
             println!("  Compiling SCSS...");
             let sass_arg = format!("{}:{}", scss_path, css_path);
             let status = if has_sass {

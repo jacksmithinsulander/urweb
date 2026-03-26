@@ -12,5 +12,20 @@ fn main() {
         );
         std::process::exit(1);
     }
+
+    // LALRPOP emits a blank line after `#![allow(...)]` on the fallback `ToTriple`
+    // trait; clippy::empty_line_after_outer_attr flags that. Collapse to one newline.
+    let grammar_rs =
+        std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap()).join("parse/grammar.rs");
+    if let Ok(raw) = std::fs::read_to_string(&grammar_rs) {
+        let fixed = raw.replace(
+            "#![allow(clippy::type_complexity, dead_code)]\n\npub ",
+            "#![allow(clippy::type_complexity, dead_code)]\npub ",
+        );
+        if fixed != raw {
+            let _ = std::fs::write(&grammar_rs, fixed);
+        }
+    }
+
     println!("cargo:rustc-cfg=generated_parser");
 }

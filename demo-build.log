@@ -1,3 +1,3 @@
-parse_urs(/Users/jacksmith/prog/urweb/lib/ur/top.urs) error: UnrecognizedToken { token: (36, Karrow, 39), expected: ["\"*\"", "\"->\"", "\"=\"", "\"class\"", "\"con\"", "\"constraint\"", "\"datatype\"", "\"functor\"", "\"include\"", "\"signature\"", "\"structure\"", "\"table\"", "\"type\"", "\"val\""] }
-:0:0-0:0: UnrecognizedToken { token: (36, Karrow, 39), expected: ["\"*\"", "\"->\"", "\"=\"", "\"class\"", "\"con\"", "\"constraint\"", "\"datatype\"", "\"functor\"", "\"include\"", "\"signature\"", "\"structure\"", "\"table\"", "\"type\"", "\"val\""] }
+parse_urs(/Users/jacksmith/prog/urweb/lib/ur/top.urs) error: UnrecognizedToken { token: (329, Dcolon, 331), expected: ["\"#\"", "\"$\"", "\"(\"", "\"()\"", "\")\"", "\"*\"", "\"++\"", "\",\"", "\"->\"", "\".\"", "\":\"", "\"IDENT\"", "\"UIDENT\"", "\"[\"", "\"_\"", "\"map\"", "\"{\""] }
+:0:0-0:0: UnrecognizedToken { token: (329, Dcolon, 331), expected: ["\"#\"", "\"$\"", "\"(\"", "\"()\"", "\")\"", "\"*\"", "\"++\"", "\",\"", "\"->\"", "\".\"", "\":\"", "\"IDENT\"", "\"UIDENT\"", "\"[\"", "\"_\"", "\"map\"", "\"{\""] }
 Parse failed

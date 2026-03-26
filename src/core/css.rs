@@ -221,8 +221,8 @@ impl Summarizer {
             Expression::App(f, xml) => {
                 // Peel the outer-most App: f is the partially-applied tag, xml is the body.
                 let xml_sm = self.exp(xml);
-                let f_sm = self.exp_app_tag(f, &xml_sm);
-                f_sm
+
+                self.exp_app_tag(f, &xml_sm)
             }
 
             Expression::CApp(f, _) => self.exp(f),

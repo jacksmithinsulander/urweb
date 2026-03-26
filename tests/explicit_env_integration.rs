@@ -481,9 +481,8 @@ fn lift_con_in_con_proj_recurses() {
     match &out.node {
         Constructor::Proj(inner, n) => {
             assert_eq!(*n, 1);
-            match &inner.node {
-                Constructor::Tuple(cs) => assert!(matches!(cs[0].node, Constructor::Rel(1))),
-                _ => {}
+            if let Constructor::Tuple(cs) = &inner.node {
+                assert!(matches!(cs[0].node, Constructor::Rel(1)))
             }
         }
         _ => panic!("expected Proj"),

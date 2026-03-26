@@ -1356,54 +1356,54 @@ pub fn preprocess_urs(src: &str) -> String {
         preprocess_urs_burn!(fuel, out, src, i);
         'pp_step: {
             // Skip ML block comments (* ... *) — `get`/`checked_add` only (no `i+1<n` / `b[i+1]` mutants)
-            if matches!(b.get(i).copied(), Some(b'(')) {
-                if matches!(i.checked_add(1).and_then(|j| b.get(j)).copied(), Some(b'*')) {
-                    out.push_str("(*");
-                    i = i.saturating_add(2).min(n);
-                    let mut depth = 1usize;
-                    for _ in 0..step_cap {
-                        preprocess_urs_burn_hot!(fuel, out, src, i);
-                        if b.get(i).is_none() {
-                            break;
-                        }
-                        if matches!(depth, 0) {
-                            break;
-                        }
-                        let ib = i;
-                        if matches!(b.get(i).copied(), Some(b'(')) {
-                            let nx = i.checked_add(1).and_then(|j| b.get(j)).copied();
-                            if matches!(nx, Some(b'*')) {
-                                out.push_str("(*");
-                                i = i.saturating_add(2).min(n);
-                                depth = depth.saturating_add(1);
-                            } else {
-                                out.push(b[i] as char);
-                                i = i.saturating_add(1).min(n);
-                            }
-                        } else if matches!(b.get(i).copied(), Some(b'*')) {
-                            let nx = i.checked_add(1).and_then(|j| b.get(j)).copied();
-                            if matches!(nx, Some(b')')) {
-                                out.push_str("*)");
-                                i = i.saturating_add(2).min(n);
-                                depth = depth.saturating_sub(1);
-                            } else {
-                                out.push(b[i] as char);
-                                i = i.saturating_add(1).min(n);
-                            }
+            if matches!(b.get(i).copied(), Some(b'('))
+                && matches!(i.checked_add(1).and_then(|j| b.get(j)).copied(), Some(b'*'))
+            {
+                out.push_str("(*");
+                i = i.saturating_add(2).min(n);
+                let mut depth = 1usize;
+                for _ in 0..step_cap {
+                    preprocess_urs_burn_hot!(fuel, out, src, i);
+                    if b.get(i).is_none() {
+                        break;
+                    }
+                    if matches!(depth, 0) {
+                        break;
+                    }
+                    let ib = i;
+                    if matches!(b.get(i).copied(), Some(b'(')) {
+                        let nx = i.checked_add(1).and_then(|j| b.get(j)).copied();
+                        if matches!(nx, Some(b'*')) {
+                            out.push_str("(*");
+                            i = i.saturating_add(2).min(n);
+                            depth = depth.saturating_add(1);
                         } else {
                             out.push(b[i] as char);
                             i = i.saturating_add(1).min(n);
                         }
-                        if let Some(0) = i.checked_sub(ib) {
-                            break;
+                    } else if matches!(b.get(i).copied(), Some(b'*')) {
+                        let nx = i.checked_add(1).and_then(|j| b.get(j)).copied();
+                        if matches!(nx, Some(b')')) {
+                            out.push_str("*)");
+                            i = i.saturating_add(2).min(n);
+                            depth = depth.saturating_sub(1);
+                        } else {
+                            out.push(b[i] as char);
+                            i = i.saturating_add(1).min(n);
                         }
+                    } else {
+                        out.push(b[i] as char);
+                        i = i.saturating_add(1).min(n);
                     }
-                    if pp_urs_depth_nonzero!(depth) {
-                        out.push_str(&src[i..]);
-                        return out;
+                    if let Some(0) = i.checked_sub(ib) {
+                        break;
                     }
-                    break 'pp_step;
                 }
+                if pp_urs_depth_nonzero!(depth) {
+                    out.push_str(&src[i..]);
+                    return out;
+                }
+                break 'pp_step;
             }
 
             // Skip string literals verbatim

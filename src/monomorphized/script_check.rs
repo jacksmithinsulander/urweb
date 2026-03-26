@@ -160,7 +160,7 @@ fn has_client_exp(
             blob, mime_type, ..
         } => {
             blob.as_ref()
-                .map_or(false, |b| has_client_exp(b, basis, rpcs, funcs, push))
+                .is_some_and(|b| has_client_exp(b, basis, rpcs, funcs, push))
                 || has_client_exp(mime_type, basis, rpcs, funcs, push)
         }
         Exp::Query(qm) => {

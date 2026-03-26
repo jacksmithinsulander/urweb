@@ -164,7 +164,7 @@ pub fn validate_project_name(name: &str) -> Result<(), String> {
     if name.is_empty() {
         return Err("project name cannot be empty".into());
     }
-    if !name.chars().next().map_or(false, |c| c.is_alphabetic()) {
+    if !name.chars().next().is_some_and(|c| c.is_alphabetic()) {
         return Err(format!("project name must start with a letter: '{}'", name));
     }
     if !name.chars().all(|c| c.is_alphanumeric() || c == '_') {
@@ -306,10 +306,7 @@ pub fn file_exists(path: &str) -> bool {
 
 /// Last path segment of an `author/repo` install spec, ignoring empty `//` segments.
 pub fn package_spec_repo_leaf(spec: &str) -> &str {
-    spec.split('/')
-        .filter(|s| !s.is_empty())
-        .last()
-        .unwrap_or(spec)
+    spec.split('/').rfind(|s| !s.is_empty()).unwrap_or(spec)
 }
 
 pub fn is_file_arg(arg: &str) -> bool {
@@ -329,7 +326,7 @@ pub fn is_valid_limit(n: i32) -> bool {
 }
 
 pub fn command_succeeded(status: &std::io::Result<std::process::ExitStatus>) -> bool {
-    status.as_ref().map_or(false, |s| s.success())
+    status.as_ref().is_ok_and(|s| s.success())
 }
 
 // ---------------------------------------------------------------------------
@@ -358,13 +355,13 @@ pub fn has_sass_or_sassc() -> bool {
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status()
-        .map_or(false, |s| s.success());
+        .is_ok_and(|s| s.success());
     let has_sassc = std::process::Command::new("which")
         .arg("sassc")
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status()
-        .map_or(false, |s| s.success());
+        .is_ok_and(|s| s.success());
     sass_tool_available(has_sass, has_sassc)
 }
 

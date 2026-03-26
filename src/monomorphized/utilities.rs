@@ -565,7 +565,7 @@ pub mod exp {
         match &e.node {
             Exp::Prim(_) | Exp::Rel(_) | Exp::Named(_) | Exp::Ffi(_, _) => false,
 
-            Exp::Con(_, _, arg) => arg.as_ref().map_or(false, |a| exists(a, ft, fe)),
+            Exp::Con(_, _, arg) => arg.as_ref().is_some_and(|a| exists(a, ft, fe)),
 
             Exp::None(t) => typ::exists(t, ft),
             Exp::Some(t, inner) => typ::exists(t, ft) || exists(inner, ft, fe),
@@ -602,7 +602,7 @@ pub mod exp {
             Exp::Error(e1, t) => exists(e1, ft, fe) || typ::exists(t, ft),
 
             Exp::ReturnBlob { blob, mime_type, t } => {
-                blob.as_ref().map_or(false, |b| exists(b, ft, fe))
+                blob.as_ref().is_some_and(|b| exists(b, ft, fe))
                     || exists(mime_type, ft, fe)
                     || typ::exists(t, ft)
             }
@@ -1075,7 +1075,7 @@ pub mod decl {
             Decl::Datatype(dts) => dts.iter().any(|dt| {
                 dt.constrs
                     .iter()
-                    .any(|(_, _, t)| t.as_ref().map_or(false, |t| exists_typ(t, ft)))
+                    .any(|(_, _, t)| t.as_ref().is_some_and(|t| exists_typ(t, ft)))
             }),
 
             Decl::Val(_, _, t, e, _) => exists_typ(t, ft) || exists_exp(e, ft, fe),

@@ -81,7 +81,7 @@ pub fn discover_unique_urp(root: &Path) -> Result<PathBuf, String> {
 /// Path relative to workspace using `/`, for comparing with [`Span::file`](crate::error_types::Span).
 pub fn file_key_relative_to_root(root: &Path, disk: &Path) -> String {
     disk.strip_prefix(root)
-        .unwrap_or_else(|_| disk.as_ref())
+        .unwrap_or(disk)
         .to_string_lossy()
         .replace('\\', "/")
 }

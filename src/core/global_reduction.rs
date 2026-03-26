@@ -1326,10 +1326,10 @@ impl Reducer {
                 if arms.len() == 1
                     && matches!(&arms[0].0.node, Pattern::Record(fs) if fs.is_empty()) =>
             {
-                return match arms.pop() {
+                match arms.pop() {
                     Some((_, body)) => self.reduce_exp(env, body),
                     None => mk(Expression::Prim(Prim::Int(0))),
-                };
+                }
             }
             Expression::Case(
                 disc,
@@ -1786,7 +1786,7 @@ pub fn reduce(file: File, settings: &Settings) -> File {
                         // If any constructor argument type is polymorphic, mark the datatype
                         if constrs.iter().any(
                             |(_, _, co): &(String, usize, Option<LocatedConstructor>)| {
-                                co.as_ref().map_or(false, |c| is_poly_con(&poly_c, c))
+                                co.as_ref().is_some_and(|c| is_poly_con(&poly_c, c))
                             },
                         ) {
                             poly_c.insert(dt.id);

@@ -659,7 +659,7 @@ fn calc_const_args(enclosing: &HashSet<usize>, e: &LocatedExpression) -> usize {
             [arg, rest @ ..] => match &arg.node {
                 Expression::Rel(n) if *n == depth.wrapping_sub(1).wrapping_sub(count) => {
                     // depth >= 1 + count
-                    if depth >= 1 + count && *n == depth - 1 - count {
+                    if depth > count && *n == depth - 1 - count {
                         visit_args(enclosing, depth, count + 1, rest)
                     } else {
                         // fall through to default
@@ -667,7 +667,7 @@ fn calc_const_args(enclosing: &HashSet<usize>, e: &LocatedExpression) -> usize {
                             .fold(count, |d, e| d.min(ca(enclosing, depth, e)))
                     }
                 }
-                Expression::Rel(n) if depth >= 1 + count && *n == depth - 1 - count => {
+                Expression::Rel(n) if depth > count && *n == depth - 1 - count => {
                     visit_args(enclosing, depth, count + 1, rest)
                 }
                 _ => rest
@@ -841,7 +841,7 @@ fn build_known(file: &File) -> HashSet<usize> {
                     for dt in dts {
                         if !known.contains(&dt.id) {
                             let has_fn = dt.constrs.iter().any(|(_, _, ot)| {
-                                ot.as_ref().map_or(false, |t| function_inside(&known, t))
+                                ot.as_ref().is_some_and(|t| function_inside(&known, t))
                             });
                             if has_fn {
                                 known.insert(dt.id);
@@ -1283,29 +1283,26 @@ fn specialize_pass(
         let span = d.span.clone();
 
         // Pre-register DValRec functions.
-        match &d.node {
-            Declaration::ValRec(vis) => {
-                let enclosing: HashSet<usize> = vis.iter().map(|(_, n, _, _, _)| *n).collect();
-                let ca = vis
-                    .iter()
-                    .map(|(_, _, _, e, _)| calc_const_args(&enclosing, e))
-                    .min()
-                    .unwrap_or(0);
-                for (x, n, c, e, tag) in vis {
-                    st.funcs.insert(
-                        *n,
-                        FuncInfo {
-                            name: x.clone(),
-                            args: BTreeMap::new(),
-                            body: e.clone(),
-                            typ: c.clone(),
-                            tag: tag.clone(),
-                            const_args: ca,
-                        },
-                    );
-                }
+        if let Declaration::ValRec(vis) = &d.node {
+            let enclosing: HashSet<usize> = vis.iter().map(|(_, n, _, _, _)| *n).collect();
+            let ca = vis
+                .iter()
+                .map(|(_, _, _, e, _)| calc_const_args(&enclosing, e))
+                .min()
+                .unwrap_or(0);
+            for (x, n, c, e, tag) in vis {
+                st.funcs.insert(
+                    *n,
+                    FuncInfo {
+                        name: x.clone(),
+                        args: BTreeMap::new(),
+                        body: e.clone(),
+                        typ: c.clone(),
+                        tag: tag.clone(),
+                        const_args: ca,
+                    },
+                );
             }
-            _ => {}
         }
 
         // Reset accumulated decls for this declaration.
@@ -1388,11 +1385,7 @@ fn specialize_pass(
                     ))
                 } else if let Expression::Named(n2) = e.node {
                     // Alias: copy the func info from n2.
-                    if let Some(fi) = st.funcs.get(&n2).cloned() {
-                        Some((*n, fi))
-                    } else {
-                        None
-                    }
+                    st.funcs.get(&n2).cloned().map(|fi| (*n, fi))
                 } else {
                     None
                 }

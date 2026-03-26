@@ -29,9 +29,9 @@ thread_local! {
     /// Datatype/list ids for which urlify helpers have already been emitted.
     static URLIFY_SEEN: RefCell<HashSet<usize>> = RefCell::new(HashSet::new());
     /// Forward declarations for URL handler helper functions.
-    static URL_HANDLER_PROTOS: RefCell<Vec<String>> = RefCell::new(Vec::new());
+    static URL_HANDLER_PROTOS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
     /// Definitions for URL handler helper functions.
-    static URL_HANDLER_DEFS: RefCell<Vec<String>> = RefCell::new(Vec::new());
+    static URL_HANDLER_DEFS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
 }
 
 fn reset_url_handlers() {
@@ -62,7 +62,7 @@ fn collect_url_handler_defs() -> Vec<String> {
 thread_local! {
     /// Caps recursive work during `cargo test` / mutation so runaway mutants panic instead of timing out.
     /// Default budget so unit tests can call `p_exp` / `p_typ` without going through `cjr_print`.
-    static CJR_PRINT_TICKS: Cell<usize> = Cell::new(8_000_000);
+    static CJR_PRINT_TICKS: Cell<usize> = const { Cell::new(8_000_000) };
 }
 
 #[cfg(test)]
@@ -366,7 +366,7 @@ fn pat_con_info(env: &CjrEnv, pc: &PatCon) -> (String, String, String) {
                 )
             }
             None => (
-                format!("__uwd_UNBOUND"),
+                "__uwd_UNBOUND".to_string(),
                 format!("__uwc_UNBOUND_{}", n),
                 format!("uw_UNBOUND_{}", n),
             ),
@@ -704,7 +704,7 @@ pub fn p_exp(env: &CjrEnv, e: &LocExp, settings: &Settings) -> String {
                 );
             }
             // If op ends with an alpha char (and not fdiv), treat as a function call
-            if s != "fdiv" && s.chars().last().map_or(false, |c| c.is_alphabetic()) {
+            if s != "fdiv" && s.chars().last().is_some_and(|c| c.is_alphabetic()) {
                 return format!("{}({}, {})", s, e1_s, e2_s);
             }
             let op = if s == "fdiv" { "/" } else { s.as_str() };
@@ -1977,7 +1977,7 @@ fn unurlify_req(request: &str, t: &LocTyp, env: &CjrEnv, from_client: bool) -> S
                 let (no_arg, has_arg, t_inner) = match xncs.as_slice() {
                     [(a, _, None), (b, _, Some(t))] => (a.clone(), b.clone(), t.clone()),
                     [(b, _, Some(t)), (a, _, None)] => (a.clone(), b.clone(), t.clone()),
-                    _ => return format!("/* unurlify: bad Option datatype */ NULL"),
+                    _ => return "/* unurlify: bad Option datatype */ NULL".to_string(),
                 };
                 let unboxable = is_unboxable(&t_inner);
                 let t_s = p_typ(env, &t_inner);
@@ -3703,7 +3703,7 @@ mod tests {
     fn prim_float_prints() {
         let env = CjrEnv::new();
         let settings = Settings::default();
-        let e = dummy(Exp::Prim(Prim::Float(3.14)));
+        let e = dummy(Exp::Prim(Prim::Float(1.25)));
         let s = p_exp(&env, &e, &settings);
         assert!(
             s.contains(".") || s.contains("e"),

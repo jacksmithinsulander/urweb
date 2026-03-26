@@ -14,7 +14,7 @@ use crate::error_types::{Located, Span};
 use crate::source::*;
 use crate::parse::grammar_helpers::con_record_field_pun;
 use crate::parse::xml_helpers::{
-    XmlAttr, XmlAttrsAcc, FunParam, capitalize_attr, xml_attrs_push, xml_desugar_tag_open,
+    XmlAttr, XmlAttrsAcc, FunParam, capitalize_attr, xml_attrs_empty, xml_attrs_push, xml_desugar_tag_open,
     xml_empty_cdata, wrap_fun_params, str_to_decl_open,
 };
 
@@ -1266,7 +1266,7 @@ XmlOne: LocExp = {
     // (avoids shift/reduce vs another `XmlAttr` on the same lookahead).
     <l:@L> <head:TagHead> "/" ">" <r:@R> => {
         let pos = Span::from_offsets("", l, r, &[]);
-        let tag = xml_desugar_tag_open(l, r, head, (None, None, None, None, vec![]));
+        let tag = xml_desugar_tag_open(l, r, head, xml_attrs_empty());
         let cdata = xml_empty_cdata(pos.clone());
         Located::new(Exp::App(Box::new(tag), Box::new(cdata)), pos)
     },
@@ -1278,7 +1278,7 @@ XmlOne: LocExp = {
     },
     <l:@L> <head:TagHead> ">" "END_TAG" <r:@R> => {
         let pos = Span::from_offsets("", l, r, &[]);
-        let tag = xml_desugar_tag_open(l, r, head, (None, None, None, None, vec![]));
+        let tag = xml_desugar_tag_open(l, r, head, xml_attrs_empty());
         let empty = xml_empty_cdata(pos.clone());
         Located::new(Exp::App(Box::new(tag), Box::new(empty)), pos)
     },
@@ -1290,7 +1290,7 @@ XmlOne: LocExp = {
     },
     <l:@L> <head:TagHead> ">" <xml:Xml> "END_TAG" <r:@R> => {
         let pos = Span::from_offsets("", l, r, &[]);
-        let tag = xml_desugar_tag_open(l, r, head, (None, None, None, None, vec![]));
+        let tag = xml_desugar_tag_open(l, r, head, xml_attrs_empty());
         Located::new(Exp::App(Box::new(tag), Box::new(xml)), pos)
     },
     <l:@L> <head:TagHead> <attrs:XmlAttrPlus> ">" <xml:Xml> "END_TAG" <r:@R> => {
@@ -1326,7 +1326,7 @@ TagHead: (String, LocExp) = {
 };
 
 XmlAttrPlus: XmlAttrsAcc = {
-    <a:XmlAttr> => xml_attrs_push((None, None, None, None, vec![]), a),
+    <a:XmlAttr> => xml_attrs_push(xml_attrs_empty(), a),
     <rest:XmlAttrPlus> <a:XmlAttr> => xml_attrs_push(rest, a),
 };
 

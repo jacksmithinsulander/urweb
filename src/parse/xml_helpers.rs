@@ -94,16 +94,24 @@ pub fn capitalize_attr(s: &str) -> String {
 }
 
 /// Build `Basis.cdata (Html "")`.
-pub type XmlAttrsAcc = (
+///
+/// Boxed so LALRPOP’s `____Symbol` stack type stays small (`clippy::large_enum_variant`).
+pub type XmlAttrsAccInner = (
     Option<LocExp>,
     Option<LocExp>,
     Option<LocExp>,
     Option<LocExp>,
     Vec<(LocCon, LocExp)>,
 );
+pub type XmlAttrsAcc = Box<XmlAttrsAccInner>;
+
+#[inline]
+pub fn xml_attrs_empty() -> XmlAttrsAcc {
+    Box::new((None, None, None, None, vec![]))
+}
 
 pub fn xml_attrs_push(mut acc: XmlAttrsAcc, a: XmlAttr) -> XmlAttrsAcc {
-    let (ref mut cls, ref mut dcls, ref mut sty, ref mut dsty, ref mut av) = &mut acc;
+    let (ref mut cls, ref mut dcls, ref mut sty, ref mut dsty, ref mut av) = &mut *acc;
     match a {
         XmlAttr::Class(e) => *cls = Some(e),
         XmlAttr::DynClass(e) => *dcls = Some(e),
@@ -124,7 +132,7 @@ pub fn xml_desugar_tag_open(
 ) -> LocExp {
     let pos = Span::from_offsets("", l, r, &[]);
     let (name, head_exp) = head;
-    let (cls, dcls, sty, dsty, attr_pairs) = attrs;
+    let (cls, dcls, sty, dsty, attr_pairs) = *attrs;
 
     let some_wrap = |e: LocExp, p: Span| -> LocExp {
         Located::new(

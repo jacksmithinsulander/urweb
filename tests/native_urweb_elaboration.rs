@@ -34,9 +34,7 @@ fn native_ndb_urweb_put_get_elaborates_under_boot() {
             "    s <- urweb_get \"greet\";\n",
             "    return <xml><body>{txt s}</body></xml>\n",
         ),
-    ) {
-        return;
-    }
+    ) {}
 }
 
 #[test]
@@ -45,14 +43,15 @@ fn native_ndb_urweb_put_partial_application_elaborates_under_boot() {
         "dbms ndb\ndatabase :memory:\n\nm\n",
         concat!(
             "fun main () : transaction page =\n",
-            "    let putGreet = urweb_put \"greet\" in\n",
-            "    putGreet \"hi\";\n",
-            "    s <- urweb_get \"greet\";\n",
-            "    return <xml><body>{txt s}</body></xml>\n",
+            "    let\n",
+            "        val putGreet = urweb_put \"greet\"\n",
+            "    in\n",
+            "        putGreet \"hi\";\n",
+            "        s <- urweb_get \"greet\";\n",
+            "        return <xml><body>{txt s}</body></xml>\n",
+            "    end\n",
         ),
-    ) {
-        return;
-    }
+    ) {}
 }
 
 #[test]
@@ -64,9 +63,7 @@ fn native_tigerbeetle_urweb_tb_transfer_elaborates_under_boot() {
             "    urweb_tb_transfer 1 2 100 42;\n",
             "    return <xml><body>ok</body></xml>\n",
         ),
-    ) {
-        return;
-    }
+    ) {}
 }
 
 #[test]
@@ -75,11 +72,12 @@ fn native_tigerbeetle_urweb_tb_transfer_curried_elaborates_under_boot() {
         "dbms tigerbeetle\ndatabase 127.0.0.1:3000\n\nm\n",
         concat!(
             "fun main () : transaction page =\n",
-            "    let t = urweb_tb_transfer 1 2 in\n",
-            "    t 100 42;\n",
-            "    return <xml><body>ok</body></xml>\n",
+            "    let\n",
+            "        val t = urweb_tb_transfer 1 2\n",
+            "    in\n",
+            "        t 100 42;\n",
+            "        return <xml><body>ok</body></xml>\n",
+            "    end\n",
         ),
-    ) {
-        return;
-    }
+    ) {}
 }

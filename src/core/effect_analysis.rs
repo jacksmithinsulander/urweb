@@ -212,11 +212,11 @@ fn analyze_decl(
             loop {
                 let mut changed = false;
                 for (n, e_dejs, e, s) in &precomputed {
-                    if exp_has_write(&e_dejs, writers, settings) && !writers.contains_key(n) {
+                    if exp_has_write(e_dejs, writers, settings) && !writers.contains_key(n) {
                         writers.insert(*n, (span.clone(), s.clone()));
                         changed = true;
                     }
-                    if exp_has_read_cookie(&e_dejs, readers) && !readers.contains_key(n) {
+                    if exp_has_read_cookie(e_dejs, readers) && !readers.contains_key(n) {
                         readers.insert(*n, (span.clone(), s.clone()));
                         changed = true;
                     }
@@ -239,7 +239,7 @@ fn analyze_decl(
         Declaration::Export(ExportKind::Link(_), n, _) => {
             // Link exports accessed via GET — warn if they could cause side effects
             if let Some((loc, s)) = writers.get(&n) {
-                if !settings.is_safe_get(&s) {
+                if !settings.is_safe_get(s) {
                     errors.push((
                         loc.clone(),
                         format!(

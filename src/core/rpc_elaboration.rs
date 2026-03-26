@@ -70,8 +70,8 @@ pub fn rpcify(file: File, error_reporter: &mut impl FnMut(&Span, &str)) -> File 
     let mut trpc_base_ids: HashSet<usize> = HashSet::new();
 
     for d in &file {
-        match &d.node {
-            Declaration::Val(_, n, _, e, _) => match &e.node {
+        if let Declaration::Val(_, n, _, e, _) = &d.node {
+            match &e.node {
                 Expression::Ffi(m, f) if m == "Basis" && f == "rpc" => {
                     rpc_base_ids.insert(*n);
                 }
@@ -86,8 +86,7 @@ pub fn rpcify(file: File, error_reporter: &mut impl FnMut(&Span, &str)) -> File 
                     }
                 }
                 _ => {}
-            },
-            _ => {}
+            }
         }
     }
 
@@ -189,7 +188,7 @@ pub fn rpcify(file: File, error_reporter: &mut impl FnMut(&Span, &str)) -> File 
         );
 
         // Prepend any newly generated export declarations
-        result.extend(state.export_decls.drain(..));
+        result.append(&mut state.export_decls);
         result.push(Located { node: d.node, span });
     }
 

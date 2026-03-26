@@ -21,7 +21,7 @@ pub fn fold_cmp_rel_chain(first: LocExp, tail: Vec<(String, LocExp)>) -> LocExp 
         let r = rhs.span.last.clone();
         let file = acc.span.file.clone();
         acc = Located::new(
-            Exp::Infix(op.into(), Box::new(acc), Box::new(rhs)),
+            Exp::Infix(op, Box::new(acc), Box::new(rhs)),
             Span {
                 file,
                 first: l,

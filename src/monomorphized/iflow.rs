@@ -268,7 +268,7 @@ impl CcDb {
         match a {
             Atom::Const(_) => Some(0),
             Atom::Func(Func::DtCon0(_), _) => Some(1),
-            Atom::Func(Func::DtCon1(_, ..), _) => Some(2),
+            Atom::Func(Func::DtCon1(..), _) => Some(2),
             Atom::Recd(_) => Some(3),
             _ => None,
         }

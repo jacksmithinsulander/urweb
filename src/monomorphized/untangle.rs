@@ -226,14 +226,14 @@ fn tarjan_sccs_topological(
             }
             let cur = *cur;
             while let Some(w) = rem.pop() {
-                if !disc.contains_key(&w) {
+                if let std::collections::btree_map::Entry::Vacant(e) = disc.entry(w) {
                     let w_succs: Vec<usize> = successors
                         .get(&w)
                         .unwrap_or(&empty)
                         .iter()
                         .copied()
                         .collect();
-                    disc.insert(w, counter);
+                    e.insert(counter);
                     lowlink.insert(w, counter);
                     counter += 1;
                     on_stack.insert(w);

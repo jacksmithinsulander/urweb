@@ -519,8 +519,8 @@ impl Transformer {
             Closure(n, envs) => Closure(n, envs.into_iter().map(|a| p1!(a)).collect()),
             Query(qm) => {
                 // This case is handled in phase1_exp; shouldn't reach here.
-                let new_node = wrap_query_with_cache(&mut self.caching, qm, span, 0);
-                new_node
+
+                wrap_query_with_cache(&mut self.caching, qm, span, 0)
             }
             Dml(e1, fm) => Dml(Box::new(p1!(*e1)), fm),
             Nextval(e1) => Nextval(Box::new(p1!(*e1))),
@@ -716,10 +716,7 @@ fn phase1_decl_node(state: &mut CachingState, d: Decl, span: &Span) -> Decl {
                 Seq(e1, e2) => Seq(Box::new(p!(*e1)), Box::new(p!(*e2))),
                 Let(x, t, e1, e2) => Let(x, t, Box::new(p!(*e1)), Box::new(p!(*e2))),
                 Closure(n, envs) => Closure(n, envs.into_iter().map(|a| p!(a)).collect()),
-                Query(qm) => {
-                    let new = wrap_query_with_cache(self.0, qm, span, 0);
-                    new
-                }
+                Query(qm) => wrap_query_with_cache(self.0, qm, span, 0),
                 Dml(e1, fm) => Dml(Box::new(p!(*e1)), fm),
                 Nextval(e1) => Nextval(Box::new(p!(*e1))),
                 Setval(e1, e2) => Setval(Box::new(p!(*e1)), Box::new(p!(*e2))),

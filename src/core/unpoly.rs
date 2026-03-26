@@ -470,7 +470,7 @@ fn trim(
                 t = sub_con_in_con(cargs.len() - 1, carg, *t_body);
                 e = sub_con_in_exp(cargs.len() - 1, carg, *e_body);
             }
-            (_, _) if cargs.len() == 0 => {
+            (_, _) if cargs.is_empty() => {
                 // No more to substitute — should not be reached inside loop
                 break;
             }
@@ -612,7 +612,7 @@ fn recurse_irregular_exp(
 
         Expression::Constructor(_, _, _, arg) => arg
             .as_ref()
-            .map_or(false, |a| is_irregular_at(a, member_ids, nargs, cn)),
+            .is_some_and(|a| is_irregular_at(a, member_ids, nargs, cn)),
 
         Expression::FfiApp(_, _, args) => args
             .iter()

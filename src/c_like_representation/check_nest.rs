@@ -352,7 +352,7 @@ mod tests {
         let globals = HashMap::new();
         let result = annotate_exp(&globals, e);
         if let Exp::Query(qm) = result.node {
-            assert_eq!(qm.prepared.unwrap().nested, false);
+            assert!(!qm.prepared.unwrap().nested);
         } else {
             panic!("expected Query");
         }
@@ -570,7 +570,7 @@ mod tests {
         let globals = HashMap::new();
         let result = annotate_exp(&globals, e);
         if let Exp::Query(qm) = result.node {
-            assert_eq!(qm.prepared.unwrap().nested, true);
+            assert!(qm.prepared.unwrap().nested);
         } else {
             panic!("expected Query");
         }

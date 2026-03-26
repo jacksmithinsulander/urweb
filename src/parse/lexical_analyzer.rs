@@ -788,8 +788,7 @@ impl<'a> XmlAwareLexer<'a> {
             }
 
             // Numeric literals
-            if b.is_ascii_digit() || (b == b'-' && self.at(1).map_or(false, |c| c.is_ascii_digit()))
-            {
+            if b.is_ascii_digit() || (b == b'-' && self.at(1).is_some_and(|c| c.is_ascii_digit())) {
                 return Some(self.scan_number(start));
             }
 
@@ -987,7 +986,7 @@ impl<'a> XmlAwareLexer<'a> {
             "Name" => Token::Name,
             "Type" => Token::KindType,
             "Unit" => Token::KindUnit,
-            w if w.chars().next().map_or(false, |c| c.is_uppercase()) => {
+            w if w.chars().next().is_some_and(|c| c.is_uppercase()) => {
                 Token::UpperIdent(w.to_string())
             }
             w => Token::Ident(w.to_string()),
@@ -1232,14 +1231,12 @@ impl<'a> Iterator for XmlAwareLexer<'a> {
         if let Some(tok) = self.pending.pop_front() {
             return Some(Ok(tok));
         }
-        loop {
-            let result = match self.mode.clone() {
-                LexMode::Regular => self.next_regular()?,
-                LexMode::Xml => self.next_xml()?,
-                LexMode::XmlTag => self.next_xmltag()?,
-            };
-            return Some(result);
-        }
+        let result = match self.mode.clone() {
+            LexMode::Regular => self.next_regular()?,
+            LexMode::Xml => self.next_xml()?,
+            LexMode::XmlTag => self.next_xmltag()?,
+        };
+        Some(result)
     }
 }
 
@@ -1297,9 +1294,9 @@ mod tests {
 
     #[test]
     fn float_literal() {
-        let toks = lex_all("3.14");
+        let toks = lex_all("1.375");
         match &toks[0] {
-            Token::Float(f) => assert!((f - 3.14).abs() < 1e-10),
+            Token::Float(f) => assert!((f - 1.375).abs() < 1e-10),
             other => panic!("expected Float, got {:?}", other),
         }
     }

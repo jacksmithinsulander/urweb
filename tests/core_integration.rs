@@ -11,8 +11,8 @@ use ur::compiler;
 use ur::core::environment::Env;
 use ur::core::utilities::{classify_datatype, constructor, declaration, expression, file, kind};
 use ur::core::{
-    Constructor, Declaration, Expression, FieldMeta, Kind, LocatedConstructor, LocatedDeclaration,
-    LocatedExpression, Pattern,
+    Constructor, Declaration, Expression, FieldMeta, Kind, LocatedConstructor, LocatedExpression,
+    Pattern,
 };
 use ur::datatype_kind::DatatypeKind;
 use ur::error_types::{Located, Span};
@@ -1569,8 +1569,8 @@ fn integration_core_rpcify_rewrites_rpc_call_to_server_call_and_export() {
         ),
     ];
     let mut errors = ur::error_types::ErrorReporter::new();
-    let mut settings = ur::settings::Settings::default();
-    let result = compiler::core_rpcify(file, &mut settings, &mut errors);
+    let settings = ur::settings::Settings::default();
+    let result = compiler::core_rpcify(file, &settings, &mut errors);
     let out = result.expect("rpcify must succeed");
     let has_server_call = out.iter().any(|d| {
         ur::core::utilities::declaration::exists(
@@ -1973,9 +1973,8 @@ fn integration_local_reduction_shift_con_proj() {
     match &out.node {
         Constructor::Proj(c, n) => {
             assert_eq!(*n, 0);
-            match &c.node {
-                Constructor::Tuple(cs) => assert!(matches!(cs[0].node, Constructor::Rel(2))),
-                _ => {}
+            if let Constructor::Tuple(cs) = &c.node {
+                assert!(matches!(cs[0].node, Constructor::Rel(2)))
             }
         }
         _ => panic!("expected Proj"),
@@ -2112,9 +2111,9 @@ fn integration_core_rpcify_minimal_val() {
         "".into(),
     ));
     let file: ur::core::File = vec![decl];
-    let mut settings = ur::settings::Settings::new();
+    let settings = ur::settings::Settings::new();
     let mut errors = ur::error_types::ErrorReporter::new();
-    let result = compiler::core_rpcify(file, &mut settings, &mut errors);
+    let result = compiler::core_rpcify(file, &settings, &mut errors);
     assert!(result.is_some());
     assert_eq!(result.unwrap().len(), 1);
 }
@@ -2320,9 +2319,9 @@ fn integration_global_reduction_reduce_export() {
 fn integration_core_rpcify_database() {
     let decl = Located::dummy(Declaration::Database("db".into()));
     let file: ur::core::File = vec![decl];
-    let mut settings = ur::settings::Settings::new();
+    let settings = ur::settings::Settings::new();
     let mut errors = ur::error_types::ErrorReporter::new();
-    let result = compiler::core_rpcify(file, &mut settings, &mut errors);
+    let result = compiler::core_rpcify(file, &settings, &mut errors);
     assert!(result.is_some());
     assert_eq!(result.unwrap().len(), 1);
 }
@@ -2693,7 +2692,7 @@ fn integration_termination_check_valrec_non_recursive() {
         "".into(),
     )]));
     let file: ur::core::File = vec![decl];
-    let settings = ur::settings::Settings::new();
+    let _settings = ur::settings::Settings::new();
     let mut errors = ur::error_types::ErrorReporter::new();
     ur::core::termination_check::check(&file, &mut errors);
     assert!(!errors.has_errors());

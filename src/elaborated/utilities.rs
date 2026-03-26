@@ -2374,9 +2374,9 @@ pub mod exp {
             Pattern::Constructor(_, _, constructor_args, sub_pattern) => {
                 constructor_args.iter().any(|constructor_arg| {
                     con_utilities::exists(constructor_arg, kind_predicate, constructor_predicate)
-                }) || sub_pattern.as_ref().map_or(false, |sub| {
-                    exists_pattern(sub, kind_predicate, constructor_predicate)
-                })
+                }) || sub_pattern
+                    .as_ref()
+                    .is_some_and(|sub| exists_pattern(sub, kind_predicate, constructor_predicate))
             }
             Pattern::Record(record_fields) => {
                 record_fields.iter().any(|(_, sub_pattern, field_type)| {
@@ -2784,12 +2784,12 @@ pub mod sgn {
             SignatureItem::Datatype(dts) => dts.iter().any(|dt| {
                 dt.constrs.iter().any(|(_, _, co)| {
                     co.as_ref()
-                        .map_or(false, |c| con_utilities::exists(c, fk, fc))
+                        .is_some_and(|c| con_utilities::exists(c, fk, fc))
                 })
             }),
             SignatureItem::DatatypeImp { constrs, .. } => constrs.iter().any(|(_, _, co)| {
                 co.as_ref()
-                    .map_or(false, |c| con_utilities::exists(c, fk, fc))
+                    .is_some_and(|c| con_utilities::exists(c, fk, fc))
             }),
             SignatureItem::Val(_, _, c) => con_utilities::exists(c, fk, fc),
             SignatureItem::Structure(_, _, _, s) | SignatureItem::Signature(_, _, s) => {
@@ -3246,12 +3246,12 @@ pub mod decl {
             Declaration::Datatype(dts) => dts.iter().any(|dt| {
                 dt.constrs.iter().any(|(_, _, co)| {
                     co.as_ref()
-                        .map_or(false, |c| con_utilities::exists(c, fk, fc))
+                        .is_some_and(|c| con_utilities::exists(c, fk, fc))
                 })
             }),
             Declaration::DatatypeImp { constrs, .. } => constrs.iter().any(|(_, _, co)| {
                 co.as_ref()
-                    .map_or(false, |c| con_utilities::exists(c, fk, fc))
+                    .is_some_and(|c| con_utilities::exists(c, fk, fc))
             }),
             Declaration::Val(_, _, ty, e) => {
                 con_utilities::exists(ty, fk, fc) || eutil::exists(e, fk, fc, fe)
