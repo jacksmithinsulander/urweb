@@ -436,6 +436,21 @@ Con: LocCon = {
 };
 
 ConNode: Con = {
+    // Kind-variable universal type: `K --> Con`  (TKFun — polymorphism over a kind var).
+    // Used in top.urs: `val fold : K --> tf :: ({K} -> Type) -> ...`
+    // `-->` is not in FOLLOW(AtomConNode) so no shift-reduce conflict with UIDENT→AtomCon.
+    <name:"UIDENT"> "-->" <c:Con> => Con::TKFun(name, Box::new(c)),
+
+    // Kind abstraction: `K ==> Con` (KAbs).
+    // Used in top.urs: `con ident = K ==> fn t :: K => t`
+    <name:"UIDENT"> "==>" <c:Con> => Con::KAbs(name, Box::new(c)),
+
+    // Kind annotation with explicit parens: `(C) :: K`  (Annot).
+    // The outer parens are required; this avoids putting `::` in FOLLOW(Con) bare.
+    // Used in top.urs: `folder (([]) :: {K})`
+    <l:@L> "(" <c:ConInParen> ")" "::" <k:Kind> <r:@R> =>
+        Con::Annot(Box::new(Located::new(c, Span::from_offsets("", l, r, &[]))), Box::new(k)),
+
     // product/tuple type: `A * B`  →  Tuple([A, B])
     // Right-associative; flattens nested tuples so `A * B * C` = Tuple([A, B, C]).
     <c1:AppCon> "*" <c2:Con> => {
