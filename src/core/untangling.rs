@@ -26,8 +26,6 @@
 //!
 //! Mirrors `core_untangle.sml`.
 
-#![allow(dead_code)]
-
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::core::{Declaration, Expression, File, LocatedDeclaration, LocatedExpression};

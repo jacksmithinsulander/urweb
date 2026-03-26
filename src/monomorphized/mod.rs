@@ -4,6 +4,8 @@
 //! Option, List, Source, Signal. Used for code generation.
 //!
 //! Mirrors `mono.sml`.
+//!
+//! **Style:** new/edited Rust here follows [README.md](../../README.md) Rust code style (exceptions documented there).
 
 pub mod db_mode_check;
 pub mod endpoints;

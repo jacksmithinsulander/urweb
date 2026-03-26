@@ -2,10 +2,6 @@
 //!
 //! Mirrors `elab_util.sml`.
 
-#![allow(dead_code, unused_variables, unused_imports)]
-
-use std::sync::{Arc, Mutex};
-
 use crate::datatype_kind::DatatypeKind;
 use crate::elaborated::*;
 use crate::error_types::Located;
@@ -942,7 +938,7 @@ pub mod con {
 
 pub mod exp {
     use super::con as con_utilities;
-    use super::kind as kind_utilities;
+
     use super::*;
 
     /// Helper: maps a constructor using the expression binder context, without

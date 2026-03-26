@@ -5,6 +5,8 @@
 //! All nodes are `Located<T>` for error reporting.
 //!
 //! Mirrors `source.sml` one-to-one.
+//!
+//! **Style:** new/edited Rust here follows [README.md](../../README.md) Rust code style (exceptions documented there).
 
 use crate::error_types::Located;
 use crate::primitives::Prim;

@@ -16,13 +16,10 @@
 //! unlike the Elab environment which also tracks relative bindings for
 //! class resolution and implicit arguments.
 
-#![allow(dead_code, unused_variables, unused_imports)]
-
 use std::collections::HashMap;
 
 use crate::core::*;
 use crate::datatype_kind::DatatypeKind;
-use crate::error_types::CompileError;
 
 use super::utilities::classify_datatype;
 
@@ -316,10 +313,10 @@ impl Env {
                 sql_name,
                 id,
                 con,
-                sql_con,
-                exp,
+                sql_con: _,
+                exp: _,
                 pk_con,
-                pk_exp,
+                pk_exp: _,
                 unique_con,
             } => {
                 // Table type: Basis.sql_table con (pk ++ unique)

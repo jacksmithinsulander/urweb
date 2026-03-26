@@ -12,8 +12,6 @@
 //!
 //! Mirrors `especialize.sml`.
 
-#![allow(dead_code)]
-
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 

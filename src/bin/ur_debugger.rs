@@ -1,11 +1,11 @@
-//! ur-debugger — DAP over stdio (GDB/MI) plus `gdb` terminal helpers.
+//! Debug Adapter Protocol on standard input and output, plus GNU Debugger launch helpers (`ur-debugger`).
 //!
-//! Build Ur/Web with **`ur-compile -debug`** (or a `debug` line in the `.urp`) so `cc_and_link`
-//! passes **`-g`** and the executable contains debug symbols (DWARF). The C backend emits **`#line`**
-//! back to `.ur` where spans exist, so breakpoints can target Ur sources when DWARF lists them.
+//! The adapter speaks JSON remote procedure calls on stdio; `--gdb` uses GDB’s machine-interface text protocol (`mi3`).
+//! Build with `ur-compile -debug` (or a `debug` line in the `.urp`) so linking passes `-g` and the binary includes DWARF debugging information.
+//! The C backend emits `#line` back to `.ur` where spans exist so breakpoints can name Ur sources when the debug data lists them.
 //!
 //! ## Editor usage
-//! Point the debug adapter at `ur-debugger` with argument `--dap` (stdout must be JSON-RPC only).
+//! Point the debug adapter at `ur-debugger --dap` (standard output must carry only protocol JSON).
 //!
 //! Implemented DAP (subset): `initialize`, `launch`, `attach`, `configurationDone`, `setBreakpoints`,
 //! `breakpointLocations`, `setExceptionBreakpoints` (signal / C++ catch filters), `setDataBreakpoints`,
@@ -13,9 +13,12 @@
 //! `evaluate`, `setVariable`, `disassemble`, `loadedSources`, `source`, `exceptionInfo`, `modules`, `threads`,
 //! `stackTrace`, `scopes`, `variables`, `disconnect`, `terminate`, `shutdown`; `stopped` + `terminated` on exit;
 //! `entry` when `stopAtEntry` is set; **`loadedSource`** when new files show up in the inferior after stops.
+//!
+//! **Style:** this binary follows [README.md](../../README.md) Rust code style where edited.
 
 use anyhow::{Context, Result};
 
+/// Drop `argv[0]`, call [`run`], exit with `1` on error.
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if let Err(e) = run(args) {
@@ -24,6 +27,9 @@ fn main() {
     }
 }
 
+/// Run the Debug Adapter Protocol server, GDB machine-interface passthrough, interactive terminal mode, or print help.
+///
+/// `args` is argv without the program name. `--dap` calls [`ur::debugger::run_dap_stdio`] on standard input and output.
 fn run(args: Vec<String>) -> Result<()> {
     match args.first().map(|s| s.as_str()) {
         None | Some("-h") | Some("--help") => {
@@ -45,6 +51,7 @@ fn run(args: Vec<String>) -> Result<()> {
     }
 }
 
+/// Print mode summary and examples to standard error.
 fn print_usage() {
     eprintln!(
         "\
@@ -67,6 +74,9 @@ Examples:
     );
 }
 
+/// Run `gdb -q --interpreter=mi3` with extra arguments from `rest`.
+///
+/// Skips a leading `--` in `rest` (tokens after `ur-debugger --gdb`). Returns `Ok` only if GDB exits successfully.
 fn gdb_mi_passthrough(rest: &[String]) -> Result<()> {
     let mut cmd = std::process::Command::new("gdb");
     cmd.args(["-q", "--interpreter=mi3"]);
@@ -86,6 +96,10 @@ fn gdb_mi_passthrough(rest: &[String]) -> Result<()> {
     }
 }
 
+/// Start an interactive GDB session on the user’s terminal for a program and its arguments.
+///
+/// `rest` may start with `--run`, then the program path, then arguments for the debugged process.
+/// On Unix may replace this process with `exec`; elsewhere spawns GDB and waits. Returns `Ok` on clean GDB exit.
 fn gdb_tty(rest: &[String]) -> Result<()> {
     let mut run_first = false;
     let mut i = 0usize;

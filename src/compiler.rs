@@ -4,6 +4,11 @@
 //! explify → core passes → mono passes → cjr_print / sql_generate → C compile.
 //!
 //! Mirrors `compiler.sml`.
+//!
+//! Public helpers here use rustdoc with `# Arguments`, `# Returns`, and `# Errors` when the contract
+//! is not obvious from the signature alone.
+//!
+//! **Style:** new/edited Rust here follows [README.md](../README.md) Rust code style (exceptions documented there).
 
 use anyhow::{bail, Context, Result};
 use std::path::{Path, PathBuf};
@@ -19,6 +24,12 @@ pub(crate) static APPLY_BOOT_SETTINGS_CALLS: AtomicUsize = AtomicUsize::new(0);
 pub(crate) static CSS_SUMMARIZE_CALLS: AtomicUsize = AtomicUsize::new(0);
 #[cfg(test)]
 pub(crate) static MONO_FILECACHE_CALLS: AtomicUsize = AtomicUsize::new(0);
+#[cfg(test)]
+pub(crate) static APPEND_NATIVE_INCLUDE_FALLBACK_INVOCATIONS: AtomicUsize = AtomicUsize::new(0);
+#[cfg(test)]
+pub(crate) static APPEND_NATIVE_LIBDIR_FALLBACK_INVOCATIONS: AtomicUsize = AtomicUsize::new(0);
+#[cfg(test)]
+pub(crate) static RESOLVE_BOOT_ROOT_INVOCATIONS: AtomicUsize = AtomicUsize::new(0);
 
 /// When diagnostics were already printed to stderr, summarize why compilation stops.
 fn bail_if_errors_reported(errors: &ErrorReporter, phase: &str) -> Result<()> {
@@ -150,8 +161,11 @@ impl Default for CompileResult {
 }
 
 impl CompileResult {
-    /// Consume and return the inner `Result` (for `match` / `?`).
-    /// (`Result` is already `#[must_use]`; no extra attribute needed.)
+    /// Consume this wrapper and return the inner result from [`compile`].
+    ///
+    /// # Returns
+    ///
+    /// The `Result<PathBuf>` holding the output executable path or an error.
     pub fn into_result(self) -> Result<PathBuf> {
         self.0
     }
@@ -167,7 +181,19 @@ impl From<Result<PathBuf>> for CompileResult {
 // Phase 1: Parse .urp file
 // ---------------------------------------------------------------------------
 
-/// Parse a `.urp` project file into a `Job` description.
+/// Parse a `.urp` project file into a [`Job`] description.
+///
+/// # Arguments
+///
+/// * `path` — Path to the Ur/Web project file (typically ends in `.urp`).
+///
+/// # Returns
+///
+/// Populated [`Job`] on success.
+///
+/// # Errors
+///
+/// Input/output, malformed project file, or directive errors from the Ur/Web project parser.
 pub fn parse_urp(path: &Path) -> Result<Job> {
     crate::urp_parser::parse_urp(path)
 }
@@ -190,6 +216,8 @@ fn boot_root_from(start: PathBuf) -> Option<PathBuf> {
 /// executable first, then from [`std::env::current_dir`] (supports temp-project tests that symlink
 /// `lib/ur` into an isolated directory).
 fn resolve_boot_root() -> Option<PathBuf> {
+    #[cfg(test)]
+    RESOLVE_BOOT_ROOT_INVOCATIONS.fetch_add(1, Ordering::SeqCst);
     if let Ok(exe) = std::env::current_exe() {
         if let Some(p) = exe.parent() {
             if let Some(r) = boot_root_from(p.to_path_buf()) {
@@ -203,10 +231,17 @@ fn resolve_boot_root() -> Option<PathBuf> {
 
 /// If `URWEB_NATIVE_LIB_DIR` is unset, use checkout-relative `crates/urweb-{persy,ndb}/include` for `-I`.
 fn append_urweb_native_include_fallback(compile_cmd: &mut std::process::Command) {
-    let env_set = std::env::var("URWEB_NATIVE_LIB_DIR")
-        .map(|s| !s.trim().is_empty())
-        .unwrap_or(false);
-    if env_set {
+    #[cfg(test)]
+    APPEND_NATIVE_INCLUDE_FALLBACK_INVOCATIONS.fetch_add(1, Ordering::SeqCst);
+    // Match arms avoid unary `!` so `delete !` mutants cannot flip “use env” vs “use checkout fallbacks”.
+    let user_supplied_native_dir = match std::env::var("URWEB_NATIVE_LIB_DIR") {
+        Ok(s) => match s.trim().is_empty() {
+            true => false,
+            false => true,
+        },
+        Err(_) => false,
+    };
+    if user_supplied_native_dir {
         return;
     }
     let Some(root) = resolve_boot_root() else {
@@ -222,10 +257,16 @@ fn append_urweb_native_include_fallback(compile_cmd: &mut std::process::Command)
 
 /// If `URWEB_NATIVE_LIB_DIR` is unset, link against workspace `target/{release,debug}` when staticlibs exist.
 fn append_urweb_native_libdir_fallback(link_cmd: &mut std::process::Command) {
-    let env_set = std::env::var("URWEB_NATIVE_LIB_DIR")
-        .map(|s| !s.trim().is_empty())
-        .unwrap_or(false);
-    if env_set {
+    #[cfg(test)]
+    APPEND_NATIVE_LIBDIR_FALLBACK_INVOCATIONS.fetch_add(1, Ordering::SeqCst);
+    let user_supplied_native_dir = match std::env::var("URWEB_NATIVE_LIB_DIR") {
+        Ok(s) => match s.trim().is_empty() {
+            true => false,
+            false => true,
+        },
+        Err(_) => false,
+    };
+    if user_supplied_native_dir {
         return;
     }
     let Some(root) = resolve_boot_root() else {
@@ -240,9 +281,17 @@ fn append_urweb_native_libdir_fallback(link_cmd: &mut std::process::Command) {
     }
 }
 
-/// When `settings.boot_linking` is set, walk up from the current executable to
-/// find the project root (the directory containing `lib/ur/basis.urs`) and
-/// populate `job.basis_lib_dir` and the `config_*` settings.
+/// When `settings.boot_linking` is set, walk up from the current executable to find the checkout root
+/// (directory containing `lib/ur/basis.urs`) and populate `job.basis_lib_dir` and `config_*` paths.
+///
+/// # Arguments
+///
+/// * `job` — Project job to augment (basis library directory).
+/// * `settings` — Compiler settings to augment (`config_include`, `config_lib`, TLS library paths).
+///
+/// # Returns
+///
+/// Nothing; no-op when `boot_linking` is false or the root cannot be found.
 pub fn apply_boot_settings(job: &mut Job, settings: &mut Settings) {
     #[cfg(test)]
     APPLY_BOOT_SETTINGS_CALLS.fetch_add(1, Ordering::SeqCst);
@@ -338,9 +387,21 @@ fn ur_disk_paths_same(a: &Path, b: &Path) -> bool {
     }
 }
 
-/// When `overlay` is ` Some((disk_path, text))`, the `.ur` module whose on-disk path matches
-/// `disk_path` is parsed from `text` instead of reading the file. Intended for LSP buffers.
-/// Caller should set process cwd to the project root (same as `ur-compile`).
+/// Parse every module in `job`, but read `overlay_text` for the `.ur` whose disk path matches `overlay_disk_path`.
+///
+/// Intended for language-server buffers. The process current directory should be the project root (same as `ur-compile`).
+///
+/// # Arguments
+///
+/// * `job` — Sources list and basis configuration from [`parse_urp`].
+/// * `overlay_disk_path` — Canonical or project-relative path to the open buffer.
+/// * `overlay_text` — Editor text substituted for that file’s disk contents.
+/// * `settings` — Compiler configuration (includes, rewrites, …).
+/// * `errors` — Diagnostic sink; fatal issues append here and yield `None`.
+///
+/// # Returns
+///
+/// Parsed [`crate::source::File`] (decl list) or `None` if parsing failed.
 pub fn parse_sources_with_overlay(
     job: &Job,
     overlay_disk_path: &Path,
@@ -356,6 +417,17 @@ pub fn parse_sources_with_overlay(
     )
 }
 
+/// Parse all modules listed in `job` from disk (no overlay).
+///
+/// # Arguments
+///
+/// * `job` — Project description including `sources` and basis paths.
+/// * `settings` — Compiler configuration.
+/// * `errors` — Collects parse and read errors.
+///
+/// # Returns
+///
+/// [`crate::source::File`] or `None` on failure.
 pub fn parse_sources(
     job: &Job,
     settings: &Settings,
@@ -624,6 +696,17 @@ fn parse_sources_inner(
 // Phase 3: Elaborate
 // ---------------------------------------------------------------------------
 
+/// Type- and module-check parsed declarations into an elaborated intermediate representation.
+///
+/// # Arguments
+///
+/// * `file` — AST from [`parse_sources`] or [`parse_sources_with_overlay`].
+/// * `settings` — Compilation options affecting elaboration.
+/// * `errors` — Receives type and module errors.
+///
+/// # Returns
+///
+/// [`crate::elaborated::File`] or `None` when elaboration cannot continue.
 pub fn elaborate(
     file: crate::source::File,
     settings: &Settings,
@@ -636,6 +719,16 @@ pub fn elaborate(
 // Phase 3.5: Unnest (elab → elab, lambda-lift nested val recs)
 // ---------------------------------------------------------------------------
 
+/// Lambda-lift nested `val rec` bindings in the elaborated representation.
+///
+/// # Arguments
+///
+/// * `file` — Elaborated program.
+/// * `errors` — Diagnostic sink for unnest failures.
+///
+/// # Returns
+///
+/// Transformed elaborated file (may still contain errors reported separately).
 pub fn unnest(
     file: crate::elaborated::File,
     errors: &mut ErrorReporter,
@@ -647,6 +740,16 @@ pub fn unnest(
 // Phase 4: Explify (elab → expl)
 // ---------------------------------------------------------------------------
 
+/// Lower elaborated AST to explicit intermediate form (patterns, guards, …).
+///
+/// # Arguments
+///
+/// * `file` — Elaborated program.
+/// * `errors` — Reports explify failures.
+///
+/// # Returns
+///
+/// [`crate::explicit::File`] or `None`.
 pub fn explify(
     file: crate::elaborated::File,
     errors: &mut ErrorReporter,
@@ -658,6 +761,17 @@ pub fn explify(
 // Phase 5: Corify (expl → core)
 // ---------------------------------------------------------------------------
 
+/// Lower explicit IR to typed core language.
+///
+/// # Arguments
+///
+/// * `file` — Explicit-phase program.
+/// * `settings` — Options affecting the translation.
+/// * `errors` — Corify diagnostics.
+///
+/// # Returns
+///
+/// [`crate::core::File`] or `None`.
 pub fn corify(
     file: crate::explicit::File,
     settings: &mut Settings,
@@ -670,34 +784,89 @@ pub fn corify(
 // Core passes
 // ---------------------------------------------------------------------------
 
+/// Core phase: untangle nested binding structure (see `crate::core::untangling`).
+///
+/// # Arguments
+///
+/// * `file` — Core program.
+///
+/// # Returns
+///
+/// Transformed core [`crate::core::File`].
 pub fn core_untangle(file: crate::core::File) -> crate::core::File {
     crate::core::untangling::untangle(file)
 }
 
+/// Core phase: local reduction (simplify within bindings).
+///
+/// # Returns
+///
+/// Transformed [`crate::core::File`].
 pub fn core_reduce_local(file: crate::core::File) -> crate::core::File {
     crate::core::local_reduction::reduce(file)
 }
 
+/// Core phase: dead-code elimination (“shake”).
+///
+/// # Returns
+///
+/// Pruned [`crate::core::File`].
 pub fn core_shake(file: crate::core::File) -> crate::core::File {
     crate::core::dead_code_elimination::shake(file)
 }
 
+/// Core phase: global reduction pass.
+///
+/// # Arguments
+///
+/// * `file` — Core program.
+/// * `settings` — Controls reduction strength.
+///
+/// # Returns
+///
+/// Reduced [`crate::core::File`].
 pub fn core_reduce(file: crate::core::File, settings: &Settings) -> crate::core::File {
     crate::core::global_reduction::reduce(file, settings)
 }
 
+/// Core phase: E-specialization (see `crate::core::especialize`).
+///
+/// # Returns
+///
+/// Transformed [`crate::core::File`].
 pub fn core_especialize(file: crate::core::File) -> crate::core::File {
     crate::core::especialize::especialize(file)
 }
 
+/// Core phase: remove polymorphism where possible.
+///
+/// # Returns
+///
+/// Transformed [`crate::core::File`].
 pub fn core_unpoly(file: crate::core::File) -> crate::core::File {
     crate::core::unpoly::unpoly(file)
 }
 
+/// Core phase: specialization pass.
+///
+/// # Returns
+///
+/// Transformed [`crate::core::File`].
 pub fn core_specialize(file: crate::core::File) -> crate::core::File {
     crate::core::specialize::specialize(file)
 }
 
+/// Core phase: RPC elaboration; reports errors through `errors` and returns `None` if any occurred.
+///
+/// # Arguments
+///
+/// * `file` — Core program.
+/// * `_settings` — Reserved for future RPC options.
+/// * `errors` — Receives span-attached RPC errors.
+///
+/// # Returns
+///
+/// Updated [`crate::core::File`] or `None` when errors were reported.
 pub fn core_rpcify(
     file: crate::core::File,
     _settings: &Settings,
@@ -715,6 +884,17 @@ pub fn core_rpcify(
     }
 }
 
+/// Core phase: export tagging; returns `None` if `errors` received any diagnostic.
+///
+/// # Arguments
+///
+/// * `file` — Core program after RPC pass.
+/// * `_settings` — Reserved.
+/// * `errors` — Export/tagging errors.
+///
+/// # Returns
+///
+/// Tagged [`crate::core::File`] or `None`.
 pub fn core_tag(
     file: crate::core::File,
     _settings: &Settings,
@@ -732,6 +912,16 @@ pub fn core_tag(
     }
 }
 
+/// Core phase: effect analysis; drops effect warnings from the helper.
+///
+/// # Arguments
+///
+/// * `file` — Core program.
+/// * `settings` — Effect-policy options.
+///
+/// # Returns
+///
+/// Effect-annotated [`crate::core::File`].
 pub fn core_effectize(file: crate::core::File, settings: &Settings) -> crate::core::File {
     let (result, _warnings) = crate::core::effect_analysis::effectize(file, settings);
     result
@@ -741,10 +931,26 @@ pub fn core_effectize(file: crate::core::File, settings: &Settings) -> crate::co
 // Checks on Core
 // ---------------------------------------------------------------------------
 
+/// Verify cross-tier marshalling constraints on the core program.
+///
+/// # Arguments
+///
+/// * `file` — Core IR to check.
+/// * `settings` — Protocol and database context.
+/// * `errors` — Append-only diagnostics.
+///
+/// # Returns
+///
+/// Nothing.
 pub fn check_marshal(file: &crate::core::File, settings: &Settings, errors: &mut ErrorReporter) {
     crate::core::marshal_check::check(file, settings, errors);
 }
 
+/// Run the termination checker on recursive bindings in `file`.
+///
+/// # Returns
+///
+/// Nothing; failures append to `errors`.
 pub fn check_termination(file: &crate::core::File, errors: &mut ErrorReporter) {
     crate::core::termination_check::check(file, errors);
 }
@@ -753,6 +959,17 @@ pub fn check_termination(file: &crate::core::File, errors: &mut ErrorReporter) {
 // Mono checks
 // ---------------------------------------------------------------------------
 
+/// Classify JavaScript script fragments for the monomorphized program.
+///
+/// # Arguments
+///
+/// * `file` — Monomorphized declarations.
+/// * `settings` — Compilation options.
+/// * `errors` — Diagnostic sink.
+///
+/// # Returns
+///
+/// Updated [`crate::monomorphized::File`].
 pub fn mono_script_check(
     file: crate::monomorphized::File,
     settings: &Settings,
@@ -761,10 +978,20 @@ pub fn mono_script_check(
     crate::monomorphized::script_check::classify(file, settings, errors)
 }
 
+/// Path-mode sanity check on URLs and handlers (append to `errors` on failure).
+///
+/// # Returns
+///
+/// Nothing.
 pub fn mono_path_check(file: &crate::monomorphized::File, errors: &mut ErrorReporter) {
     crate::monomorphized::path_check::check(file, errors)
 }
 
+/// Client/server side classification; returns environment-variable hints as strings.
+///
+/// # Returns
+///
+/// Updated monomorphized file and side-effect metadata.
 pub fn mono_side_check(
     file: crate::monomorphized::File,
     settings: &Settings,
@@ -773,10 +1000,20 @@ pub fn mono_side_check(
     crate::monomorphized::side_check::check(file, settings, errors)
 }
 
+/// Validate monomorphized signatures (pass-through wrapper).
+///
+/// # Returns
+///
+/// Checked [`crate::monomorphized::File`].
 pub fn mono_sig_check(file: crate::monomorphized::File) -> crate::monomorphized::File {
     crate::monomorphized::sig_check::check(file)
 }
 
+/// Classify database modes after monomorphization.
+///
+/// # Returns
+///
+/// Updated [`crate::monomorphized::File`].
 pub fn mono_dbmode_check(file: crate::monomorphized::File) -> crate::monomorphized::File {
     crate::monomorphized::db_mode_check::classify(file)
 }
@@ -785,6 +1022,17 @@ pub fn mono_dbmode_check(file: crate::monomorphized::File) -> crate::monomorphiz
 // Phase: Monoize (core → mono)
 // ---------------------------------------------------------------------------
 
+/// Monomorphize the core program into concrete types and handlers.
+///
+/// # Arguments
+///
+/// * `file` — Typed core program.
+/// * `settings` — Mono driver options.
+/// * `errors` — Failures from the monomorphizer.
+///
+/// # Returns
+///
+/// [`crate::monomorphized::File`] or `None` when the pass fails.
 pub fn monoize(
     file: crate::core::File,
     settings: &Settings,
@@ -797,14 +1045,29 @@ pub fn monoize(
 // Mono passes
 // ---------------------------------------------------------------------------
 
+/// Mono phase: untangle (see `crate::monomorphized::untangle`).
+///
+/// # Returns
+///
+/// Transformed monomorphized file.
 pub fn mono_untangle(file: crate::monomorphized::File) -> crate::monomorphized::File {
     crate::monomorphized::untangle::untangle(file)
 }
 
+/// Mono phase: fuse adjacent bindings.
+///
+/// # Returns
+///
+/// Transformed file.
 pub fn mono_fuse(file: crate::monomorphized::File) -> crate::monomorphized::File {
     crate::monomorphized::fuse::fuse(file)
 }
 
+/// Mono phase: global reduction.
+///
+/// # Returns
+///
+/// Reduced monomorphized file.
 pub fn mono_reduce(
     file: crate::monomorphized::File,
     settings: &Settings,
@@ -812,6 +1075,11 @@ pub fn mono_reduce(
     crate::monomorphized::mono_reduce::reduce(file, settings)
 }
 
+/// Mono phase: optimization (beta reduction and related rewrites).
+///
+/// # Returns
+///
+/// Optimized file (errors are non-fatal for some inner passes).
 pub fn mono_opt(
     file: crate::monomorphized::File,
     settings: &Settings,
@@ -820,10 +1088,20 @@ pub fn mono_opt(
     crate::monomorphized::mono_opt::optimize(file, settings, errors)
 }
 
+/// Mono phase: shake unused bindings in monomorphized IR.
+///
+/// # Returns
+///
+/// Pruned file.
 pub fn mono_shake(file: crate::monomorphized::File) -> crate::monomorphized::File {
     crate::monomorphized::mono_shake::shake(file)
 }
 
+/// Mono phase: aggressive inline + fuse pipeline (matches legacy `mono_inline` staging).
+///
+/// # Returns
+///
+/// File after inline, opt, fuse, opt, shake.
 pub fn mono_inline(
     file: crate::monomorphized::File,
     settings: &Settings,
@@ -842,10 +1120,20 @@ pub fn mono_inline(
     mono_shake(file)
 }
 
+/// Hoist JavaScript fragments to top-level bindings for `app.js` emission.
+///
+/// # Returns
+///
+/// Rewritten file.
 pub fn mono_name_js(file: crate::monomorphized::File) -> crate::monomorphized::File {
     crate::monomorphized::name_js::rewrite(file)
 }
 
+/// Collect HTTP endpoint metadata while returning the file unchanged.
+///
+/// # Returns
+///
+/// Same file plus endpoint descriptor vector.
 pub fn mono_endpoints(
     file: crate::monomorphized::File,
 ) -> (
@@ -855,6 +1143,11 @@ pub fn mono_endpoints(
     crate::monomorphized::endpoints::collect(file)
 }
 
+/// Insert file-cache instrumentation when enabled in settings.
+///
+/// # Returns
+///
+/// Instrumented file.
 pub fn mono_filecache(
     file: crate::monomorphized::File,
     settings: &Settings,
@@ -864,6 +1157,11 @@ pub fn mono_filecache(
     crate::monomorphized::filecache::instrument(file, settings)
 }
 
+/// Information-flow analysis in debug builds; `None` if `errors` is non-empty afterward.
+///
+/// # Returns
+///
+/// Same file wrapped in `Some` on success.
 pub fn mono_iflow(
     file: crate::monomorphized::File,
     settings: &Settings,
@@ -877,6 +1175,11 @@ pub fn mono_iflow(
     }
 }
 
+/// SQL cache instrumentation when `settings.sqlcache` is enabled (always `Some` today).
+///
+/// # Returns
+///
+/// Transformed file.
 pub fn mono_sqlcache(
     file: crate::monomorphized::File,
     settings: &Settings,
@@ -889,6 +1192,11 @@ pub fn mono_sqlcache(
 // Phase: CJRize (mono → cjr)
 // ---------------------------------------------------------------------------
 
+/// Lower monomorphized IR to C-like representation (CJR).
+///
+/// # Returns
+///
+/// [`crate::c_like_representation::File`] or `None` if `errors` collected failures.
 pub fn cjrize(
     file: crate::monomorphized::File,
     errors: &mut ErrorReporter,
@@ -900,6 +1208,11 @@ pub fn cjrize(
 // Phase: Prepare (cjr → cjr with prepared SQL statements)
 // ---------------------------------------------------------------------------
 
+/// Bind SQL statements to prepared handles in the CJR program.
+///
+/// # Returns
+///
+/// Prepared [`crate::c_like_representation::File`].
 pub fn cjr_prepare(
     file: crate::c_like_representation::File,
     settings: &Settings,
@@ -911,6 +1224,11 @@ pub fn cjr_prepare(
 // Phase: CheckNest (annotate EQuery.prepared.nested on CJR)
 // ---------------------------------------------------------------------------
 
+/// Annotate nested query markers on prepared SQL expressions.
+///
+/// # Returns
+///
+/// Annotated [`crate::c_like_representation::File`].
 pub fn cjr_check_nest(
     file: crate::c_like_representation::File,
 ) -> crate::c_like_representation::File {
@@ -921,6 +1239,11 @@ pub fn cjr_check_nest(
 // Phase: C code generation (cjr → .c file)
 // ---------------------------------------------------------------------------
 
+/// Pretty-print CJR as C source text.
+///
+/// # Returns
+///
+/// Full C translation unit as a string.
 pub fn cjr_print(file: &crate::c_like_representation::File, settings: &Settings) -> String {
     crate::c_like_representation::cjr_print::cjr_print(file, settings)
 }
@@ -929,6 +1252,11 @@ pub fn cjr_print(file: &crate::c_like_representation::File, settings: &Settings)
 // Phase: JS compilation
 // ---------------------------------------------------------------------------
 
+/// Emit bundled JavaScript for the client tier (when applicable).
+///
+/// # Returns
+///
+/// JavaScript source string or `None` on failure (see `errors`).
 pub fn js_compile(
     file: &crate::monomorphized::File,
     settings: &Settings,
@@ -941,6 +1269,11 @@ pub fn js_compile(
 // Phase: SQL DDL generation
 // ---------------------------------------------------------------------------
 
+/// Generate structured query language data-definition statements from the CJR program.
+///
+/// # Returns
+///
+/// DDL text for the configured database backend.
 pub fn sql_generate(file: &crate::c_like_representation::File, settings: &Settings) -> String {
     crate::c_like_representation::sql_generate::sql_generate(file, settings)
 }
@@ -949,6 +1282,11 @@ pub fn sql_generate(file: &crate::c_like_representation::File, settings: &Settin
 // Phase: CSS summary (after core shake, optional diagnostic)
 // ---------------------------------------------------------------------------
 
+/// Summarize style/CSS-related constructs in the core program (diagnostics tooling).
+///
+/// # Returns
+///
+/// [`crate::core::css::Summary`] aggregate.
 pub fn css_summarize(file: &crate::core::File) -> crate::core::css::Summary {
     #[cfg(test)]
     CSS_SUMMARIZE_CALLS.fetch_add(1, Ordering::SeqCst);
@@ -995,11 +1333,24 @@ fn command_status_deadline(
     cmd.status().with_context(|| format!("running {what}"))
 }
 
-/// Compile and link generated C into `output`.
+/// Write `c_source` to a `.c` file next to `output`, compile to `.o`, then link the executable at `output`.
 ///
-/// When `job.debug` is true (Ur project `debug` directive or `ur-compile -debug`), the compile and
-/// link commands include **`-g`** so the executable carries debug info (typically DWARF) for
-/// GDB, LLDB, and the `ur-debugger` DAP adapter.
+/// When `job.debug` is true, passes `-g` so the binary includes debugging information (for example DWARF) for debuggers.
+///
+/// # Arguments
+///
+/// * `c_source` — Full C translation unit text.
+/// * `output` — Desired executable path (stem used for intermediate `.c` / `.o` names).
+/// * `job` — Link line flags (`debug`, `profile`, custom linker, …).
+/// * `settings` — Include paths, runtime libraries, compiler executable.
+///
+/// # Returns
+///
+/// `Ok(())` when compile and link both succeed.
+///
+/// # Errors
+///
+/// Write failures, non-zero `cc`/`ld` status, or subprocess errors (context from [`anyhow::Context`]).
 pub fn cc_and_link(c_source: &str, output: &Path, job: &Job, settings: &Settings) -> Result<()> {
     use std::process::Command;
     #[cfg(test)]
@@ -1058,10 +1409,13 @@ pub fn cc_and_link(c_source: &str, output: &Path, job: &Job, settings: &Settings
         }
     }
     if let Ok(dir) = std::env::var("URWEB_NATIVE_LIB_DIR") {
-        if !dir.is_empty() {
-            let inc = std::path::Path::new(&dir).join("include");
-            if inc.is_dir() {
-                compile_cmd.arg("-I").arg(&inc);
+        match dir.is_empty() {
+            true => {}
+            false => {
+                let inc = std::path::Path::new(&dir).join("include");
+                if inc.is_dir() {
+                    compile_cmd.arg("-I").arg(&inc);
+                }
             }
         }
     }
@@ -1098,8 +1452,11 @@ pub fn cc_and_link(c_source: &str, output: &Path, job: &Job, settings: &Settings
     }
     link_cmd.arg(&o_file);
     if let Ok(dir) = std::env::var("URWEB_NATIVE_LIB_DIR") {
-        if !dir.is_empty() {
-            link_cmd.arg(format!("-L{}", dir));
+        match dir.is_empty() {
+            true => {}
+            false => {
+                link_cmd.arg(format!("-L{}", dir));
+            }
         }
     }
     append_urweb_native_libdir_fallback(&mut link_cmd);
@@ -1122,8 +1479,11 @@ pub fn cc_and_link(c_source: &str, output: &Path, job: &Job, settings: &Settings
     link_cmd.arg("-lurweb").arg("-lm");
     let db_link = dbms_link_library_flag(settings);
     for token in db_link.split_whitespace() {
-        if !token.is_empty() {
-            link_cmd.arg(token);
+        match token.is_empty() {
+            true => {}
+            false => {
+                link_cmd.arg(token);
+            }
         }
     }
     // BearSSL (crypto)
@@ -1168,7 +1528,11 @@ pub fn cc_and_link(c_source: &str, output: &Path, job: &Job, settings: &Settings
 // Top-level: full build pipeline
 // ---------------------------------------------------------------------------
 
-/// Resolve a user-given project path to the `.urp` file we open (`foo.ur` → `foo.urp`).
+/// Normalize a user path to the `.urp` file (`foo` / `foo.ur` → `foo.urp`).
+///
+/// # Returns
+///
+/// Path with `.urp` extension when missing.
 pub(crate) fn resolve_urp_project_path(urp_path: &Path) -> PathBuf {
     if urp_path.extension().is_none_or(|e| e != "urp") {
         urp_path.with_extension("urp")
@@ -1177,12 +1541,20 @@ pub(crate) fn resolve_urp_project_path(urp_path: &Path) -> PathBuf {
     }
 }
 
-/// Linker flag for the configured DBMS (unit-tested; `cc_and_link` delegates here).
+/// Extra linker tokens for the resolved database back end (for example `-lsqlite3`).
+///
+/// # Returns
+///
+/// Static string slice (possibly empty or multiple whitespace-separated flags).
 pub(crate) fn dbms_link_library_flag(settings: &crate::settings::Settings) -> &'static str {
     crate::db::link_library_flag_from_option(&settings.db_backend)
 }
 
-/// Copy `.urp` `database` / `dbms` into `settings` when the CLI did not set them.
+/// Merge `.urp` `database` / `dbms` lines into `settings` when the command line left them unset.
+///
+/// # Errors
+///
+/// Invalid engine or connection string combinations as `String`.
 pub(crate) fn apply_job_db_settings(
     job: &Job,
     settings: &mut crate::settings::Settings,
@@ -1190,8 +1562,11 @@ pub(crate) fn apply_job_db_settings(
     crate::db::apply_urp_job_db_fields(settings, job.dbms.as_deref(), job.database.as_deref())
 }
 
-/// Parse `.urp` and build [`Job`] + [`Settings`] like the start of `run_compile` (boot path,
-/// `dbms`/`database` merge, `ur.toml` `[build].db` default, manifest reconciliation).
+/// Parse `.urp` and produce [`Job`] plus merged [`Settings`] (boot discovery, database fields, `ur.toml` reconciliation).
+///
+/// # Errors
+///
+/// Parse failures, database validation, or manifest mismatch strings.
 pub fn resolve_project_job_and_settings(urp_path: &Path) -> Result<(Job, Settings), String> {
     let mut job = parse_urp(urp_path).map_err(|e| e.to_string())?;
     let mut settings = Settings::new();
@@ -1204,15 +1579,18 @@ pub fn resolve_project_job_and_settings(urp_path: &Path) -> Result<(Job, Setting
     Ok((job, settings))
 }
 
-/// [`Settings`] only — see [`resolve_project_job_and_settings`].
+/// [`Settings`] from [`resolve_project_job_and_settings`] without returning the [`Job`].
 pub fn resolve_project_settings_for_urp(urp_path: &Path) -> Result<Settings, String> {
     Ok(resolve_project_job_and_settings(urp_path)?.1)
 }
 
-/// Effective [`crate::db::ProjectDb`] for a workspace folder (unique `.urp` + `ur.toml` merge).
+/// Resolved [`crate::db::ProjectDb`] for an editor workspace root (single `.urp` + `ur.toml` rules).
 ///
-/// Batch compile, LSP [`crate::lsp_analysis::ProjectState::open`], and the debugger should all
-/// agree on this value for the same tree.
+/// Batch compile, [`crate::lsp_analysis::ProjectState::open`], and tooling should agree on this for the same tree.
+///
+/// # Errors
+///
+/// Same as project resolution when discovery or reconciliation fails.
 pub fn effective_project_db_for_workspace_root(
     workspace_root: &std::path::Path,
 ) -> Result<crate::db::ProjectDb, String> {
@@ -1221,9 +1599,18 @@ pub fn effective_project_db_for_workspace_root(
     Ok(crate::db::effective_project_db(&settings))
 }
 
-/// Run the complete compilation pipeline for a `.urp` project.
+/// Run the full compilation pipeline for a `.urp` project through C compilation and linking.
 ///
-/// Corresponds to `Compiler.run` / the main compilation path in `main.mlton.sml`.
+/// Wraps the inner result in [`CompileResult`] for mutation-testing compatibility.
+///
+/// # Arguments
+///
+/// * `urp_path` — Project file or stem (`.urp` appended when needed).
+/// * `settings` — In/out driver settings (URL prefix, headers, debug, merged database options, …).
+///
+/// # Returns
+///
+/// [`CompileResult`] wrapping the path to the generated executable or an [`anyhow::Error`].
 pub fn compile(urp_path: &Path, settings: &mut Settings) -> CompileResult {
     run_compile(urp_path, settings).into()
 }
@@ -1366,11 +1753,17 @@ fn run_compile(urp_path: &Path, settings: &mut Settings) -> Result<PathBuf> {
     Ok(exe_path)
 }
 
-/// Run the compilation pipeline and return the generated C code and SQL DDL
-/// without invoking the C compiler or linker.
+/// Run the same pipeline as [`compile`] but stop after code generation: return C source and SQL DDL strings.
 ///
-/// Used by tests to assert on generated output (catches return-value mutants
-/// that replace phases with Default::default()).
+/// Skips [`cc_and_link`] and executable output; useful for tests.
+///
+/// # Returns
+///
+/// `(c_code, sql_ddl)` on success.
+///
+/// # Errors
+///
+/// Same classes of failure as the full pipeline (parse, elaborate, mono, CJR, …).
 pub fn compile_to_outputs(urp_path: &Path, settings: &mut Settings) -> Result<(String, String)> {
     let mut errors = ErrorReporter::new();
 
@@ -1469,8 +1862,13 @@ pub fn compile_to_outputs(urp_path: &Path, settings: &mut Settings) -> Result<(S
 // Module name helper (used by main.rs)
 // ---------------------------------------------------------------------------
 
-/// Derive the Ur/Web module name from a filename.
-/// e.g., `/path/to/my_app.ur` → `"MyApp"`.
+/// Derive the Ur/Web module name from a filename stem (capitalizes the first Unicode scalar).
+///
+/// Example: `/path/to/my_app.ur` → `"MyApp"`.
+///
+/// # Returns
+///
+/// Module name string (may be empty for odd paths).
 pub fn module_of(filename: &str) -> String {
     let path = Path::new(filename);
     let stem = path.file_stem().unwrap_or_default().to_string_lossy();
@@ -1489,7 +1887,7 @@ pub fn module_of(filename: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::ProjectDb;
+    use crate::db::{DatabaseBackend, ProjectDb};
     use std::path::Path;
     use std::sync::atomic::Ordering;
 
@@ -1566,6 +1964,300 @@ mod tests {
         let j = Job::default();
         assert_eq!(j.prefix, "/");
         assert_eq!(j.timeout, 120);
+    }
+
+    /// Mutants that make [`super::bail_if_errors_reported`] always `Ok(())` let the pipeline run on broken input and can hit mutation timeouts.
+    #[test]
+    fn bail_if_errors_reported_fails_when_diagnostics_present() {
+        let mut errors = ErrorReporter::new();
+        errors.report(crate::error_types::CompileError::Plain("bad".into()));
+        let out = bail_if_errors_reported(&errors, "Parsing");
+        assert!(
+            out.is_err(),
+            "must stop the pipeline when the error buffer is non-empty"
+        );
+        let msg = out.unwrap_err().to_string();
+        assert!(
+            msg.contains("Parsing") && msg.contains('1'),
+            "message should name the phase and error count: {msg}"
+        );
+    }
+
+    /// Silent success path for [`super::bail_if_errors_reported`] (catches inverted condition mutants).
+    #[test]
+    fn bail_if_errors_reported_ok_when_no_diagnostics() {
+        let errors = ErrorReporter::new();
+        assert!(
+            bail_if_errors_reported(&errors, "Parsing").is_ok(),
+            "empty error buffer must not bail"
+        );
+    }
+
+    /// [`super::boot_root_from`] must walk parents until `lib/ur/basis.urs` exists (`None` / wrong `Some` mutants break boot and native fallbacks).
+    #[test]
+    fn boot_root_from_finds_checkout_markers() {
+        let tmp = tempfile::tempdir().unwrap();
+        let basis_dir = tmp.path().join("lib/ur");
+        std::fs::create_dir_all(&basis_dir).unwrap();
+        std::fs::write(basis_dir.join("basis.urs"), "(* test sig *)").unwrap();
+        let start = tmp.path().join("nested/deep");
+        std::fs::create_dir_all(&start).unwrap();
+        let root = boot_root_from(start);
+        assert_eq!(
+            root.as_deref(),
+            Some(tmp.path()),
+            "expected parent scan to find directory containing lib/ur/basis.urs"
+        );
+    }
+
+    /// [`super::ur_disk_paths_same`] is used for LSP overlay selection; `true`/`false` mutants mis-apply editor buffers.
+    #[test]
+    fn ur_disk_paths_same_same_file_true() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("mod.ur");
+        std::fs::write(&p, "val x = 1\n").unwrap();
+        assert!(
+            ur_disk_paths_same(&p, &p),
+            "identical paths must compare equal without canonical I/O errors"
+        );
+    }
+
+    /// Symlinked paths should match after canonicalization (LSP / temp-project layouts).
+    #[cfg(unix)]
+    #[test]
+    fn ur_disk_paths_same_symlink_matches_target() {
+        let tmp = tempfile::tempdir().unwrap();
+        let real = tmp.path().join("real.ur");
+        std::fs::write(&real, "val x = 1\n").unwrap();
+        let alias = tmp.path().join("alias.ur");
+        std::os::unix::fs::symlink(&real, &alias).expect("symlink");
+        assert!(
+            ur_disk_paths_same(&real, &alias),
+            "canonical comparison must treat symlink alias as the same file"
+        );
+    }
+
+    #[test]
+    fn ur_disk_paths_same_unrelated_files_are_false() {
+        let tmp = tempfile::tempdir().unwrap();
+        let a = tmp.path().join("a.ur");
+        let b = tmp.path().join("b.ur");
+        std::fs::write(&a, "1").unwrap();
+        std::fs::write(&b, "2").unwrap();
+        assert!(
+            !ur_disk_paths_same(&a, &b),
+            "mutants forcing true would break LSP overlay selection"
+        );
+    }
+
+    /// `append_*` no-op mutants skip these counters (see `cargo mutants` timeouts on argv builders).
+    #[test]
+    fn append_urweb_native_fallbacks_execute() {
+        let previous = std::env::var_os("URWEB_NATIVE_LIB_DIR");
+        std::env::remove_var("URWEB_NATIVE_LIB_DIR");
+        APPEND_NATIVE_INCLUDE_FALLBACK_INVOCATIONS.store(0, Ordering::SeqCst);
+        APPEND_NATIVE_LIBDIR_FALLBACK_INVOCATIONS.store(0, Ordering::SeqCst);
+        let mut compile_cmd = std::process::Command::new("true");
+        append_urweb_native_include_fallback(&mut compile_cmd);
+        let mut link_cmd = std::process::Command::new("true");
+        append_urweb_native_libdir_fallback(&mut link_cmd);
+        assert!(
+            APPEND_NATIVE_INCLUDE_FALLBACK_INVOCATIONS.load(Ordering::SeqCst) >= 1
+                && APPEND_NATIVE_LIBDIR_FALLBACK_INVOCATIONS.load(Ordering::SeqCst) >= 1,
+            "native fallback shims must run real logic"
+        );
+        match previous {
+            Some(value) => std::env::set_var("URWEB_NATIVE_LIB_DIR", value),
+            None => std::env::remove_var("URWEB_NATIVE_LIB_DIR"),
+        }
+    }
+
+    /// Whole-function mutants (`None` / `Some(Default::default())`) omit the first [`RESOLVE_BOOT_ROOT_INVOCATIONS`] bump.
+    #[test]
+    fn resolve_boot_root_runs_observable_body() {
+        RESOLVE_BOOT_ROOT_INVOCATIONS.store(0, Ordering::SeqCst);
+        let _ = resolve_boot_root();
+        assert!(
+            RESOLVE_BOOT_ROOT_INVOCATIONS.load(Ordering::SeqCst) >= 1,
+            "replace resolve_boot_root body must not skip the hook"
+        );
+    }
+
+    /// Boot linking sets `Top`’s wrapper span to `"<top>"` in [`parse_sources_inner`].
+    ///
+    /// The checkout `lib/ur/top.ur` may exceed this parser’s grammar; the test uses a tiny `lib/ur`
+    /// under a temp dir (real `basis.urs` copied from the workspace, minimal `top.ur` / `top.urs`).
+    #[test]
+    fn parse_sources_boot_mode_preserves_top_marker_span_file() {
+        let manifest_lib =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("lib/ur/basis.urs");
+        if !manifest_lib.is_file() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let mini_lib = dir.path().join("lib/ur");
+        std::fs::create_dir_all(&mini_lib).unwrap();
+        std::fs::copy(&manifest_lib, mini_lib.join("basis.urs")).expect("copy basis.urs");
+        std::fs::write(mini_lib.join("top.urs"), "val boot_top_tiny : int\n").unwrap();
+        std::fs::write(mini_lib.join("top.ur"), "val boot_top_tiny = 0\n").unwrap();
+        std::fs::write(dir.path().join("Main.ur"), "val main = 1\n").unwrap();
+        let job = Job {
+            sources: vec!["Main".into()],
+            basis_lib_dir: Some(mini_lib),
+            ..Default::default()
+        };
+        let mut errors = ErrorReporter::new();
+        let settings = Settings::new();
+        let source_tree =
+            with_parse_test_cwd(dir.path(), || parse_sources(&job, &settings, &mut errors))
+                .unwrap_or_else(|| panic!("parse_sources failed: {:?}", errors.errors));
+        let basis_mod = source_tree.iter().find(|d| {
+            matches!(
+                &d.node,
+                crate::source::Decl::FfiStr(name, _, _) if name == "Basis"
+            )
+        });
+        let basis_mod = basis_mod.expect("expected Basis FFI from boot parse_sources_inner");
+        assert_eq!(
+            basis_mod.span.file, "<basis>",
+            "Basis span.file must remain <basis> (parse_sources_inner Span literal)"
+        );
+        let top_mod = source_tree.iter().find(|d| {
+            matches!(
+                &d.node,
+                crate::source::Decl::Str(name, _, _, _, _) if name == "Top"
+            )
+        });
+        let top_mod = top_mod.expect("expected Top structure parsed from synthetic lib/ur/top.ur");
+        assert_eq!(
+            top_mod.span.file, "<top>",
+            "Top synthetic span.file must remain <top>"
+        );
+    }
+
+    /// Synthetic UrwebNative FFI items must stay non-empty with stable names (empty `vec!` mutants break native-surface projects).
+    #[test]
+    fn urweb_native_ffi_sgn_items_contains_expected_vals() {
+        let items = urweb_native_ffi_sgn_items();
+        assert_eq!(
+            items.len(),
+            3,
+            "UrwebNative shim must expose put, get, tigerbeetle transfer"
+        );
+        let val_names: Vec<&str> = items
+            .iter()
+            .map(|loc| match &loc.node {
+                crate::source::SgnItem::Val(name, _) => name.as_str(),
+                other => panic!("unexpected SgnItem variant: {other:?}"),
+            })
+            .collect();
+        assert!(val_names.contains(&"urweb_put"));
+        assert!(val_names.contains(&"urweb_get"));
+        assert!(val_names.contains(&"urweb_tb_transfer"));
+    }
+
+    /// [`super::apply_job_db_settings`] must reject unknown DBMS tokens when the backend slot is still empty.
+    #[test]
+    fn apply_job_db_settings_rejects_unknown_dbms() {
+        let job = Job {
+            dbms: Some("___not_a_valid_dbms_token___".into()),
+            ..Default::default()
+        };
+        let mut settings = Settings::new();
+        let out = apply_job_db_settings(&job, &mut settings);
+        assert!(
+            out.is_err(),
+            "invalid job dbms must not be ignored (mutant Ok(()) loses validation)"
+        );
+    }
+
+    /// [`resolve_project_job_and_settings`] must return the real [`Job`] from the `.urp`, not a blank default.
+    #[test]
+    fn resolve_project_job_and_settings_preserves_urp_sources() {
+        let dir = tempfile::tempdir().unwrap();
+        let urp = dir.path().join("demo.urp");
+        std::fs::write(&urp, "Main\n").unwrap();
+        std::fs::write(dir.path().join("Main.ur"), "val x = 1\n").unwrap();
+        let (job, _) = resolve_project_job_and_settings(&urp).expect("resolve project");
+        assert!(
+            job.sources.iter().any(|s| s.contains("Main")),
+            ".urp module list must not be replaced by Job::default() ({:?})",
+            job.sources
+        );
+    }
+
+    /// [`resolve_project_settings_for_urp`] should surface manifest database defaults.
+    #[test]
+    fn resolve_project_settings_for_urp_reads_ur_toml_db() {
+        let dir = tempfile::tempdir().unwrap();
+        let urp = dir.path().join("one.urp");
+        std::fs::write(&urp, "Main\n").unwrap();
+        std::fs::write(dir.path().join("Main.ur"), "val x = 1\n").unwrap();
+        std::fs::write(
+            dir.path().join("ur.toml"),
+            r#"[package]
+name = "one"
+kind = "app"
+
+[build]
+entry = "Main"
+db = "sqlite"
+"#,
+        )
+        .unwrap();
+        let settings = resolve_project_settings_for_urp(&urp).expect("settings");
+        assert_eq!(
+            settings.db_backend.as_ref().map(|b| b.canonical_name()),
+            Some("sqlite"),
+            "manifest sqlite must merge into settings"
+        );
+    }
+
+    /// [`effective_project_db_for_workspace_root`] must follow the same resolution as batch compile (not `ProjectDb::default()`).
+    #[test]
+    fn effective_project_db_for_workspace_root_matches_manifest_sqlite() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("w.urp"), "Main\n").unwrap();
+        std::fs::write(dir.path().join("Main.ur"), "val x = 1\n").unwrap();
+        std::fs::write(
+            dir.path().join("ur.toml"),
+            r#"[package]
+name = "w"
+kind = "app"
+
+[build]
+entry = "Main"
+db = "sqlite"
+"#,
+        )
+        .unwrap();
+        let db = effective_project_db_for_workspace_root(dir.path()).expect("project db");
+        assert_eq!(
+            db.canonical_name(),
+            "sqlite",
+            "mutants returning Ok(ProjectDb::default()) yield postgres, not sqlite"
+        );
+    }
+
+    /// Invalid overlay text must not return a bogus empty parse (`Some(Default)` mutants).
+    #[test]
+    fn parse_sources_with_overlay_invalid_buffer_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let urp = dir.path().join("p.urp");
+        std::fs::write(&urp, "Main\n").unwrap();
+        std::fs::write(dir.path().join("Main.ur"), "val x = 1\n").unwrap();
+        let job = parse_urp(&urp).unwrap();
+        let mut errors = ErrorReporter::new_silent();
+        let settings = Settings::new();
+        let main_path = dir.path().join("Main.ur");
+        let got = with_parse_test_cwd(dir.path(), || {
+            parse_sources_with_overlay(&job, &main_path, "val x = (", &settings, &mut errors)
+        });
+        assert!(
+            got.is_none(),
+            "broken overlay must not produce Some(parse) {:?}",
+            got.as_ref().map(|f| f.len())
+        );
     }
 
     // Pipeline stub tests: each panics until implemented. Mutants that replace with

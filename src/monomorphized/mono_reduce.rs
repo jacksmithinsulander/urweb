@@ -13,8 +13,6 @@
 //! (converting a case-returning-function into a function-returning-case),
 //! the whole file is reduced again.
 
-#![allow(dead_code)]
-
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};

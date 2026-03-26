@@ -1,10 +1,9 @@
-#![allow(dead_code, unused_variables, unused_imports)]
-
 //! Disjointness constraint environment and proof search.
 //!
 //! Translated from `disjoint.sml`.
+//!
+//! Public [`prove`], [`assert`], [`decompose_row`], and helpers document `# Arguments` / `# Returns`.
 
-use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::elaborated::type_operations::hnorm_con;
@@ -37,8 +36,17 @@ pub enum PieceFst {
 /// A piece is a `PieceFst` paired with a list of projection indices (for nested tuples).
 pub type Piece = (PieceFst, Vec<usize>);
 
-pub fn piece_to_string(p: &PieceFst) -> String {
-    match p {
+/// Debug string for the “head” of a disjointness [`Piece`].
+///
+/// # Arguments
+///
+/// * `p` — First component only (no projection suffix).
+///
+/// # Returns
+///
+/// Human-readable label (not valid Ur/Web syntax).
+pub fn piece_to_string(head_piece: &PieceFst) -> String {
+    match head_piece {
         PieceFst::NameC(s) => format!("NameC({})", s),
         PieceFst::NameR(n) => format!("NameR({})", n),
         PieceFst::NameN(n) => format!("NameN({})", n),
@@ -49,10 +57,19 @@ pub fn piece_to_string(p: &PieceFst) -> String {
     }
 }
 
-pub fn rp_to_string(p: &Piece) -> String {
-    let ns: Vec<String> = p.1.iter().map(|n| n.to_string()).collect();
-    let mut parts = vec![piece_to_string(&p.0)];
-    parts.extend(ns);
+/// Debug string for a full [`Piece`] including projection indices.
+///
+/// # Returns
+///
+/// Space-separated [`piece_to_string`] head plus index numbers.
+pub fn rp_to_string(piece_with_projections: &Piece) -> String {
+    let projection_indices: Vec<String> = piece_with_projections
+        .1
+        .iter()
+        .map(|index| index.to_string())
+        .collect();
+    let mut parts = vec![piece_to_string(&piece_with_projections.0)];
+    parts.extend(projection_indices);
     parts.join(" ")
 }
 
@@ -64,16 +81,33 @@ pub fn rp_to_string(p: &Piece) -> String {
 /// to be disjoint from it.
 pub type DisjointEnv = BTreeMap<Piece, BTreeSet<Piece>>;
 
+/// Empty disjointness map (no facts yet).
+///
+/// # Returns
+///
+/// New [`DisjointEnv`].
 pub fn empty_env() -> DisjointEnv {
     BTreeMap::new()
 }
 
-/// Print the disjointness environment for debugging.
-pub fn print_env(env: &DisjointEnv) {
+/// Print `disjointness_map` to stderr (`DENV:` header, one line per recorded disjoint pair).
+///
+/// # Arguments
+///
+/// * `disjointness_map` — Environment to dump.
+///
+/// # Returns
+///
+/// Nothing.
+pub fn print_env(disjointness_map: &DisjointEnv) {
     eprintln!("\nDENV:");
-    for (p1, pset) in env {
-        for p2 in pset {
-            eprintln!("{} ~ {}", rp_to_string(p1), rp_to_string(p2));
+    for (left_piece, disjoint_right_set) in disjointness_map {
+        for right_piece in disjoint_right_set {
+            eprintln!(
+                "{} ~ {}",
+                rp_to_string(left_piece),
+                rp_to_string(right_piece)
+            );
         }
     }
 }
@@ -86,9 +120,9 @@ pub fn print_env(env: &DisjointEnv) {
 #[derive(Debug, Clone)]
 pub struct Goal {
     pub span: Span,
-    pub c1: LocatedConstructor,
-    pub c2: LocatedConstructor,
-    pub denv: DisjointEnv,
+    pub left_constructor: LocatedConstructor,
+    pub right_constructor: LocatedConstructor,
+    pub disjointness_environment: DisjointEnv,
 }
 
 // ---------------------------------------------------------------------------
@@ -129,6 +163,16 @@ fn piece_fst_to_row(p: &PieceFst, span: &Span) -> LocatedConstructor {
     }
 }
 
+/// Turn abstract [`Piece`] plus `span` into a row-shaped [`LocatedConstructor`] (for reifying goals).
+///
+/// # Arguments
+///
+/// * `piece` — Name or row piece with optional projection-index suffix.
+/// * `span` — Source span for synthetic nodes.
+///
+/// # Returns
+///
+/// Constructor representing that piece as a row (wrapped names become single-field records).
 pub fn piece_to_row(piece: &Piece, span: &Span) -> LocatedConstructor {
     let base = piece_fst_to_row(&piece.0, span);
     piece.1.iter().fold(base, |acc, &n| Located {
@@ -153,15 +197,26 @@ fn piece_enter(p: &Piece) -> Piece {
     (piece_fst_enter(&p.0), p.1.clone())
 }
 
-/// Shift the disjointness environment when entering a constructor binder.
-pub fn enter(denv: DisjointEnv) -> DisjointEnv {
-    let mut new_env = BTreeMap::new();
-    for (p, pset) in denv {
-        let new_p = piece_enter(&p);
-        let new_pset = pset.into_iter().map(|q| piece_enter(&q)).collect();
-        new_env.insert(new_p, new_pset);
+/// Shift de Bruijn-relative [`PieceFst::NameR`] / [`PieceFst::RowR`] entries when entering a binder.
+///
+/// # Arguments
+///
+/// * `denv` — Prior environment.
+///
+/// # Returns
+///
+/// New map with incremented rel levels on key and value pieces.
+pub fn enter(disjointness_environment: DisjointEnv) -> DisjointEnv {
+    let mut shifted = BTreeMap::new();
+    for (piece, right_set) in disjointness_environment {
+        let shifted_piece = piece_enter(&piece);
+        let shifted_right_set = right_set
+            .into_iter()
+            .map(|other| piece_enter(&other))
+            .collect();
+        shifted.insert(shifted_piece, shifted_right_set);
     }
-    new_env
+    shifted
 }
 
 // ---------------------------------------------------------------------------
@@ -225,7 +280,7 @@ fn decompose_row_inner(c: LocatedConstructor, acc: Vec<Piece_>) -> Vec<Piece_> {
 }
 
 fn decompose_row_default(c: LocatedConstructor, acc: Vec<Piece_>) -> Vec<Piece_> {
-    let normed = hnorm_con(c.clone());
+    let _normed = hnorm_con(c.clone());
     let (base, ns) = decompose_proj(c.clone());
     match base.node.clone() {
         Constructor::Record(_, xcs) => {
@@ -270,11 +325,29 @@ pub fn decompose_row(c: LocatedConstructor) -> Vec<Piece_> {
 // prove1 : primitive disjointness check
 // ---------------------------------------------------------------------------
 
-/// Returns `true` if `p1` and `p2` are statically known to be disjoint.
-pub fn prove1(denv: &DisjointEnv, p1: &Piece, p2: &Piece) -> bool {
-    match (&p1.0, &p2.0) {
-        (PieceFst::NameC(s1), PieceFst::NameC(s2)) => s1.to_lowercase() != s2.to_lowercase(),
-        _ => denv.get(p1).map(|pset| pset.contains(p2)).unwrap_or(false),
+/// Primitive disjointness: distinct literal names, or `p2` recorded under `p1` in `denv`.
+///
+/// # Arguments
+///
+/// * `denv` — Known disjoint pairs.
+/// * `p1`, `p2` — Pieces to test.
+///
+/// # Returns
+///
+/// `true` if disjoint under those rules.
+pub fn prove1(
+    disjointness_hypotheses: &DisjointEnv,
+    left_piece: &Piece,
+    right_piece: &Piece,
+) -> bool {
+    match (&left_piece.0, &right_piece.0) {
+        (PieceFst::NameC(left_name), PieceFst::NameC(right_name)) => {
+            left_name.to_lowercase() != right_name.to_lowercase()
+        }
+        _ => disjointness_hypotheses
+            .get(left_piece)
+            .map(|right_set| right_set.contains(right_piece))
+            .unwrap_or(false),
     }
 }
 
@@ -282,52 +355,69 @@ pub fn prove1(denv: &DisjointEnv, p1: &Piece, p2: &Piece) -> bool {
 // assert : add a disjointness fact
 // ---------------------------------------------------------------------------
 
-/// Record that `c1` and `c2` are disjoint, updating the environment.
+/// Record that row shapes `c1` and `c2` are disjoint by decomposing and linking all piece pairs.
+///
+/// Ignores [`Piece_::Unknown`] halves. Symmetric edges are inserted (except redundant literal–literal pairs).
+///
+/// # Arguments
+///
+/// * `c1`, `c2` — Row (or name) constructors.
+/// * `denv` — Environment to extend.
+///
+/// # Returns
+///
+/// Updated [`DisjointEnv`].
 pub fn assert(
-    c1: LocatedConstructor,
-    c2: LocatedConstructor,
-    mut denv: DisjointEnv,
+    left_row_constructor: LocatedConstructor,
+    right_row_constructor: LocatedConstructor,
+    mut disjointness_environment: DisjointEnv,
 ) -> DisjointEnv {
-    let ps1_raw = decompose_row(c1);
-    let ps2_raw = decompose_row(c2);
+    let left_decomposition = decompose_row(left_row_constructor);
+    let right_decomposition = decompose_row(right_row_constructor);
 
-    let ps1: Vec<Piece> = ps1_raw
+    let left_pieces: Vec<Piece> = left_decomposition
         .into_iter()
-        .filter_map(|p| match p {
-            Piece_::Piece(p) => Some(p),
+        .filter_map(|fragment| match fragment {
+            Piece_::Piece(piece) => Some(piece),
             Piece_::Unknown(_) => None,
         })
         .collect();
-    let ps2: Vec<Piece> = ps2_raw
+    let right_pieces: Vec<Piece> = right_decomposition
         .into_iter()
-        .filter_map(|p| match p {
-            Piece_::Piece(p) => Some(p),
+        .filter_map(|fragment| match fragment {
+            Piece_::Piece(piece) => Some(piece),
             Piece_::Unknown(_) => None,
         })
         .collect();
 
-    // For each p1 in ps1, add all of ps2 as known disjoint from p1
-    for p1 in &ps1 {
-        let entry = denv.entry(p1.clone()).or_default();
-        for p2 in &ps2 {
-            // NameC pieces know they're disjoint from other NameC pieces automatically;
-            // don't record them to keep the env smaller
-            if !matches!((&p1.0, &p2.0), (PieceFst::NameC(_), PieceFst::NameC(_))) {
-                entry.insert(p2.clone());
+    for left_piece in &left_pieces {
+        let entry = disjointness_environment
+            .entry(left_piece.clone())
+            .or_default();
+        for right_piece in &right_pieces {
+            if !matches!(
+                (&left_piece.0, &right_piece.0),
+                (PieceFst::NameC(_), PieceFst::NameC(_))
+            ) {
+                entry.insert(right_piece.clone());
             }
         }
     }
-    // And vice versa
-    for p2 in &ps2 {
-        let entry = denv.entry(p2.clone()).or_default();
-        for p1 in &ps1 {
-            if !matches!((&p2.0, &p1.0), (PieceFst::NameC(_), PieceFst::NameC(_))) {
-                entry.insert(p1.clone());
+    for right_piece in &right_pieces {
+        let entry = disjointness_environment
+            .entry(right_piece.clone())
+            .or_default();
+        for left_piece in &left_pieces {
+            if !matches!(
+                (&right_piece.0, &left_piece.0),
+                (PieceFst::NameC(_), PieceFst::NameC(_))
+            ) {
+                entry.insert(left_piece.clone());
             }
         }
     }
 
-    denv
+    disjointness_environment
 }
 
 // ---------------------------------------------------------------------------
@@ -338,66 +428,90 @@ pub fn assert(
 use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 static PROVED: AtomicUsize = AtomicUsize::new(0);
 
+/// Reset the proved-goal counter and [`crate::elaborated::type_operations::reset_stats`].
+///
+/// # Returns
+///
+/// Nothing.
 pub fn reset() {
     PROVED.store(0, AtomicOrdering::Relaxed);
     crate::elaborated::type_operations::reset_stats();
 }
 
-/// Try to prove that `c1` and `c2` are disjoint using `denv`.
+/// Try to show two row constructors disjoint using `disjointness_hypotheses`.
 ///
-/// Returns a (possibly empty) list of unresolved `Goal`s.  An empty list
-/// means the proof succeeded.
+/// Pairs every piece from each side; any pair not justified by [`prove1`] becomes a [`Goal`].
+/// Mixed unknown/known decompositions short-circuit to a single goal.
+///
+/// # Arguments
+///
+/// * `diagnostic_span` — Span for emitted goals.
+/// * `disjointness_hypotheses` — Current disjointness map.
+/// * `left_constructor`, `right_constructor` — Row (or name) types to relate.
+///
+/// # Returns
+///
+/// Empty `Vec` when fully discharged; otherwise one [`Goal`] per missing pairwise proof (may contain duplicates).
 pub fn prove(
-    span: Span,
-    denv: &DisjointEnv,
-    c1: LocatedConstructor,
-    c2: LocatedConstructor,
+    diagnostic_span: Span,
+    disjointness_hypotheses: &DisjointEnv,
+    left_constructor: LocatedConstructor,
+    right_constructor: LocatedConstructor,
 ) -> Vec<Goal> {
     PROVED.fetch_add(1, AtomicOrdering::Relaxed);
 
-    let ps1 = decompose_row(c1.clone());
-    let ps2 = decompose_row(c2.clone());
+    let left_fragments = decompose_row(left_constructor.clone());
+    let right_fragments = decompose_row(right_constructor.clone());
 
-    let has_unknown = |ps: &[Piece_]| ps.iter().any(|p| matches!(p, Piece_::Unknown(_)));
-    let has_pieces = |ps: &[Piece_]| ps.iter().any(|p| matches!(p, Piece_::Piece(_)));
+    let decomposition_has_unknown = |fragments: &[Piece_]| {
+        fragments
+            .iter()
+            .any(|fragment| matches!(fragment, Piece_::Unknown(_)))
+    };
+    let decomposition_has_piece = |fragments: &[Piece_]| {
+        fragments
+            .iter()
+            .any(|fragment| matches!(fragment, Piece_::Piece(_)))
+    };
 
-    // If either side has unknowns and the other is non-empty, we can't decide
-    if (has_unknown(&ps1) && has_pieces(&ps2)) || (has_unknown(&ps2) && has_pieces(&ps1)) {
+    if (decomposition_has_unknown(&left_fragments) && decomposition_has_piece(&right_fragments))
+        || (decomposition_has_unknown(&right_fragments) && decomposition_has_piece(&left_fragments))
+    {
         return vec![Goal {
-            span,
-            c1,
-            c2,
-            denv: denv.clone(),
+            span: diagnostic_span,
+            left_constructor,
+            right_constructor,
+            disjointness_environment: disjointness_hypotheses.clone(),
         }];
     }
 
-    let clean_ps1: Vec<Piece> = ps1
+    let left_pieces: Vec<Piece> = left_fragments
         .into_iter()
-        .filter_map(|p| match p {
-            Piece_::Piece(p) => Some(p),
+        .filter_map(|fragment| match fragment {
+            Piece_::Piece(piece) => Some(piece),
             _ => None,
         })
         .collect();
-    let clean_ps2: Vec<Piece> = ps2
+    let right_pieces: Vec<Piece> = right_fragments
         .into_iter()
-        .filter_map(|p| match p {
-            Piece_::Piece(p) => Some(p),
+        .filter_map(|fragment| match fragment {
+            Piece_::Piece(piece) => Some(piece),
             _ => None,
         })
         .collect();
 
-    let mut remaining = vec![];
-    for p1 in &clean_ps1 {
-        for p2 in &clean_ps2 {
-            if !prove1(denv, p1, p2) {
-                remaining.push(Goal {
-                    span: span.clone(),
-                    c1: piece_to_row(p1, &span),
-                    c2: piece_to_row(p2, &span),
-                    denv: denv.clone(),
+    let mut unresolved_goals = vec![];
+    for left_piece in &left_pieces {
+        for right_piece in &right_pieces {
+            if !prove1(disjointness_hypotheses, left_piece, right_piece) {
+                unresolved_goals.push(Goal {
+                    span: diagnostic_span.clone(),
+                    left_constructor: piece_to_row(left_piece, &diagnostic_span),
+                    right_constructor: piece_to_row(right_piece, &diagnostic_span),
+                    disjointness_environment: disjointness_hypotheses.clone(),
                 });
             }
         }
     }
-    remaining
+    unresolved_goals
 }

@@ -1,20 +1,18 @@
-//! Shared CLI helpers and templates used by ur and sub-binaries.
+//! Shared command-line helpers and templates for the `ur` orchestrator and `ur-*` helper binaries.
 //!
-//! ## Binary conventions (`ur-*` drivers)
+//! New and edited code follows [README.md](../README.md) (naming, line comments on logic, `///` on functions; see Exceptions there).
 //!
-//! - **Help text**: The orchestrator (`ur`) and `ur-compile` print command overview lines to **stdout**.
-//!   `ur-debugger` prints usage to **stderr** (terminal UX).
-//! - **Unknown flags**: `ur-compile` errors on unknown `-` flags; **ur-fmt** logs a **warning**
-//!   and continues (lenient for forward compatibility).
-//! - **Exit codes**: `0` success; `1` for failures unless documented otherwise (e.g. **ur-lsp** exits `0` on
-//!   clean editor disconnect when [`crate::lsp_support::disconnect_error_exits_clean`] matches).
-//! - **Error handling in `main`**: Long-running protocol tools (**ur-lsp**, **ur-debugger**) use
-//!   [`anyhow::Result`] in their `run()`; thin dispatch binaries typically return **`i32`** and use
-//!   `eprintln!` for user-facing errors.
+//! ## Conventions for small binaries
+//!
+//! - Help: `ur` and `ur-compile` print overviews to standard output; `ur-debugger` prints usage to standard error.
+//! - Unknown flags: `ur-compile` fails on unknown `-` flags; `ur-fmt` may log a warning and continue.
+//! - Exit codes: `0` means success; `1` usually means failure unless documented (for example `ur-lsp` exits `0` on a clean
+//!   disconnect when [`crate::lsp_support::disconnect_error_exits_clean`] matches).
+//! - `main` style: long-running tools (`ur-lsp`, `ur-debugger`) use [`anyhow::Result`] in `run()`; thin wrappers often return `i32` and use `eprintln!`.
 
 use serde::Deserialize;
 
-/// Relative path to the project manifest (strict TOML).
+/// Relative path to the project manifest (strict Tom’s Obvious, Minimal Language).
 pub const UR_MANIFEST_FILE: &str = "ur.toml";
 
 const UR_MANIFEST_MISSING_ORCHESTRATOR: &str = "ur.toml not found in current directory\n\
@@ -36,16 +34,47 @@ pub const UR_ORCHESTRATOR_USAGE_LINES: &[&str] = &[
     "  ur [flag ...] project-name",
 ];
 
-/// Load and strictly parse [`UR_MANIFEST_FILE`] from the current directory (e.g. `ur build`).
+/// Load and strictly parse [`UR_MANIFEST_FILE`] (`ur.toml`) from the current working directory.
+///
+/// Unknown keys are rejected (`deny_unknown_fields`) as the configuration trust boundary.
+///
+/// # Returns
+///
+/// [`UrTomlStrict`] on success.
+///
+/// # Errors
+///
+/// Missing manifest (orchestrator message), read failure, or invalid Tom's Obvious, Minimal Language (prefixed human-readable `String`).
 pub fn load_ur_manifest_cwd() -> Result<UrTomlStrict, String> {
     load_ur_manifest_cwd_inner(UR_MANIFEST_MISSING_ORCHESTRATOR)
 }
 
-/// Same as [`load_ur_manifest_cwd`], but when discovering files for **ur-fmt** with no explicit paths.
+/// Like [`load_ur_manifest_cwd`], used when `ur-fmt` discovers files and needs a different missing-file message.
+///
+/// # Returns
+///
+/// [`UrTomlStrict`] on success.
+///
+/// # Errors
+///
+/// Same as [`load_ur_manifest_cwd`] but with the formatter-oriented missing-manifest text.
 pub fn load_ur_manifest_cwd_for_fmt_discovery() -> Result<UrTomlStrict, String> {
     load_ur_manifest_cwd_inner(UR_MANIFEST_MISSING_FMT)
 }
 
+/// Read `ur.toml` if present; otherwise return `missing_msg` as `Err`.
+///
+/// # Arguments
+///
+/// * `missing_msg` — Error string when [`UR_MANIFEST_FILE`] is absent.
+///
+/// # Returns
+///
+/// Parsed manifest or error string.
+///
+/// # Errors
+///
+/// Missing file (`missing_msg`), I/O while reading, or TOML/serde rejection.
 fn load_ur_manifest_cwd_inner(missing_msg: &str) -> Result<UrTomlStrict, String> {
     if !file_exists(UR_MANIFEST_FILE) {
         return Err(missing_msg.to_string());
@@ -55,7 +84,19 @@ fn load_ur_manifest_cwd_inner(missing_msg: &str) -> Result<UrTomlStrict, String>
     parse_ur_toml_strict(&toml_content).map_err(|e| format!("error: ur.toml: {}", e))
 }
 
-/// Require a non-empty `[build] entry` (shared by **`ur build`** and default **ur-fmt** discovery).
+/// Require a non-empty `[build] entry` (used by `ur build` and default `ur-fmt` project discovery).
+///
+/// # Arguments
+///
+/// * `cfg` — Strict manifest already parsed from disk.
+///
+/// # Returns
+///
+/// `Ok(())` when `cfg.build.entry` is non-empty.
+///
+/// # Errors
+///
+/// Fixed error string when `entry` is empty.
 pub fn require_manifest_entry(cfg: &UrTomlStrict) -> Result<(), String> {
     if cfg.build.entry.is_empty() {
         Err("error: ur.toml: [build] entry is required".into())
@@ -64,7 +105,15 @@ pub fn require_manifest_entry(cfg: &UrTomlStrict) -> Result<(), String> {
     }
 }
 
-/// **`ur-install`**: require `ur.toml` in cwd (no parse).
+/// For `ur-install`: require `ur.toml` in the current working directory (existence only, no parse).
+///
+/// # Returns
+///
+/// `Ok(())` when [`UR_MANIFEST_FILE`] exists.
+///
+/// # Errors
+///
+/// User-facing string when the file is missing.
 pub fn ensure_ur_toml_present_for_install() -> Result<(), String> {
     if !file_exists(UR_MANIFEST_FILE) {
         Err("error: ur.toml not found; run from project directory".into())
@@ -73,7 +122,18 @@ pub fn ensure_ur_toml_present_for_install() -> Result<(), String> {
     }
 }
 
-/// Run a peer binary from `PATH`; returns its exit code, or `1` if the executable was not found.
+/// Run `exe` as found on the user’s `PATH` with `args`, returning the child exit status.
+///
+/// Uses [`std::process::Command`] and only searches `PATH` (not the current directory).
+///
+/// # Arguments
+///
+/// * `exe` — Program name on the path (for example `"ur-compile"`).
+/// * `args` — Argument vector after `exe` (no implicit `argv[0]` insertion).
+///
+/// # Returns
+///
+/// Child exit code, `0` on success; `1` if the executable could not be started; otherwise the child’s non-zero status.
 pub fn exec_peer_bin(exe: &str, args: &[String]) -> i32 {
     match std::process::Command::new(exe).args(args).status() {
         Ok(s) => {
@@ -151,6 +211,19 @@ pub enum ProjectKind {
     Library,
 }
 
+/// Validate `ur new` / scaffold names: non-empty, starts with letter, alphanumeric + `_` only.
+///
+/// # Arguments
+///
+/// * `name` — Proposed directory / module stem.
+///
+/// # Returns
+///
+/// `Ok(())` when rules pass.
+///
+/// # Errors
+///
+/// Descriptive `String` when validation fails.
 pub fn validate_project_name(name: &str) -> Result<(), String> {
     if name.is_empty() {
         return Err("project name cannot be empty".into());
@@ -167,6 +240,15 @@ pub fn validate_project_name(name: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Uppercase the first Unicode scalar (used for generated Ur module names).
+///
+/// # Arguments
+///
+/// * `s` — Input string (may be empty).
+///
+/// # Returns
+///
+/// New string with the first character uppercased; empty if `s` is empty.
 pub fn capitalize(s: &str) -> String {
     let mut chars = s.chars();
     match chars.next() {
@@ -179,6 +261,16 @@ pub fn capitalize(s: &str) -> String {
     }
 }
 
+/// Paths printed by `ur new` that depend on app vs library layout.
+///
+/// # Arguments
+///
+/// * `kind` — Application or library scaffold.
+/// * `name` — Project directory name.
+///
+/// # Returns
+///
+/// Relative paths (as strings) to mention in the success message (may be empty).
 pub fn kind_specific_created_files(kind: ProjectKind, name: &str) -> Vec<String> {
     let mut out = vec![];
     if kind == ProjectKind::Library {
@@ -196,7 +288,7 @@ pub fn kind_specific_created_files(kind: ProjectKind, name: &str) -> Vec<String>
 // ---------------------------------------------------------------------------
 
 /// Project manifest with **closed** tables: extra keys are rejected (LangSec-style trust boundary).
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct UrTomlStrict {
     pub package: UrTomlPackageStrict,
@@ -214,6 +306,7 @@ pub struct UrTomlPackageStrict {
     pub kind: String,
 }
 
+/// `[package].kind` default when omitted in `ur.toml`.
 fn default_pkg_kind() -> String {
     "app".into()
 }
@@ -232,6 +325,7 @@ pub struct UrTomlBuildStrict {
     pub boot: bool,
 }
 
+/// `[build].db` default engine when omitted.
 fn default_build_db() -> String {
     "sqlite".into()
 }
@@ -245,10 +339,52 @@ pub struct UrTomlStyleStrict {
     pub css: Option<String>,
 }
 
+impl Default for UrTomlPackageStrict {
+    fn default() -> Self {
+        Self {
+            name: None,
+            kind: default_pkg_kind(),
+        }
+    }
+}
+
+impl Default for UrTomlBuildStrict {
+    fn default() -> Self {
+        Self {
+            entry: String::new(),
+            db: default_build_db(),
+            ccompiler: String::new(),
+            boot: false,
+        }
+    }
+}
+
+/// Deserialize closed `ur.toml` tables; unknown keys are rejected by serde.
+///
+/// # Arguments
+///
+/// * `content` — Full manifest file text.
+///
+/// # Returns
+///
+/// [`UrTomlStrict`] on success.
+///
+/// # Errors
+///
+/// TOML syntax or schema errors as display string.
 pub fn parse_ur_toml_strict(content: &str) -> Result<UrTomlStrict, String> {
     toml::from_str(content).map_err(|e| format!("{e}"))
 }
 
+/// Loose line-based TOML-ish parse for legacy `ur-install` patching (not strict `UrTomlStrict`).
+///
+/// # Arguments
+///
+/// * `content` — Whole file body.
+///
+/// # Returns
+///
+/// Flattened `section.key` → value pairs best-effort (no serde validation).
 pub fn parse_toml(content: &str) -> Vec<(String, String)> {
     let mut section = String::new();
     let mut entries = vec![];
@@ -280,6 +416,16 @@ pub fn parse_toml(content: &str) -> Vec<(String, String)> {
     entries
 }
 
+/// Look up `section.key` style flattened entries from [`parse_toml`].
+///
+/// # Arguments
+///
+/// * `entries` — Output of [`parse_toml`].
+/// * `key` — Full flattened key to match exactly.
+///
+/// # Returns
+///
+/// Value reference when the key exists.
 pub fn toml_get<'a>(entries: &'a [(String, String)], key: &str) -> Option<&'a str> {
     entries
         .iter()
@@ -291,31 +437,94 @@ pub fn toml_get<'a>(entries: &'a [(String, String)], key: &str) -> Option<&'a st
 // File and flag helpers
 // ---------------------------------------------------------------------------
 
+/// True if `path` exists on disk (symlink follows OS rules).
+///
+/// # Arguments
+///
+/// * `path` — Filesystem path string.
+///
+/// # Returns
+///
+/// Whether [`std::path::Path::exists`] is true.
 pub fn file_exists(path: &str) -> bool {
     std::path::Path::new(path).exists()
 }
 
 /// Last path segment of an `author/repo` install spec, ignoring empty `//` segments.
+///
+/// # Arguments
+///
+/// * `spec` — Package specifier string.
+///
+/// # Returns
+///
+/// Repository leaf name slice into `spec`.
 pub fn package_spec_repo_leaf(spec: &str) -> &str {
     spec.split('/').rfind(|s| !s.is_empty()).unwrap_or(spec)
 }
 
+/// Heuristic: argv token is a file/project name, not a `-flag`.
+///
+/// # Arguments
+///
+/// * `arg` — One command-line token.
+///
+/// # Returns
+///
+/// `true` when `arg` does not start with `-`.
 pub fn is_file_arg(arg: &str) -> bool {
     !arg.starts_with('-')
 }
 
+/// Blank or `#` comment lines in `.urp` source parsing.
+///
+/// # Arguments
+///
+/// * `line` — Single line (may include leading whitespace depending on caller).
+///
+/// # Returns
+///
+/// Whether the line should be ignored as blank or comment.
 pub fn should_skip_urp_line(line: &str) -> bool {
     line.is_empty() || line.starts_with('#')
 }
 
+/// Used by formatter lenient flag handling: empty flag or argv looks like another flag.
+///
+/// # Arguments
+///
+/// * `flag` — Current flag token being parsed (may be empty).
+/// * `arg` — Next argv token.
+///
+/// # Returns
+///
+/// `true` when the formatter should treat this as an unknown or ambiguous flag boundary.
 pub fn is_unknown_compiler_flag(flag: &str, arg: &str) -> bool {
     flag.is_empty() || arg.starts_with('-')
 }
 
+/// Resource limit class values must be non-negative.
+///
+/// # Arguments
+///
+/// * `n` — Candidate limit value.
+///
+/// # Returns
+///
+/// `true` when `n >= 0`.
 pub fn is_valid_limit(n: i32) -> bool {
     n >= 0
 }
 
+/// True when `status` is `Ok` and the child exited successfully.
+///
+/// # Arguments
+///
+/// * `status` — Result from [`std::process::Command::status`] or similar.
+///
+/// # Returns
+///
+/// Whether spawning worked and [`std::process::ExitStatus::success`] is true.
 pub fn command_succeeded(status: &std::io::Result<std::process::ExitStatus>) -> bool {
     status.as_ref().is_ok_and(|s| s.success())
 }
@@ -324,22 +533,64 @@ pub fn command_succeeded(status: &std::io::Result<std::process::ExitStatus>) -> 
 // Build config helpers
 // ---------------------------------------------------------------------------
 
+/// `ur.toml` `kind == "lib"` selects type-check-only `ur build` path.
+///
+/// # Arguments
+///
+/// * `kind` — `[package].kind` string.
+///
+/// # Returns
+///
+/// `true` for `"lib"`.
 pub fn is_lib_project(kind: &str) -> bool {
     kind == "lib"
 }
 
+/// Parse `[build].boot` string to bool for templates.
+///
+/// # Arguments
+///
+/// * `value` — Raw table value text.
+///
+/// # Returns
+///
+/// `true` only when `value == "true"`.
 pub fn parse_boot(value: &str) -> bool {
     value == "true"
 }
 
+/// Forward `-ccompiler` only when the manifest field is non-empty.
+///
+/// # Arguments
+///
+/// * `cc` — `[build].ccompiler` field.
+///
+/// # Returns
+///
+/// `true` when `cc` is not empty.
 pub fn should_add_ccompiler(cc: &str) -> bool {
     !cc.is_empty()
 }
 
+/// True if either Dart Sass or `sassc` is installed per `which` probes.
+///
+/// # Arguments
+///
+/// * `has_sass` — Whether `which sass` succeeded for the caller’s probe.
+/// * `has_sassc` — Whether `which sassc` succeeded.
+///
+/// # Returns
+///
+/// Logical OR of the two flags.
 pub fn sass_tool_available(has_sass: bool, has_sassc: bool) -> bool {
     has_sass || has_sassc
 }
 
+/// Probe `PATH` for `sass` and `sassc` to decide whether SCSS precompilation can run.
+///
+/// # Returns
+///
+/// `true` if either executable is found (non-interactive `which` checks).
 pub fn has_sass_or_sassc() -> bool {
     let has_sass = std::process::Command::new("which")
         .arg("sass")
@@ -402,6 +653,34 @@ css = "style/css/main.css"
         assert_eq!(cfg.package.kind, "app");
         assert_eq!(cfg.build.entry, "demo");
         assert!(cfg.style.is_some());
+    }
+
+    /// Omitted `[package].kind` must deserialize to `"app"` via [`default_pkg_kind`] (mutants on that default break orchestration).
+    #[test]
+    fn ur_toml_package_kind_defaults_to_app() {
+        let content = r#"[package]
+name = "nokind"
+
+[build]
+entry = "Main"
+db = "sqlite"
+"#;
+        let cfg = parse_ur_toml_strict(content).expect("parse");
+        assert_eq!(cfg.package.kind, "app");
+    }
+
+    /// Omitted `[build].db` uses [`default_build_db`] (`sqlite`).
+    #[test]
+    fn ur_toml_build_db_defaults_to_sqlite() {
+        let content = r#"[package]
+name = "x"
+kind = "app"
+
+[build]
+entry = "Main"
+"#;
+        let cfg = parse_ur_toml_strict(content).expect("parse");
+        assert_eq!(cfg.build.db, "sqlite");
     }
 
     #[test]

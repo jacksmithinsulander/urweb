@@ -1,20 +1,20 @@
-//! Primitive literals shared across all IRs.
+//! Primitive literals shared across compiler intermediate representations.
 //!
-//! - **Prim**: Int, Float, String(StringMode, _), Char
-//! - **StringMode**: Normal vs Html (different escaping for codegen)
-//! - Methods: to_c_literal, float_to_string; runtime text via `Display` (`ToString`)
+//! [`Prim`] covers integers, floats, text, and characters; [`StringMode`] selects normal versus HTML-oriented escaping for code generation.
+//! See [`Prim::to_c_literal`] and [`Prim::float_to_string`]; [`std::fmt::Display`] is used where run-time text is needed.
 //!
-//! Mirrors SML's `Prim.t`.
+//! Shapes follow Standard ML’s `Prim.t` from the reference compiler.
 
 use std::fmt;
 
-/// Primitive literals (mirrors SML's `Prim.t`).
+/// How string literals are escaped when emitting C or HTML-aware text.
 #[derive(Debug, Clone, PartialEq)]
 pub enum StringMode {
     Normal,
     Html,
 }
 
+/// Primitive literal values carried through all compiler intermediate representations.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Prim {
     Int(i64),
@@ -25,11 +25,23 @@ pub enum Prim {
 
 impl Prim {
     /// Format a float with 16 decimal places in scientific notation (matches MLton behaviour).
+    ///
+    /// # Arguments
+    ///
+    /// * `n` — Floating-point value to serialize.
+    ///
+    /// # Returns
+    ///
+    /// `String` suitable for embedding in generated C or comparisons.
     pub fn float_to_string(n: f64) -> std::string::String {
         format!("{:.16e}", n)
     }
 
     /// Render the primitive as a C literal (used by the C code generator).
+    ///
+    /// # Returns
+    ///
+    /// Source fragment such as `123LL`, a quoted string, or a character literal.
     pub fn to_c_literal(&self) -> std::string::String {
         match self {
             Prim::Int(n) => {
@@ -50,6 +62,7 @@ impl Prim {
         }
     }
 
+    /// Escape a string for double-quoted C literals (mirrors upstream Char/string escaping rules).
     fn quote_double(string: &str) -> std::string::String {
         let mut out = std::string::String::new();
         for ch in string.chars() {
@@ -78,6 +91,7 @@ impl Prim {
         out
     }
 
+    /// Format a single Unicode scalar as a C character literal.
     fn to_c_char(ch: char) -> std::string::String {
         match ch {
             '"' => "\"".to_string(),
@@ -86,6 +100,10 @@ impl Prim {
     }
 
     /// Total ordering suitable for BTreeMap keys.
+    ///
+    /// # Returns
+    ///
+    /// Discriminator byte: integer `0`, float `1`, string `2`, character `3`.
     pub fn variant_tag(&self) -> u8 {
         match self {
             Prim::Int(_) => 0,
@@ -96,6 +114,7 @@ impl Prim {
     }
 }
 
+/// Human-readable rendering for logging and tests (not C syntax).
 impl fmt::Display for Prim {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -107,6 +126,7 @@ impl fmt::Display for Prim {
     }
 }
 
+/// Delegates total compare to [`Ord`] for `Prim`.
 impl PartialOrd for Prim {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
@@ -115,6 +135,7 @@ impl PartialOrd for Prim {
 
 impl Eq for Prim {}
 
+/// Total order: integers, then floats, strings, then chars (see variant tags).
 impl Ord for Prim {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         use std::cmp::Ordering;

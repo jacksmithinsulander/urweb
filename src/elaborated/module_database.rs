@@ -1,16 +1,11 @@
-#![allow(dead_code, unused_variables, unused_imports)]
-
 //! Cache of module code with dependency information.
 //!
 //! Translated from `mod_db.sml`.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::Mutex;
 use std::time::SystemTime;
 
-use crate::elaborated::{
-    Constructor, Declaration, Expression, LocatedDeclaration, Signature, Structure,
-};
+use crate::elaborated::{Constructor, Declaration, LocatedDeclaration};
 
 // ---------------------------------------------------------------------------
 // One cached module entry

@@ -6,8 +6,6 @@
 //!
 //! Mirrors `tag.sml`.
 
-#![allow(dead_code, unused_variables)]
-
 use std::collections::HashMap;
 
 use crate::core::environment::Env;
@@ -106,7 +104,7 @@ fn tag_it(
     state: &mut State,
     source_names: &HashMap<usize, String>,
     uf: &UnionFind,
-    env: &Env,
+    _env: &Env,
     error_reporter: &mut impl FnMut(&Span, &str),
 ) -> LocatedExpression {
     let span = e.span.clone();
@@ -550,7 +548,7 @@ fn make_wrapper(
         );
         let (abs, _, _) = args.iter().rev().enumerate().fold(
             (body, 0usize, wrap_t),
-            |(inner, k, rest_t), (i, arg_t)| {
+            |(inner, k, rest_t), (_i, arg_t)| {
                 let fn_t = Located::new(
                     Constructor::TFun(Box::new(arg_t.clone()), Box::new(rest_t.clone())),
                     span.clone(),
@@ -626,7 +624,7 @@ pub fn tag(file: File, error_reporter: &mut impl FnMut(&Span, &str)) -> File {
                 let src_name = source_names.get(n).cloned().unwrap_or_default();
                 match state.by_tag.get(&src_name) {
                     None => d,
-                    Some((ek2, n2)) => {
+                    Some((ek2, _n2)) => {
                         if export_kind_discriminant(ek) != export_kind_discriminant(ek2) {
                             error_reporter(
                                 &span,
@@ -693,7 +691,7 @@ pub fn tag(file: File, error_reporter: &mut impl FnMut(&Span, &str)) -> File {
         // Collect new val declarations from new tags
         let mut new_val_decls: Vec<LocatedDeclaration> = Vec::new();
         let mut new_export_decls: Vec<LocatedDeclaration> = Vec::new();
-        for (ek, f, cn) in new_tags {
+        for (_ek, f, cn) in new_tags {
             if let Some((f_name, f_type)) = env
                 .lookup_e_named(f)
                 .ok()

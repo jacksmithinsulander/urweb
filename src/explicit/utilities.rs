@@ -2,14 +2,10 @@
 //!
 //! Ports `expl_util.sml`.
 
-#![allow(dead_code, unused_variables, unused_imports)]
-
 use crate::datatype_kind::DatatypeKind;
 use crate::explicit::{
-    CaseMeta, Constructor, DatatypeDecl, Declaration, Expression, FieldMeta, Kind,
-    LocatedConstructor, LocatedDeclaration, LocatedExpression, LocatedKind, LocatedPattern,
-    LocatedSignature, LocatedSignatureItem, LocatedStructure, Pattern, PatternConstructor,
-    RestMeta, Signature, SignatureItem, Structure,
+    CaseMeta, Constructor, Declaration, Expression, FieldMeta, Kind, LocatedConstructor,
+    LocatedDeclaration, LocatedExpression, LocatedKind, RestMeta,
 };
 
 // ---------------------------------------------------------------------------
@@ -700,7 +696,7 @@ pub mod exp {
         con::map_b(c, ctx, fk, fc, bind)
     }
 
-    fn binder_bridge<Ctx, FB>(bind: &FB) -> impl Fn(&mut Ctx, &con::Binder)
+    fn binder_bridge<Ctx, FB>(_bind: &FB) -> impl Fn(&mut Ctx, &con::Binder)
     where
         FB: Fn(&mut Ctx, &Binder),
     {

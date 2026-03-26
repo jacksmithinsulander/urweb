@@ -111,7 +111,21 @@ Mutation testing (`cargo mutants`, sharded) runs after these succeed.
 
 ---
 
-## 7. Ur/Web source files (what Cursor is often editing)
+## 7. Rust code style (mandatory for edits in this repo)
+
+When you add or substantially edit **Rust** (`*.rs` under `src/`, `crates/`, `tests/`, `examples/`):
+
+1. **Names** — Use **long, descriptive identifiers**; do **not** add new abbreviations or opaque acronyms. Prefer `elaborated_syntax_tree` over `est`; prefer `database_connection_string` over `dbcs`.
+2. **Comments on lines** — **Each executable line** should have an accompanying **`//` comment** (same line or line above) that states **exactly what that line does**, including “obvious” assignments and calls. Goal: a reader (or LLM) never guesses intent.
+3. **Rustdoc on every function** — Every **`fn`** (public or private, free or in `impl`) needs **`///`** rustdoc: what it does, parameters/return, and error/panic behavior if non-obvious.
+
+Treat [README.md](README.md) “Rust code style” as the human-readable spec; apply it to all new work and to regions you touch in existing files.
+
+**Exceptions:** standard domain names (`CJR`, `LSP`, …); **generated Rust**—edit sources and regenerate; **trait-only `impl`s**—one block `///` OK; **`#[test]`**—`///` optional; **braces / `match` arms**—section or arm comments OK. See README subsection “Exceptions and definitions.”
+
+---
+
+## 8. Ur/Web source files (what Cursor is often editing)
 
 - **Extensions:** `.ur` (impl), `.urs` (sig).
 - **Type params:** `::` explicit, `:::` implicit.
@@ -122,7 +136,7 @@ Mutation testing (`cargo mutants`, sharded) runs after these succeed.
 
 ---
 
-## 8. Extra workspace members
+## 9. Extra workspace members
 
 - [`crates/urweb-persy/`](crates/urweb-persy/)
 - [`crates/urweb-ndb/`](crates/urweb-ndb/)
@@ -131,7 +145,7 @@ Use `cargo check -p urweb-persy` (etc.) when iterating on one crate.
 
 ---
 
-## 9. Docs scaffolds (mdBook)
+## 10. Docs scaffolds (mdBook)
 
 | Book | Directory | Build |
 |------|-----------|--------|
@@ -142,10 +156,10 @@ Requires [`mdbook`](https://rust-lang.github.io/mdBook/) installed separately.
 
 ---
 
-## 10. Rules of thumb for edits
+## 11. Rules of thumb for edits
 
 1. **Smallest diff** that satisfies the task; no unrelated renames or “cleanup.”
-2. **Follow surrounding code** in the file you touch (error handling, `anyhow` vs `Result`, etc.).
+2. **Rust style policy** (section 7) overrides “match legacy comment density” for code you change: add descriptive names, line comments, and `///` on functions you introduce or heavily edit.
 3. **Compatibility:** Prefer not to break existing Ur programs that already compile here; extend tests in [`tests/`](tests/).
 4. **Runtime reality:** Generated C may use **pthreads** today—see README roadmap; do not rip out threading without a coordinated design.
 5. **Roadmap ≠ shipped:** Zenroom, `.urt`, self-hosting, pluggable UI—these are **goals**; verify in code before assuming they exist ([Zenroom docs](https://dev.zenroom.org/#/) for future crypto plugin context).

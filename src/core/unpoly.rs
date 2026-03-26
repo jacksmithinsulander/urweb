@@ -8,8 +8,6 @@
 //!
 //! Mirrors `unpoly.sml`.
 
-#![allow(dead_code)]
-
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::collections::HashMap;

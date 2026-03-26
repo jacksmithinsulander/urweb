@@ -13,8 +13,6 @@
 //!
 //! Mirrors `core_util.sml`.
 
-#![allow(dead_code, unused_variables, unused_imports)]
-
 use crate::core::*;
 use crate::datatype_kind::DatatypeKind;
 use crate::error_types::Located;
@@ -3226,7 +3224,7 @@ mod tests {
     /// Catches mutant: collect_pat_binders_fold. Case arm context must include pattern binders.
     #[test]
     fn exp_fold_b_case_arm_ctx_has_binders() {
-        use super::Binder;
+        
         let ty = Located::dummy(Constructor::Unit);
         let disc = Located::dummy(Expression::Prim(crate::primitives::Prim::Int(0)));
         let pat = Located::dummy(Pattern::Var("x".into(), ty.clone()));

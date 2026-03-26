@@ -1,4 +1,6 @@
-//! ur-fmt — Format Ur/Web source files (parse-validated layout).
+//! Format `.ur` and `.urs` sources after parsing (invalid programs are not rewritten silently).
+//!
+//! The formatter builds an abstract syntax tree, then pretty-prints. **Style:** [README.md](../../README.md) when edited.
 
 use std::fs;
 use std::path::Path;
@@ -7,12 +9,17 @@ use ur::cli_common;
 use ur::error_types::CompileError;
 use ur::ur_format::format_source_path;
 
+/// Print each [`CompileError`] to standard error.
 fn print_errors(errors: &[CompileError]) {
     for e in errors {
         eprintln!("{e}");
     }
 }
 
+/// Parse `ur-fmt` flags and format listed files or discover the project through `ur.toml`.
+///
+/// `args` is argv after the program name (`--check`, `--tab`, paths, …). Returns `0` when no file needed changes
+/// (or `--check` found no diff), `1` when formatting would change a file or errors occurred.
 fn fmt_command(args: &[String]) -> i32 {
     let mut check_mode = false;
     let mut tab_width: usize = 4;
@@ -155,6 +162,7 @@ fn fmt_command(args: &[String]) -> i32 {
     }
 }
 
+/// Run [`fmt_command`] on argv after the executable, then exit with its status.
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let code = fmt_command(&args[1..]);

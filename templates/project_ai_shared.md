@@ -136,3 +136,15 @@ Copy sections into `.cursor/rules/*.mdc` with `globs` like `*.ur`, `*.urs`, `*.u
 ## Planned documentation syntax
 
 **NatSpec-style** structured comments for Ur are **not** guaranteed in every compiler build—ordinary `(* ... *)` only unless your toolchain’s docs say otherwise. Conceptual model: [Solidity NatSpec](https://docs.soliditylang.org/en/latest/natspec-format.html).
+
+---
+
+## If you hack the Rust compiler (not Ur application code)
+
+When editing the **Ur/Web Rust toolchain** repository itself (`src/**/*.rs`, `crates/**/*.rs`), the maintainers expect:
+
+1. **Descriptive names only** — no new cryptic abbreviations or unexplained acronyms in identifiers (standard terms like `LSP` / `CJR` where they are the usual name are fine).
+2. **A comment on (almost) every executable line** — structural closing braces and trivial `match` `|` rows can rely on section or arm comments; **do not hand-edit LALRPOP-generated `.rs`**.
+3. **`///` rustdoc on every function** — except **`#[test]`** functions (optional `///`) and obvious **trait forwarders** if the whole `impl` is documented once.
+
+See **Contributing → Rust code style** and **Exceptions and definitions** in that repo’s `README.md` (and root `claude.md` / `cursor.md`).

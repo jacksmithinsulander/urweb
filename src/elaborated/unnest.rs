@@ -2,7 +2,6 @@
 //!
 //! Ports `unnest.sml`. Runs between elaborate and explify.
 
-#![allow(dead_code)]
 //!
 //! Any `EDValRec` binding inside an `ELet` expression is hoisted to a
 //! top-level `Declaration::ValRec`, with additional lambda parameters
@@ -1659,9 +1658,20 @@ impl<'a> UnnestCtx<'a> {
 // Public entry point
 // ---------------------------------------------------------------------------
 
-/// Remove nested function definitions by lambda-lifting.
+/// Remove nested function definitions by lambda-lifting (hoist nested `fun` as top-level `val rec`).
 ///
-/// Ported from `unnest.sml`. Must run between elaborate and explify.
+/// Ported from `unnest.sml`. Must run **after** [`crate::elaborated::elaborate::elab_file`] and **before**
+/// [`crate::elaborated::explify::explify`].
+///
+/// # Arguments
+///
+/// * `file` — Elaborated module body.
+/// * `errors` — Reporter for failures during unnesting (e.g. bad shapes).
+///
+/// # Returns
+///
+/// Transformed [`File`] (possibly with extra top-level bindings); errors are recorded in `errors`, not
+/// as `Result`.
 pub fn unnest(file: File, errors: &mut ErrorReporter) -> File {
     let max_name = {
         // Find the maximum named ID in the file to start fresh IDs above it.

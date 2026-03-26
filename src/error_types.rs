@@ -1,10 +1,10 @@
-//! Error handling and source locations.
+//! Diagnostics: positions, spans, and error accumulation for the batch compiler and the language server.
 //!
-//! - **Pos**: (line, column) in a source file
-//! - **Span**: file + start/end positions
-//! - **Located<T>**: pairs any value with a Span for error reporting
-//! - **CompileError**: parse/type/I/O errors
-//! - **ErrorReporter**: accumulates errors during compilation
+//! [`Pos`] is a line and column in a source file (one-based line numbers in human output).
+//! [`Span`] names the file plus start and end [`Pos`] values.
+//! [`Located`] pairs any node with a [`Span`] (like Standard ML’s located type).
+//! [`CompileError`] covers parse and type messages, warnings, and input/output failures.
+//! [`ErrorReporter`] collects diagnostics; silent reporters feed the Language Server Protocol without printing.
 
 use thiserror::Error;
 
@@ -16,9 +16,11 @@ pub struct Pos {
 }
 
 impl Pos {
+    /// Sentinel position used before real source locations are known.
     pub const DUMMY: Pos = Pos { line: 0, col: 0 };
 }
 
+/// Prints `line:col` for diagnostics.
 impl std::fmt::Display for Pos {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}:{}", self.line, self.col)
@@ -33,6 +35,7 @@ pub struct Span {
     pub last: Pos,
 }
 
+/// Default span is empty file and dummy positions.
 impl Default for Span {
     fn default() -> Self {
         Span::dummy()
@@ -40,6 +43,11 @@ impl Default for Span {
 }
 
 impl Span {
+    /// Empty path and [`Pos::DUMMY`] at both ends — used for non-source errors.
+    ///
+    /// # Returns
+    ///
+    /// A [`Span`] with empty `file` and dummy positions.
     pub fn dummy() -> Self {
         Span {
             file: String::new(),
@@ -48,7 +56,18 @@ impl Span {
         }
     }
 
-    /// Build a Span from byte offsets, given a sorted list of newline positions.
+    /// Build a span from Unicode UTF-8 byte offsets and a sorted list of newline byte offsets in the same buffer.
+    ///
+    /// # Arguments
+    ///
+    /// * `file` — Logical filename stored in the span (often a path or `file:` URL string).
+    /// * `start` — Inclusive UTF-8 byte offset of the range start in the source buffer.
+    /// * `end` — Inclusive UTF-8 byte offset of the range end in the source buffer.
+    /// * `line_starts` — Sorted indices of newline bytes; defines line boundaries for `start` / `end`.
+    ///
+    /// # Returns
+    ///
+    /// A [`Span`] with one-based line numbers and UTF-8 byte columns within each line.
     pub fn from_offsets(file: &str, start: usize, end: usize, line_starts: &[usize]) -> Self {
         let pos_of = |offset: usize| {
             // line_starts[i] = byte offset of start of line i+1 (0-indexed)
@@ -74,6 +93,7 @@ impl Span {
     }
 }
 
+/// `file:first-last` for human-readable error banners.
 impl std::fmt::Display for Span {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}:{}-{}", self.file, self.first, self.last)
@@ -88,10 +108,29 @@ pub struct Located<T> {
 }
 
 impl<T> Located<T> {
+    /// Attach an arbitrary AST node to a concrete source span.
+    ///
+    /// # Arguments
+    ///
+    /// * `node` — Parsed syntax or other value to carry.
+    /// * `span` — Source extent for diagnostics.
+    ///
+    /// # Returns
+    ///
+    /// [`Located`] pairing `node` with `span`.
     pub fn new(node: T, span: Span) -> Self {
         Located { node, span }
     }
 
+    /// Wrap `node` with [`Span::dummy`] for synthetic or recovered trees.
+    ///
+    /// # Arguments
+    ///
+    /// * `node` — Value without a real source location.
+    ///
+    /// # Returns
+    ///
+    /// [`Located`] with [`Span::dummy`].
     pub fn dummy(node: T) -> Self {
         Located {
             node,
@@ -136,6 +175,7 @@ pub enum CompileError {
     Io(#[from] std::io::Error),
 }
 
+/// Sentinel empty plain error (used by mutation testing subs).
 impl Default for CompileError {
     fn default() -> Self {
         CompileError::Plain(String::new())
@@ -143,6 +183,16 @@ impl Default for CompileError {
 }
 
 impl CompileError {
+    /// Build a generic at-location error carrying only `message`.
+    ///
+    /// # Arguments
+    ///
+    /// * `span` — Where the problem was found.
+    /// * `message` — Human-readable explanation.
+    ///
+    /// # Returns
+    ///
+    /// [`CompileError::AtSpan`].
     pub fn at(span: Span, message: impl Into<String>) -> Self {
         CompileError::AtSpan {
             span,
@@ -151,6 +201,16 @@ impl CompileError {
     }
 
     /// Error at `span` with an extra “hint:” line (handholding / Elm-style).
+    ///
+    /// # Arguments
+    ///
+    /// * `span` — Where the problem was found.
+    /// * `message` — Primary explanation.
+    /// * `hint` — Second line; if empty, only `message` is kept.
+    ///
+    /// # Returns
+    ///
+    /// [`CompileError::AtSpan`] with an optional appended hint line.
     pub fn at_with_hint(span: Span, message: impl Into<String>, hint: impl Into<String>) -> Self {
         let hint_s = hint.into();
         let msg = if hint_s.is_empty() {
@@ -161,6 +221,11 @@ impl CompileError {
         CompileError::AtSpan { span, message: msg }
     }
 
+    /// Return the primary span when this variant carries one.
+    ///
+    /// # Returns
+    ///
+    /// `Some(span)` for located variants; `None` for [`CompileError::Plain`] and [`CompileError::Io`].
     pub fn span(&self) -> Option<&Span> {
         match self {
             CompileError::AtSpan { span, .. }
@@ -171,6 +236,16 @@ impl CompileError {
         }
     }
 
+    /// Non-fatal diagnostic surfaced as [`CompileError::WarningAt`].
+    ///
+    /// # Arguments
+    ///
+    /// * `span` — Warning location.
+    /// * `message` — Warning text.
+    ///
+    /// # Returns
+    ///
+    /// [`CompileError::WarningAt`].
     pub fn warning_at(span: Span, message: impl Into<String>) -> Self {
         CompileError::WarningAt {
             span,
@@ -179,14 +254,15 @@ impl CompileError {
     }
 }
 
-/// Accumulates compile errors (mirrors SML's global error ref + errorLog).
+/// Collected compile diagnostics (similar to the Standard ML compiler’s global error log).
 #[derive(Debug)]
 pub struct ErrorReporter {
     pub errors: Vec<CompileError>,
-    /// When false, errors are only collected (used by LSP / batch analysis).
+    /// When false, errors are stored only (language server and incremental analysis).
     pub eprint: bool,
 }
 
+/// Default reporter prints each error to stderr as it is collected.
 impl Default for ErrorReporter {
     fn default() -> Self {
         ErrorReporter {
@@ -197,11 +273,16 @@ impl Default for ErrorReporter {
 }
 
 impl ErrorReporter {
+    /// Construct a reporter that echoes errors to stderr (CLI default).
     pub fn new() -> Self {
         ErrorReporter::default()
     }
 
     /// Collect diagnostics without printing to stderr (language servers, tests).
+    ///
+    /// # Returns
+    ///
+    /// Fresh reporter with `eprint: false`.
     pub fn new_silent() -> Self {
         ErrorReporter {
             errors: Vec::new(),
@@ -209,6 +290,15 @@ impl ErrorReporter {
         }
     }
 
+    /// Store `error` and optionally print it immediately.
+    ///
+    /// # Arguments
+    ///
+    /// * `error` — Diagnostic to append to [`ErrorReporter::errors`].
+    ///
+    /// # Returns
+    ///
+    /// Nothing.
     pub fn report(&mut self, error: CompileError) {
         if self.eprint {
             eprintln!("{error}");
@@ -216,11 +306,31 @@ impl ErrorReporter {
         self.errors.push(error);
     }
 
+    /// Shorthand for [`CompileError::at`] followed by [`Self::report`].
+    ///
+    /// # Arguments
+    ///
+    /// * `span` — Error location.
+    /// * `message` — Error text.
+    ///
+    /// # Returns
+    ///
+    /// Nothing.
     pub fn report_at(&mut self, span: Span, message: impl Into<String>) {
         self.report(CompileError::at(span, message));
     }
 
     /// Report at `span` with a second-line hint.
+    ///
+    /// # Arguments
+    ///
+    /// * `span` — Error location.
+    /// * `message` — Primary text.
+    /// * `hint` — Optional hint line.
+    ///
+    /// # Returns
+    ///
+    /// Nothing.
     pub fn report_at_with_hint(
         &mut self,
         span: Span,
@@ -230,10 +340,20 @@ impl ErrorReporter {
         self.report(CompileError::at_with_hint(span, message, hint));
     }
 
+    /// `true` if any diagnostic has been collected (warnings count too).
+    ///
+    /// # Returns
+    ///
+    /// Whether [`ErrorReporter::errors`] is non-empty.
     pub fn has_errors(&self) -> bool {
         !self.errors.is_empty()
     }
 
+    /// Clear accumulated diagnostics (tests and incremental analysis).
+    ///
+    /// # Returns
+    ///
+    /// Nothing.
     pub fn reset(&mut self) {
         self.errors.clear();
     }
@@ -367,5 +487,25 @@ mod tests {
         let e = CompileError::at(span.clone(), "bad type");
         assert!(e.to_string().contains("bad type"));
         assert_eq!(e.span(), Some(&span));
+    }
+
+    /// `new_silent` must differ from [`Default::default`] so language-server analysis does not echo to stderr.
+    #[test]
+    fn error_reporter_new_silent_disables_eprint() {
+        let silent = ErrorReporter::new_silent();
+        assert!(!silent.eprint, "new_silent must set eprint=false");
+        let loud = ErrorReporter::default();
+        assert!(loud.eprint, "Default must keep eprint=true");
+    }
+
+    /// Replacing [`ErrorReporter::report_at_with_hint`] with a no-op would drop diagnostics (cargo-mutants).
+    #[test]
+    fn error_reporter_report_at_with_hint_pushes_one_diagnostic() {
+        let mut reporter = ErrorReporter::new_silent();
+        reporter.report_at_with_hint(Span::dummy(), "primary", "hint line");
+        assert_eq!(reporter.errors.len(), 1);
+        let text = reporter.errors[0].to_string();
+        assert!(text.contains("primary"));
+        assert!(text.contains("hint"));
     }
 }

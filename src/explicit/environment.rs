@@ -2,11 +2,9 @@
 //!
 //! Mirrors `expl_env.sml`.
 
-#![allow(dead_code, unused_variables, unused_imports)]
-
 use std::collections::HashMap;
 
-use crate::error_types::{Located, Span};
+use crate::error_types::Located;
 use crate::explicit::*;
 
 // ---------------------------------------------------------------------------
@@ -425,7 +423,7 @@ impl Env {
                 orig_mod,
                 orig_path,
                 orig_name,
-                orig_constrs_path,
+                orig_constrs_path: _,
                 constrs,
             } => {
                 let t = Located::new(
@@ -592,7 +590,7 @@ impl Env {
                 orig_mod,
                 orig_path,
                 orig_name,
-                orig_constrs_path,
+                orig_constrs_path: _,
                 constrs,
             } => {
                 let t = Located::new(

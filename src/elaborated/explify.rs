@@ -16,9 +16,18 @@ use crate::primitives::Prim;
 // Public entry point
 // ---------------------------------------------------------------------------
 
-/// Convert an elaborated file to the explicit representation.
+/// Convert an elaborated [`elab::File`] to the explicit intermediate representation.
 ///
-/// Returns `None` if any diagnostic was reported during the pass.
+/// Drops constraints, resolves implicits, and strips unification wrappers; recovery nodes may be emitted.
+///
+/// # Arguments
+///
+/// * `file` — Output of elaboration (after [`crate::elaborated::unnest`] in the full pipeline).
+/// * `errors` — Receives diagnostics from the pass.
+///
+/// # Returns
+///
+/// `Some(explicit file)` when [`ErrorReporter::has_errors`] is false after the pass; otherwise `None`.
 pub fn explify(file: elab::File, errors: &mut ErrorReporter) -> Option<expl::File> {
     let out: expl::File = file
         .into_iter()

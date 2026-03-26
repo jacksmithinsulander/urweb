@@ -16,6 +16,10 @@
 //! If no blank line exists, the whole file is treated as source filenames.
 //!
 //! Mirrors the `parseUrp'` function in `compiler.sml`.
+//!
+//! **Style:** new/edited Rust here follows [README.md](../../README.md) Rust code style (exceptions documented there).
+//!
+//! The public entry [`parse_urp`] documents `# Arguments`, `# Returns`, and `# Errors`.
 
 use std::path::{Path, PathBuf};
 
@@ -28,7 +32,19 @@ use crate::settings::{Action, PathKind, PatternKind, Rewrite, Rule};
 // Public entry point
 // ---------------------------------------------------------------------------
 
-/// Parse a `.urp` project file and return a `Job` description.
+/// Parse a `.urp` project file into a [`Job`] (directives, then source paths).
+///
+/// # Arguments
+///
+/// * `path` — Filesystem path to the `.urp` file (read as UTF-8).
+///
+/// # Errors
+///
+/// I/O failure, malformed directive, unknown filter kind, or other parse errors (wrapped with [`anyhow::Context`]).
+///
+/// # Returns
+///
+/// [`Job`] with resolved paths (sources relative to the `.urp` directory unless absolute).
 pub fn parse_urp(path: &Path) -> Result<Job> {
     let content = std::fs::read_to_string(path)
         .with_context(|| format!("reading project file {}", path.display()))?;

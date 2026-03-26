@@ -24,8 +24,6 @@
 //!
 //! Mirrors `termination.sml`.
 
-#![allow(dead_code)]
-
 use std::collections::{HashMap, HashSet};
 
 use crate::core::*;

@@ -473,3 +473,164 @@ fn ur_lsp_closing_stdin_exits_successfully() {
         String::from_utf8_lossy(&out.stderr)
     );
 }
+
+/// Keys that `cargo mutants` used to kill via delete-field mutants on [`ServerCapabilities`] in `ur-lsp`.
+fn assert_capabilities_cover_server_surface(capabilities: &Value) {
+    for key in [
+        "textDocumentSync",
+        "hoverProvider",
+        "definitionProvider",
+        "typeDefinitionProvider",
+        "referencesProvider",
+        "documentHighlightProvider",
+        "workspaceSymbolProvider",
+        "documentSymbolProvider",
+        "completionProvider",
+        "signatureHelpProvider",
+        "renameProvider",
+        "foldingRangeProvider",
+        "selectionRangeProvider",
+        "inlayHintProvider",
+        "semanticTokensProvider",
+        "documentFormattingProvider",
+    ] {
+        assert!(
+            capabilities.get(key).is_some(),
+            "initialize must advertise {key}, got {capabilities:?}"
+        );
+    }
+}
+
+#[test]
+fn ur_lsp_initialize_advertises_full_capabilities() {
+    let mut child = Command::new(cargo_bin("ur-lsp"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn ur-lsp");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let (reader, rx) = spawn_stdout_reader(stdout);
+
+    write_msg(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "processId": null,
+                "capabilities": {},
+                "clientInfo": {"name": "ur-lsp-cap-test", "version": "0"}
+            }
+        }),
+    );
+
+    let body = recv_jsonrpc_matching(
+        &rx,
+        |v| v.get("id") == Some(&json!(1)) && v.get("result").is_some(),
+        LSP_RPC_DEADLINE,
+        "initialize id=1",
+    );
+    let msg: Value = serde_json::from_slice(&body).expect("json");
+    let caps = msg
+        .get("result")
+        .and_then(|r| r.get("capabilities"))
+        .expect("capabilities");
+    assert_capabilities_cover_server_surface(caps);
+
+    let _ = child.kill();
+    let _ = child.wait();
+    drop(rx);
+    let _ = reader.join();
+}
+
+#[test]
+fn ur_lsp_formatting_returns_empty_when_buffer_already_canonical() {
+    let fmt_uri = "file:///tmp/ur-lsp-fmt-nodup.ur";
+    let buffer = "val x = 1\n";
+    let mut child = Command::new(cargo_bin("ur-lsp"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn ur-lsp");
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let (reader, rx) = spawn_stdout_reader(stdout);
+
+    write_msg(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "processId": null,
+                "capabilities": {},
+                "clientInfo": {"name": "ur-lsp-fmt", "version": "0"}
+            }
+        }),
+    );
+    recv_jsonrpc_matching(
+        &rx,
+        |v| v.get("id") == Some(&json!(1)) && v.get("result").is_some(),
+        LSP_RPC_DEADLINE,
+        "initialize",
+    );
+    write_msg(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "initialized",
+            "params": {}
+        }),
+    );
+    write_msg(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": fmt_uri,
+                    "languageId": "ur",
+                    "version": 1,
+                    "text": buffer
+                }
+            }
+        }),
+    );
+    write_msg(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 99,
+            "method": "textDocument/formatting",
+            "params": {
+                "textDocument": {"uri": fmt_uri},
+                "options": {"tabSize": 4, "insertSpaces": true}
+            }
+        }),
+    );
+    let body = recv_jsonrpc_matching(
+        &rx,
+        |v| v.get("id") == Some(&json!(99)) && v.get("result").is_some(),
+        LSP_RPC_DEADLINE,
+        "formatting response",
+    );
+    let msg: Value = serde_json::from_slice(&body).expect("json");
+    let result = msg.get("result").expect("result");
+    assert_eq!(
+        result,
+        &json!([]),
+        "canonical buffer must yield empty edits (fmt == doc.text guard), got {result:?}"
+    );
+
+    let _ = child.kill();
+    let _ = child.wait();
+    drop(rx);
+    let _ = reader.join();
+}

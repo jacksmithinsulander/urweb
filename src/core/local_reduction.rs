@@ -15,8 +15,6 @@
 //!
 //! Mirrors `reduce_local.sml`.
 
-#![allow(dead_code)]
-
 use crate::core::*;
 use crate::primitives::Prim;
 

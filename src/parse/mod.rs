@@ -32,6 +32,8 @@
 //! ordinary char iteration). [`preprocess_urs`](preprocess_urs) can truncate with the remainder
 //! appended if fuel exhausts — documented in its body. Integration tests in `tests/langsec_preprocess.rs`
 //! pin representative rewrite + parse behavior.
+//!
+//! **Style:** new/edited Rust here follows [README.md](../../README.md) Rust code style (exceptions documented there).
 
 pub mod expr_langsec;
 pub mod grammar_helpers;
@@ -60,6 +62,14 @@ static PREPROCESS_URS_FUEL_TEST_OVERRIDE: std::sync::Mutex<Option<usize>> =
     std::sync::Mutex::new(None);
 
 /// Test-only: override initial fuel for the next [`preprocess_urs`] call(s). Pass `None` to disable.
+///
+/// # Arguments
+///
+/// * `fuel` — Maximum preprocess steps, or `None` for the production default.
+///
+/// # Returns
+///
+/// Nothing.
 #[cfg(test)]
 pub fn test_set_preprocess_urs_fuel_override(fuel: Option<usize>) {
     *PREPROCESS_URS_FUEL_TEST_OVERRIDE.lock().unwrap() = fuel;
@@ -279,6 +289,14 @@ fn emit_ws_comments_prefix(out: &mut String, input: &str, b: &[u8], i: &mut usiz
 /// Pass-through scan (legacy hook): `case`/`of` arm rewriting is done in
 /// `rewrite_case_arm_separators` to match `urweb.grm` `barOpt branch branchs` — no forced
 /// `arm_sep` after every `of`.
+///
+/// # Arguments
+///
+/// * `input` — UTF-8 source text.
+///
+/// # Returns
+///
+/// Same string (identity).
 pub fn rewrite_case_leading_bars(input: &str) -> String {
     input.to_string()
 }
@@ -287,6 +305,14 @@ pub fn rewrite_case_leading_bars(input: &str) -> String {
 /// `arm_sep` (see `grammar.lalrpop` `CaseArmSep`). Pattern scan stops at the first `=>` at
 /// paren depth 0; bodies treat `(* … *)` and `"…"` like the leading-bar pass.  Patterns with
 /// top-level `|` (or-pats) can confuse this pass — parenthesize if needed.
+///
+/// # Arguments
+///
+/// * `input` — UTF-8 `.ur` / `.urs` source before parsing.
+///
+/// # Returns
+///
+/// Transformed source safe for the case-arm grammar.
 pub fn rewrite_case_arm_separators(input: &str) -> String {
     #[derive(Clone, Copy, PartialEq, Eq)]
     enum BodyStop {
@@ -543,6 +569,11 @@ pub fn rewrite_case_arm_separators(input: &str) -> String {
     out
 }
 
+/// Compose [`rewrite_case_leading_bars`] and [`rewrite_case_arm_separators`] for `case` preprocessing.
+///
+/// # Returns
+///
+/// Rewritten UTF-8 string.
 pub fn rewrite_case_expressions(src: &str) -> String {
     rewrite_case_arm_separators(&rewrite_case_leading_bars(src))
 }
@@ -553,6 +584,14 @@ pub fn rewrite_case_expressions(src: &str) -> String {
 /// Adding this as a grammar rule causes LR(1) conflicts because `IDENT` is used for both
 /// `AtomConNode` and `KindAtom`.  The preprocessor handles the common case by scanning for
 /// `lowercase-ident :: kind ->` patterns and wrapping in brackets.
+///
+/// # Arguments
+///
+/// * `src` — Signature or source fragment.
+///
+/// # Returns
+///
+/// Source with bracketed kind binders inserted where detected.
 pub fn rewrite_bare_kind_binders(src: &str) -> String {
     let b = src.as_bytes();
     let n = b.len();
@@ -598,10 +637,17 @@ pub fn rewrite_bare_kind_binders(src: &str) -> String {
                 i += 1;
             }
             let ws1 = &src[ws_start..i];
-            // Check for `::` (not `:::`)
-            if i + 2 <= n && &b[i..i + 2] == b"::" && b.get(i + 2).copied() != Some(b':') {
-                i += 2;
-                // Skip whitespace after ::
+            // Check for `:::` or `::` (not `::::`)
+            let is_triple =
+                i + 3 <= n && &b[i..i + 3] == b":::" && b.get(i + 3).copied() != Some(b':');
+            let is_double = !is_triple
+                && i + 2 <= n
+                && &b[i..i + 2] == b"::"
+                && b.get(i + 2).copied() != Some(b':');
+            if is_triple || is_double {
+                let colon_str = if is_triple { ":::" } else { "::" };
+                i += colon_str.len();
+                // Skip whitespace after :: or :::
                 let ws2_start = i;
                 while i < n && matches!(b[i], b' ' | b'\t') {
                     i += 1;
@@ -651,7 +697,7 @@ pub fn rewrite_bare_kind_binders(src: &str) -> String {
                     out.push('[');
                     out.push_str(id);
                     out.push_str(ws1);
-                    out.push_str("::");
+                    out.push_str(colon_str);
                     out.push_str(ws2);
                     out.push_str(kind_text);
                     out.push_str("] -> ");
@@ -661,10 +707,10 @@ pub fn rewrite_bare_kind_binders(src: &str) -> String {
                     }
                     continue;
                 } else {
-                    // No arrow: emit id, whitespace, `::`, whitespace as-is
+                    // No arrow: emit id, whitespace, `::` or `:::`, whitespace as-is
                     out.push_str(id);
                     out.push_str(ws1);
-                    out.push_str("::");
+                    out.push_str(colon_str);
                     out.push_str(ws2);
                     // i is already at kind_start
                     continue;
@@ -697,6 +743,14 @@ pub fn rewrite_bare_kind_binders(src: &str) -> String {
 /// the table type.  Stripping them here keeps the grammar simple.
 ///
 /// We replace each constraint line with a blank line to preserve line numbers.
+///
+/// # Arguments
+///
+/// * `src` — `.ur` source containing `table` declarations.
+///
+/// # Returns
+///
+/// Source with constraint-only lines blanked (line count preserved).
 pub fn strip_table_constraints(src: &str) -> String {
     fn is_constraint_line(trimmed: &str) -> bool {
         trimmed.starts_with("PRIMARY ")
@@ -752,6 +806,14 @@ fn pp_kw_word_at(b: &[u8], i: usize, n: usize, word: &[u8]) -> bool {
 ///
 /// Heuristic: a `{...}` block is a SQL splice if, after skipping whitespace/comments, the first
 /// non-ws token is NOT followed by `=` (record field separator) and is NOT `...` or `}`.
+///
+/// # Arguments
+///
+/// * `input` — `.ur` source with SQL splices.
+///
+/// # Returns
+///
+/// Source where eligible `{...}` become `(...)`.
 pub fn rewrite_sql_brace_splices(input: &str) -> String {
     let b = input.as_bytes();
     let n = b.len();
@@ -869,6 +931,14 @@ pub fn rewrite_sql_brace_splices(input: &str) -> String {
 /// grammar need not share `|` / `of` with patterns and other constructs (LangSec / LALR).
 /// Rewrite keyword `where` for signatures: `sgn_where` at paren depth 0, `sgn_subwhere` when
 /// nested in `(...)`, so LR(1) can separate top-level vs inner `Sgn` boundaries.
+///
+/// # Arguments
+///
+/// * `input` — UTF-8 source containing signature `where` clauses.
+///
+/// # Returns
+///
+/// Transformed UTF-8 source.
 pub fn rewrite_sgn_where(input: &str) -> String {
     let b = input.as_bytes();
     let n = b.len();
@@ -922,6 +992,15 @@ pub fn rewrite_sgn_where(input: &str) -> String {
     out
 }
 
+/// After `datatype` `=`, rewrite constructor `|` / `of` to magic tokens for the LALRPOP grammar.
+///
+/// # Arguments
+///
+/// * `input` — Source containing `datatype` declarations.
+///
+/// # Returns
+///
+/// Transformed source.
 pub fn rewrite_datatype_constructors(input: &str) -> String {
     fn find_dtype_equals(input: &str, b: &[u8], mut i: usize, n: usize) -> Option<usize> {
         let mut depth = 0i32;
@@ -1309,6 +1388,15 @@ fn rewrite_sig_type_class_abstract_lines(input: &str) -> String {
     out
 }
 
+/// Preprocess a `.urs` signature file: case rewrites, signature `where`, datatype tokens, then fuel-bounded pass.
+///
+/// # Arguments
+///
+/// * `src` — Raw `.urs` text.
+///
+/// # Returns
+///
+/// String ready for [`parse_urs`]’s lexer. If internal fuel exhausts, remainder is appended (see body).
 pub fn preprocess_urs(src: &str) -> String {
     let src = rewrite_case_expressions(&rewrite_sgn_where(&rewrite_datatype_constructors(src)));
     // Declaration-header keywords after which `IDENT ::` means a kind
@@ -1787,7 +1875,20 @@ pub fn preprocess_urs(src: &str) -> String {
     out
 }
 
-/// Preprocessed excerpt of `lib/ur/basis.urs` around `pos` (for dev binaries / mutation tests).
+/// Preprocessed excerpt of `lib/ur/basis.urs` around byte `pos` (dev helpers / mutation tests).
+///
+/// # Arguments
+///
+/// * `pos` — Byte index into the preprocessed buffer.
+/// * `before` / `after` — Bytes to include on each side.
+///
+/// # Returns
+///
+/// Slice of the preprocessed basis as `String`.
+///
+/// # Errors
+///
+/// If `basis.urs` cannot be read from disk.
 pub fn basis_urs_preprocessed_window(
     pos: usize,
     before: usize,
@@ -1805,6 +1906,10 @@ pub fn basis_urs_preprocessed_window(
 /// `"*"` as an expression token (which conflicts with multiplication).
 /// Only replaces `*` when it is the sole non-whitespace content between a matching `(…)` pair
 /// (and the `(` is NOT the start of a comment `(*`).
+///
+/// # Returns
+///
+/// Source with `( sql_star )` placeholders.
 pub fn rewrite_sql_star(input: &str) -> String {
     let b = input.as_bytes();
     let n = b.len();
@@ -1855,6 +1960,10 @@ pub fn rewrite_sql_star(input: &str) -> String {
 /// a boolean or expression context: `WHERE`, `HAVING`, `ON` (case-sensitive, as Ur/Web SQL uses
 /// uppercase).  Only the outermost braces are rewritten; inner `{...}` remains untouched.
 /// Record literals (`{field = ...}`) and text-splices (`{[...]}`) are never touched.
+///
+/// # Returns
+///
+/// Transformed UTF-8 source.
 pub fn rewrite_sql_keyword_brace_splices(input: &str) -> String {
     let b = input.as_bytes();
     let n = b.len();
@@ -2003,8 +2112,13 @@ pub fn rewrite_sql_keyword_brace_splices(input: &str) -> String {
     out
 }
 
-/// Preprocess `.ur` source exactly like [`parse_ur`] before the lexer runs (rewrites only).
-/// Used by LSP semantic highlighting and other tools that need the same surface as the parser.
+/// Preprocess `.ur` source exactly like [`parse_ur`] before the lexer (rewrites only, no parse).
+///
+/// Language server semantic tokens and similar tools use this for a consistent surface.
+///
+/// # Returns
+///
+/// Transformed source string.
 pub fn preprocess_ur_for_parse(src: &str) -> String {
     rewrite_case_expressions(&rewrite_sgn_where(&rewrite_datatype_constructors(
         &rewrite_bare_kind_binders(&rewrite_sql_star(&rewrite_sql_keyword_brace_splices(
@@ -2013,13 +2127,22 @@ pub fn preprocess_ur_for_parse(src: &str) -> String {
     )))
 }
 
-/// Parse a single `.ur` source file.
+/// Parse one `.ur` module after the standard preprocessor chain and LALRPOP parse.
 ///
-/// `project_db` is the effective [`crate::db::ProjectDb`] for this compile (from `ur.toml` /
-/// `.urp` / CLI). It selects LangSec / future backend-specific surface rules; the LALRPOP parser
-/// is shared, but preprocess and recognizers can branch on it.
+/// # Arguments
 ///
-/// Returns `None` and records an error in `errors` on parse failure.
+/// * `_filename` — Label for diagnostics (may be a path or virtual `file:` string).
+/// * `source` — Raw UTF-8 module text.
+/// * `errors` — Receives a plain or spanned error on failure.
+/// * `project_db` — Effective database / LangSec profile for this compile (`ur.toml`, `.urp`, CLI).
+///
+/// # Returns
+///
+/// Parsed [`File`] (declaration vector) or `None` when the parser fails or code was built without `generated_parser`.
+///
+/// # Errors
+///
+/// Does not return `Result`; failures are appended to `errors` and yield `None`.
 pub fn parse_ur(
     _filename: &str,
     source: &str,
@@ -2036,6 +2159,16 @@ pub fn parse_ur(
             Ok(file) => Some(file),
             Err(e) => {
                 let msg = format!("{:?}", e);
+                // Debug: print context around the error position
+                if let Some(start) = msg.find("token: (") {
+                    if let Some(end) = msg[start + 8..].find(',') {
+                        if let Ok(pos) = msg[start + 8..start + 8 + end].parse::<usize>() {
+                            let lo = pos.saturating_sub(150);
+                            let hi = (pos + 80).min(pre.len());
+                            eprintln!("parse_ur context around {}: {:?}", pos, &pre[lo..hi]);
+                        }
+                    }
+                }
                 eprintln!("parse_ur({}) error: {}", _filename, msg);
                 errors.report(CompileError::at(Span::dummy(), msg));
                 None
@@ -2052,9 +2185,17 @@ pub fn parse_ur(
     }
 }
 
-/// Count top-level declarations after parsing `source` as a `.ur` file.
+/// Count top-level declarations by parsing `source` as `.ur` with default [`crate::db::ProjectDb`].
 ///
-/// Used by the `test_parse` binary and tests (avoids a trivial `-> Some(1)` mutant surface).
+/// # Arguments
+///
+/// * `virtual_path` — Filename label for [`parse_ur`].
+/// * `source` — Module source.
+/// * `errors` — Parse error sink.
+///
+/// # Returns
+///
+/// `Some(len)` of the top-level vector, or `None` on parse failure.
 pub fn parse_top_level_decl_count(
     virtual_path: &str,
     source: &str,
@@ -2069,9 +2210,21 @@ pub fn parse_top_level_decl_count(
     .map(|f| f.len())
 }
 
-/// Parse a `.urs` signature file.
+/// Parse a `.urs` signature file after [`preprocess_urs`].
 ///
-/// Returns `None` and records an error in `errors` on parse failure.
+/// # Arguments
+///
+/// * `_filename` — Label for error messages.
+/// * `source` — Raw signature source.
+/// * `errors` — Diagnostic sink.
+///
+/// # Returns
+///
+/// Vector of located signature items, or `None` on failure / missing generated parser.
+///
+/// # Errors
+///
+/// Recorded in `errors`; function returns `None`.
 pub fn parse_urs(
     _filename: &str,
     source: &str,

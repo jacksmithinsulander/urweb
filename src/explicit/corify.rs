@@ -5,8 +5,6 @@
 //!
 //! Mirrors `corify.sml`.
 
-#![allow(dead_code)]
-
 use std::collections::HashMap;
 
 use crate::datatype_kind::DatatypeKind;

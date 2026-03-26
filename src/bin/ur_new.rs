@@ -1,13 +1,21 @@
-//! ur-new — Create new Ur/Web project scaffold.
+//! Scaffold a new Ur/Web application or library (`ur-new`): `ur.toml`, `.urp`, starter `.ur` or `.urs`.
+//!
+//! Application projects may include Sassy CSS sources and matching Cascading Style Sheets output paths; libraries omit styling.
+//! **Style:** [README.md](../../README.md) when edited.
 
 use std::process;
 use ur::cli_common;
 use ur::cli_common::ProjectKind;
 
+/// Write Unicode UTF-8 bytes to `path` (wraps [`std::fs::write`]).
 fn write_file(path: &str, content: &str) -> std::io::Result<()> {
     std::fs::write(path, content)
 }
 
+/// Create the directory tree, manifest, `.urp`, source stubs, editor helper files, and try `git init`.
+///
+/// `kind` selects application (with stylesheet layout) versus library. `name` is validated by [`cli_common::validate_project_name`].
+/// Returns `0` on success, `1` on input/output or validation errors.
 fn new_project(kind: ProjectKind, name: &str) -> i32 {
     if let Err(e) = cli_common::validate_project_name(name) {
         eprintln!("error: {}", e);
@@ -221,6 +229,7 @@ fun greet (name : string) : string = \"Hello, \" ^ name ^ \"!\"\n",
     0
 }
 
+/// Parse `ur-new [--lib] <name>`, run [`new_project`], then exit with the returned status code.
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let rest = &args[1..];

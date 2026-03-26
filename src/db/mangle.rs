@@ -2,7 +2,17 @@
 
 use super::{DatabaseBackend, ProjectDb};
 
-/// Escape / prefix a SQL identifier (tables, columns) for the active backend.
+/// Escape / prefix a SQL identifier (columns, etc.) for the active backend.
+///
+/// # Arguments
+///
+/// * `backend` — Resolved [`ProjectDb`] (MySQL lowercases; Postgres/SQLite keep case when not mangling).
+/// * `mangle` — When true, apply `uw_` prefix per dialect rules.
+/// * `s` — Logical identifier from the compiler.
+///
+/// # Returns
+///
+/// String safe to embed as an identifier in emitted SQL.
 pub fn mangle_sql_ident(backend: &ProjectDb, mangle: bool, s: &str) -> String {
     if backend.is_mysql() {
         if mangle {
@@ -17,7 +27,17 @@ pub fn mangle_sql_ident(backend: &ProjectDb, mangle: bool, s: &str) -> String {
     }
 }
 
-/// Table names: Postgres-style capitalizes the first letter when mangling.
+/// Table names: Postgres-style capitalizes the first letter when mangling; MySQL stays lowercase.
+///
+/// # Arguments
+///
+/// * `backend` — Same as [`mangle_sql_ident`].
+/// * `mangle` — Same as [`mangle_sql_ident`].
+/// * `s` — Logical table name.
+///
+/// # Returns
+///
+/// Mangled table identifier for DDL and queries.
 pub fn mangle_sql_table(backend: &ProjectDb, mangle: bool, s: &str) -> String {
     if backend.is_mysql() {
         if mangle {

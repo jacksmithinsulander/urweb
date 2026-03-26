@@ -1,4 +1,9 @@
-//! ur-compile — Compile Ur/Web project to executable.
+//! ur-compile — Compile Ur/Web projects to native executables and emit **SQL** (Structured Query Language) DDL.
+//!
+//! Mentions elsewhere: Language Server Protocol helpers, compiler intermediate representation, Structured Query Language schema output,
+//! and foreign function interface lines in `.urp` project files.
+//!
+//! **Style:** [README.md](../../README.md) Rust conventions when this file is edited.
 
 use std::process;
 use ur::cli_common;
@@ -6,6 +11,9 @@ use ur::settings::Settings;
 
 const VERSION_STRING: &str = env!("CARGO_PKG_VERSION");
 
+/// Print usage: shared orchestrator lines plus compiler-specific flags.
+///
+/// `-dbms` picks the database engine; `-tc` stops after type checking (no code generation).
 fn print_usage(_settings: &Settings) {
     let _name = std::env::args()
         .next()
@@ -35,6 +43,10 @@ fn print_usage(_settings: &Settings) {
     println!("  -moduleOf <file>     print module name of <file>");
 }
 
+/// Parse `ur-compile` arguments and run the full pipeline through C output and Structured Query Language artifacts when requested.
+///
+/// `args` is argv after the program name. Returns `0` on success (including type-check-only mode), non-zero on diagnostics or input/output failure.
+/// Updates [`Settings`] from flags, then calls [`ur::compiler::compile`].
 pub fn run_compiler_args(args: &[String]) -> i32 {
     let mut settings = Settings::new();
     let mut project_file: Option<String> = None;
@@ -254,6 +266,9 @@ pub fn run_compiler_args(args: &[String]) -> i32 {
     }
 }
 
+/// Spawn a worker thread with a large stack, run [`run_compiler_args`], then exit with its status.
+///
+/// Stack size is [`ur::COMPILE_THREAD_STACK_BYTES`] so deep elaboration (type inference) does not overflow the default thread stack.
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     // Run in a thread with 64MB stack to handle deep elaboration recursion.

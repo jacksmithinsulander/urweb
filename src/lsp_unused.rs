@@ -1,4 +1,4 @@
-//! Unused top-level value warnings for LSP (reachable from export/table/view roots).
+//! Optional warnings for unused top-level bindings in the language server (reachable from export, table, or view roots).
 
 use std::collections::HashSet;
 use std::path::Path;
@@ -8,7 +8,7 @@ use crate::elaborated::{
     LocatedSignature, Signature, SignatureItem, Structure,
 };
 use crate::error_types::{CompileError, ErrorReporter};
-use crate::lsp_semantics::compiler_paths_match;
+use crate::lsp_semantics::{paths_match_given_open_normalized, slash_normalized_cow};
 
 fn collect_named_ids_expr(e: &LocatedExpression, s: &mut HashSet<usize>) {
     match &e.node {
@@ -192,10 +192,12 @@ pub fn report_unused_top_level_values(
     }
     expand_used_from_roots(elab, &mut used);
 
+    let open_norm = slash_normalized_cow(open_file_key);
+    let oref = open_norm.as_ref();
     for d in elab {
         match &d.node {
             Declaration::Val(name, id, _, _) => {
-                if compiler_paths_match(open_file_key, &d.span.file) && !used.contains(id) {
+                if paths_match_given_open_normalized(oref, &d.span.file) && !used.contains(id) {
                     errors.report(CompileError::warning_at(
                         d.span.clone(),
                         format!(
@@ -206,7 +208,7 @@ pub fn report_unused_top_level_values(
             }
             Declaration::ValRec(recs) => {
                 for (name, id, _, _) in recs {
-                    if compiler_paths_match(open_file_key, &d.span.file) && !used.contains(id) {
+                    if paths_match_given_open_normalized(oref, &d.span.file) && !used.contains(id) {
                         errors.report(CompileError::warning_at(
                             d.span.clone(),
                             format!(

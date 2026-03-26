@@ -9,6 +9,8 @@
 //! **`modules`**: `-file-list-shared-libraries` with a fallback MI spelling, plus the launch **`program`** as an `executable` row when missing.
 //! **`loadedSource`**: `=library-loaded` / `=library-unloaded` (MI async on GDB) while the inferior runs, plus a
 //! **`-file-list-exec-source-files`** diff after stops for lldb / fallback.
+//!
+//! **Style:** new/edited Rust here follows [README.md](../../README.md) Rust code style (exceptions documented there).
 
 mod dap_framing;
 mod dap_session;

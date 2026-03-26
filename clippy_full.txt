@@ -1,0 +1,690 @@
+   Compiling ur v0.1.0 (/Users/jacksmith/prog/urweb)
+    Checking urweb-ndb v0.1.0 (/Users/jacksmith/prog/urweb/crates/urweb-ndb)
+    Checking urweb-persy v0.1.0 (/Users/jacksmith/prog/urweb/crates/urweb-persy)
+error[E0433]: failed to resolve: use of undeclared type `PatternConstructor`
+    --> src/elaborated/environment.rs:2930:17
+     |
+2930 |                 PatternConstructor::Var(0),
+     |                 ^^^^^^^^^^^^^^^^^^ use of undeclared type `PatternConstructor`
+     |
+help: a type alias with a similar name exists
+     |
+2930 -                 PatternConstructor::Var(0),
+2930 +                 LocatedConstructor::Var(0),
+     |
+help: consider importing one of these enums
+     |
+2690 +     use crate::core::PatternConstructor;
+     |
+2690 +     use crate::elaborated::PatternConstructor;
+     |
+2690 +     use crate::explicit::PatternConstructor;
+     |
+
+error: unused import: `self::____lalrpop_util::state_machine as ____state_machine`
+  --> /var/folders/4r/8fcpcv_d101gyvjm203hj5p40000gn/T/cursor-sandbox-cache/8e2ab72817b1ab5deb6c41e81f921875/cargo-target/debug/build/ur-dcb8de9ff26d24e9/out/parse/grammar.rs:13:5
+   |
+13 | use self::____lalrpop_util::state_machine as ____state_machine;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `-D unused-imports` implied by `-D warnings`
+   = help: to override `-D warnings` add `#[allow(unused_imports)]`
+
+error: unused imports: `Located` and `Span`
+  --> /var/folders/4r/8fcpcv_d101gyvjm203hj5p40000gn/T/cursor-sandbox-cache/8e2ab72817b1ab5deb6c41e81f921875/cargo-target/debug/build/ur-dcb8de9ff26d24e9/out/parse/grammar.rs:20:30
+   |
+20 |     use crate::error_types::{Located, Span};
+   |                              ^^^^^^^  ^^^^
+
+error: unused import: `crate::parse::grammar_helpers::con_record_field_pun`
+  --> /var/folders/4r/8fcpcv_d101gyvjm203hj5p40000gn/T/cursor-sandbox-cache/8e2ab72817b1ab5deb6c41e81f921875/cargo-target/debug/build/ur-dcb8de9ff26d24e9/out/parse/grammar.rs:22:9
+   |
+22 |     use crate::parse::grammar_helpers::con_record_field_pun;
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: unused imports: `capitalize_attr`, `str_to_decl_open`, `wrap_fun_params`, `xml_attrs_empty`, `xml_attrs_push`, `xml_desugar_tag_open`, and `xml_empty_cdata`
+  --> /var/folders/4r/8fcpcv_d101gyvjm203hj5p40000gn/T/cursor-sandbox-cache/8e2ab72817b1ab5deb6c41e81f921875/cargo-target/debug/build/ur-dcb8de9ff26d24e9/out/parse/grammar.rs:24:37
+   |
+24 |     XmlAttr, XmlAttrsAcc, FunParam, capitalize_attr, xml_attrs_empty, xml_attrs_push, xml_desugar_tag_open,
+   |                                     ^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^
+25 |     xml_empty_cdata, wrap_fun_params, str_to_decl_open,
+   |     ^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^
+
+error: unused import: `super::Binder`
+    --> src/core/utilities.rs:3227:13
+     |
+3227 |         use super::Binder;
+     |             ^^^^^^^^^^^^^
+     |
+     = note: `-D unused-imports` implied by `-D warnings`
+     = help: to override `-D warnings` add `#[allow(unused_imports)]`
+
+error: unused imports: `Located` and `Span`
+     --> /var/folders/4r/8fcpcv_d101gyvjm203hj5p40000gn/T/cursor-sandbox-cache/8e2ab72817b1ab5deb6c41e81f921875/cargo-target/debug/build/ur-dcb8de9ff26d24e9/out/parse/grammar.rs:15584:30
+      |
+15584 |     use crate::error_types::{Located, Span};
+      |                              ^^^^^^^  ^^^^
+
+error: unused import: `crate::parse::grammar_helpers::con_record_field_pun`
+     --> /var/folders/4r/8fcpcv_d101gyvjm203hj5p40000gn/T/cursor-sandbox-cache/8e2ab72817b1ab5deb6c41e81f921875/cargo-target/debug/build/ur-dcb8de9ff26d24e9/out/parse/grammar.rs:15586:9
+      |
+15586 |     use crate::parse::grammar_helpers::con_record_field_pun;
+      |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: unused imports: `capitalize_attr`, `str_to_decl_open`, `wrap_fun_params`, `xml_attrs_empty`, `xml_attrs_push`, `xml_desugar_tag_open`, and `xml_empty_cdata`
+     --> /var/folders/4r/8fcpcv_d101gyvjm203hj5p40000gn/T/cursor-sandbox-cache/8e2ab72817b1ab5deb6c41e81f921875/cargo-target/debug/build/ur-dcb8de9ff26d24e9/out/parse/grammar.rs:15588:37
+      |
+15588 |     XmlAttr, XmlAttrsAcc, FunParam, capitalize_attr, xml_attrs_empty, xml_attrs_push, xml_desugar_tag_open,
+      |                                     ^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^
+15589 |     xml_empty_cdata, wrap_fun_params, str_to_decl_open,
+      |     ^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^
+
+error: unused import: `self::____lalrpop_util::state_machine as ____state_machine`
+  --> /var/folders/4r/8fcpcv_d101gyvjm203hj5p40000gn/T/cursor-sandbox-cache/8e2ab72817b1ab5deb6c41e81f921875/cargo-target/debug/build/ur-dcb8de9ff26d24e9/out/parse/grammar.rs:13:5
+   |
+13 | use self::____lalrpop_util::state_machine as ____state_machine;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: unused variable: `recovery`
+    --> /var/folders/4r/8fcpcv_d101gyvjm203hj5p40000gn/T/cursor-sandbox-cache/8e2ab72817b1ab5deb6c41e81f921875/cargo-target/debug/build/ur-dcb8de9ff26d24e9/out/parse/grammar.rs:3959:13
+     |
+3959 |             recovery: ____state_machine::ErrorRecovery<Self>,
+     |             ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_recovery`
+     |
+     = note: `-D unused-variables` implied by `-D warnings`
+     = help: to override `-D warnings` add `#[allow(unused_variables)]`
+
+error: unused variable: `recovery`
+     --> /var/folders/4r/8fcpcv_d101gyvjm203hj5p40000gn/T/cursor-sandbox-cache/8e2ab72817b1ab5deb6c41e81f921875/cargo-target/debug/build/ur-dcb8de9ff26d24e9/out/parse/grammar.rs:17239:13
+      |
+17239 |             recovery: ____state_machine::ErrorRecovery<Self>,
+      |             ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_recovery`
+
+error: function `report_dup_url` is never used
+  --> src/core/export_tagging.rs:84:4
+   |
+84 | fn report_dup_url(span: &Span, prefix_message: &str, error_reporter: &mut impl FnMut(&Span, &str)) {
+   |    ^^^^^^^^^^^^^^
+   |
+   = note: `-D dead-code` implied by `-D warnings`
+   = help: to override `-D warnings` add `#[expect(dead_code)]` or `#[allow(dead_code)]`
+
+error: function `report_both` is never used
+  --> src/core/export_tagging.rs:89:4
+   |
+89 | fn report_both(span: &Span, function_name: &str, error_reporter: &mut impl FnMut(&Span, &str)) {
+   |    ^^^^^^^^^^^
+
+error: fields `name` and `args` are never read
+  --> src/core/rpc_elaboration.rs:26:5
+   |
+25 | struct TFunc {
+   |        ----- fields in this struct
+26 |     name: String,
+   |     ^^^^
+27 |     args: Vec<(String, LocatedConstructor)>,
+   |     ^^^^
+
+error: function `trim` is never used
+   --> src/core/unpoly.rs:443:4
+    |
+443 | fn trim(
+    |    ^^^^
+
+error: function `de_abs` is never used
+   --> src/core/unpoly.rs:660:4
+    |
+660 | fn de_abs(e: LocatedExpression, cargs: &[LocatedKind]) -> LocatedExpression {
+    |    ^^^^^^
+
+error: static `KUNIF_COUNT` is never used
+  --> src/elaborated/elaborate.rs:34:8
+   |
+34 | static KUNIF_COUNT: AtomicUsize = AtomicUsize::new(0);
+   |        ^^^^^^^^^^^
+
+error: function `fresh_kunif_id` is never used
+  --> src/elaborated/elaborate.rs:38:4
+   |
+38 | fn fresh_kunif_id() -> usize {
+   |    ^^^^^^^^^^^^^^
+
+error: function `dummy_span` is never used
+  --> src/elaborated/elaborate.rs:70:4
+   |
+70 | fn dummy_span() -> Span {
+   |    ^^^^^^^^^^
+
+error: method `basis_con` is never used
+   --> src/elaborated/elaborate.rs:499:8
+    |
+472 | impl ElabCtx {
+    | ------------ method in this implementation
+...
+499 |     fn basis_con(
+    |        ^^^^^^^^^
+
+error: function `project_con_from_str` is never used
+   --> src/elaborated/elaborate.rs:523:4
+    |
+523 | fn project_con_from_str(
+    |    ^^^^^^^^^^^^^^^^^^^^
+
+error: function `sgi_find_sgn` is never used
+   --> src/elaborated/elaborate.rs:582:4
+    |
+582 | fn sgi_find_sgn<'a>(
+    |    ^^^^^^^^^^^^
+
+error: function `selfify` is never used
+    --> src/elaborated/elaborate.rs:4329:4
+     |
+4329 | fn selfify(
+     |    ^^^^^^^
+
+error: function `inc_identity` is never used
+   --> src/elaborated/type_operations.rs:678:4
+    |
+678 | fn inc_identity() {
+    |    ^^^^^^^^^^^^
+
+error: function `inc_fuse` is never used
+   --> src/elaborated/type_operations.rs:684:4
+    |
+684 | fn inc_fuse() {
+    |    ^^^^^^^^
+
+error: function `lift_k` is never used
+  --> src/elaborated/unnest.rs:27:4
+   |
+27 | fn lift_k(by: i64, bound: usize, k: LocatedKind) -> LocatedKind {
+   |    ^^^^^^
+
+error: struct `Ctx` is never constructed
+   --> src/elaborated/unnest.rs:806:8
+    |
+806 | struct Ctx {
+    |        ^^^
+
+error: multiple associated items are never used
+   --> src/elaborated/unnest.rs:818:8
+    |
+817 | impl Ctx {
+    | -------- associated items in this implementation
+818 |     fn new() -> Self {
+    |        ^^^
+...
+827 |     fn push_k(&mut self, name: String) {
+    |        ^^^^^^
+...
+832 |     fn pop_k(&mut self) {
+    |        ^^^^^
+...
+836 |     fn push_c(&mut self, name: String, kind: LocatedKind) {
+    |        ^^^^^^
+...
+847 |     fn push_e(&mut self, name: String, typ: LocatedConstructor) {
+    |        ^^^^^^
+...
+851 |     fn push_e_n(&mut self, n: usize) {
+    |        ^^^^^^^^
+...
+860 |     fn pop_e_n(&mut self, n: usize) {
+    |        ^^^^^^^
+
+error: struct `State` is never constructed
+   --> src/elaborated/unnest.rs:868:8
+    |
+868 | struct State {
+    |        ^^^^^
+
+error: associated items `new` and `fresh` are never used
+   --> src/elaborated/unnest.rs:874:8
+    |
+873 | impl State {
+    | ---------- associated items in this implementation
+874 |     fn new(max_name: usize) -> Self {
+    |        ^^^
+...
+880 |     fn fresh(&mut self) -> usize {
+    |        ^^^^^
+
+error: function `hoist_valrec` is never used
+   --> src/elaborated/unnest.rs:938:4
+    |
+938 | fn hoist_valrec(
+    |    ^^^^^^^^^^^^
+
+error: function `unnest_exp` is never used
+    --> src/elaborated/unnest.rs:1096:4
+     |
+1096 | fn unnest_exp(ctx: &mut Ctx, e: LocatedExpression) -> LocatedExpression {
+     |    ^^^^^^^^^^
+
+error: function `process_let_eds` is never used
+    --> src/elaborated/unnest.rs:1145:4
+     |
+1145 | fn process_let_eds(
+     |    ^^^^^^^^^^^^^^^
+
+error: function `unnest_exp_node` is never used
+    --> src/elaborated/unnest.rs:1160:4
+     |
+1160 | fn unnest_exp_node(_ctx: &mut Ctx, e: Exp, _span: &crate::error_types::Span) -> Exp {
+     |    ^^^^^^^^^^^^^^^
+
+error: function `loc_dummy` is never used
+  --> src/explicit/corify.rs:20:4
+   |
+20 | fn loc_dummy() -> Span {
+   |    ^^^^^^^^^
+
+error: method `basis_is` is never used
+   --> src/explicit/corify.rs:179:8
+    |
+140 | impl St {
+    | ------- method in this implementation
+...
+179 |     fn basis_is(mut self, n: usize) -> Self {
+    |        ^^^^^^^^
+
+error: function `map_con_ctx` is never used
+   --> src/explicit/utilities.rs:683:8
+    |
+683 |     fn map_con_ctx<Ctx, FK, FC, FB>(
+    |        ^^^^^^^^^^^
+
+error: function `binder_bridge` is never used
+   --> src/explicit/utilities.rs:699:8
+    |
+699 |     fn binder_bridge<Ctx, FB>(_bind: &FB) -> impl Fn(&mut Ctx, &con::Binder)
+    |        ^^^^^^^^^^^^^
+
+error: field `0` is never read
+  --> src/monomorphized/jscomp.rs:25:18
+   |
+25 | struct CantEmbed(LocTyp);
+   |        --------- ^^^^^^
+   |        |
+   |        field in this struct
+   |
+   = help: consider removing this field
+   = note: `CantEmbed` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+error: function `dummy_span` is never used
+   --> src/monomorphized/jscomp.rs:109:4
+    |
+109 | fn dummy_span() -> Span {
+    |    ^^^^^^^^^^
+
+error: function `make_let` is never used
+   --> src/monomorphized/jscomp.rs:197:4
+    |
+197 | fn make_let(span: &Span, x: &str, t: LocTyp, e1: LocExp, e2: LocExp) -> LocExp {
+    |    ^^^^^^^^
+
+error: function `pat_binds_types` is never used
+   --> src/monomorphized/jscomp.rs:795:4
+    |
+795 | fn pat_binds_types(p: &LocPat, env: &mut Vec<LocTyp>) {
+    |    ^^^^^^^^^^^^^^^
+
+error: variant `WriteCookie` is never constructed
+  --> src/monomorphized/mono_reduce.rs:46:5
+   |
+41 | enum Event {
+   |      ----- variant in this enum
+...
+46 |     WriteCookie,
+   |     ^^^^^^^^^^^
+   |
+   = note: `Event` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+error: field `abs_counts` is never read
+  --> src/monomorphized/mono_reduce.rs:74:5
+   |
+67 | struct ReduceCtx {
+   |        --------- field in this struct
+...
+74 |     abs_counts: HashMap<usize, usize>,
+   |     ^^^^^^^^^^
+
+error: function `dummy_span` is never used
+  --> src/monomorphized/sqlcache.rs:39:4
+   |
+39 | fn dummy_span() -> Span {
+   |    ^^^^^^^^^^
+
+error: function `unit_typ` is never used
+  --> src/monomorphized/sqlcache.rs:55:4
+   |
+55 | fn unit_typ(span: &Span) -> LocTyp {
+   |    ^^^^^^^^
+
+error: field `state_typ` is never read
+   --> src/monomorphized/sqlcache.rs:256:5
+    |
+247 | struct CacheSlot {
+    |        --------- field in this struct
+...
+256 |     state_typ: LocTyp,
+    |     ^^^^^^^^^
+    |
+    = note: `CacheSlot` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+error: field `caching` is never read
+   --> src/monomorphized/sqlcache.rs:436:5
+    |
+435 | struct Transformer {
+    |        ----------- field in this struct
+436 |     caching: CachingState,
+    |     ^^^^^^^
+
+error: associated items `new`, `build_table_map`, `phase1_exp`, and `phase1_node` are never used
+   --> src/monomorphized/sqlcache.rs:444:8
+    |
+443 | impl Transformer {
+    | ---------------- associated items in this implementation
+444 |     fn new() -> Self {
+    |        ^^^
+...
+452 |     fn build_table_map(&mut self) {
+    |        ^^^^^^^^^^^^^^^
+...
+466 |     fn phase1_exp(&mut self, e: LocExp) -> LocExp {
+    |        ^^^^^^^^^^
+...
+481 |     fn phase1_node(&mut self, e: Exp, span: &Span) -> Exp {
+    |        ^^^^^^^^^^^
+
+error: field `0` is never read
+  --> /var/folders/4r/8fcpcv_d101gyvjm203hj5p40000gn/T/cursor-sandbox-cache/8e2ab72817b1ab5deb6c41e81f921875/cargo-target/debug/build/ur-dcb8de9ff26d24e9/out/parse/grammar.rs:43:18
+   |
+43 |         Variant6(core::option::Option<LocCon>),
+   |         -------- ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |         |
+   |         field in this variant
+   |
+help: consider changing the field to be of unit type to suppress this warning while preserving the field numbering, or remove the field
+   |
+43 -         Variant6(core::option::Option<LocCon>),
+43 +         Variant6(()),
+   |
+
+error: field `0` is never read
+  --> /var/folders/4r/8fcpcv_d101gyvjm203hj5p40000gn/T/cursor-sandbox-cache/8e2ab72817b1ab5deb6c41e81f921875/cargo-target/debug/build/ur-dcb8de9ff26d24e9/out/parse/grammar.rs:44:18
+   |
+44 |         Variant7(usize),
+   |         -------- ^^^^^
+   |         |
+   |         field in this variant
+   |
+help: consider changing the field to be of unit type to suppress this warning while preserving the field numbering, or remove the field
+   |
+44 -         Variant7(usize),
+44 +         Variant7(()),
+   |
+
+error: field `0` is never read
+  --> /var/folders/4r/8fcpcv_d101gyvjm203hj5p40000gn/T/cursor-sandbox-cache/8e2ab72817b1ab5deb6c41e81f921875/cargo-target/debug/build/ur-dcb8de9ff26d24e9/out/parse/grammar.rs:81:19
+   |
+81 |         Variant44(core::option::Option<LocKind>),
+   |         --------- ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |         |
+   |         field in this variant
+   |
+help: consider changing the field to be of unit type to suppress this warning while preserving the field numbering, or remove the field
+   |
+81 -         Variant44(core::option::Option<LocKind>),
+81 +         Variant44(()),
+   |
+
+error: field `0` is never read
+  --> /var/folders/4r/8fcpcv_d101gyvjm203hj5p40000gn/T/cursor-sandbox-cache/8e2ab72817b1ab5deb6c41e81f921875/cargo-target/debug/build/ur-dcb8de9ff26d24e9/out/parse/grammar.rs:89:19
+   |
+89 |         Variant52(core::option::Option<LocSgn>),
+   |         --------- ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |         |
+   |         field in this variant
+   |
+help: consider changing the field to be of unit type to suppress this warning while preserving the field numbering, or remove the field
+   |
+89 -         Variant52(core::option::Option<LocSgn>),
+89 +         Variant52(()),
+   |
+
+error: field `0` is never read
+     --> /var/folders/4r/8fcpcv_d101gyvjm203hj5p40000gn/T/cursor-sandbox-cache/8e2ab72817b1ab5deb6c41e81f921875/cargo-target/debug/build/ur-dcb8de9ff26d24e9/out/parse/grammar.rs:15607:18
+      |
+15607 |         Variant6(core::option::Option<LocCon>),
+      |         -------- ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+      |         |
+      |         field in this variant
+      |
+help: consider changing the field to be of unit type to suppress this warning while preserving the field numbering, or remove the field
+      |
+15607 -         Variant6(core::option::Option<LocCon>),
+15607 +         Variant6(()),
+      |
+
+error: field `0` is never read
+     --> /var/folders/4r/8fcpcv_d101gyvjm203hj5p40000gn/T/cursor-sandbox-cache/8e2ab72817b1ab5deb6c41e81f921875/cargo-target/debug/build/ur-dcb8de9ff26d24e9/out/parse/grammar.rs:15608:18
+      |
+15608 |         Variant7(usize),
+      |         -------- ^^^^^
+      |         |
+      |         field in this variant
+      |
+help: consider changing the field to be of unit type to suppress this warning while preserving the field numbering, or remove the field
+      |
+15608 -         Variant7(usize),
+15608 +         Variant7(()),
+      |
+
+error: field `0` is never read
+     --> /var/folders/4r/8fcpcv_d101gyvjm203hj5p40000gn/T/cursor-sandbox-cache/8e2ab72817b1ab5deb6c41e81f921875/cargo-target/debug/build/ur-dcb8de9ff26d24e9/out/parse/grammar.rs:15645:19
+      |
+15645 |         Variant44(core::option::Option<LocKind>),
+      |         --------- ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+      |         |
+      |         field in this variant
+      |
+help: consider changing the field to be of unit type to suppress this warning while preserving the field numbering, or remove the field
+      |
+15645 -         Variant44(core::option::Option<LocKind>),
+15645 +         Variant44(()),
+      |
+
+error: field `0` is never read
+     --> /var/folders/4r/8fcpcv_d101gyvjm203hj5p40000gn/T/cursor-sandbox-cache/8e2ab72817b1ab5deb6c41e81f921875/cargo-target/debug/build/ur-dcb8de9ff26d24e9/out/parse/grammar.rs:15653:19
+      |
+15653 |         Variant52(core::option::Option<LocSgn>),
+      |         --------- ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+      |         |
+      |         field in this variant
+      |
+help: consider changing the field to be of unit type to suppress this warning while preserving the field numbering, or remove the field
+      |
+15653 -         Variant52(core::option::Option<LocSgn>),
+15653 +         Variant52(()),
+      |
+
+error: the `Err`-variant returned from this function is very large
+   --> src/elaborated/elaborate.rs:148:6
+    |
+126 |     IncompatibleKinds(elab::LocatedKind, elab::LocatedKind),
+    |     ------------------------------------------------------- the largest variant contains at least 240 bytes
+127 |     OccursCheckFailed(elab::LocatedKind, elab::LocatedKind),
+    |     ------------------------------------------------------- the variant `OccursCheckFailed` contains at least 240 bytes
+...
+148 | ) -> Result<(), FailedToUnifyKinds> {
+    |      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: try reducing the size of `elaborated::elaborate::FailedToUnifyKinds`, for example by boxing large elements or replacing it with `Box<elaborated::elaborate::FailedToUnifyKinds>`
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#result_large_err
+    = note: `-D clippy::result-large-err` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::result_large_err)]`
+
+error: parameter is only used in recursion
+   --> src/elaborated/elaborate.rs:677:5
+    |
+677 |     elaboration_context: &mut ElabCtx,
+    |     ^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_elaboration_context`
+    |
+note: parameter used here
+   --> src/elaborated/elaborate.rs:694:17
+    |
+694 |                 elaboration_context,
+    |                 ^^^^^^^^^^^^^^^^^^^
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#only_used_in_recursion
+    = note: `-D clippy::only-used-in-recursion` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::only_used_in_recursion)]`
+
+error: parameter is only used in recursion
+   --> src/elaborated/elaborate.rs:678:5
+    |
+678 |     elaboration_environment: &Env,
+    |     ^^^^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_elaboration_environment`
+    |
+note: parameter used here
+   --> src/elaborated/elaborate.rs:695:17
+    |
+695 |                 elaboration_environment,
+    |                 ^^^^^^^^^^^^^^^^^^^^^^^
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#only_used_in_recursion
+
+error: the `Err`-variant returned from this function is very large
+    --> src/elaborated/elaborate.rs:1578:6
+     |
+1476 |     IncompatibleConstructors(elab::LocatedConstructor, elab::LocatedConstructor),
+     |     ---------------------------------------------------------------------------- the largest variant contains at least 256 bytes
+1477 |     KindUnificationFailed(FailedToUnifyKinds),
+     |     ----------------------------------------- the variant `KindUnificationFailed` contains at least 248 bytes
+...
+1578 | ) -> Result<(), FailedToUnifyConstructors> {
+     |      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = help: try reducing the size of `elaborated::elaborate::FailedToUnifyConstructors`, for example by boxing large elements or replacing it with `Box<elaborated::elaborate::FailedToUnifyConstructors>`
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#result_large_err
+
+error: the `Err`-variant returned from this function is very large
+    --> src/elaborated/elaborate.rs:1596:6
+     |
+1476 |     IncompatibleConstructors(elab::LocatedConstructor, elab::LocatedConstructor),
+     |     ---------------------------------------------------------------------------- the largest variant contains at least 256 bytes
+1477 |     KindUnificationFailed(FailedToUnifyKinds),
+     |     ----------------------------------------- the variant `KindUnificationFailed` contains at least 248 bytes
+...
+1596 | ) -> Result<(), FailedToUnifyConstructors> {
+     |      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = help: try reducing the size of `elaborated::elaborate::FailedToUnifyConstructors`, for example by boxing large elements or replacing it with `Box<elaborated::elaborate::FailedToUnifyConstructors>`
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#result_large_err
+
+error: the `Err`-variant returned from this function is very large
+    --> src/elaborated/elaborate.rs:1954:6
+     |
+1476 |     IncompatibleConstructors(elab::LocatedConstructor, elab::LocatedConstructor),
+     |     ---------------------------------------------------------------------------- the largest variant contains at least 256 bytes
+1477 |     KindUnificationFailed(FailedToUnifyKinds),
+     |     ----------------------------------------- the variant `KindUnificationFailed` contains at least 248 bytes
+...
+1954 | ) -> Result<(), FailedToUnifyConstructors> {
+     |      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = help: try reducing the size of `elaborated::elaborate::FailedToUnifyConstructors`, for example by boxing large elements or replacing it with `Box<elaborated::elaborate::FailedToUnifyConstructors>`
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#result_large_err
+
+error: this `if let` can be collapsed into the outer `if let`
+    --> src/elaborated/elaborate.rs:3327:9
+     |
+3327 | /         if let elab::SignatureItem::Val(_, _id, t) = sgi {
+3328 | |             let e = Located::new(
+3329 | |                 elab::Expression::ModProj(str_id, ms[1..].to_vec(), x.to_string()),
+3330 | |                 span.clone(),
+3331 | |             );
+3332 | |             return (e, t.clone());
+3333 | |         }
+     | |_________^
+     |
+help: the outer pattern can be modified to include the inner pattern
+    --> src/elaborated/elaborate.rs:3326:17
+     |
+3326 |     if let Some(sgi) = sgi_find_val(&items, x) {
+     |                 ^^^ replace this binding
+3327 |         if let elab::SignatureItem::Val(_, _id, t) = sgi {
+     |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ with this pattern
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#collapsible_match
+     = note: `-D clippy::collapsible-match` implied by `-D warnings`
+     = help: to override `-D warnings` add `#[allow(clippy::collapsible_match)]`
+
+error: this `if let` can be collapsed into the outer `if let`
+    --> src/elaborated/elaborate.rs:5071:17
+     |
+5071 | /                 if let elab::SignatureItem::Structure(_, _, _id, sgn) = sgi {
+5072 | |                     let str_out = Located::new(
+5073 | |                         elab::Structure::Proj(Box::new(str_ie), field.clone()),
+5074 | |                         span.clone(),
+5075 | |                     );
+5076 | |                     return (str_out, sgn.clone());
+5077 | |                 }
+     | |_________________^
+     |
+help: the outer pattern can be modified to include the inner pattern
+    --> src/elaborated/elaborate.rs:5070:25
+     |
+5070 |             if let Some(sgi) = sgi_find_str(&items, field) {
+     |                         ^^^ replace this binding
+5071 |                 if let elab::SignatureItem::Structure(_, _, _id, sgn) = sgi {
+     |                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ with this pattern
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#collapsible_match
+
+error: you seem to want to iterate on a map's values
+    --> src/elaborated/elaborate.rs:5377:25
+     |
+5377 |     for (_cn, rules) in elaboration_environment.classes() {
+     |                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#for_kv_map
+     = note: `-D clippy::for-kv-map` implied by `-D warnings`
+     = help: to override `-D warnings` add `#[allow(clippy::for_kv_map)]`
+help: use the corresponding method
+     |
+5377 -     for (_cn, rules) in elaboration_environment.classes() {
+5377 +     for rules in elaboration_environment.classes().values() {
+     |
+
+error: you seem to use `.enumerate()` and immediately discard the index
+   --> src/monomorphized/sqlcache.rs:453:54
+    |
+453 |         for (_idx, slot) in self.caching.slots.iter().enumerate() {
+    |                                                      ^^^^^^^^^^^^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#unused_enumerate_index
+    = note: `-D clippy::unused-enumerate-index` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::unused_enumerate_index)]`
+help: remove the `.enumerate()` call
+    |
+453 -         for (_idx, slot) in self.caching.slots.iter().enumerate() {
+453 +         for slot in self.caching.slots.iter() {
+    |
+
+For more information about this error, try `rustc --explain E0433`.
+error: could not compile `ur` (lib test) due to 11 previous errors
+warning: build failed, waiting for other jobs to finish...
+error: module `____parse____File` should have a snake case name
+  --> /var/folders/4r/8fcpcv_d101gyvjm203hj5p40000gn/T/cursor-sandbox-cache/8e2ab72817b1ab5deb6c41e81f921875/cargo-target/debug/build/ur-dcb8de9ff26d24e9/out/parse/grammar.rs:18:5
+   |
+18 | mod ____parse____File {
+   |     ^^^^^^^^^^^^^^^^^ help: convert the identifier to snake case: `____parse_file`
+   |
+   = note: `-D non-snake-case` implied by `-D warnings`
+   = help: to override `-D warnings` add `#[allow(non_snake_case)]`
+
+error: module `____parse____SgnItems` should have a snake case name
+     --> /var/folders/4r/8fcpcv_d101gyvjm203hj5p40000gn/T/cursor-sandbox-cache/8e2ab72817b1ab5deb6c41e81f921875/cargo-target/debug/build/ur-dcb8de9ff26d24e9/out/parse/grammar.rs:15582:5
+      |
+15582 | mod ____parse____SgnItems {
+      |     ^^^^^^^^^^^^^^^^^^^^^ help: convert the identifier to snake case: `____parse_sgn_items`
+
+error: could not compile `ur` (lib) due to 67 previous errors

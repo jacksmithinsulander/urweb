@@ -16,8 +16,6 @@
 //!    constructor expressions and patterns), then prepend any newly generated
 //!    `DDatatype` specialization decls.
 
-#![allow(dead_code)]
-
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap, HashSet};
 

@@ -6,8 +6,6 @@
 //!
 //! Mirrors `marshalcheck.sml`.
 
-#![allow(dead_code)]
-
 use std::collections::{BTreeSet, HashMap};
 
 use crate::core::utilities::constructor as con_util;

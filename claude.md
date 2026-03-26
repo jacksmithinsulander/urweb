@@ -127,7 +127,21 @@ CI also runs **mutation testing** (`cargo mutants`) in shards after the above pa
 
 ---
 
-## 9. Ur/Web syntax reminder (for `*.ur` / `*.urs`)
+## 9. Rust code style (mandatory)
+
+Applies to all **Rust** under `src/`, `crates/`, `tests/`, and `examples/`. Details also in [README.md](README.md) (Contributing → Rust code style).
+
+1. **Identifiers** — Prefer **full, long, descriptive names**. Do **not** introduce new **abbreviations** or **unexplained acronyms** in names. Readers should infer meaning from the name alone (for example `monomorphized_expression` rather than `me` or `mono_exp`).
+2. **Line-level comments** — **Every executable line** of Rust you add or change should have a **`//` comment** (end-of-line or immediately above) that **states what that line does**, even if it looks obvious. Empty lines and lone `}` may stay uncommented when the opening of the block is already documented and the brace adds no new behavior.
+3. **Rustdoc on every function** — Each **`fn`** (module function or `impl` method, `pub` or private) must have a **`///`** block: purpose, parameters, return value, and errors/panics when not clear from types alone.
+
+Legacy code may not yet comply; **new work** and **substantive edits** must move touched code toward this standard.
+
+**Exceptions (same as README):** allowed domain acronyms (`CJR`, `LSP`, …) where standard; **no hand-editing generated `.rs`**; **trait impls** may use one `///` on the `impl` or module `//!`; **`#[test]`** functions need not each have `///`; **structural `}`** and dense `match` arms may use section or arm comments instead of a comment on every pattern line; **tests/** naming rules still ban new opaque abbreviations.
+
+---
+
+## 10. Ur/Web syntax reminder (for `*.ur` / `*.urs`)
 
 - **Kinds / types:** `transaction`, `page`, `source`, `xml`; records `{ Label = t, ... }`; declarations `con`, `val`, `datatype`, `fun`.
 - **Type parameters:** `::` explicit, `:::` implicit.
@@ -141,7 +155,7 @@ CI also runs **mutation testing** (`cargo mutants`) in shards after the above pa
 
 ---
 
-## 10. Documentation artifacts in this repo
+## 11. Documentation artifacts in this repo
 
 | Path | Purpose |
 |------|---------|
@@ -152,17 +166,17 @@ CI also runs **mutation testing** (`cargo mutants`) in shards after the above pa
 
 ---
 
-## 11. Editing discipline (for Claude)
+## 12. Editing discipline (for Claude)
 
 - **Stay inside the user’s task**; avoid drive-by refactors and unrelated formatting.
-- **Match existing style** in the touched file (imports, error types, comment density).
+- **Rust:** Follow **section 9** (names, per-line comments, `///` on every function) for all Rust you add or materially edit; that takes precedence over sparse legacy style in untouched lines.
 - **Preserve backward compatibility** with upstream Ur/Web where the project already does; when in doubt, add tests rather than changing accepted programs silently.
 - **Emitted C** may still use **pthreads** in some runtime paths; replacing that is a **roadmap** item, not something to “fix” opportunistically without a design.
 - **Upstream demos** (`demo/` on [github.com/urweb/urweb](https://github.com/urweb/urweb)) may not exist in this clone; do not assume paths from the official repo exist here.
 
 ---
 
-## 12. Future / roadmap (context only)
+## 13. Future / roadmap (context only)
 
 Summarized in [README.md](README.md): CSP instead of pthreads, pluggable UI backends, faster parallel compiler, self-hosting, `.urt` tests, **[Zenroom](https://dev.zenroom.org/#/)** plugin story, richer books, full NatSpec implementation.
 

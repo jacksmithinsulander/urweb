@@ -24,8 +24,6 @@
 //!
 //! When `settings.sqlcache` is `false` the file is returned unchanged.
 
-#![allow(dead_code, unused_variables)]
-
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::error_types::{Located, Span};
@@ -304,7 +302,7 @@ fn wrap_query_with_cache(
     state: &mut CachingState,
     qm: QueryMeta,
     span: &Span,
-    env_len: usize,
+    _env_len: usize,
 ) -> Exp {
     let i = state.next();
 
@@ -452,7 +450,7 @@ impl Transformer {
     }
 
     fn build_table_map(&mut self) {
-        for (idx, slot) in self.caching.slots.iter().enumerate() {
+        for slot in self.caching.slots.iter() {
             for tbl in &slot.tables {
                 self.table_to_caches
                     .entry(tbl.clone())
@@ -585,7 +583,7 @@ impl Transformer {
         }
     }
 
-    fn phase2_node(&self, e: Exp, span: &Span) -> Exp {
+    fn phase2_node(&self, e: Exp, _span: &Span) -> Exp {
         use Exp::*;
         macro_rules! p2 {
             ($e:expr) => {
@@ -657,7 +655,7 @@ fn phase1_decl(state: &mut CachingState, d: LocDecl) -> LocDecl {
     Located::new(new_node, span)
 }
 
-fn phase1_decl_node(state: &mut CachingState, d: Decl, span: &Span) -> Decl {
+fn phase1_decl_node(state: &mut CachingState, d: Decl, _span: &Span) -> Decl {
     // We need a local helper that owns `state` via a mutable reference.
     // Temporarily build a thin shim.
     struct Ph1<'a>(&'a mut CachingState);
@@ -764,7 +762,7 @@ fn phase2_decl(xfm: &Transformer, d: LocDecl) -> LocDecl {
     Located::new(new_node, span)
 }
 
-fn phase2_decl_node(xfm: &Transformer, d: Decl, span: &Span) -> Decl {
+fn phase2_decl_node(xfm: &Transformer, d: Decl, _span: &Span) -> Decl {
     match d {
         Decl::Val(x, n, t, e, s) => Decl::Val(x, n, t, xfm.phase2_exp(e), s),
         Decl::ValRec(vis) => Decl::ValRec(

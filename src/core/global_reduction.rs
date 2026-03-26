@@ -16,8 +16,6 @@
 //!
 //! Mirrors `reduce.sml`.
 
-#![allow(dead_code)]
-
 use std::collections::{BTreeSet, HashMap};
 
 use crate::core::local_reduction::{shift_con, shift_exp};

@@ -4,6 +4,8 @@
 //! SQL. Simplified control flow and data representation.
 //!
 //! Mirrors `cjr.sml`.
+//!
+//! **Style:** new/edited Rust here follows [README.md](../../README.md) Rust code style (exceptions documented there).
 
 pub mod check_nest;
 pub mod cjr_print;

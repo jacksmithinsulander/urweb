@@ -6,8 +6,6 @@
 //!
 //! Mirrors `effectize.sml`.
 
-#![allow(dead_code)]
-
 use std::collections::HashMap;
 
 use crate::core::utilities::expression as exp_util;

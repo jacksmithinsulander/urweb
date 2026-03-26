@@ -6,8 +6,6 @@
 //!
 //! The public entry point is `js_compile`.
 
-#![allow(dead_code)]
-
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::datatype_kind::DatatypeKind;
