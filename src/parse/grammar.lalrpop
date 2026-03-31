@@ -352,14 +352,14 @@ SgnItemNode: SgnItem = {
     "signature" <name:"UIDENT"> "=" <s:Sgn> => SgnItem::Sgn(name, s),
     "include" <s:Sgn> => SgnItem::Include(s),
     "constraint" <c1:Con> "~" <c2:Con> => SgnItem::Constraint(c1, c2),
-    // `class nm` (bare → Type→Type kind) | `class nm = C` | `class nm :: K` | `class nm :: K = C`
+    // Bare `class nm` → one type argument of kind `Type`; ModProj / open use `k -> Type` as needed.
+    // | `class nm = C` | `class nm :: K` | `class nm :: K = C`
     "class" <name:"IDENT"> "=" <c:Con> =>
         SgnItem::Class(name, Box::new(Located::dummy(Kind::Wild)), c),
     "class" <name:"IDENT"> "::" <k:Kind> => SgnItem::ClassAbs(name, Box::new(k)),
     "class" <name:"IDENT"> "::" <k:Kind> "=" <c:Con> =>
         SgnItem::Class(name, Box::new(k), c),
-    "class" <name:"IDENT"> => SgnItem::ClassAbs(name, Box::new(Located::dummy(Kind::Arrow(
-        Box::new(Located::dummy(Kind::Type)), Box::new(Located::dummy(Kind::Type)))))),
+    "class" <name:"IDENT"> => SgnItem::ClassAbs(name, Box::new(Located::dummy(Kind::Type))),
     "table" <name:"IDENT"> ":" <c:Con> => {
         let z = Located::dummy(Exp::Record(vec![], false));
         SgnItem::Table(name, c, z.clone(), z)

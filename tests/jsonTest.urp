@@ -1,3 +1,5 @@
+rewrite all JsonTest/*
+
 $/char
 $/string
 $/list

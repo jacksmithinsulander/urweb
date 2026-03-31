@@ -1,5 +1,4 @@
 ffi goofy
 rewrite all AttrMangle/*
-allow meta beppo
 
 attrMangle

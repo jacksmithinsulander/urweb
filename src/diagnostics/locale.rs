@@ -1,4 +1,6 @@
 //! Project language for diagnostic templates (`ur.toml` `[package].language`).
+//!
+//! Tools honor [`crate::cli_common::URWEB_LANG_ENV`] when the manifest is missing or silent on `language`.
 
 /// Supported languages for compiler diagnostics (batch, LSP, tests).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

@@ -16,19 +16,24 @@
 //!
 //! **Style:** this binary follows [README.md](../../README.md) Rust code style where edited.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
+
+use ur::cli_common::{cli_diagnostic_text, diagnostic_locale_for_cli};
+use ur::diagnostics::{DiagnosticId, DiagnosticLocale};
 
 /// Drop `argv[0]`, call [`run`], exit with `1` on error.
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    if let Err(e) = run(args) {
-        eprintln!(
-            "{}",
-            ur::error_types::format_tool_diagnostic_banner_and_body(
-                "ur-debugger",
-                &format!("{e:#}")
-            )
+    if let Err(run_error) = run(args) {
+        let locale = diagnostic_locale_for_cli(None);
+        let body = cli_diagnostic_text(
+            DiagnosticId::CliDebuggerRunFailed,
+            vec![format!("{run_error:#}")],
+            locale,
         );
+        let bannered =
+            ur::error_types::format_tool_diagnostic_banner_and_body("ur-debugger", &body);
+        ur::cli_common::writeln_stderr_display(bannered);
         std::process::exit(1);
     }
 }
@@ -37,68 +42,59 @@ fn main() {
 ///
 /// `args` is argv without the program name. `--dap` calls [`ur::debugger::run_dap_stdio`] on standard input and output.
 fn run(args: Vec<String>) -> Result<()> {
+    let locale = diagnostic_locale_for_cli(None);
     match args.first().map(|s| s.as_str()) {
         None | Some("-h") | Some("--help") => {
             print_usage();
             Ok(())
         }
-        Some("--dap") => ur::debugger::run_dap_stdio().context("DAP server"),
-        Some("--gdb") => gdb_mi_passthrough(&args[1..]),
-        Some("--tty") => gdb_tty(&args[1..]),
-        Some(other) if other.starts_with('-') => {
-            eprintln!(
+        Some("--dap") => ur::debugger::run_dap_stdio().map_err(|dap_error| {
+            anyhow::anyhow!(
                 "{}",
-                ur::error_types::format_tool_diagnostic_banner_and_body(
-                    "ur-debugger",
-                    &format!(
-                        "I do not recognize the flag `{other}`.\n\nRun `ur-debugger --help` for valid modes (--dap, --gdb, --tty)."
-                    )
+                cli_diagnostic_text(
+                    DiagnosticId::CliDebuggerCliDapStdioFailed,
+                    vec![format!("{dap_error:#}")],
+                    locale,
                 )
+            )
+        }),
+        Some("--gdb") => gdb_mi_passthrough(&args[1..]),
+        Some("--tty") => gdb_tty(&args[1..], locale),
+        Some(other) if other.starts_with('-') => {
+            let body = cli_diagnostic_text(
+                DiagnosticId::CliDebuggerUnknownFlag,
+                vec![other.to_string()],
+                locale,
             );
+            let bannered =
+                ur::error_types::format_tool_diagnostic_banner_and_body("ur-debugger", &body);
+            ur::cli_common::writeln_stderr_display(bannered);
             print_usage();
-            Err(anyhow::anyhow!("unknown option"))
+            Err(anyhow::anyhow!(""))
         }
         _ => {
-            eprintln!(
-                "{}",
-                ur::error_types::format_tool_diagnostic_banner_and_body(
-                    "ur-debugger",
-                    "Say which mode you want:\n  --dap   Debug Adapter Protocol on stdin/stdout\n  --gdb   Raw GDB/MI passthrough\n  --tty   Interactive GDB terminal\n\nTry: ur-debugger --help"
-                )
-            );
+            let body = cli_diagnostic_text(DiagnosticId::CliDebuggerMissingMode, vec![], locale);
+            let bannered =
+                ur::error_types::format_tool_diagnostic_banner_and_body("ur-debugger", &body);
+            ur::cli_common::writeln_stderr_display(bannered);
             print_usage();
-            Err(anyhow::anyhow!("missing mode"))
+            Err(anyhow::anyhow!(""))
         }
     }
 }
 
 /// Print mode summary and examples to standard error.
 fn print_usage() {
-    eprintln!(
-        "\
-ur-debugger — native debugger (DAP + GDB/MI or lldb-mi)
-
-Modes:
-  --dap              DAP server on stdio (VS Code, Zed, Neovim, Emacs dap-mode, …)
-  --gdb -- [args]    Passthrough: gdb -q --interpreter=mi3 [args]
-  --tty [--run] PROG [ARG ...]
-                     Interactive GDB: gdb -q [--ex run] --args PROG [ARG ...]
-
-Launch JSON (DAP): use gdbPath / miDebuggerPath; set MIMode to \"gdb\" (default) or \"lldb\"
-for lldb-mi. Build the app with ur-compile -debug so the binary is compiled with -g.
-
-Examples:
-  ur-debugger --dap
-  ur-debugger --gdb -- -ex 'file ./myapp' -ex run
-  ur-debugger --tty --run ./myapp
-"
-    );
+    let locale = diagnostic_locale_for_cli(None);
+    let usage_text = cli_diagnostic_text(DiagnosticId::CliDebuggerUsageBody, vec![], locale);
+    ur::cli_common::writeln_stderr_display(usage_text);
 }
 
 /// Run `gdb -q --interpreter=mi3` with extra arguments from `rest`.
 ///
 /// Skips a leading `--` in `rest` (tokens after `ur-debugger --gdb`). Returns `Ok` only if GDB exits successfully.
 fn gdb_mi_passthrough(rest: &[String]) -> Result<()> {
+    let locale = diagnostic_locale_for_cli(None);
     let mut cmd = std::process::Command::new("gdb");
     cmd.args(["-q", "--interpreter=mi3"]);
     let args: Vec<&str> = rest
@@ -107,13 +103,31 @@ fn gdb_mi_passthrough(rest: &[String]) -> Result<()> {
         .map(String::as_str)
         .collect();
     cmd.args(args);
-    let status = cmd
-        .status()
-        .context("failed to run gdb (install GDB; on macOS see Homebrew gdb + codesigning)")?;
+    let status = cmd.status().map_err(|spawn_error| {
+        anyhow::anyhow!(
+            "{}",
+            cli_diagnostic_text(
+                DiagnosticId::CliDebuggerGdbSpawnFailed,
+                vec![spawn_error.to_string()],
+                locale,
+            )
+        )
+    })?;
     if status.success() {
         Ok(())
     } else {
-        Err(anyhow::anyhow!("gdb exited with {status}"))
+        let code = status
+            .code()
+            .map(|code| code.to_string())
+            .unwrap_or_else(|| "unknown".to_string());
+        Err(anyhow::anyhow!(
+            "{}",
+            cli_diagnostic_text(
+                DiagnosticId::CliDebuggerGdbExitedNonZero,
+                vec![code],
+                locale,
+            )
+        ))
     }
 }
 
@@ -121,16 +135,23 @@ fn gdb_mi_passthrough(rest: &[String]) -> Result<()> {
 ///
 /// `rest` may start with `--run`, then the program path, then arguments for the debugged process.
 /// On Unix may replace this process with `exec`; elsewhere spawns GDB and waits. Returns `Ok` on clean GDB exit.
-fn gdb_tty(rest: &[String]) -> Result<()> {
+fn gdb_tty(rest: &[String], locale: DiagnosticLocale) -> Result<()> {
     let mut run_first = false;
     let mut i = 0usize;
     if rest.first().map(|s| s.as_str()) == Some("--run") {
         run_first = true;
         i = 1;
     }
-    let prog = rest
-        .get(i)
-        .context("--tty requires a program path (see ur-debugger --help)")?;
+    let prog = rest.get(i).ok_or_else(|| {
+        anyhow::anyhow!(
+            "{}",
+            cli_diagnostic_text(
+                DiagnosticId::CliDebuggerCliTtyRequiresProgramPath,
+                vec![],
+                locale,
+            )
+        )
+    })?;
     let trailing: Vec<&str> = rest[i + 1..].iter().map(String::as_str).collect();
 
     #[cfg(unix)]
@@ -144,10 +165,19 @@ fn gdb_tty(rest: &[String]) -> Result<()> {
         cmd.arg("--args").arg(prog);
         cmd.args(trailing);
         let e = cmd.exec();
-        Err(anyhow::anyhow!("exec gdb: {e}"))
+        let locale = diagnostic_locale_for_cli(None);
+        Err(anyhow::anyhow!(
+            "{}",
+            cli_diagnostic_text(
+                DiagnosticId::CliDebuggerGdbExecFailed,
+                vec![e.to_string()],
+                locale,
+            )
+        ))
     }
     #[cfg(not(unix))]
     {
+        let locale = diagnostic_locale_for_cli(None);
         let mut cmd = std::process::Command::new("gdb");
         cmd.arg("-q");
         if run_first {
@@ -155,11 +185,31 @@ fn gdb_tty(rest: &[String]) -> Result<()> {
         }
         cmd.arg("--args").arg(prog);
         cmd.args(trailing);
-        let status = cmd.status().context("gdb")?;
+        let status = cmd.status().map_err(|spawn_error| {
+            anyhow::anyhow!(
+                "{}",
+                cli_diagnostic_text(
+                    DiagnosticId::CliDebuggerGdbSpawnFailed,
+                    vec![spawn_error.to_string()],
+                    locale,
+                )
+            )
+        })?;
         if status.success() {
             Ok(())
         } else {
-            Err(anyhow::anyhow!("gdb exited with {status}"))
+            let code = status
+                .code()
+                .map(|code| code.to_string())
+                .unwrap_or_else(|| "unknown".to_string());
+            Err(anyhow::anyhow!(
+                "{}",
+                cli_diagnostic_text(
+                    DiagnosticId::CliDebuggerGdbExitedNonZero,
+                    vec![code],
+                    locale,
+                )
+            ))
         }
     }
 }

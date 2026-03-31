@@ -7,7 +7,7 @@
 use std::collections::HashSet;
 
 use crate::diagnostics::{DiagnosticId, DiagnosticPayload};
-use crate::error_types::ErrorReporter;
+use crate::error_types::{CompileError, ErrorReporter};
 use crate::monomorphized::{Decl, Exp, File, LocExp, Sidedness};
 use crate::primitives::Prim;
 use crate::settings::Settings;
@@ -58,11 +58,15 @@ fn check_exp(
                         env_vars.insert(s.clone());
                     } else if !*warned_dynamic {
                         *warned_dynamic = true;
-                        eprintln!(
-                            "WARNING: {}: reading from an environment variable not determined at compile time, \
-                             which can confuse CSRF protection",
-                            e.span
-                        );
+                        errors.report(CompileError::warning_at_with_hint(
+                            e.span.clone(),
+                            DiagnosticPayload::new(
+                                DiagnosticId::SideGetenvNotCompileTimeString,
+                                vec![e.span.to_string()],
+                            ),
+                            DiagnosticId::HintSideGetenvNotCompileTimeString,
+                            vec![],
+                        ));
                     }
                 }
             } else {

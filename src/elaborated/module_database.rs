@@ -57,31 +57,33 @@ impl ModDb {
     }
 
     // -----------------------------------------------------------------------
-    // Debug printing
+    // Debug printing (tracing only; avoids ad hoc stderr in the library)
     // -----------------------------------------------------------------------
 
+    /// Emit a sorted snapshot of [`Self::by_name`] at [`tracing::Level::DEBUG`] for debugging.
+    ///
+    /// # Returns
+    ///
+    /// Nothing.
     pub fn print_by_name(&self) {
-        eprintln!("Contents of ModDb.by_name:");
+        tracing::debug!("ModDb.by_name snapshot: {} entries", self.by_name.len());
         let mut names: Vec<&String> = self.by_name.keys().collect();
         names.sort();
-        for name in names {
-            let m = &self.by_name[name];
-            let deps: Vec<&str> = {
-                let mut v: Vec<&str> = m.deps.iter().map(|s| s.as_str()).collect();
-                v.sort();
-                v
-            };
-            let when = m
+        for module_name in names {
+            let entry = &self.by_name[module_name];
+            let mut dependency_labels: Vec<&str> = entry.deps.iter().map(|s| s.as_str()).collect();
+            dependency_labels.sort();
+            let stored_seconds = entry
                 .when
                 .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs().to_string())
+                .map(|duration| duration.as_secs().to_string())
                 .unwrap_or_else(|_| "?".to_string());
-            eprintln!(
-                "  {}. Stored at: {}. HasErrors: {}. Deps: {}",
-                name,
-                when,
-                m.has_errors,
-                deps.join(", ")
+            tracing::debug!(
+                module = %module_name,
+                stored_epoch_seconds = %stored_seconds,
+                has_errors = entry.has_errors,
+                deps = %dependency_labels.join(", "),
+                "ModDb row"
             );
         }
     }

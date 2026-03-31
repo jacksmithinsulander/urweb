@@ -1,145 +1,5 @@
 -- TYPE ------------------------------------------------------
 
-Kind mismatch: IncompatibleKinds(Located { node: Type, span: Span { file: "", first: Pos { line: 1, col: 1963 }, last: Pos { line: 1, col: 1967 } } }, Located { node: Arrow(Located { node: Type, span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }, Located { node: Type, span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }), span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } })
-
-    --> :1:1977-1:1978
-
-
--- TYPE ------------------------------------------------------
-
-Kind mismatch: IncompatibleKinds(Located { node: Type, span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }, Located { node: Arrow(Located { node: Type, span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }, Located { node: Type, span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }), span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } })
-
-    --> :1:1987-1:1997
-
-
--- TYPE ------------------------------------------------------
-
-Kind mismatch: IncompatibleKinds(Located { node: Type, span: Span { file: "", first: Pos { line: 1, col: 2023 }, last: Pos { line: 1, col: 2027 } } }, Located { node: Arrow(Located { node: Type, span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }, Located { node: Type, span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }), span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } })
-
-    --> :1:2037-1:2038
-
-
--- TYPE ------------------------------------------------------
-
-Kind mismatch: IncompatibleKinds(Located { node: Type, span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }, Located { node: Arrow(Located { node: Type, span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }, Located { node: Type, span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }), span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } })
-
-    --> :1:2047-1:2057
-
-
--- TYPE ------------------------------------------------------
-
-Kind mismatch: IncompatibleKinds(Located { node: Type, span: Span { file: "", first: Pos { line: 1, col: 2076 }, last: Pos { line: 1, col: 2080 } } }, Located { node: Arrow(Located { node: Type, span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }, Located { node: Type, span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }), span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } })
-
-    --> :1:2130-1:2131
-
-
--- TYPE ------------------------------------------------------
-
-Kind mismatch: IncompatibleKinds(Located { node: Rel(0), span: Span { file: "", first: Pos { line: 1, col: 1395 }, last: Pos { line: 1, col: 1396 } } }, Located { node: Type, span: Span { file: "", first: Pos { line: 1, col: 3696 }, last: Pos { line: 1, col: 3708 } } })
-
-    --> :1:3697-1:3708
-
-
--- TYPE ------------------------------------------------------
-
-Kind mismatch: IncompatibleKinds(Located { node: Rel(0), span: Span { file: "", first: Pos { line: 1, col: 1395 }, last: Pos { line: 1, col: 1396 } } }, Located { node: Type, span: Span { file: "", first: Pos { line: 1, col: 4081 }, last: Pos { line: 1, col: 4094 } } })
-
-    --> :1:4082-1:4094
-
-
--- TYPE ------------------------------------------------------
-
-Kind mismatch: IncompatibleKinds(Located { node: Rel(0), span: Span { file: "", first: Pos { line: 1, col: 1395 }, last: Pos { line: 1, col: 1396 } } }, Located { node: Type, span: Span { file: "", first: Pos { line: 1, col: 4098 }, last: Pos { line: 1, col: 4111 } } })
-
-    --> :1:4099-1:4111
-
-
--- TYPE ------------------------------------------------------
-
-Kind mismatch: IncompatibleKinds(Located { node: Rel(0), span: Span { file: "", first: Pos { line: 1, col: 1395 }, last: Pos { line: 1, col: 1396 } } }, Located { node: Type, span: Span { file: "", first: Pos { line: 1, col: 6222 }, last: Pos { line: 1, col: 6234 } } })
-
-    --> :1:6223-1:6234
-
-
--- TYPE ------------------------------------------------------
-
-Kind mismatch: IncompatibleKinds(Located { node: Rel(0), span: Span { file: "", first: Pos { line: 1, col: 1395 }, last: Pos { line: 1, col: 1396 } } }, Located { node: Type, span: Span { file: "", first: Pos { line: 1, col: 6463 }, last: Pos { line: 1, col: 6475 } } })
-
-    --> :1:6464-1:6475
-
-
--- TYPE ------------------------------------------------------
-
-Kind mismatch: IncompatibleKinds(Located { node: Rel(0), span: Span { file: "", first: Pos { line: 1, col: 1395 }, last: Pos { line: 1, col: 1396 } } }, Located { node: Type, span: Span { file: "", first: Pos { line: 1, col: 7071 }, last: Pos { line: 1, col: 7084 } } })
-
-    --> :1:7072-1:7084
-
-
--- TYPE ------------------------------------------------------
-
-Kind mismatch: IncompatibleKinds(Located { node: Rel(0), span: Span { file: "", first: Pos { line: 1, col: 1395 }, last: Pos { line: 1, col: 1396 } } }, Located { node: Type, span: Span { file: "", first: Pos { line: 1, col: 7088 }, last: Pos { line: 1, col: 7101 } } })
-
-    --> :1:7089-1:7101
-
-
--- TYPE ------------------------------------------------------
-
-Kind mismatch: IncompatibleKinds(Located { node: Rel(0), span: Span { file: "", first: Pos { line: 1, col: 1395 }, last: Pos { line: 1, col: 1396 } } }, Located { node: Record(Located { node: Type, span: Span { file: "", first: Pos { line: 1, col: 13771 }, last: Pos { line: 1, col: 13775 } } }), span: Span { file: "", first: Pos { line: 1, col: 13770 }, last: Pos { line: 1, col: 13776 } } })
-
-    --> :1:12397-1:12411
-
-
--- TYPE ------------------------------------------------------
-
-Kind mismatch: IncompatibleKinds(Located { node: Rel(0), span: Span { file: "", first: Pos { line: 1, col: 1395 }, last: Pos { line: 1, col: 1396 } } }, Located { node: Record(Located { node: Type, span: Span { file: "", first: Pos { line: 1, col: 13771 }, last: Pos { line: 1, col: 13775 } } }), span: Span { file: "", first: Pos { line: 1, col: 13770 }, last: Pos { line: 1, col: 13776 } } })
-
-    --> :1:12942-1:12956
-
-
--- TYPE ------------------------------------------------------
-
-Kind mismatch: IncompatibleKinds(Located { node: Type, span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }, Located { node: Arrow(Located { node: Type, span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }, Located { node: Type, span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }), span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } })
-
-    --> :1:13228-1:13238
-
-
--- TYPE ------------------------------------------------------
-
-Kind mismatch: IncompatibleKinds(Located { node: Type, span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }, Located { node: Arrow(Located { node: Type, span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }, Located { node: Type, span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }), span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } })
-
-    --> :1:13534-1:13544
-
-
--- TYPE ------------------------------------------------------
-
-Kind mismatch: IncompatibleKinds(Located { node: Type, span: Span { file: "", first: Pos { line: 1, col: 13703 }, last: Pos { line: 1, col: 13707 } } }, Located { node: Arrow(Located { node: Type, span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }, Located { node: Type, span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }), span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } })
-
-    --> :1:13751-1:13752
-
-
--- TYPE ------------------------------------------------------
-
-Kind mismatch: IncompatibleKinds(Located { node: Tuple([Located { node: Type, span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }, Located { node: Type, span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }]), span: Span { file: "", first: Pos { line: 1, col: 13788 }, last: Pos { line: 1, col: 13805 } } }, Located { node: Type, span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } })
-
-    --> :1:13788-1:13805
-
-
--- TYPE ------------------------------------------------------
-
-Kind mismatch: IncompatibleKinds(Located { node: Type, span: Span { file: "", first: Pos { line: 1, col: 13824 }, last: Pos { line: 1, col: 13828 } } }, Located { node: Arrow(Located { node: Type, span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }, Located { node: Type, span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }), span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } })
-
-    --> :1:13837-1:13838
-
-
--- TYPE ------------------------------------------------------
-
-Kind mismatch: IncompatibleKinds(Located { node: Type, span: Span { file: "", first: Pos { line: 1, col: 13871 }, last: Pos { line: 1, col: 13875 } } }, Located { node: Arrow(Located { node: Type, span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }, Located { node: Type, span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }), span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } })
-
-    --> :1:13884-1:13885
-
-
--- TYPE ------------------------------------------------------
-
 Constructor application to non-TCFun type
 
     --> :1:451-1:453
@@ -259,13 +119,6 @@ Constructor application to non-TCFun type
 
 -- TYPE ------------------------------------------------------
 
-Kind mismatch: IncompatibleKinds(Located { node: Type, span: Span { file: "", first: Pos { line: 1, col: 2876 }, last: Pos { line: 1, col: 2880 } } }, Located { node: Arrow(Located { node: Type, span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }, Located { node: Type, span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }), span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } })
-
-    --> :1:2892-1:2893
-
-
--- TYPE ------------------------------------------------------
-
 Type mismatch: IncompatibleConstructors(Located { node: App(Located { node: Named(12), span: Span { file: "", first: Pos { line: 1, col: 2976 }, last: Pos { line: 1, col: 2980 } } }, Located { node: Unif(1, Span { file: "", first: Pos { line: 1, col: 2976 }, last: Pos { line: 1, col: 2980 } }, Located { node: Type, span: Span { file: "", first: Pos { line: 1, col: 2976 }, last: Pos { line: 1, col: 2980 } } }, "_", Mutex { data: Unknown, poisoned: false, .. }), span: Span { file: "", first: Pos { line: 1, col: 2976 }, last: Pos { line: 1, col: 2980 } } }), span: Span { file: "", first: Pos { line: 1, col: 2976 }, last: Pos { line: 1, col: 2980 } } }, Located { node: Named(12), span: Span { file: "", first: Pos { line: 1, col: 2918 }, last: Pos { line: 1, col: 2924 } } })
 
     --> :1:2976-1:2980
@@ -283,13 +136,6 @@ Type mismatch: IncompatibleConstructors(Located { node: App(Located { node: Name
 Type mismatch: IncompatibleConstructors(Located { node: TFun(Located { node: Unif(3, Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } }, Located { node: Type, span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }, "t", Mutex { data: Unknown, poisoned: false, .. }), span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }, Located { node: Unif(3, Span { file: "", first: Pos { line: 1, col: 2945 }, last: Pos { line: 1, col: 3039 } }, Located { node: Type, span: Span { file: "", first: Pos { line: 1, col: 2945 }, last: Pos { line: 1, col: 3039 } } }, "_case", Mutex { data: Known(Located { node: Named(2), span: Span { file: "", first: Pos { line: 1, col: 2984 }, last: Pos { line: 1, col: 2986 } } }), poisoned: false, .. }), span: Span { file: "", first: Pos { line: 1, col: 2945 }, last: Pos { line: 1, col: 3039 } } }), span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }, Located { node: Named(2), span: Span { file: "", first: Pos { line: 1, col: 3339 }, last: Pos { line: 1, col: 3345 } } })
 
     --> :1:2908-1:3041
-
-
--- TYPE ------------------------------------------------------
-
-Kind mismatch: IncompatibleKinds(Located { node: Type, span: Span { file: "", first: Pos { line: 1, col: 3066 }, last: Pos { line: 1, col: 3070 } } }, Located { node: Arrow(Located { node: Type, span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }, Located { node: Type, span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }), span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } })
-
-    --> :1:3082-1:3083
 
 
 -- TYPE ------------------------------------------------------
@@ -406,13 +252,6 @@ Application to non-function type
 
 -- TYPE ------------------------------------------------------
 
-Kind mismatch: IncompatibleKinds(Located { node: Rel(0), span: Span { file: "", first: Pos { line: 1, col: 2363 }, last: Pos { line: 1, col: 2364 } } }, Located { node: Type, span: Span { file: "", first: Pos { line: 1, col: 5146 }, last: Pos { line: 1, col: 5158 } } })
-
-    --> :1:5147-1:5158
-
-
--- TYPE ------------------------------------------------------
-
 Constructor application to non-TCFun type
 
     --> :1:5124-1:5126
@@ -430,20 +269,6 @@ Application to non-function type
 Application to non-function type
 
     --> :1:5124-1:5290
-
-
--- TYPE ------------------------------------------------------
-
-Kind mismatch: IncompatibleKinds(Located { node: Rel(0), span: Span { file: "", first: Pos { line: 1, col: 2363 }, last: Pos { line: 1, col: 2364 } } }, Located { node: Type, span: Span { file: "", first: Pos { line: 1, col: 5591 }, last: Pos { line: 1, col: 5604 } } })
-
-    --> :1:5592-1:5604
-
-
--- TYPE ------------------------------------------------------
-
-Kind mismatch: IncompatibleKinds(Located { node: Rel(0), span: Span { file: "", first: Pos { line: 1, col: 2363 }, last: Pos { line: 1, col: 2364 } } }, Located { node: Type, span: Span { file: "", first: Pos { line: 1, col: 5608 }, last: Pos { line: 1, col: 5621 } } })
-
-    --> :1:5609-1:5621
 
 
 -- TYPE ------------------------------------------------------
@@ -1029,13 +854,6 @@ Type mismatch: IncompatibleConstructors(Located { node: App(Located { node: Name
 
 -- TYPE ------------------------------------------------------
 
-Kind mismatch: IncompatibleKinds(Located { node: Rel(0), span: Span { file: "", first: Pos { line: 1, col: 2363 }, last: Pos { line: 1, col: 2364 } } }, Located { node: Record(Located { node: Type, span: Span { file: "", first: Pos { line: 1, col: 13771 }, last: Pos { line: 1, col: 13775 } } }), span: Span { file: "", first: Pos { line: 1, col: 13770 }, last: Pos { line: 1, col: 13776 } } })
-
-    --> :1:15594-1:15608
-
-
--- TYPE ------------------------------------------------------
-
 Type mismatch: IncompatibleConstructors(Located { node: App(Located { node: Named(12), span: Span { file: "", first: Pos { line: 1, col: 15663 }, last: Pos { line: 1, col: 15667 } } }, Located { node: Unif(3, Span { file: "", first: Pos { line: 1, col: 15663 }, last: Pos { line: 1, col: 15667 } }, Located { node: Type, span: Span { file: "", first: Pos { line: 1, col: 15663 }, last: Pos { line: 1, col: 15667 } } }, "_", Mutex { data: Unknown, poisoned: false, .. }), span: Span { file: "", first: Pos { line: 1, col: 15663 }, last: Pos { line: 1, col: 15667 } } }), span: Span { file: "", first: Pos { line: 1, col: 15663 }, last: Pos { line: 1, col: 15667 } } }, Located { node: TRecord(Located { node: Concat(Located { node: Record(Located { node: Record(Located { node: Type, span: Span { file: "", first: Pos { line: 1, col: 15662 }, last: Pos { line: 1, col: 15674 } } }), span: Span { file: "", first: Pos { line: 1, col: 15662 }, last: Pos { line: 1, col: 15674 } } }, [(Located { node: Name("nm"), span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }, Located { node: Unif(3, Span { file: "", first: Pos { line: 1, col: 15662 }, last: Pos { line: 1, col: 15674 } }, Located { node: Type, span: Span { file: "", first: Pos { line: 1, col: 15662 }, last: Pos { line: 1, col: 15674 } } }, "_field", Mutex { data: Unknown, poisoned: false, .. }), span: Span { file: "", first: Pos { line: 1, col: 15662 }, last: Pos { line: 1, col: 15674 } } })]), span: Span { file: "", first: Pos { line: 1, col: 15662 }, last: Pos { line: 1, col: 15674 } } }, Located { node: Unif(3, Span { file: "", first: Pos { line: 1, col: 15662 }, last: Pos { line: 1, col: 15674 } }, Located { node: Record(Located { node: Type, span: Span { file: "", first: Pos { line: 1, col: 15662 }, last: Pos { line: 1, col: 15674 } } }), span: Span { file: "", first: Pos { line: 1, col: 15662 }, last: Pos { line: 1, col: 15674 } } }, "_rest", Mutex { data: Unknown, poisoned: false, .. }), span: Span { file: "", first: Pos { line: 1, col: 15662 }, last: Pos { line: 1, col: 15674 } } }), span: Span { file: "", first: Pos { line: 1, col: 15662 }, last: Pos { line: 1, col: 15674 } } }), span: Span { file: "", first: Pos { line: 1, col: 15662 }, last: Pos { line: 1, col: 15674 } } })
 
     --> :1:15663-1:15670
@@ -1081,13 +899,6 @@ Type mismatch: IncompatibleConstructors(Located { node: Named(12), span: Span { 
 Type mismatch: IncompatibleConstructors(Located { node: Named(12), span: Span { file: "", first: Pos { line: 1, col: 16177 }, last: Pos { line: 1, col: 16183 } } }, Located { node: Named(113), span: Span { file: "", first: Pos { line: 1, col: 31597 }, last: Pos { line: 1, col: 31608 } } })
 
     --> :1:16177-1:16183
-
-
--- TYPE ------------------------------------------------------
-
-Kind mismatch: IncompatibleKinds(Located { node: Rel(0), span: Span { file: "", first: Pos { line: 1, col: 2363 }, last: Pos { line: 1, col: 2364 } } }, Located { node: Record(Located { node: Type, span: Span { file: "", first: Pos { line: 1, col: 13771 }, last: Pos { line: 1, col: 13775 } } }), span: Span { file: "", first: Pos { line: 1, col: 13770 }, last: Pos { line: 1, col: 13776 } } })
-
-    --> :1:16297-1:16311
 
 
 -- TYPE ------------------------------------------------------
@@ -1169,13 +980,6 @@ Type mismatch: IncompatibleConstructors(Located { node: Named(9), span: Span { f
 
 -- TYPE ------------------------------------------------------
 
-Kind mismatch: IncompatibleKinds(Located { node: Type, span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }, Located { node: Arrow(Located { node: Type, span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }, Located { node: Type, span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }), span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } })
-
-    --> :1:16700-1:16710
-
-
--- TYPE ------------------------------------------------------
-
 Unbound variable `SQL`
 
     --> :1:16811-1:16814
@@ -1200,13 +1004,6 @@ Application to non-function type
 Application to non-function type
 
     --> :1:16811-1:16849
-
-
--- TYPE ------------------------------------------------------
-
-Kind mismatch: IncompatibleKinds(Located { node: Type, span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }, Located { node: Arrow(Located { node: Type, span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }, Located { node: Type, span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }), span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } })
-
-    --> :1:16976-1:16986
 
 
 -- TYPE ------------------------------------------------------
@@ -4207,20 +4004,6 @@ Type mismatch: IncompatibleConstructors(Located { node: App(Located { node: App(
 
 -- TYPE ------------------------------------------------------
 
-Kind mismatch: IncompatibleKinds(Located { node: Type, span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }, Located { node: Arrow(Located { node: Type, span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }, Located { node: Type, span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }), span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } })
-
-    --> :1:90-1:94
-
-
--- TYPE ------------------------------------------------------
-
-Kind mismatch: IncompatibleKinds(Located { node: Type, span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }, Located { node: Arrow(Located { node: Type, span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }, Located { node: Type, span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }), span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } })
-
-    --> :1:90-1:94
-
-
--- TYPE ------------------------------------------------------
-
 Type mismatch: IncompatibleConstructors(Located { node: Named(0), span: Span { file: "", first: Pos { line: 1, col: 147 }, last: Pos { line: 1, col: 157 } } }, Located { node: Named(401), span: Span { file: "", first: Pos { line: 1, col: 32748 }, last: Pos { line: 1, col: 32760 } } })
 
     --> :1:240-1:241
@@ -4539,20 +4322,6 @@ Type mismatch: IncompatibleConstructors(Located { node: Concat(Located { node: R
 Unresolved disjointness constraint
 
     --> :1:572-1:579
-
-
--- TYPE ------------------------------------------------------
-
-Kind mismatch: IncompatibleKinds(Located { node: Type, span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }, Located { node: Arrow(Located { node: Type, span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }, Located { node: Type, span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }), span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } })
-
-    --> :1:295-1:298
-
-
--- TYPE ------------------------------------------------------
-
-Kind mismatch: IncompatibleKinds(Located { node: Type, span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }, Located { node: Arrow(Located { node: Type, span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }, Located { node: Type, span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }), span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } })
-
-    --> :1:295-1:298
 
 
 -- TYPE ------------------------------------------------------
@@ -5670,13 +5439,6 @@ Application to non-function type
 
 -- TYPE ------------------------------------------------------
 
-Constructor application to non-arrow kind
-
-    --> :1:87-1:107
-
-
--- TYPE ------------------------------------------------------
-
 Unbound variable `queryX`
 
     --> :1:167-1:173
@@ -6734,30 +6496,9 @@ Type mismatch: IncompatibleConstructors(Located { node: Concat(Located { node: U
 
 -- TYPE ------------------------------------------------------
 
-Kind mismatch: IncompatibleKinds(Located { node: Type, span: Span { file: "", first: Pos { line: 1, col: 24 }, last: Pos { line: 1, col: 28 } } }, Located { node: Arrow(Located { node: Type, span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }, Located { node: Type, span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }), span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } })
-
-    --> :1:357-1:359
-
-
--- TYPE ------------------------------------------------------
-
-Kind mismatch: IncompatibleKinds(Located { node: Tuple([Located { node: Type, span: Span { file: "", first: Pos { line: 1, col: 389 }, last: Pos { line: 1, col: 393 } } }, Located { node: Type, span: Span { file: "", first: Pos { line: 1, col: 396 }, last: Pos { line: 1, col: 400 } } }]), span: Span { file: "", first: Pos { line: 1, col: 388 }, last: Pos { line: 1, col: 401 } } }, Located { node: Type, span: Span { file: "", first: Pos { line: 1, col: 24 }, last: Pos { line: 1, col: 28 } } })
-
-    --> :1:420-1:424
-
-
--- TYPE ------------------------------------------------------
-
 Kind mismatch: IncompatibleKinds(Located { node: Arrow(Located { node: Type, span: Span { file: "", first: Pos { line: 1, col: 40 }, last: Pos { line: 1, col: 44 } } }, Located { node: Type, span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }), span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }, Located { node: Type, span: Span { file: "", first: Pos { line: 1, col: 406 }, last: Pos { line: 1, col: 425 } } })
 
     --> :1:407-1:425
-
-
--- TYPE ------------------------------------------------------
-
-Kind mismatch: IncompatibleKinds(Located { node: Tuple([Located { node: Type, span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }, Located { node: Type, span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }]), span: Span { file: "", first: Pos { line: 1, col: 455 }, last: Pos { line: 1, col: 468 } } }, Located { node: Type, span: Span { file: "", first: Pos { line: 1, col: 24 }, last: Pos { line: 1, col: 28 } } })
-
-    --> :1:455-1:468
 
 
 -- TYPE ------------------------------------------------------
@@ -6769,13 +6510,6 @@ Kind mismatch: IncompatibleKinds(Located { node: Arrow(Located { node: Type, spa
 
 -- TYPE ------------------------------------------------------
 
-Kind mismatch: IncompatibleKinds(Located { node: Tuple([Located { node: Type, span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }, Located { node: Type, span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }]), span: Span { file: "", first: Pos { line: 1, col: 499 }, last: Pos { line: 1, col: 514 } } }, Located { node: Type, span: Span { file: "", first: Pos { line: 1, col: 24 }, last: Pos { line: 1, col: 28 } } })
-
-    --> :1:499-1:514
-
-
--- TYPE ------------------------------------------------------
-
 Kind mismatch: IncompatibleKinds(Located { node: Arrow(Located { node: Type, span: Span { file: "", first: Pos { line: 1, col: 40 }, last: Pos { line: 1, col: 44 } } }, Located { node: Type, span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }), span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }, Located { node: Type, span: Span { file: "", first: Pos { line: 1, col: 481 }, last: Pos { line: 1, col: 514 } } })
 
     --> :1:491-1:514
@@ -6783,23 +6517,9 @@ Kind mismatch: IncompatibleKinds(Located { node: Arrow(Located { node: Type, spa
 
 -- TYPE ------------------------------------------------------
 
-Kind mismatch: IncompatibleKinds(Located { node: Tuple([Located { node: Type, span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }, Located { node: Type, span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }]), span: Span { file: "", first: Pos { line: 1, col: 546 }, last: Pos { line: 1, col: 562 } } }, Located { node: Type, span: Span { file: "", first: Pos { line: 1, col: 24 }, last: Pos { line: 1, col: 28 } } })
-
-    --> :1:546-1:562
-
-
--- TYPE ------------------------------------------------------
-
 Kind mismatch: IncompatibleKinds(Located { node: Arrow(Located { node: Type, span: Span { file: "", first: Pos { line: 1, col: 40 }, last: Pos { line: 1, col: 44 } } }, Located { node: Type, span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }), span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }, Located { node: Type, span: Span { file: "", first: Pos { line: 1, col: 528 }, last: Pos { line: 1, col: 562 } } })
 
     --> :1:538-1:562
-
-
--- TYPE ------------------------------------------------------
-
-Kind mismatch: IncompatibleKinds(Located { node: Tuple([Located { node: Type, span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }, Located { node: Type, span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }]), span: Span { file: "", first: Pos { line: 1, col: 592 }, last: Pos { line: 1, col: 604 } } }, Located { node: Type, span: Span { file: "", first: Pos { line: 1, col: 24 }, last: Pos { line: 1, col: 28 } } })
-
-    --> :1:592-1:604
 
 
 -- TYPE ------------------------------------------------------
@@ -6832,13 +6552,6 @@ Unbound type constructor `fst`
 
 -- TYPE ------------------------------------------------------
 
-Kind mismatch: IncompatibleKinds(Located { node: Type, span: Span { file: "", first: Pos { line: 1, col: 24 }, last: Pos { line: 1, col: 28 } } }, Located { node: Arrow(Located { node: Type, span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }, Located { node: Type, span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }), span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } })
-
-    --> :1:357-1:359
-
-
--- TYPE ------------------------------------------------------
-
 Kind mismatch: IncompatibleKinds(Located { node: Arrow(Located { node: Type, span: Span { file: "", first: Pos { line: 1, col: 40 }, last: Pos { line: 1, col: 44 } } }, Located { node: Type, span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }), span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }, Located { node: Type, span: Span { file: "", first: Pos { line: 1, col: 387 }, last: Pos { line: 1, col: 406 } } })
 
     --> :1:388-1:406
@@ -6849,13 +6562,6 @@ Kind mismatch: IncompatibleKinds(Located { node: Arrow(Located { node: Type, spa
 Unbound type constructor `t`
 
     --> :1:505-1:506
-
-
--- TYPE ------------------------------------------------------
-
-Kind mismatch: IncompatibleKinds(Located { node: Tuple([Located { node: Error, span: Span { file: "", first: Pos { line: 1, col: 505 }, last: Pos { line: 1, col: 506 } } }, Located { node: Type, span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }]), span: Span { file: "", first: Pos { line: 1, col: 504 }, last: Pos { line: 1, col: 515 } } }, Located { node: Type, span: Span { file: "", first: Pos { line: 1, col: 24 }, last: Pos { line: 1, col: 28 } } })
-
-    --> :1:504-1:515
 
 
 -- TYPE ------------------------------------------------------
@@ -6968,13 +6674,6 @@ Constructor application to non-arrow kind
 Unbound type constructor `fst`
 
     --> :1:1352-1:1355
-
-
--- TYPE ------------------------------------------------------
-
-Kind mismatch: IncompatibleKinds(Located { node: Tuple([Located { node: Type, span: Span { file: "", first: Pos { line: 1, col: 1211 }, last: Pos { line: 1, col: 1215 } } }, Located { node: Type, span: Span { file: "", first: Pos { line: 1, col: 1218 }, last: Pos { line: 1, col: 1222 } } }]), span: Span { file: "", first: Pos { line: 1, col: 1210 }, last: Pos { line: 1, col: 1223 } } }, Located { node: Type, span: Span { file: "", first: Pos { line: 1, col: 24 }, last: Pos { line: 1, col: 28 } } })
-
-    --> :1:1437-1:1441
 
 
 -- TYPE ------------------------------------------------------
@@ -7581,14 +7280,7 @@ Type mismatch: UnificationRecursionLimitExceeded
 
 -- TYPE ------------- /Users/jacksmith/prog/urweb/demo/crud.ur
 
-Kind mismatch for `colsMeta`: IncompatibleKinds(Located { node: Type, span: Span { file: "", first: Pos { line: 1, col: 24 }, last: Pos { line: 1, col: 28 } } }, Located { node: Tuple([Located { node: Type, span: Span { file: "", first: Pos { line: 1, col: 389 }, last: Pos { line: 1, col: 393 } } }, Located { node: Type, span: Span { file: "", first: Pos { line: 1, col: 396 }, last: Pos { line: 1, col: 400 } } }]), span: Span { file: "", first: Pos { line: 1, col: 388 }, last: Pos { line: 1, col: 401 } } })
-
-    --> /Users/jacksmith/prog/urweb/demo/crud.ur:0:0-0:0
-
-
--- TYPE ------------- /Users/jacksmith/prog/urweb/demo/crud.ur
-
-Type mismatch: KindUnificationFailed(IncompatibleKinds(Located { node: Type, span: Span { file: "", first: Pos { line: 1, col: 24 }, last: Pos { line: 1, col: 28 } } }, Located { node: Tuple([Located { node: Type, span: Span { file: "", first: Pos { line: 1, col: 389 }, last: Pos { line: 1, col: 393 } } }, Located { node: Type, span: Span { file: "", first: Pos { line: 1, col: 396 }, last: Pos { line: 1, col: 400 } } }]), span: Span { file: "", first: Pos { line: 1, col: 388 }, last: Pos { line: 1, col: 401 } } }))
+Type mismatch: IncompatibleConstructors(Located { node: Abs("db", Located { node: Type, span: Span { file: "", first: Pos { line: 1, col: 24 }, last: Pos { line: 1, col: 28 } } }, Located { node: Abs("widget", Located { node: Type, span: Span { file: "", first: Pos { line: 1, col: 40 }, last: Pos { line: 1, col: 44 } } }, Located { node: TRecord(Located { node: Record(Located { node: Record(Located { node: Unif(Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } }, "_", Mutex { data: Known(Located { node: Type, span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }), poisoned: false, .. }), span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }), span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }, [(Located { node: Name("Name"), span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }, Located { node: Named(2), span: Span { file: "", first: Pos { line: 1, col: 74 }, last: Pos { line: 1, col: 80 } } }), (Located { node: Name("Show"), span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }, Located { node: TFun(Located { node: Rel(1), span: Span { file: "", first: Pos { line: 1, col: 107 }, last: Pos { line: 1, col: 109 } } }, Located { node: Named(440), span: Span { file: "", first: Pos { line: 1, col: 113 }, last: Pos { line: 1, col: 118 } } }), span: Span { file: "", first: Pos { line: 1, col: 107 }, last: Pos { line: 1, col: 118 } } }), (Located { node: Name("Widget"), span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }, Located { node: TCFun(Explicit, "nm", Located { node: Name, span: Span { file: "", first: Pos { line: 1, col: 154 }, last: Pos { line: 1, col: 158 } } }, Located { node: App(Located { node: App(Located { node: App(Located { node: Named(420), span: Span { file: "", first: Pos { line: 1, col: 163 }, last: Pos { line: 1, col: 166 } } }, Located { node: Named(434), span: Span { file: "", first: Pos { line: 1, col: 167 }, last: Pos { line: 1, col: 171 } } }), span: Span { file: "", first: Pos { line: 1, col: 163 }, last: Pos { line: 1, col: 171 } } }, Located { node: Record(Located { node: Record(Located { node: Unif(Span { file: "", first: Pos { line: 1, col: 172 }, last: Pos { line: 1, col: 174 } }, "_", Mutex { data: Known(Located { node: Type, span: Span { file: "", first: Pos { line: 1, col: 33531 }, last: Pos { line: 1, col: 33535 } } }), poisoned: false, .. }), span: Span { file: "", first: Pos { line: 1, col: 172 }, last: Pos { line: 1, col: 174 } } }), span: Span { file: "", first: Pos { line: 1, col: 172 }, last: Pos { line: 1, col: 174 } } }, []), span: Span { file: "", first: Pos { line: 1, col: 172 }, last: Pos { line: 1, col: 174 } } }), span: Span { file: "", first: Pos { line: 1, col: 163 }, last: Pos { line: 1, col: 174 } } }, Located { node: Record(Located { node: Record(Located { node: Unif(Span { file: "", first: Pos { line: 1, col: 175 }, last: Pos { line: 1, col: 188 } }, "_", Mutex { data: Known(Located { node: Type, span: Span { file: "", first: Pos { line: 1, col: 40 }, last: Pos { line: 1, col: 44 } } }), poisoned: false, .. }), span: Span { file: "", first: Pos { line: 1, col: 175 }, last: Pos { line: 1, col: 188 } } }), span: Span { file: "", first: Pos { line: 1, col: 175 }, last: Pos { line: 1, col: 188 } } }, [(Located { node: Rel(0), span: Span { file: "", first: Pos { line: 1, col: 176 }, last: Pos { line: 1, col: 178 } } }, Located { node: Rel(1), span: Span { file: "", first: Pos { line: 1, col: 181 }, last: Pos { line: 1, col: 187 } } })]), span: Span { file: "", first: Pos { line: 1, col: 175 }, last: Pos { line: 1, col: 188 } } }), span: Span { file: "", first: Pos { line: 1, col: 163 }, last: Pos { line: 1, col: 188 } } }), span: Span { file: "", first: Pos { line: 1, col: 147 }, last: Pos { line: 1, col: 188 } } }), (Located { node: Name("WidgetPopulated"), span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }, Located { node: TCFun(Explicit, "nm", Located { node: Name, span: Span { file: "", first: Pos { line: 1, col: 233 }, last: Pos { line: 1, col: 237 } } }, Located { node: TFun(Located { node: Rel(2), span: Span { file: "", first: Pos { line: 1, col: 242 }, last: Pos { line: 1, col: 244 } } }, Located { node: App(Located { node: App(Located { node: App(Located { node: Named(420), span: Span { file: "", first: Pos { line: 1, col: 248 }, last: Pos { line: 1, col: 251 } } }, Located { node: Named(434), span: Span { file: "", first: Pos { line: 1, col: 252 }, last: Pos { line: 1, col: 256 } } }), span: Span { file: "", first: Pos { line: 1, col: 248 }, last: Pos { line: 1, col: 256 } } }, Located { node: Record(Located { node: Record(Located { node: Unif(Span { file: "", first: Pos { line: 1, col: 257 }, last: Pos { line: 1, col: 259 } }, "_", Mutex { data: Known(Located { node: Type, span: Span { file: "", first: Pos { line: 1, col: 33531 }, last: Pos { line: 1, col: 33535 } } }), poisoned: false, .. }), span: Span { file: "", first: Pos { line: 1, col: 257 }, last: Pos { line: 1, col: 259 } } }), span: Span { file: "", first: Pos { line: 1, col: 257 }, last: Pos { line: 1, col: 259 } } }, []), span: Span { file: "", first: Pos { line: 1, col: 257 }, last: Pos { line: 1, col: 259 } } }), span: Span { file: "", first: Pos { line: 1, col: 248 }, last: Pos { line: 1, col: 259 } } }, Located { node: Record(Located { node: Record(Located { node: Unif(Span { file: "", first: Pos { line: 1, col: 260 }, last: Pos { line: 1, col: 273 } }, "_", Mutex { data: Known(Located { node: Type, span: Span { file: "", first: Pos { line: 1, col: 40 }, last: Pos { line: 1, col: 44 } } }), poisoned: false, .. }), span: Span { file: "", first: Pos { line: 1, col: 260 }, last: Pos { line: 1, col: 273 } } }), span: Span { file: "", first: Pos { line: 1, col: 260 }, last: Pos { line: 1, col: 273 } } }, [(Located { node: Rel(0), span: Span { file: "", first: Pos { line: 1, col: 261 }, last: Pos { line: 1, col: 263 } } }, Located { node: Rel(1), span: Span { file: "", first: Pos { line: 1, col: 266 }, last: Pos { line: 1, col: 272 } } })]), span: Span { file: "", first: Pos { line: 1, col: 260 }, last: Pos { line: 1, col: 273 } } }), span: Span { file: "", first: Pos { line: 1, col: 248 }, last: Pos { line: 1, col: 273 } } }), span: Span { file: "", first: Pos { line: 1, col: 242 }, last: Pos { line: 1, col: 273 } } }), span: Span { file: "", first: Pos { line: 1, col: 226 }, last: Pos { line: 1, col: 273 } } }), (Located { node: Name("Parse"), span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }, Located { node: TFun(Located { node: Rel(0), span: Span { file: "", first: Pos { line: 1, col: 301 }, last: Pos { line: 1, col: 307 } } }, Located { node: Rel(1), span: Span { file: "", first: Pos { line: 1, col: 311 }, last: Pos { line: 1, col: 313 } } }), span: Span { file: "", first: Pos { line: 1, col: 301 }, last: Pos { line: 1, col: 313 } } }), (Located { node: Name("Inject"), span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }, Located { node: App(Located { node: Named(302), span: Span { file: "", first: Pos { line: 1, col: 342 }, last: Pos { line: 1, col: 356 } } }, Located { node: Rel(1), span: Span { file: "", first: Pos { line: 1, col: 357 }, last: Pos { line: 1, col: 359 } } }), span: Span { file: "", first: Pos { line: 1, col: 342 }, last: Pos { line: 1, col: 359 } } })]), span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }), span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }), span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }), span: Span { file: "", first: Pos { line: 1, col: 14 }, last: Pos { line: 1, col: 360 } } }, Located { node: Named(1037), span: Span { file: "", first: Pos { line: 1, col: 412 }, last: Pos { line: 1, col: 419 } } })
 
     --> /Users/jacksmith/prog/urweb/demo/crud.ur:0:0-0:0
 
@@ -9184,30 +8876,9 @@ Unresolved disjointness constraint
 
 -- TYPE ------------------------------------------------------
 
-Kind mismatch: IncompatibleKinds(Located { node: Type, span: Span { file: "", first: Pos { line: 1, col: 24 }, last: Pos { line: 1, col: 28 } } }, Located { node: Arrow(Located { node: Type, span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }, Located { node: Type, span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }), span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } })
-
-    --> :1:160-1:162
-
-
--- TYPE ------------------------------------------------------
-
-Kind mismatch: IncompatibleKinds(Located { node: Tuple([Located { node: Type, span: Span { file: "", first: Pos { line: 1, col: 339 }, last: Pos { line: 1, col: 343 } } }, Located { node: Type, span: Span { file: "", first: Pos { line: 1, col: 346 }, last: Pos { line: 1, col: 350 } } }]), span: Span { file: "", first: Pos { line: 1, col: 338 }, last: Pos { line: 1, col: 351 } } }, Located { node: Type, span: Span { file: "", first: Pos { line: 1, col: 24 }, last: Pos { line: 1, col: 28 } } })
-
-    --> :1:370-1:374
-
-
--- TYPE ------------------------------------------------------
-
 Kind mismatch: IncompatibleKinds(Located { node: Arrow(Located { node: Type, span: Span { file: "", first: Pos { line: 1, col: 39 }, last: Pos { line: 1, col: 43 } } }, Located { node: Type, span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }), span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }, Located { node: Type, span: Span { file: "", first: Pos { line: 1, col: 356 }, last: Pos { line: 1, col: 375 } } })
 
     --> :1:357-1:375
-
-
--- TYPE ------------------------------------------------------
-
-Kind mismatch: IncompatibleKinds(Located { node: Tuple([Located { node: Type, span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }, Located { node: Type, span: Span { file: "", first: Pos { line: 1, col: 4380 }, last: Pos { line: 1, col: 4384 } } }]), span: Span { file: "", first: Pos { line: 1, col: 405 }, last: Pos { line: 1, col: 425 } } }, Located { node: Type, span: Span { file: "", first: Pos { line: 1, col: 24 }, last: Pos { line: 1, col: 28 } } })
-
-    --> :1:405-1:425
 
 
 -- TYPE ------------------------------------------------------
@@ -9219,23 +8890,9 @@ Kind mismatch: IncompatibleKinds(Located { node: Arrow(Located { node: Type, spa
 
 -- TYPE ------------------------------------------------------
 
-Kind mismatch: IncompatibleKinds(Located { node: Tuple([Located { node: Type, span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }, Located { node: Type, span: Span { file: "", first: Pos { line: 1, col: 4380 }, last: Pos { line: 1, col: 4384 } } }]), span: Span { file: "", first: Pos { line: 1, col: 456 }, last: Pos { line: 1, col: 478 } } }, Located { node: Type, span: Span { file: "", first: Pos { line: 1, col: 24 }, last: Pos { line: 1, col: 28 } } })
-
-    --> :1:456-1:478
-
-
--- TYPE ------------------------------------------------------
-
 Kind mismatch: IncompatibleKinds(Located { node: Arrow(Located { node: Type, span: Span { file: "", first: Pos { line: 1, col: 39 }, last: Pos { line: 1, col: 43 } } }, Located { node: Type, span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }), span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }, Located { node: Type, span: Span { file: "", first: Pos { line: 1, col: 438 }, last: Pos { line: 1, col: 478 } } })
 
     --> :1:448-1:478
-
-
--- TYPE ------------------------------------------------------
-
-Kind mismatch: IncompatibleKinds(Located { node: Tuple([Located { node: Type, span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }, Located { node: Type, span: Span { file: "", first: Pos { line: 1, col: 4380 }, last: Pos { line: 1, col: 4384 } } }]), span: Span { file: "", first: Pos { line: 1, col: 510 }, last: Pos { line: 1, col: 533 } } }, Located { node: Type, span: Span { file: "", first: Pos { line: 1, col: 24 }, last: Pos { line: 1, col: 28 } } })
-
-    --> :1:510-1:533
 
 
 -- TYPE ------------------------------------------------------
@@ -9268,13 +8925,6 @@ Unbound type constructor `fst`
 
 -- TYPE ------------------------------------------------------
 
-Kind mismatch: IncompatibleKinds(Located { node: Type, span: Span { file: "", first: Pos { line: 1, col: 24 }, last: Pos { line: 1, col: 28 } } }, Located { node: Arrow(Located { node: Type, span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }, Located { node: Type, span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }), span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } })
-
-    --> :1:160-1:162
-
-
--- TYPE ------------------------------------------------------
-
 Kind mismatch: IncompatibleKinds(Located { node: Arrow(Located { node: Type, span: Span { file: "", first: Pos { line: 1, col: 39 }, last: Pos { line: 1, col: 43 } } }, Located { node: Type, span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }), span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }, Located { node: Type, span: Span { file: "", first: Pos { line: 1, col: 337 }, last: Pos { line: 1, col: 356 } } })
 
     --> :1:338-1:356
@@ -9285,13 +8935,6 @@ Kind mismatch: IncompatibleKinds(Located { node: Arrow(Located { node: Type, spa
 Unbound type constructor `t`
 
     --> :1:455-1:456
-
-
--- TYPE ------------------------------------------------------
-
-Kind mismatch: IncompatibleKinds(Located { node: Tuple([Located { node: Error, span: Span { file: "", first: Pos { line: 1, col: 455 }, last: Pos { line: 1, col: 456 } } }, Located { node: Type, span: Span { file: "", first: Pos { line: 1, col: 4380 }, last: Pos { line: 1, col: 4384 } } }]), span: Span { file: "", first: Pos { line: 1, col: 454 }, last: Pos { line: 1, col: 472 } } }, Located { node: Type, span: Span { file: "", first: Pos { line: 1, col: 24 }, last: Pos { line: 1, col: 28 } } })
-
-    --> :1:454-1:472
 
 
 -- TYPE ------------------------------------------------------
@@ -9348,13 +8991,6 @@ Constructor application to non-arrow kind
 Unbound type constructor `fst`
 
     --> :1:950-1:953
-
-
--- TYPE ------------------------------------------------------
-
-Kind mismatch: IncompatibleKinds(Located { node: Tuple([Located { node: Type, span: Span { file: "", first: Pos { line: 1, col: 783 }, last: Pos { line: 1, col: 787 } } }, Located { node: Type, span: Span { file: "", first: Pos { line: 1, col: 790 }, last: Pos { line: 1, col: 794 } } }]), span: Span { file: "", first: Pos { line: 1, col: 782 }, last: Pos { line: 1, col: 795 } } }, Located { node: Type, span: Span { file: "", first: Pos { line: 1, col: 24 }, last: Pos { line: 1, col: 28 } } })
-
-    --> :1:1091-1:1095
 
 
 -- TYPE ------------------------------------------------------
@@ -10297,14 +9933,7 @@ Unresolved disjointness constraint
 
 -- TYPE --------- /Users/jacksmith/prog/urweb/demo/batchFun.ur
 
-Kind mismatch for `colsMeta`: IncompatibleKinds(Located { node: Type, span: Span { file: "", first: Pos { line: 1, col: 24 }, last: Pos { line: 1, col: 28 } } }, Located { node: Tuple([Located { node: Type, span: Span { file: "", first: Pos { line: 1, col: 339 }, last: Pos { line: 1, col: 343 } } }, Located { node: Type, span: Span { file: "", first: Pos { line: 1, col: 346 }, last: Pos { line: 1, col: 350 } } }]), span: Span { file: "", first: Pos { line: 1, col: 338 }, last: Pos { line: 1, col: 351 } } })
-
-    --> /Users/jacksmith/prog/urweb/demo/batchFun.ur:0:0-0:0
-
-
--- TYPE --------- /Users/jacksmith/prog/urweb/demo/batchFun.ur
-
-Type mismatch: KindUnificationFailed(IncompatibleKinds(Located { node: Type, span: Span { file: "", first: Pos { line: 1, col: 24 }, last: Pos { line: 1, col: 28 } } }, Located { node: Tuple([Located { node: Type, span: Span { file: "", first: Pos { line: 1, col: 339 }, last: Pos { line: 1, col: 343 } } }, Located { node: Type, span: Span { file: "", first: Pos { line: 1, col: 346 }, last: Pos { line: 1, col: 350 } } }]), span: Span { file: "", first: Pos { line: 1, col: 338 }, last: Pos { line: 1, col: 351 } } }))
+Type mismatch: IncompatibleConstructors(Located { node: Abs("db", Located { node: Type, span: Span { file: "", first: Pos { line: 1, col: 24 }, last: Pos { line: 1, col: 28 } } }, Located { node: Abs("state", Located { node: Type, span: Span { file: "", first: Pos { line: 1, col: 39 }, last: Pos { line: 1, col: 43 } } }, Located { node: TRecord(Located { node: Record(Located { node: Record(Located { node: Unif(Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } }, "_", Mutex { data: Known(Located { node: Type, span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }), poisoned: false, .. }), span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }), span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }, [(Located { node: Name("Nam"), span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }, Located { node: Named(2), span: Span { file: "", first: Pos { line: 1, col: 72 }, last: Pos { line: 1, col: 78 } } }), (Located { node: Name("Show"), span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }, Located { node: TFun(Located { node: Rel(1), span: Span { file: "", first: Pos { line: 1, col: 105 }, last: Pos { line: 1, col: 107 } } }, Located { node: Named(440), span: Span { file: "", first: Pos { line: 1, col: 111 }, last: Pos { line: 1, col: 116 } } }), span: Span { file: "", first: Pos { line: 1, col: 105 }, last: Pos { line: 1, col: 116 } } }), (Located { node: Name("Inject"), span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }, Located { node: App(Located { node: Named(302), span: Span { file: "", first: Pos { line: 1, col: 145 }, last: Pos { line: 1, col: 159 } } }, Located { node: Rel(1), span: Span { file: "", first: Pos { line: 1, col: 160 }, last: Pos { line: 1, col: 162 } } }), span: Span { file: "", first: Pos { line: 1, col: 145 }, last: Pos { line: 1, col: 162 } } }), (Located { node: Name("NewState"), span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }, Located { node: App(Located { node: Named(113), span: Span { file: "", first: Pos { line: 1, col: 194 }, last: Pos { line: 1, col: 205 } } }, Located { node: Rel(0), span: Span { file: "", first: Pos { line: 1, col: 206 }, last: Pos { line: 1, col: 211 } } }), span: Span { file: "", first: Pos { line: 1, col: 194 }, last: Pos { line: 1, col: 211 } } }), (Located { node: Name("Widget"), span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }, Located { node: TFun(Located { node: Rel(0), span: Span { file: "", first: Pos { line: 1, col: 240 }, last: Pos { line: 1, col: 245 } } }, Located { node: Named(440), span: Span { file: "", first: Pos { line: 1, col: 249 }, last: Pos { line: 1, col: 254 } } }), span: Span { file: "", first: Pos { line: 1, col: 240 }, last: Pos { line: 1, col: 254 } } }), (Located { node: Name("ReadState"), span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }, Located { node: TFun(Located { node: Rel(0), span: Span { file: "", first: Pos { line: 1, col: 286 }, last: Pos { line: 1, col: 291 } } }, Located { node: App(Located { node: Named(113), span: Span { file: "", first: Pos { line: 1, col: 295 }, last: Pos { line: 1, col: 306 } } }, Located { node: Rel(1), span: Span { file: "", first: Pos { line: 1, col: 307 }, last: Pos { line: 1, col: 309 } } }), span: Span { file: "", first: Pos { line: 1, col: 295 }, last: Pos { line: 1, col: 309 } } }), span: Span { file: "", first: Pos { line: 1, col: 286 }, last: Pos { line: 1, col: 309 } } })]), span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }), span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }), span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }), span: Span { file: "", first: Pos { line: 1, col: 14 }, last: Pos { line: 1, col: 310 } } }, Located { node: Named(1137), span: Span { file: "", first: Pos { line: 1, col: 362 }, last: Pos { line: 1, col: 369 } } })
 
     --> /Users/jacksmith/prog/urweb/demo/batchFun.ur:0:0-0:0
 
@@ -10528,13 +10157,6 @@ Type mismatch: IncompatibleConstructors(Located { node: Concat(Located { node: U
 
 -- TYPE ------------------------------------------------------
 
-Kind mismatch: IncompatibleKinds(Located { node: Tuple([Located { node: Type, span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }, Located { node: Type, span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }, Located { node: Type, span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }]), span: Span { file: "", first: Pos { line: 1, col: 54 }, last: Pos { line: 1, col: 76 } } }, Located { node: Type, span: Span { file: "", first: Pos { line: 1, col: 8247 }, last: Pos { line: 1, col: 8251 } } })
-
-    --> :1:54-1:76
-
-
--- TYPE ------------------------------------------------------
-
 Unbound variable `oneRow`
 
     --> :1:124-1:130
@@ -10661,23 +10283,9 @@ Unresolved disjointness constraint
 
 -- TYPE ------------------------------------------------------
 
-Kind mismatch: IncompatibleKinds(Located { node: Type, span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }, Located { node: Arrow(Located { node: Type, span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }, Located { node: Type, span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }), span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } })
-
-    --> :1:84-1:89
-
-
--- TYPE ------------------------------------------------------
-
 Unbound variable `_`
 
     --> :1:183-1:184
-
-
--- TYPE ------------------------------------------------------
-
-Kind mismatch: IncompatibleKinds(Located { node: Type, span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }, Located { node: Arrow(Located { node: Type, span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }, Located { node: Type, span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } }), span: Span { file: "", first: Pos { line: 0, col: 0 }, last: Pos { line: 0, col: 0 } } })
-
-    --> :1:175-1:180
 
 
 -- TYPE ------------------------------------------------------
@@ -12283,4 +11891,6 @@ Type mismatch: IncompatibleConstructors(Located { node: Concat(Located { node: U
     --> /Users/jacksmith/prog/urweb/demo/demo.ur:0:0-0:0
 
 
-Elaboration failed
+The compiler stopped: the elaboration phase produced no output.
+
+There may be an earlier diagnostic — scroll up — or this may be an internal bug with a small repro.

@@ -27,10 +27,21 @@ pub fn read_manifest_project_db_next_to_urp(urp_path: &Path) -> Result<Option<Pr
     if !manifest_path.is_file() {
         return Ok(None);
     }
-    let toml = std::fs::read_to_string(&manifest_path)
-        .map_err(|e| format!("error reading {}: {}", manifest_path.display(), e))?;
-    let cfg = crate::cli_common::parse_ur_toml_strict(&toml)
-        .map_err(|e| format!("{}: {}", manifest_path.display(), e))?;
+    let locale = crate::cli_common::diagnostic_locale_from_manifest_path(&manifest_path);
+    let toml = std::fs::read_to_string(&manifest_path).map_err(|read_error| {
+        crate::cli_common::cli_diagnostic_text(
+            crate::diagnostics::DiagnosticId::CliFileReadFailed,
+            vec![manifest_path.display().to_string(), read_error.to_string()],
+            locale,
+        )
+    })?;
+    let cfg = crate::cli_common::parse_ur_toml_strict(&toml).map_err(|parse_detail| {
+        crate::cli_common::cli_diagnostic_text(
+            crate::diagnostics::DiagnosticId::CliTomlParseAtPathFailed,
+            vec![manifest_path.display().to_string(), parse_detail],
+            locale,
+        )
+    })?;
     Ok(Some(ProjectDb::parse_user_input(cfg.build.db.trim())?))
 }
 
@@ -57,17 +68,30 @@ pub fn apply_urp_manifest_diagnostic_locale(
     if !manifest_path.is_file() {
         return Ok(());
     }
-    let toml = std::fs::read_to_string(&manifest_path)
-        .map_err(|e| format!("error reading {}: {}", manifest_path.display(), e))?;
-    let cfg = crate::cli_common::parse_ur_toml_strict(&toml)
-        .map_err(|e| format!("{}: {}", manifest_path.display(), e))?;
+    let file_locale = crate::cli_common::diagnostic_locale_from_manifest_path(&manifest_path);
+    let toml = std::fs::read_to_string(&manifest_path).map_err(|read_error| {
+        crate::cli_common::cli_diagnostic_text(
+            crate::diagnostics::DiagnosticId::CliFileReadFailed,
+            vec![manifest_path.display().to_string(), read_error.to_string()],
+            file_locale,
+        )
+    })?;
+    let cfg = crate::cli_common::parse_ur_toml_strict(&toml).map_err(|parse_detail| {
+        crate::cli_common::cli_diagnostic_text(
+            crate::diagnostics::DiagnosticId::CliTomlParseAtPathFailed,
+            vec![manifest_path.display().to_string(), parse_detail],
+            file_locale,
+        )
+    })?;
     let raw = cfg.package.language.trim();
     if raw.is_empty() {
         return Ok(());
     }
     let Some(locale) = crate::diagnostics::DiagnosticLocale::parse_manifest_token(raw) else {
-        return Err(format!(
-            "ur.toml [package].language is `{raw}`; expected en, sv, or es"
+        return Err(crate::cli_common::cli_diagnostic_text(
+            crate::diagnostics::DiagnosticId::CliPackageLanguageInvalid,
+            vec![raw.to_string()],
+            file_locale,
         ));
     };
     settings.diagnostic_locale = locale;

@@ -6,7 +6,11 @@
 //! Project configuration is strict `ur.toml` (Tom's Obvious, Minimal Language), not legacy `urweb.toml`.
 
 use std::process;
-use ur::cli_common;
+
+use ur::cli_common::{
+    self, cli_diagnostic_text, diagnostic_locale_for_cli, writeln_stderr_line, writeln_stdout_line,
+};
+use ur::diagnostics::{DiagnosticId, DiagnosticLocale};
 
 /// Implement `ur build`: read the manifest, optionally run Sass, then invoke the compiler.
 ///
@@ -17,74 +21,88 @@ use ur::cli_common;
 ///
 /// `verbosity_forward` — leading `-v` / `-vv` / `-verbose` tokens from `ur build` to pass through to `ur-compile`.
 fn build_project(verbosity_forward: &[String]) -> i32 {
-    // Load strict project manifest from the current working directory.
     let cfg = match cli_common::load_ur_manifest_cwd() {
-        Ok(c) => c, // Parsed `ur.toml` is valid.
-        Err(e) => {
-            // Surface manifest errors to the user and abort without compiling.
-            eprintln!("{}", e);
+        Ok(parsed_manifest) => parsed_manifest,
+        Err(manifest_error) => {
+            cli_common::writeln_stderr_display(manifest_error);
             return 1;
         }
     };
-    // Applications and libraries must declare a non-empty entry module in `[build]`.
-    if let Err(e) = cli_common::require_manifest_entry(&cfg) {
-        eprintln!("{}", e);
+    let locale = diagnostic_locale_for_cli(Some(&cfg.package.language));
+    if let Err(entry_error) = cli_common::require_manifest_entry(&cfg) {
+        cli_common::writeln_stderr_display(entry_error);
         return 1;
     }
 
-    // Fields used to build the `ur-compile` argument list.
-    let kind = cfg.package.kind.as_str(); // `"app"` or `"lib"`.
-    let entry = cfg.build.entry.as_str(); // Module stem (matches `entry.ur`).
-    let db = cfg.build.db.as_str(); // Database engine name for `-dbms`.
-                                    // Reject unknown engines early so the user sees a clear manifest error.
-    if let Err(e) = ur::db::validate_manifest_db_engine(db) {
-        eprintln!("error: ur.toml [build].db: {}", e);
+    let kind = cfg.package.kind.as_str();
+    let entry = cfg.build.entry.as_str();
+    let db = cfg.build.db.as_str();
+    if let Err(db_error) = ur::db::validate_manifest_db_engine(db) {
+        let message = cli_diagnostic_text(
+            DiagnosticId::CliManifestDatabaseEngineInvalid,
+            vec![db_error.to_string()],
+            locale,
+        );
+        cli_common::writeln_stderr_display(message);
         return 1;
     }
-    let cc = cfg.build.ccompiler.as_str(); // Optional C compiler override.
-    let is_lib = cli_common::is_lib_project(kind); // Libraries type-check only (`-tc`).
-    let boot = cfg.build.boot; // Static/bootstrapped link mode when true.
-    let scss = cfg.style.as_ref().and_then(|s| s.scss.as_deref()); // Optional SCSS source path.
-    let css = cfg.style.as_ref().and_then(|s| s.css.as_deref()); // Matching CSS output path.
+    let cc = cfg.build.ccompiler.as_str();
+    let is_lib = cli_common::is_lib_project(kind);
+    let boot = cfg.build.boot;
+    let scss = cfg
+        .style
+        .as_ref()
+        .and_then(|style_section| style_section.scss.as_deref());
+    let css = cfg
+        .style
+        .as_ref()
+        .and_then(|style_section| style_section.css.as_deref());
 
-    // When both style paths exist and a Sass implementation is available, regenerate CSS before compile.
     if let (Some(scss_path), Some(css_path)) = (scss, css) {
         if cli_common::has_sass_or_sassc() {
-            // Prefer `sass` (Dart Sass) when `which sass` succeeds.
             let has_sass = std::process::Command::new("which")
                 .arg("sass")
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
                 .status()
-                .is_ok_and(|s| s.success());
-            println!("  Compiling SCSS...");
-            // Sass CLI expects `input:output` for a single build command.
+                .is_ok_and(|status| status.success());
+            let scss_line =
+                cli_diagnostic_text(DiagnosticId::CliOrchestratorScssCompiling, vec![], locale);
+            writeln_stdout_line(&scss_line);
             let sass_arg = format!("{}:{}", scss_path, css_path);
             let status = if has_sass {
                 std::process::Command::new("sass")
                     .args([sass_arg.as_str(), "--no-source-map", "--style=expanded"])
                     .status()
             } else {
-                // Fall back to `sassc` (libsass wrapper) with separate input and output paths.
                 std::process::Command::new("sassc")
                     .args([scss_path, css_path])
                     .status()
             };
             if !cli_common::command_succeeded(&status) {
-                eprintln!("error: SCSS compilation failed");
+                let err =
+                    cli_diagnostic_text(DiagnosticId::CliScssCompilationFailed, vec![], locale);
+                cli_common::writeln_stderr_display(err);
                 return 1;
             }
         }
     }
 
-    // Inform the user whether we emit a full app binary or stop after type-check.
-    println!(
-        "  {} {}...",
-        if is_lib { "Type-checking" } else { "Building" },
-        entry
-    );
+    let progress = if is_lib {
+        cli_diagnostic_text(
+            DiagnosticId::CliOrchestratorTypeCheckingLib,
+            vec![entry.to_string()],
+            locale,
+        )
+    } else {
+        cli_diagnostic_text(
+            DiagnosticId::CliOrchestratorBuildingApp,
+            vec![entry.to_string()],
+            locale,
+        )
+    };
+    writeln_stdout_line(&progress);
 
-    // Assemble `ur-compile` argv: optional `-ccompiler`, optional `-boot`, then project-specific tail.
     let mut args: Vec<String> = vec![];
     if cli_common::should_add_ccompiler(cc) {
         args.extend(["-ccompiler".to_string(), cc.to_string()]);
@@ -93,10 +111,8 @@ fn build_project(verbosity_forward: &[String]) -> i32 {
         args.push("-boot".to_string());
     }
     if is_lib {
-        // Library projects only run the compiler through type-checking.
         args.extend(["-tc".to_string(), entry.to_string()]);
     } else {
-        // Application projects pass database and SQL output paths inferred from the entry name.
         args.extend([
             "-dbms".to_string(),
             db.to_string(),
@@ -109,20 +125,22 @@ fn build_project(verbosity_forward: &[String]) -> i32 {
     }
 
     args.extend(verbosity_forward.iter().cloned());
-    // Delegate to the real compiler binary on `PATH`.
     cli_common::exec_peer_bin("ur-compile", &args)
 }
 
-/// Print the built-in subcommand summary to standard output.
+/// Print localized orchestrator help to standard output (compiler tail follows same catalog).
 ///
-/// Lines come from [`cli_common::UR_ORCHESTRATOR_USAGE_LINES`]. Compiler flags are documented via `ur-compile -help`.
-fn print_usage() {
-    println!("usage:");
-    for line in cli_common::UR_ORCHESTRATOR_USAGE_LINES {
-        println!("{}", line);
+/// `locale` drives which template table [`cli_diagnostic_text`] selects.
+fn print_orchestrator_help(locale: DiagnosticLocale) {
+    let usage_heading = cli_diagnostic_text(DiagnosticId::CliUsageHeading, vec![], locale);
+    writeln_stdout_line(&usage_heading);
+    let body = cli_diagnostic_text(DiagnosticId::CliOrchestratorUsageLines, vec![], locale);
+    for line in body.lines() {
+        writeln_stdout_line(line);
     }
-    println!();
-    println!("Run 'ur -help' for compiler flag help (via ur-compile).");
+    writeln_stdout_line("");
+    let footer = cli_diagnostic_text(DiagnosticId::CliOrchestratorUsageMoreHelp, vec![], locale);
+    writeln_stdout_line(&footer);
 }
 
 /// Dispatch argv after the program name: run a helper binary or treat the tail as a compiler invocation.
@@ -130,15 +148,22 @@ fn print_usage() {
 /// `args` is the command-line slice without `argv[0]`; the first token picks the subcommand.
 /// Returns the child exit status, or `1` for usage errors. Unknown first tokens are forwarded to `ur-compile` (legacy `ur Project` style).
 fn dispatch(args: &[String]) -> i32 {
-    match args.first().map(|s| s.as_str()) {
+    let default_locale = diagnostic_locale_for_cli(None);
+    match args.first().map(|token| token.as_str()) {
         None => {
-            // No subcommand: print minimal usage on stderr.
-            eprintln!("usage: ur <command> [args...]");
-            eprintln!("Run 'ur -help' for more information.");
+            let missing = cli_diagnostic_text(
+                DiagnosticId::CliDispatchMissingSubcommand,
+                vec![],
+                default_locale,
+            );
+            writeln_stderr_line(&missing);
+            let hint =
+                cli_diagnostic_text(DiagnosticId::CliDispatchRunHelpHint, vec![], default_locale);
+            writeln_stderr_line(&hint);
             1
         }
         Some("-h") | Some("--help") => {
-            print_usage();
+            print_orchestrator_help(default_locale);
             0
         }
         Some("new") => {
@@ -167,7 +192,6 @@ fn dispatch(args: &[String]) -> i32 {
             cli_common::exec_peer_bin("ur-debugger", &rest)
         }
         Some(_) => {
-            // Treat as compiler invocation: forward full argv tail unchanged.
             let forwarded: Vec<String> = args.to_vec();
             cli_common::exec_peer_bin("ur-compile", &forwarded)
         }

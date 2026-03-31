@@ -1343,9 +1343,13 @@ fn reduce_node(env: &Env, e: Exp, span: &Span, ctx: &ReduceCtx, settings: &Setti
                 let impure_arg = impure_ctx(env, &arg, ctx, settings);
                 let cf = count_free(0, &body);
                 let multi_use = !ctx.full_mode && cf > 1;
-                eprintln!(
-                    "[beta] x={} impure_arg={} cf={} multi_use={} full_mode={}",
-                    x, impure_arg, cf, multi_use, ctx.full_mode
+                tracing::debug!(
+                    variable = %x,
+                    impure_arg,
+                    free_under_lambda = cf,
+                    multi_use,
+                    full_mode = ctx.full_mode,
+                    "mono_reduce beta-reduction decision"
                 );
                 if impure_arg || multi_use {
                     // Too many uses or arg is impure: use ELet instead of substitution

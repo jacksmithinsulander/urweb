@@ -1,7 +1,8 @@
 //! Exercise `ur-lsp` over JSON-RPC so LSP handlers cannot be stubbed out silently.
 
+mod common;
+
 use std::io::{Read, Write};
-use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::thread;
@@ -19,24 +20,7 @@ const LSP_RPC_DEADLINE: Duration = Duration::from_secs(5);
 
 const SMOKE_DOC_URI: &str = "file:///tmp/ur-lsp-smoke.ur";
 
-fn cargo_bin(name: &str) -> PathBuf {
-    let underscored = name.replace('-', "_");
-    let key = format!("CARGO_BIN_EXE_{underscored}");
-    if let Some(p) = std::env::var_os(&key) {
-        return PathBuf::from(p);
-    }
-    let profile = std::env::var("PROFILE").unwrap_or_else(|_| "debug".into());
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("target")
-        .join(&profile)
-        .join(name);
-    assert!(
-        path.exists(),
-        "missing binary {name}: set {key} or build with cargo test — looked for {:?}",
-        path
-    );
-    path
-}
+use common::ur_package_binary as cargo_bin;
 
 fn write_msg(stdin: &mut impl Write, body: &Value) {
     let payload = serde_json::to_vec(body).expect("serialize json");

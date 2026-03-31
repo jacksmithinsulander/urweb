@@ -3,7 +3,9 @@
 //! Package specs are uniform resource locators or `author/repo` shorthand (implicit `https://github.com/`).
 
 use std::process;
-use ur::cli_common;
+
+use ur::cli_common::{self, cli_diagnostic_text, diagnostic_locale_for_cli, writeln_stdout_line};
+use ur::diagnostics::DiagnosticId;
 
 /// Clone `spec` as a shallow Git submodule under `packages/<repo-leaf>` and print `.urp` hints.
 ///
@@ -11,19 +13,16 @@ use ur::cli_common;
 /// Returns `0` on success or if already present, `1` when `ur.toml` is missing or Git fails.
 /// Prints a suggested `library` line for the project `.urp` file.
 fn install_package(spec: &str) -> i32 {
-    // Last path segment of `author/repo` for the local directory name.
     let repo_name = cli_common::package_spec_repo_leaf(spec);
+    let locale = diagnostic_locale_for_cli(None);
 
-    // Requires an existing `ur.toml` so dependency tracking stays project-relative.
-    if let Err(e) = cli_common::ensure_ur_toml_present_for_install() {
-        eprintln!("{}", e);
+    if let Err(manifest_error) = cli_common::ensure_ur_toml_present_for_install() {
+        ur::cli_common::writeln_stderr_display(manifest_error);
         return 1;
     }
 
-    // Ensure parent directory exists for submodule checkout.
     let _ = std::fs::create_dir("packages");
 
-    // Allow full `git@` / `https:` URLs; otherwise assume github.com.
     let github_spec = if spec.contains(':') {
         spec.to_string()
     } else {
@@ -32,24 +31,40 @@ fn install_package(spec: &str) -> i32 {
 
     let pkg_dir = format!("packages/{}", repo_name);
     if cli_common::file_exists(&pkg_dir) {
-        println!("Package '{}' already installed at {}", repo_name, pkg_dir);
+        let msg = cli_diagnostic_text(
+            DiagnosticId::CliInstallPackagePresent,
+            vec![repo_name.to_string(), pkg_dir],
+            locale,
+        );
+        writeln_stdout_line(&msg);
         return 0;
     }
 
-    println!("Installing {} ...", spec);
+    let progress = cli_diagnostic_text(
+        DiagnosticId::CliInstallInProgress,
+        vec![spec.to_string()],
+        locale,
+    );
+    writeln_stdout_line(&progress);
     let status = std::process::Command::new("git")
         .args(["submodule", "add", "--depth=1", &github_spec, &pkg_dir])
         .status();
 
     if !cli_common::command_succeeded(&status) {
-        eprintln!("error: git submodule add failed");
+        let err = cli_diagnostic_text(DiagnosticId::CliInstallGitFailed, vec![], locale);
+        ur::cli_common::writeln_stderr_display(err);
         return 1;
     }
 
-    // Suggest a `library` line pointing at the package’s `.urp` layout convention.
     let lib_urp = format!("packages/{}/{}", repo_name, repo_name);
-    println!("Installed {} at {}", spec, pkg_dir);
-    println!("Add to your .urp:  library {}", lib_urp);
+    let done = cli_diagnostic_text(
+        DiagnosticId::CliInstallSucceeded,
+        vec![spec.to_string(), pkg_dir],
+        locale,
+    );
+    writeln_stdout_line(&done);
+    let hint = cli_diagnostic_text(DiagnosticId::CliInstallUrpHint, vec![lib_urp], locale);
+    writeln_stdout_line(&hint);
     0
 }
 
@@ -58,9 +73,11 @@ fn install_package(spec: &str) -> i32 {
 /// Exits with `1` when the spec is missing.
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    let spec = args.get(1).map(|s| s.as_str()).unwrap_or("");
+    let spec = args.get(1).map(|token| token.as_str()).unwrap_or("");
     if spec.is_empty() {
-        eprintln!("usage: ur-install <author/repo>");
+        let locale = diagnostic_locale_for_cli(None);
+        let usage = cli_diagnostic_text(DiagnosticId::CliInstallUsage, vec![], locale);
+        ur::cli_common::writeln_stderr_display(usage);
         process::exit(1);
     }
     let code = install_package(spec);

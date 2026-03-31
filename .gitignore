@@ -79,6 +79,7 @@ vendor/BearSSL/build/
 
 # Cargo / Rust
 target/
+target-smoke/
 
 # cargo-mutants (mutation testing)
 mutants.out/

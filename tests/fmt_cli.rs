@@ -1,25 +1,12 @@
 //! Integration tests for `ur-fmt` (`src/bin/ur_fmt.rs`).
 
+mod common;
+
 use std::fs;
-use std::path::PathBuf;
 use std::process::Command;
 
+use common::ur_package_binary as cargo_bin;
 use tempfile::tempdir;
-
-fn cargo_bin(name: &str) -> PathBuf {
-    let underscored = name.replace('-', "_");
-    let key = format!("CARGO_BIN_EXE_{underscored}");
-    if let Some(p) = std::env::var_os(&key) {
-        return PathBuf::from(p);
-    }
-    let profile = std::env::var("PROFILE").unwrap_or_else(|_| "debug".into());
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("target")
-        .join(&profile)
-        .join(name);
-    assert!(path.exists(), "missing {name}: set {key} — {:?}", path);
-    path
-}
 
 #[test]
 fn ur_fmt_parse_failure_prints_error_detail() {

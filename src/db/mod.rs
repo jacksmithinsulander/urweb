@@ -133,17 +133,31 @@ pub fn reconcile_ur_manifest_with_resolved_db(
     if !manifest_path.exists() {
         return Ok(());
     }
-    let toml = std::fs::read_to_string(&manifest_path)
-        .map_err(|e| format!("error reading {}: {}", manifest_path.display(), e))?;
-    let cfg = crate::cli_common::parse_ur_toml_strict(&toml)
-        .map_err(|e| format!("{}: {}", manifest_path.display(), e))?;
+    let locale = crate::cli_common::diagnostic_locale_from_manifest_path(&manifest_path);
+    let toml = std::fs::read_to_string(&manifest_path).map_err(|read_error| {
+        crate::cli_common::cli_diagnostic_text(
+            crate::diagnostics::DiagnosticId::CliFileReadFailed,
+            vec![manifest_path.display().to_string(), read_error.to_string()],
+            locale,
+        )
+    })?;
+    let cfg = crate::cli_common::parse_ur_toml_strict(&toml).map_err(|parse_detail| {
+        crate::cli_common::cli_diagnostic_text(
+            crate::diagnostics::DiagnosticId::CliTomlParseAtPathFailed,
+            vec![manifest_path.display().to_string(), parse_detail],
+            locale,
+        )
+    })?;
     let manifest_db = ProjectDb::parse_user_input(cfg.build.db.trim())?;
     let effective = resolved_backend(&settings.db_backend);
     if effective != manifest_db {
-        return Err(format!(
-            "ur.toml [build].db is `{}` but this build resolves to `{}` (-dbms / .urp `dbms` / default). They must match.",
-            manifest_db.canonical_name(),
-            effective.canonical_name(),
+        return Err(crate::cli_common::cli_diagnostic_text(
+            crate::diagnostics::DiagnosticId::CliBuildDatabaseEngineMismatch,
+            vec![
+                manifest_db.canonical_name().to_string(),
+                effective.canonical_name().to_string(),
+            ],
+            locale,
         ));
     }
     Ok(())

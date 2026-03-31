@@ -8,18 +8,21 @@
 //! - Unknown flags: `ur-compile` fails on unknown `-` flags; `ur-fmt` may log a warning and continue.
 //! - Exit codes: `0` means success; `1` usually means failure unless documented (for example `ur-lsp` exits `0` on a clean
 //!   disconnect when [`crate::lsp_support::disconnect_error_exits_clean`] matches).
-//! - `main` style: long-running tools (`ur-lsp`, `ur-debugger`) use [`anyhow::Result`] in `run()`; thin wrappers often return `i32` and use `eprintln!`.
+//! - `main` style: long-running tools (`ur-lsp`, `ur-debugger`) use [`anyhow::Result`] in `run()`; thin wrappers return `i32` and send user-facing lines through [`writeln_stderr_line`] / [`writeln_stderr_display`] (not the `eprintln!` macro).
+//! - Intentional standard output (help text, machine-readable values) uses [`writeln_stdout_line`] / [`writeln_stdout_display`], not the `println!` macro.
 
 use serde::Deserialize;
+use std::io::Write as _;
+
+use crate::diagnostics::{
+    format_diagnostic_payload_for_user, DiagnosticId, DiagnosticLocale, DiagnosticPayload,
+};
 
 /// Relative path to the project manifest (strict Tom’s Obvious, Minimal Language).
 pub const UR_MANIFEST_FILE: &str = "ur.toml";
 
-const UR_MANIFEST_MISSING_ORCHESTRATOR: &str = "ur.toml not found in current directory\n\
-Run 'ur new <name>' to create a project, then 'cd <name> && ur build'";
-
-const UR_MANIFEST_MISSING_FMT: &str =
-    "error: ur.toml not found; run from project directory or specify files";
+/// Optional environment override for diagnostic language when no `ur.toml` `[package] language` is available (`en`, `sv`, `es`).
+pub const URWEB_LANG_ENV: &str = "URWEB_LANG";
 
 /// Lines printed under `usage:` for the `ur` orchestrator (`ur new`, `ur build`, …).
 pub const UR_ORCHESTRATOR_USAGE_LINES: &[&str] = &[
@@ -46,7 +49,8 @@ pub const UR_ORCHESTRATOR_USAGE_LINES: &[&str] = &[
 ///
 /// Missing manifest (orchestrator message), read failure, or invalid Tom's Obvious, Minimal Language (prefixed human-readable `String`).
 pub fn load_ur_manifest_cwd() -> Result<UrTomlStrict, String> {
-    load_ur_manifest_cwd_inner(UR_MANIFEST_MISSING_ORCHESTRATOR)
+    let locale = diagnostic_locale_for_cli(None); // No `[package] language` until the file exists.
+    load_ur_manifest_cwd_inner(DiagnosticId::CliManifestMissingOrchestrator, locale)
 }
 
 /// Like [`load_ur_manifest_cwd`], used when `ur-fmt` discovers files and needs a different missing-file message.
@@ -59,7 +63,8 @@ pub fn load_ur_manifest_cwd() -> Result<UrTomlStrict, String> {
 ///
 /// Same as [`load_ur_manifest_cwd`] but with the formatter-oriented missing-manifest text.
 pub fn load_ur_manifest_cwd_for_fmt_discovery() -> Result<UrTomlStrict, String> {
-    load_ur_manifest_cwd_inner(UR_MANIFEST_MISSING_FMT)
+    let locale = diagnostic_locale_for_cli(None); // Formatter discovery before manifest content is known.
+    load_ur_manifest_cwd_inner(DiagnosticId::CliManifestMissingFmt, locale)
 }
 
 /// Read `ur.toml` if present; otherwise return `missing_msg` as `Err`.
@@ -75,13 +80,27 @@ pub fn load_ur_manifest_cwd_for_fmt_discovery() -> Result<UrTomlStrict, String> 
 /// # Errors
 ///
 /// Missing file (`missing_msg`), I/O while reading, or TOML/serde rejection.
-fn load_ur_manifest_cwd_inner(missing_msg: &str) -> Result<UrTomlStrict, String> {
+fn load_ur_manifest_cwd_inner(
+    missing_manifest_id: DiagnosticId,
+    locale: DiagnosticLocale,
+) -> Result<UrTomlStrict, String> {
     if !file_exists(UR_MANIFEST_FILE) {
-        return Err(missing_msg.to_string());
+        return Err(cli_diagnostic_text(missing_manifest_id, vec![], locale)); // Missing file uses its own catalog id.
     }
-    let toml_content = std::fs::read_to_string(UR_MANIFEST_FILE)
-        .map_err(|e| format!("error reading ur.toml: {}", e))?;
-    parse_ur_toml_strict(&toml_content).map_err(|e| format!("error: ur.toml: {}", e))
+    let toml_content = std::fs::read_to_string(UR_MANIFEST_FILE).map_err(|read_error| {
+        cli_diagnostic_text(
+            DiagnosticId::CliUrTomlReadFailed,
+            vec![read_error.to_string()],
+            locale,
+        )
+    })?;
+    parse_ur_toml_strict(&toml_content).map_err(|parse_detail| {
+        cli_diagnostic_text(
+            DiagnosticId::CliUrTomlParseFailed,
+            vec![parse_detail],
+            locale,
+        )
+    })
 }
 
 /// Require a non-empty `[build] entry` (used by `ur build` and default `ur-fmt` project discovery).
@@ -99,7 +118,12 @@ fn load_ur_manifest_cwd_inner(missing_msg: &str) -> Result<UrTomlStrict, String>
 /// Fixed error string when `entry` is empty.
 pub fn require_manifest_entry(cfg: &UrTomlStrict) -> Result<(), String> {
     if cfg.build.entry.is_empty() {
-        Err("error: ur.toml: [build] entry is required".into())
+        let locale = diagnostic_locale_for_cli(Some(&cfg.package.language)); // Respect project language once manifest is loaded.
+        Err(cli_diagnostic_text(
+            DiagnosticId::CliManifestEntryRequired,
+            vec![],
+            locale,
+        ))
     } else {
         Ok(())
     }
@@ -116,10 +140,147 @@ pub fn require_manifest_entry(cfg: &UrTomlStrict) -> Result<(), String> {
 /// User-facing string when the file is missing.
 pub fn ensure_ur_toml_present_for_install() -> Result<(), String> {
     if !file_exists(UR_MANIFEST_FILE) {
-        Err("error: ur.toml not found; run from project directory".into())
+        let locale = diagnostic_locale_for_cli(None); // Install runs before parsing `ur.toml`.
+        Err(cli_diagnostic_text(
+            DiagnosticId::CliUrTomlMissingInstall,
+            vec![],
+            locale,
+        ))
     } else {
         Ok(())
     }
+}
+
+// ---------------------------------------------------------------------------
+// Standard error (one place for CLI / driver lines; avoids scattered `eprintln!`)
+// ---------------------------------------------------------------------------
+
+/// Writes one complete line to standard error, then a newline; ignores I/O errors (best-effort user feedback).
+///
+/// # Arguments
+///
+/// * `line` — Text for the line (caller supplies any `error:` prefix).
+///
+/// # Returns
+///
+/// Nothing.
+pub fn writeln_stderr_line(line: &str) {
+    let mut lock = std::io::stderr().lock(); // Serialize concurrent stderr writes from this process.
+    let _ = writeln!(lock, "{line}"); // Best-effort: typical failures are broken pipes when user pipes output.
+}
+
+/// Writes [`std::fmt::Display`] to standard error with a trailing newline (for example an [`anyhow::Error`]).
+///
+/// # Arguments
+///
+/// * `message` — Value rendered with default `Display`.
+///
+/// # Returns
+///
+/// Nothing.
+pub fn writeln_stderr_display(message: impl std::fmt::Display) {
+    let mut lock = std::io::stderr().lock(); // Lock stderr once for the whole line.
+    let _ = writeln!(lock, "{message}"); // Ignore `BrokenPipe` and similar when the sink disappears.
+}
+
+/// Writes a blank line to standard error.
+///
+/// # Returns
+///
+/// Nothing.
+pub fn writeln_stderr_blank() {
+    let mut lock = std::io::stderr().lock(); // Single lock for the empty line.
+    let _ = writeln!(lock); // Separates multi-line CLI output visually.
+}
+
+/// Writes one complete line to standard output, then a newline (`println!`-free orchestration).
+///
+/// # Arguments
+///
+/// * `line` — Text to emit (caller controls prefixes and tone).
+///
+/// # Returns
+///
+/// Nothing; pipe failures are ignored.
+pub fn writeln_stdout_line(line: &str) {
+    let mut lock = std::io::stdout().lock(); // Serialize stdout from helper binaries.
+    let _ = writeln!(lock, "{line}"); // User might redirect or close the pipe early.
+}
+
+/// Writes [`std::fmt::Display`] to standard output with a trailing newline.
+///
+/// # Arguments
+///
+/// * `message` — Value rendered with default `Display`.
+///
+/// # Returns
+///
+/// Nothing.
+pub fn writeln_stdout_display(message: impl std::fmt::Display) {
+    let mut lock = std::io::stdout().lock(); // Single lock for one coherent line.
+    let _ = writeln!(lock, "{message}"); // BrokenPipe is acceptable for downstream tools.
+}
+
+/// Resolve [`DiagnosticLocale`] for thin CLI binaries: manifest field wins, then [`URWEB_LANG_ENV`], then English.
+///
+/// # Arguments
+///
+/// * `package_language` — Raw `[package] language` from `ur.toml` when already parsed, else [`None`].
+///
+/// # Returns
+///
+/// Locale parsed from manifest token, environment token, or [`DiagnosticLocale::default`].
+pub fn diagnostic_locale_for_cli(package_language: Option<&str>) -> DiagnosticLocale {
+    if let Some(raw) = package_language {
+        if let Some(parsed) = DiagnosticLocale::parse_manifest_token(raw) {
+            return parsed; // Authoritative when the manifest names a language.
+        }
+    }
+    if let Ok(env_raw) = std::env::var(URWEB_LANG_ENV) {
+        if let Some(parsed) = DiagnosticLocale::parse_manifest_token(&env_raw) {
+            return parsed; // Lets CI or shells pick Swedish/Spanish without `ur.toml`.
+        }
+    }
+    DiagnosticLocale::default() // English when nothing else matches.
+}
+
+/// Read `[package] language` from `manifest_path` when present and valid `ur.toml`; otherwise fall back like [`diagnostic_locale_for_cli`] with [`None`].
+///
+/// # Arguments
+///
+/// * `manifest_path` — Absolute or relative path to `ur.toml`.
+///
+/// # Returns
+///
+/// Locale best inferred from that manifest’s language field, or environment/default.
+pub fn diagnostic_locale_from_manifest_path(manifest_path: &std::path::Path) -> DiagnosticLocale {
+    let Ok(contents) = std::fs::read_to_string(manifest_path) else {
+        return diagnostic_locale_for_cli(None); // Missing or unreadable: env / default only.
+    };
+    let Ok(cfg) = parse_ur_toml_strict(&contents) else {
+        return diagnostic_locale_for_cli(None); // Broken manifest cannot supply language.
+    };
+    diagnostic_locale_for_cli(Some(&cfg.package.language)) // Parsed package wins over env alone.
+}
+
+/// Fill a catalog [`DiagnosticId`] template for terminal or orchestrator text.
+///
+/// # Arguments
+///
+/// * `diagnostic_id` — Stable CLI or compiler catalog entry.
+/// * `arguments` — Positional `{0}` … replacements.
+/// * `locale` — Active [`DiagnosticLocale`].
+///
+/// # Returns
+///
+/// Fully expanded, localized string.
+pub fn cli_diagnostic_text(
+    diagnostic_id: DiagnosticId,
+    arguments: Vec<String>,
+    locale: DiagnosticLocale,
+) -> String {
+    let payload = DiagnosticPayload::new(diagnostic_id, arguments); // Wrap as a single-message payload.
+    format_diagnostic_payload_for_user(&payload, locale) // Same renderer as compiler diagnostics.
 }
 
 /// Run `exe` as found on the user’s `PATH` with `args`, returning the child exit status.
@@ -144,7 +305,13 @@ pub fn exec_peer_bin(exe: &str, args: &[String]) -> i32 {
             }
         }
         Err(_) => {
-            eprintln!("error: {} not found in PATH", exe);
+            let locale = diagnostic_locale_for_cli(None); // No manifest context when peers are missing.
+            let text = cli_diagnostic_text(
+                DiagnosticId::CliPeerBinaryNotFound,
+                vec![exe.to_string()],
+                locale,
+            ); // Catalog copy explains PATH.
+            writeln_stderr_line(&text); // Friendly stderr line without ad-hoc string formatting.
             1
         }
     }
@@ -224,17 +391,26 @@ pub enum ProjectKind {
 /// # Errors
 ///
 /// Descriptive `String` when validation fails.
-pub fn validate_project_name(name: &str) -> Result<(), String> {
+pub fn validate_project_name(name: &str, locale: DiagnosticLocale) -> Result<(), String> {
     if name.is_empty() {
-        return Err("project name cannot be empty".into());
+        return Err(cli_diagnostic_text(
+            DiagnosticId::CliProjectNameEmpty,
+            vec![],
+            locale,
+        ));
     }
     if !name.chars().next().is_some_and(|c| c.is_alphabetic()) {
-        return Err(format!("project name must start with a letter: '{}'", name));
+        return Err(cli_diagnostic_text(
+            DiagnosticId::CliProjectNameMustStartWithLetter,
+            vec![name.to_string()],
+            locale,
+        ));
     }
     if !name.chars().all(|c| c.is_alphanumeric() || c == '_') {
-        return Err(format!(
-            "project name must contain only letters, digits, or underscores: '{}'",
-            name
+        return Err(cli_diagnostic_text(
+            DiagnosticId::CliProjectNameInvalidCharacters,
+            vec![name.to_string()],
+            locale,
         ));
     }
     Ok(())
@@ -654,26 +830,27 @@ pub fn has_sass_or_sassc() -> bool {
 mod tests {
     use super::*;
     use crate::compiler_diagnostics::{lock_for_compile, TEST_CWD_LOCK};
+    use crate::diagnostics::DiagnosticLocale;
 
     #[test]
     fn validate_name_empty() {
-        assert!(validate_project_name("").is_err());
+        assert!(validate_project_name("", DiagnosticLocale::En).is_err());
     }
 
     #[test]
     fn validate_name_starts_with_digit() {
-        assert!(validate_project_name("1foo").is_err());
+        assert!(validate_project_name("1foo", DiagnosticLocale::En).is_err());
     }
 
     #[test]
     fn validate_name_valid() {
-        assert!(validate_project_name("my_app").is_ok());
-        assert!(validate_project_name("Foo123").is_ok());
+        assert!(validate_project_name("my_app", DiagnosticLocale::En).is_ok());
+        assert!(validate_project_name("Foo123", DiagnosticLocale::En).is_ok());
     }
 
     #[test]
     fn validate_name_hyphen_invalid() {
-        assert!(validate_project_name("my-app").is_err());
+        assert!(validate_project_name("my-app", DiagnosticLocale::En).is_err());
     }
 
     #[test]

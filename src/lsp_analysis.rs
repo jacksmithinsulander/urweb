@@ -2,7 +2,9 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::cli_common::cli_diagnostic_text;
 use crate::compiler::{self, elaborate, parse_sources_with_overlay, Job};
+use crate::diagnostics::{DiagnosticId, DiagnosticLocale};
 use crate::elaborated::File as ElabFile;
 use crate::error_types::ErrorReporter;
 use crate::settings::Settings;
@@ -22,6 +24,7 @@ impl ProjectState {
     /// # Arguments
     ///
     /// * `workspace_root` — Folder the editor opened (must contain exactly one `.urp`).
+    /// * `locale` — Diagnostic language for discovery and resolution error text (`ur.toml` / environment).
     ///
     /// # Returns
     ///
@@ -29,11 +32,21 @@ impl ProjectState {
     ///
     /// # Errors
     ///
-    /// Project discovery or resolver failures as `String` (same shapes as batch compile errors).
-    pub fn open(workspace_root: &Path) -> Result<Self, String> {
-        let urp_path = crate::lsp_workspace::discover_unique_urp(workspace_root)?;
-        let (job, settings) = compiler::resolve_project_job_and_settings(&urp_path)
-            .map_err(|e| format!("{}: {e}", urp_path.display()))?;
+    /// Localized project discovery or resolver failures as `String`.
+    pub fn open(workspace_root: &Path, locale: DiagnosticLocale) -> Result<Self, String> {
+        let urp_path = crate::lsp_workspace::discover_unique_urp(workspace_root)
+            .map_err(|discovery_error| discovery_error.to_diagnostic_text(locale))?;
+        let (job, settings) =
+            compiler::resolve_project_job_and_settings(&urp_path).map_err(|resolver_error| {
+                cli_diagnostic_text(
+                    DiagnosticId::CliLspProjectResolveFailed,
+                    vec![
+                        urp_path.display().to_string(),
+                        format!("{resolver_error:#}"),
+                    ],
+                    locale,
+                )
+            })?;
         Ok(ProjectState {
             root: workspace_root.to_path_buf(),
             urp_path,

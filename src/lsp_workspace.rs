@@ -16,6 +16,85 @@ use std::path::{Path, PathBuf};
 
 use lsp_types::{InitializeParams, Uri};
 
+use crate::cli_common::cli_diagnostic_text;
+use crate::diagnostics::{DiagnosticId, DiagnosticLocale};
+
+/// Failed to find exactly one `.urp` in a workspace root after a non-recursive directory scan.
+#[derive(Debug, Clone)]
+pub enum WorkspaceProjectDiscoveryError {
+    /// Reading the workspace directory itself failed (`read_dir`).
+    ReadDir {
+        /// Workspace root that could not be opened for listing.
+        root: PathBuf,
+        /// Operating-system or I/O error detail.
+        detail: String,
+    },
+    /// Reading one directory entry during the scan failed.
+    DirEntry {
+        /// Workspace root being scanned.
+        root: PathBuf,
+        /// Operating-system or I/O error detail.
+        detail: String,
+    },
+    /// No file with extension `.urp` exists directly under the root.
+    NoUrProject {
+        /// Workspace root directory.
+        root: PathBuf,
+    },
+    /// Invariant violation: one match was counted but `pop()` returned nothing.
+    MissingPopulatedPath {
+        /// Workspace root directory.
+        root: PathBuf,
+    },
+    /// More than one `.urp` file exists directly under the root.
+    MultipleUrProjects {
+        /// Workspace root directory.
+        root: PathBuf,
+        /// Every `.urp` path found (non-recursive).
+        paths: Vec<PathBuf>,
+    },
+}
+
+impl WorkspaceProjectDiscoveryError {
+    /// Render this error with [`cli_diagnostic_text`] for `locale` using workspace discovery catalog IDs.
+    pub fn to_diagnostic_text(&self, locale: DiagnosticLocale) -> String {
+        match self {
+            WorkspaceProjectDiscoveryError::ReadDir { root, detail } => cli_diagnostic_text(
+                DiagnosticId::CliLspWorkspaceReadDirFailed,
+                vec![root.display().to_string(), detail.clone()],
+                locale,
+            ),
+            WorkspaceProjectDiscoveryError::DirEntry { root, detail } => cli_diagnostic_text(
+                DiagnosticId::CliLspWorkspaceDirEntryFailed,
+                vec![root.display().to_string(), detail.clone()],
+                locale,
+            ),
+            WorkspaceProjectDiscoveryError::NoUrProject { root } => cli_diagnostic_text(
+                DiagnosticId::CliLspWorkspaceNoUrProjectFile,
+                vec![root.display().to_string()],
+                locale,
+            ),
+            WorkspaceProjectDiscoveryError::MissingPopulatedPath { root } => cli_diagnostic_text(
+                DiagnosticId::CliLspWorkspaceUrpPathInternal,
+                vec![root.display().to_string()],
+                locale,
+            ),
+            WorkspaceProjectDiscoveryError::MultipleUrProjects { root, paths } => {
+                let list = paths
+                    .iter()
+                    .map(|path| path.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                cli_diagnostic_text(
+                    DiagnosticId::CliLspWorkspaceMultipleUrProjectFiles,
+                    vec![root.display().to_string(), list],
+                    locale,
+                )
+            }
+        }
+    }
+}
+
 /// Convert a `file:` Language Server Protocol [`Uri`] to a local path; other schemes yield `None`.
 ///
 /// # Arguments
@@ -91,28 +170,38 @@ pub fn workspace_root_from_initialize(params: &InitializeParams) -> Option<PathB
 ///
 /// # Errors
 ///
-/// Directory read failures, zero matches, or more than one `.urp` file (human-readable `String` messages).
-pub fn discover_unique_urp(root: &Path) -> Result<PathBuf, String> {
+/// [`WorkspaceProjectDiscoveryError`] when the directory cannot be scanned or the `.urp` count is not exactly one.
+pub fn discover_unique_urp(root: &Path) -> Result<PathBuf, WorkspaceProjectDiscoveryError> {
     let mut found: Vec<PathBuf> = Vec::new();
-    let rd = std::fs::read_dir(root).map_err(|e| format!("read workspace directory: {e}"))?;
-    for ent in rd {
-        let ent = ent.map_err(|e| format!("workspace dir entry: {e}"))?;
-        let p = ent.path();
-        if p.extension().and_then(|x| x.to_str()) == Some("urp") {
-            found.push(p);
+    let rd =
+        std::fs::read_dir(root).map_err(|io_error| WorkspaceProjectDiscoveryError::ReadDir {
+            root: root.to_path_buf(),
+            detail: format!("{io_error:#}"),
+        })?;
+    for dir_entry_result in rd {
+        let directory_entry =
+            dir_entry_result.map_err(|io_error| WorkspaceProjectDiscoveryError::DirEntry {
+                root: root.to_path_buf(),
+                detail: format!("{io_error:#}"),
+            })?;
+        let path = directory_entry.path();
+        if path.extension().and_then(|extension| extension.to_str()) == Some("urp") {
+            found.push(path);
         }
     }
     match found.len() {
-        0 => Err(
-            "no .urp file in the workspace root (open a folder that contains exactly one .urp)"
-                .into(),
-        ),
+        0 => Err(WorkspaceProjectDiscoveryError::NoUrProject {
+            root: root.to_path_buf(),
+        }),
         1 => found
             .pop()
-            .ok_or_else(|| "workspace scan: missing .urp path".to_string()),
-        _ => Err(
-            "multiple .urp files in the workspace root; use a folder with a single project".into(),
-        ),
+            .ok_or_else(|| WorkspaceProjectDiscoveryError::MissingPopulatedPath {
+                root: root.to_path_buf(),
+            }),
+        _ => Err(WorkspaceProjectDiscoveryError::MultipleUrProjects {
+            root: root.to_path_buf(),
+            paths: found,
+        }),
     }
 }
 

@@ -28,13 +28,13 @@ use crate::primitives::Prim;
 ///
 /// # Returns
 ///
-/// `Some(explicit file)` when [`ErrorReporter::has_errors`] is false after the pass; otherwise `None`.
+/// `Some(explicit file)` when [`ErrorReporter::has_hard_errors`] is false after the pass; otherwise `None`.
 pub fn explify(file: elab::File, errors: &mut ErrorReporter) -> Option<expl::File> {
     let out: expl::File = file
         .into_iter()
         .filter_map(|d| explify_decl(d, errors))
         .collect();
-    if errors.has_errors() {
+    if errors.has_hard_errors() {
         None
     } else {
         Some(out)

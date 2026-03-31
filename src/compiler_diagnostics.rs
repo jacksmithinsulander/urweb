@@ -6,8 +6,13 @@
 //! boundaries that return [`InternalCompilerError`] (displayed like `anyhow`, and convertible).
 
 use std::fmt::Display;
+use std::io::Write as _;
 use std::ops::{Deref, DerefMut};
 use std::sync::{Mutex, MutexGuard};
+
+use crate::cli_common::{cli_diagnostic_text, diagnostic_locale_for_cli};
+use crate::diagnostics::{DiagnosticId, DiagnosticLocale, DiagnosticPayload};
+use crate::error_types::{format_compile_error_for_terminal, CompileError, ErrorReporter, Span};
 
 #[cfg(test)]
 /// Serializes [`std::env::set_current_dir`] across unit tests (cwd is process-global).
@@ -86,11 +91,14 @@ pub fn lock_for_compile<'a, T>(mutex: &'a Mutex<T>, context: &str) -> CompileLoc
     match mutex.lock() {
         Ok(guard) => CompileLockGuard::Held(guard),
         Err(poisoned) => {
-            eprintln!(
-                "The compiler hit an internal lock problem ({context}).\n\
-                 This usually means an earlier pass panicked while holding this lock.\n\
-                 Try rebuilding from a clean state. If it keeps happening, please report a bug."
-            );
+            let locale = diagnostic_locale_for_cli(None); // Mutex helpers run without a manifest handle.
+            let text = cli_diagnostic_text(
+                DiagnosticId::CompilerInternalLockPoisoned,
+                vec![context.to_string()],
+                locale,
+            ); // Same body as [`format_diagnostic_payload_for_user`] with env/manifest locale.
+            let mut lock = std::io::stderr().lock(); // User-visible stderr for poison recovery.
+            let _ = writeln!(lock, "{text}"); // Matches other catalog-driven stderr lines.
             CompileLockGuard::Held(poisoned.into_inner())
         }
     }
@@ -105,6 +113,32 @@ pub fn internal_compiler_error(context: &str, detail: impl Display) -> InternalC
          This is unexpected — your project may have triggered a compiler bug.\n\
          Please report this with a small example if you can reproduce it."
     ))
+}
+
+/// Record a recoverable internal assumption failure in a Core pass, or print the same catalog message if no reporter is threaded (unit tests and thin wrappers).
+///
+/// # Arguments
+///
+/// * `errors` — Slot holding the active compilation reporter when available (reborrowed across recursive passes).
+/// * `span` — Best-effort source span for the surrounding construct.
+/// * `payload` — Catalog id and template arguments.
+/// * `locale_fallback` — Locale for stderr when `errors` is `None` (use English in tests).
+pub fn report_core_recovery(
+    errors: &mut Option<&mut ErrorReporter>,
+    span: Span,
+    payload: DiagnosticPayload,
+    locale_fallback: DiagnosticLocale,
+) {
+    let compile_error = CompileError::warning_at(span, payload);
+    match errors.as_mut() {
+        Some(reporter) => reporter.report(compile_error),
+        None => {
+            let text = format_compile_error_for_terminal(&compile_error, locale_fallback); // Same shape as [`ErrorReporter::report`].
+            let mut lock = std::io::stderr().lock(); // Fallback when no reporter owns stderr sequencing.
+            let _ = writeln!(lock, "{text}"); // Catalog-formatted warning/recovery line.
+            let _ = writeln!(lock); // Trailing blank line for terminal readability.
+        }
+    }
 }
 
 #[cfg(test)]

@@ -7,6 +7,7 @@ use ur::elaborated::elaboration_errors::{
     compile_error_from_expression_elaboration_error, compile_error_from_kind_elaboration_error,
     ExpressionElaborationError, KindElaborationError,
 };
+use ur::elaborated::{Constructor, Located};
 use ur::error_types::{CompileError, Pos, Span};
 
 /// Build a compact [`Span`] used only to exercise [`CompileError`] rendering.
@@ -146,5 +147,68 @@ fn parse_failure_template_renders_in_en_sv_es() {
             "locale {locale:?} should expand placeholders: {rendered}"
         );
         assert!(rendered.contains("Mod.ur"), "{locale:?}: {rendered}");
+    }
+}
+
+#[test]
+fn incompatible_constructors_diagnostic_uses_pretty_types_not_debug_dump() {
+    let span = sample_span();
+    let left = Located::new(Constructor::Name("int".into()), span.clone());
+    let right = Located::new(Constructor::Name("bool".into()), span.clone());
+    let compile_error = compile_error_from_expression_elaboration_error(
+        &ExpressionElaborationError::IncompatibleConstructors(left, right),
+    );
+    let rendered = compile_error.to_string();
+    assert!(
+        rendered.contains("int") && rendered.contains("bool"),
+        "expected type names in message:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains("Located"),
+        "should not embed `Located` Debug:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains("Constructor::"),
+        "should not embed enum `Debug`:\n{rendered}"
+    );
+}
+
+/// `.urp` soft failures and Core recoveries (catalog 298–301) must render in all shipped locales without raw `{n}` placeholders.
+#[test]
+fn urp_and_core_recovery_templates_render_in_en_sv_es() {
+    let cases: &[(DiagnosticId, Vec<String>)] = &[
+        (
+            DiagnosticId::UrpLibraryProjectParseFailed,
+            vec!["nested.urp".into(), "permission denied".into()],
+        ),
+        (
+            DiagnosticId::UrpUnrecognizedDirective,
+            vec!["fooDirective".into()],
+        ),
+        (
+            DiagnosticId::CoreEspecializeMissingSpecializationMetadata,
+            vec!["name_id=42".into()],
+        ),
+        (
+            DiagnosticId::CoreLocalReductionStaticCaseArmMissing,
+            vec!["Example.ur:4:2-4:8".into()],
+        ),
+    ];
+    for (id, args) in cases {
+        let payload = DiagnosticPayload::new(*id, args.clone());
+        for locale in [
+            DiagnosticLocale::En,
+            DiagnosticLocale::Sv,
+            DiagnosticLocale::Es,
+        ] {
+            let rendered = ur::diagnostics::format_diagnostic_payload_for_user(&payload, locale);
+            for placeholder_index in 0..args.len() {
+                let needle = format!("{{{placeholder_index}}}");
+                assert!(
+                    !rendered.contains(&needle),
+                    "id {id:?} locale {locale:?} must expand {needle}, got: {rendered}"
+                );
+            }
+        }
     }
 }

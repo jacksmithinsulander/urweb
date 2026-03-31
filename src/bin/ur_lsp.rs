@@ -40,6 +40,10 @@ use lsp_types::{
     TypeDefinitionProviderCapability, Uri, WorkDoneProgressOptions, WorkspaceSymbolParams,
 };
 
+use ur::cli_common::{
+    self, cli_diagnostic_text, diagnostic_locale_for_cli, diagnostic_locale_from_manifest_path,
+};
+use ur::diagnostics::DiagnosticId;
 use ur::lsp_analysis::{AnalysisSnapshot, ProjectState};
 use ur::lsp_semantics;
 use ur::lsp_workspace::{
@@ -55,12 +59,18 @@ use ur::lsp_workspace::{
 ///
 /// Does not return: calls [`std::process::exit`] with `0` or `1`.
 fn main() {
-    if let Err(e) = run() {
-        let msg = e.to_string();
-        if ur::lsp_support::disconnect_error_exits_clean(&msg) {
+    if let Err(run_error) = run() {
+        let disconnect_message = run_error.to_string();
+        if ur::lsp_support::disconnect_error_exits_clean(&disconnect_message) {
             std::process::exit(0);
         }
-        eprintln!("ur-lsp error: {e}");
+        let locale = diagnostic_locale_for_cli(None);
+        let text = cli_diagnostic_text(
+            DiagnosticId::CliLspRunFailed,
+            vec![format!("{run_error:#}")],
+            locale,
+        );
+        cli_common::writeln_stderr_display(text);
         std::process::exit(1);
     }
 }
@@ -112,19 +122,33 @@ fn run() -> Result<()> {
         serde_json::from_value(init_value).unwrap_or_else(|_| InitializeParams::default());
 
     let workspace_root = workspace_root_from_initialize(&init_params);
+    let lsp_locale = workspace_root
+        .as_ref()
+        .map(|root| diagnostic_locale_from_manifest_path(&root.join("ur.toml")))
+        .unwrap_or_else(|| diagnostic_locale_for_cli(None));
     let project = workspace_root
         .as_ref()
-        .and_then(|r| match ProjectState::open(r) {
+        .and_then(|r| match ProjectState::open(r, lsp_locale) {
             Ok(p) => Some(p),
             Err(e) => {
-                eprintln!("ur-lsp: project load: {e}");
+                let msg = cli_diagnostic_text(
+                    DiagnosticId::CliLspProjectOpenFailed,
+                    vec![format!("{e:#}")],
+                    lsp_locale,
+                );
+                cli_common::writeln_stderr_display(msg);
                 None
             }
         });
 
     if let Some(ref root) = workspace_root {
         if let Err(e) = std::env::set_current_dir(root) {
-            eprintln!("ur-lsp: set_current_dir({}): {e}", root.display());
+            let msg = cli_diagnostic_text(
+                DiagnosticId::CliLspWorkspaceChdirFailed,
+                vec![root.display().to_string(), format!("{e:#}")],
+                lsp_locale,
+            );
+            cli_common::writeln_stderr_display(msg);
         }
     }
 
@@ -838,11 +862,12 @@ fn handle_request(
         return Ok(());
     }
 
+    // JSON-RPC error `message` is conventionally English for LSP clients; not localized like stderr catalog text.
     connection.sender.send(
         Response::new_err(
             id,
             ErrorCode::MethodNotFound as i32,
-            format!("unknown method: {method}"),
+            format!("Method not found: {method}"),
         )
         .into(),
     )?;

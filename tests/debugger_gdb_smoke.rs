@@ -2,6 +2,8 @@
 //!
 //! Requires `gdb` on PATH and a trivial debug binary (`target/debug/deeptest`).
 
+mod common;
+
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -84,14 +86,12 @@ fn dap_initialize_and_launch_smoke() {
         return;
     }
     if !gdb_available() {
-        eprintln!("skip debugger_gdb_smoke: gdb not found");
+        ur::cli_common::writeln_stderr_line("skip debugger_gdb_smoke: gdb not found");
         return;
     }
 
     let exe = deeptest_executable();
-    let ur_dbg = std::env::var_os("CARGO_BIN_EXE_ur_debugger").expect(
-        "run as `cargo test --test debugger_gdb_smoke` so Cargo sets CARGO_BIN_EXE_ur_debugger",
-    );
+    let ur_dbg = common::ur_package_binary("ur-debugger");
     let mut child = Command::new(ur_dbg)
         .arg("--dap")
         .stdin(Stdio::piped())

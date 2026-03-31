@@ -17,10 +17,13 @@
 //! compiler’s [`ErrorReporter`] prints with [`format_compile_error_for_terminal`] when stderr is a TTY
 //! and [`NO_COLOR`](https://no-color.org/) is unset. **CLI tools** (for example the debugger) can use
 //! [`format_tool_diagnostic_banner_and_body`] when the failure is not a [`CompileError`].
+//! [`CompileError`]'s [`std::fmt::Display`] delegates to [`format_compile_error_for_terminal`] with
+//! [`crate::cli_common::diagnostic_locale_for_cli`] so default printing matches the catalog + locale story.
 
 use std::fmt;
 use std::fmt::Write as _;
 use std::io::IsTerminal as _;
+use std::io::Write as _;
 
 use crate::diagnostics::{
     format_diagnostic_payload_for_user, DiagnosticId, DiagnosticLocale, DiagnosticPayload,
@@ -576,68 +579,12 @@ fn write_plain_diagnostic<W: fmt::Write>(
 }
 
 impl fmt::Display for CompileError {
-    /// Renders English ([`DiagnosticLocale::En`]); use [`format_compile_error_for_user`] for other locales.
+    /// Renders with [`format_compile_error_for_terminal`] and [`crate::cli_common::diagnostic_locale_for_cli`]
+    /// (environment `URWEB_LANG`; project `ur.toml` applies once cwd/manifest loading has run).
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let locale = DiagnosticLocale::En;
-        let localized = self.localized_body(locale);
-        match self {
-            CompileError::Plain(_) => {
-                write_plain_diagnostic(formatter, "ERROR", localized.as_str())
-            }
-            CompileError::AtSpan { span, .. } => {
-                write_located_diagnostic(formatter, "ERROR", span, localized.as_str())
-            }
-            CompileError::ParseError { span, .. } => {
-                write_located_diagnostic(formatter, "PARSE", span, localized.as_str())
-            }
-            CompileError::TypeError { span, .. } => {
-                write_located_diagnostic(formatter, "TYPE", span, localized.as_str())
-            }
-            CompileError::SqlError { span, .. } => {
-                write_located_diagnostic(formatter, "SQL", span, localized.as_str())
-            }
-            CompileError::XmlError { span, .. } => {
-                write_located_diagnostic(formatter, "XML", span, localized.as_str())
-            }
-            CompileError::WarningAt { span, .. } => {
-                let (main_text, hint) = split_message_and_hint(localized.as_str());
-                let banner_suffix = if span.file.is_empty() {
-                    String::new()
-                } else {
-                    span.file.clone()
-                };
-                writeln!(
-                    formatter,
-                    "{}",
-                    format_diagnostic_banner_line("WARNING", banner_suffix.as_str())
-                )?;
-                writeln!(formatter)?;
-                write_wrapped_explanation(formatter, main_text)?;
-                writeln!(formatter)?;
-                writeln!(formatter)?;
-                writeln!(formatter, "    --> {}", span)?;
-                if let Some(hint_text) = hint {
-                    writeln!(formatter)?;
-                    writeln!(formatter, "Hint: {}", hint_text)?;
-                }
-                Ok(())
-            }
-            CompileError::Io(io_error) => {
-                writeln!(formatter, "{}", format_diagnostic_banner_line("IO", ""))?;
-                writeln!(formatter)?;
-                let intro = format_diagnostic_payload_for_user(
-                    &DiagnosticPayload::new(
-                        DiagnosticId::IoSomethingWrongReadingWriting,
-                        Vec::new(),
-                    ),
-                    locale,
-                );
-                writeln!(formatter, "{intro}")?;
-                writeln!(formatter)?;
-                writeln!(formatter, "    {}", io_error)?;
-                Ok(())
-            }
-        }
+        let locale = crate::cli_common::diagnostic_locale_for_cli(None);
+        let localized = format_compile_error_for_terminal(self, locale);
+        write!(formatter, "{localized}")
     }
 }
 
@@ -1158,11 +1105,10 @@ impl ErrorReporter {
     /// Store `error` and optionally print it immediately.
     pub fn report(&mut self, error: CompileError) {
         if self.eprint {
-            eprintln!(
-                "{}",
-                format_compile_error_for_terminal(&error, self.diagnostic_locale)
-            );
-            eprintln!();
+            let rendered = format_compile_error_for_terminal(&error, self.diagnostic_locale); // Localized banner + body.
+            let mut stderr_lock = std::io::stderr().lock(); // Avoid interleaving with other stderr users.
+            let _ = writeln!(stderr_lock, "{rendered}"); // Primary diagnostic block.
+            let _ = writeln!(stderr_lock); // Blank line before the next stderr message.
         }
         self.errors.push(error);
     }
@@ -1263,6 +1209,17 @@ impl ErrorReporter {
     /// Whether [`ErrorReporter::errors`] is non-empty.
     pub fn has_errors(&self) -> bool {
         !self.errors.is_empty()
+    }
+
+    /// `true` when compilation should stop: at least one non-warning diagnostic was reported.
+    ///
+    /// # Returns
+    ///
+    /// Whether [`ErrorReporter::errors`] contains any entry other than [`CompileError::WarningAt`].
+    pub fn has_hard_errors(&self) -> bool {
+        self.errors
+            .iter()
+            .any(|entry| !matches!(entry, CompileError::WarningAt { .. }))
     }
 
     /// Clear accumulated diagnostics (tests and incremental analysis).
@@ -1438,6 +1395,20 @@ mod tests {
     }
 
     #[test]
+    fn error_reporter_warning_at_does_not_count_as_hard_error() {
+        let mut reporter = ErrorReporter::new_silent();
+        reporter.report(CompileError::warning_at(
+            Span::dummy(),
+            DiagnosticPayload::new(DiagnosticId::MutationTestingBadPlaceholder, vec![]),
+        ));
+        assert!(reporter.has_errors());
+        assert!(
+            !reporter.has_hard_errors(),
+            "warnings alone must not trigger hard-error gates"
+        );
+    }
+
+    #[test]
     fn compile_error_at_with_hint_renders_hint_section() {
         let span = Span {
             file: "Mod.ur".to_string(),
@@ -1567,28 +1538,46 @@ mod tests {
     }
 
     #[test]
-    fn format_compile_error_for_user_matches_display() {
+    fn format_compile_error_for_user_matches_forced_plain_terminal_path() {
         let e = CompileError::Plain(DiagnosticPayload::new(
             DiagnosticId::MutationTestingBadPlaceholder,
             vec![],
         ));
+        let locale = crate::cli_common::diagnostic_locale_for_cli(None);
         assert_eq!(
-            format_compile_error_for_user(&e, DiagnosticLocale::En),
-            e.to_string()
+            format_compile_error_for_user(&e, locale),
+            format_compile_error_for_terminal_test(&e, false, locale),
+            "`Display` may add ANSI when stderr is a TTY; plain TTY path must match LSP/user text"
         );
     }
 
     #[test]
-    fn format_compile_error_for_terminal_plain_mode_matches_display() {
+    fn format_compile_error_for_terminal_plain_mode_matches_user_text() {
         let e = CompileError::type_at_with_hint(
             Span::dummy(),
             DiagnosticPayload::new(DiagnosticId::MutationTestingBadPlaceholder, vec![]),
             DiagnosticId::HintParseUrSyntax,
             vec![],
         );
+        let locale = crate::cli_common::diagnostic_locale_for_cli(None);
         assert_eq!(
-            format_compile_error_for_terminal_test(&e, false, DiagnosticLocale::En),
-            e.to_string()
+            format_compile_error_for_terminal_test(&e, false, locale),
+            format_compile_error_for_user(&e, locale),
+        );
+    }
+
+    /// [`CompileError`]'s [`std::fmt::Display`] must stay an alias for [`format_compile_error_for_terminal`].
+    #[test]
+    fn compile_error_display_matches_format_compile_error_for_terminal() {
+        let e = CompileError::Plain(DiagnosticPayload::new(
+            DiagnosticId::MutationTestingBadPlaceholder,
+            vec![],
+        ));
+        let locale = crate::cli_common::diagnostic_locale_for_cli(None);
+        assert_eq!(
+            e.to_string(),
+            format_compile_error_for_terminal(&e, locale),
+            "`fmt::Display` delegates to `format_compile_error_for_terminal` with CLI locale"
         );
     }
 

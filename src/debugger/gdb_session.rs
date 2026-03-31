@@ -6,7 +6,10 @@ use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, Result};
+
+use super::diagnostic_locale::debugger_diagnostic_text;
+use crate::diagnostics::DiagnosticId;
 
 use super::dap_shared::LoadedSourceNotifier;
 use super::mi_parse::{
@@ -47,9 +50,19 @@ impl GdbSession {
         } else {
             child.arg("--interpreter=mi3");
         }
-        let mut child = child
-            .spawn()
-            .with_context(|| format!("failed to spawn debugger '{exe}' ({mi_mode})"))?;
+        let mut child = child.spawn().map_err(|spawn_error| {
+            anyhow!(
+                "{}",
+                debugger_diagnostic_text(
+                    DiagnosticId::CliDebuggerSpawnMiBackendFailed,
+                    vec![
+                        exe.to_string(),
+                        mi_mode.to_string(),
+                        spawn_error.to_string(),
+                    ],
+                )
+            )
+        })?;
         let stdin = child.stdin.take().unwrap();
         let stdout = child.stdout.take().unwrap();
         let stderr = child.stderr.take().unwrap();
@@ -106,12 +119,22 @@ impl GdbSession {
                     }
                     return Ok(l);
                 }
-                Some(GdbLine::Eof) => return Err(anyhow!("GDB stdout closed")),
+                Some(GdbLine::Eof) => {
+                    return Err(anyhow!(
+                        "{}",
+                        debugger_diagnostic_text(DiagnosticId::CliDebuggerGdbStdoutClosed, vec![])
+                    ));
+                }
                 None => {
-                    guard = self
-                        .line_cv
-                        .wait(guard)
-                        .map_err(|_| anyhow!("GDB line queue mutex poisoned"))?;
+                    guard = self.line_cv.wait(guard).map_err(|_| {
+                        anyhow!(
+                            "{}",
+                            debugger_diagnostic_text(
+                                DiagnosticId::CliDebuggerGdbLineQueueMutexPoisoned,
+                                vec![]
+                            )
+                        )
+                    })?;
                 }
             }
         }
@@ -145,7 +168,13 @@ impl GdbSession {
                     payload: pl,
                 }) if tok == token => {
                     let msg = mi_get_str(pl, "msg").unwrap_or("GDB/MI error");
-                    return Err(anyhow!("{msg}"));
+                    return Err(anyhow!(
+                        "{}",
+                        debugger_diagnostic_text(
+                            DiagnosticId::CliDebuggerGdbMiReported,
+                            vec![msg.to_string()],
+                        )
+                    ));
                 }
                 Some(MiRecord::Result {
                     token: tok,
@@ -190,7 +219,13 @@ impl GdbSession {
                     payload: pl,
                 }) if tok == t => {
                     let msg = mi_get_str(pl, "msg").unwrap_or("GDB/MI error");
-                    return Err(anyhow!("{msg}"));
+                    return Err(anyhow!(
+                        "{}",
+                        debugger_diagnostic_text(
+                            DiagnosticId::CliDebuggerGdbMiReported,
+                            vec![msg.to_string()],
+                        )
+                    ));
                 }
                 Some(MiRecord::ExecAsync {
                     class: "running", ..
@@ -387,7 +422,13 @@ impl GdbSession {
                     payload: pl,
                 }) if tok == t => {
                     let msg = mi_get_str(pl, "msg").unwrap_or("GDB/MI error");
-                    return Err(anyhow!("{msg}"));
+                    return Err(anyhow!(
+                        "{}",
+                        debugger_diagnostic_text(
+                            DiagnosticId::CliDebuggerGdbMiReported,
+                            vec![msg.to_string()],
+                        )
+                    ));
                 }
                 Some(MiRecord::Result {
                     token: tok,
@@ -424,7 +465,13 @@ impl GdbSession {
     /// Assign to a variable in the current stack frame (DAP `setVariable`).
     pub fn set_variable(&mut self, thread: u64, frame: u32, name: &str, value: &str) -> Result<()> {
         if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
-            return Err(anyhow!("setVariable name must be a simple C identifier"));
+            return Err(anyhow!(
+                "{}",
+                debugger_diagnostic_text(
+                    DiagnosticId::CliDebuggerSetVariableNameNotSimpleCIdentifier,
+                    vec![],
+                )
+            ));
         }
         self.thread_select(thread)?;
         self.mi_simple(&format!("-stack-select-frame {frame}"))?;

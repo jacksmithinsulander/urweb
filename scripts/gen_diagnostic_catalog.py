@@ -134,7 +134,7 @@ add("TypeHoleFoundInternal", "TYPE HOLE (internal)\n\nThe elaborator left a type
 
 # Batch 2: optional file keeps the main script readable.
 _SCRIPTS = Path(__file__).resolve().parent
-for _extra in ("_catalog_batch2.py", "_catalog_rest.py"):
+for _extra in ("_catalog_batch2.py", "_catalog_rest.py", "_catalog_post_cjrize.py", "_catalog_cli.py"):
     _path = _SCRIPTS / _extra
     if _path.is_file():
         exec(

@@ -17,6 +17,10 @@ use crate::elaborated::{
     LocatedConstructor, LocatedDeclaration, LocatedExpression, LocatedKind, LocatedPattern,
     LocatedSignature, LocatedSignatureItem,
 };
+use crate::elaborated::type_display::{
+    format_constructor, format_expression, format_kind, format_pattern, format_signature,
+    format_signature_item,
+};
 use crate::error_types::{CompileError, Span};
 
 /// Build a catalog payload for [`KindUnificationFailure`] (nested under constructor / signature errors).
@@ -27,15 +31,15 @@ use crate::error_types::{CompileError, Span};
 ///
 /// # Returns
 ///
-/// [`DiagnosticPayload`] whose template takes `Debug` text placeholders.
+/// [`DiagnosticPayload`] whose template takes pretty-printed kind text.
 pub fn kind_unification_payload(failure: &KindUnificationFailure) -> DiagnosticPayload {
     match failure {
         KindUnificationFailure::OccursCheckFailed(found_kind, expected_kind) => {
             DiagnosticPayload::new(
                 DiagnosticId::KindOccursCheckFailed,
                 vec![
-                    format!("{:?}", found_kind.node),
-                    format!("{:?}", expected_kind.node),
+                    format_kind(found_kind),
+                    format_kind(expected_kind),
                 ],
             )
         }
@@ -43,18 +47,15 @@ pub fn kind_unification_payload(failure: &KindUnificationFailure) -> DiagnosticP
             DiagnosticPayload::new(
                 DiagnosticId::IncompatibleKinds,
                 vec![
-                    format!("{:?}", found_kind.node),
-                    format!("{:?}", expected_kind.node),
+                    format_kind(found_kind),
+                    format_kind(expected_kind),
                 ],
             )
         }
         KindUnificationFailure::ScopePreventsUnification(first_kind, second_kind) => {
             DiagnosticPayload::new(
                 DiagnosticId::ScopePreventsKindUnification,
-                vec![
-                    format!("{:?}", first_kind.node),
-                    format!("{:?}", second_kind.node),
-                ],
+                vec![format_kind(first_kind), format_kind(second_kind)],
             )
         }
     }
@@ -79,28 +80,25 @@ pub fn constructor_unification_payload(
             kind_failure,
         ) => DiagnosticPayload::new(
             DiagnosticId::NestedKindUnificationFailure,
-            vec![
-                format!("{:?}", found_kind.node),
-                format!("{:?}", expected_kind.node),
-            ],
+            vec![format_kind(found_kind), format_kind(expected_kind)],
         )
         .with_suffix(kind_unification_payload(kind_failure)),
         ConstructorUnificationFailure::ConstructorOccursCheckFailed(left, right) => {
             DiagnosticPayload::new(
                 DiagnosticId::ConstructorOccursCheckFailed,
-                vec![format!("{:?}", left.node), format!("{:?}", right.node)],
+                vec![format_constructor(left), format_constructor(right)],
             )
         }
         ConstructorUnificationFailure::IncompatibleConstructors(left, right) => {
             DiagnosticPayload::new(
                 DiagnosticId::IncompatibleConstructorsUnif,
-                vec![format!("{:?}", left.node), format!("{:?}", right.node)],
+                vec![format_constructor(left), format_constructor(right)],
             )
         }
         ConstructorUnificationFailure::TypeFunctionExplicitnessMismatch(left, right) => {
             DiagnosticPayload::new(
                 DiagnosticId::TypeFunctionExplicitnessMismatch,
-                vec![format!("{:?}", left.node), format!("{:?}", right.node)],
+                vec![format_constructor(left), format_constructor(right)],
             )
         }
         ConstructorUnificationFailure::UnexpectedKindForKindofQuery(
@@ -111,8 +109,8 @@ pub fn constructor_unification_payload(
             DiagnosticId::UnexpectedKindForKindofQuery,
             vec![
                 expectation.clone(),
-                format!("{:?}", kind.node),
-                format!("{:?}", constructor.node),
+                format_kind(kind),
+                format_constructor(constructor),
             ],
         ),
         ConstructorUnificationFailure::RecordConstructorUnificationFailure(
@@ -129,8 +127,10 @@ pub fn constructor_unification_payload(
             )) = field_detail
             {
                 part3.push_str(&format!(
-                    "; field {:?}: {:?} vs {:?}",
-                    field_name_constructor.node, left_field_type.node, right_field_type.node
+                    "; field {}: {} vs {}",
+                    format_constructor(field_name_constructor),
+                    format_constructor(left_field_type),
+                    format_constructor(right_field_type),
                 ));
                 if let Some(inner) = nested_failure {
                     part3.push_str("; ");
@@ -143,8 +143,8 @@ pub fn constructor_unification_payload(
             DiagnosticPayload::new(
                 DiagnosticId::RecordConstructorUnificationFailure,
                 vec![
-                    format!("{:?}", left_record.node),
-                    format!("{:?}", right_record.node),
+                    format_constructor(left_record),
+                    format_constructor(right_record),
                     part3,
                 ],
             )
@@ -158,7 +158,7 @@ pub fn constructor_unification_payload(
         ConstructorUnificationFailure::SubstitutionBlockedByDeepUnification(_head, body) => {
             DiagnosticPayload::new(
                 DiagnosticId::SubstitutionBlockedByDeepUnification,
-                vec![String::new(), format!("{:?}", body.node)],
+                vec![String::new(), format_constructor(body)],
             )
         }
         ConstructorUnificationFailure::UnificationLiftingTooDeep => {
@@ -167,7 +167,7 @@ pub fn constructor_unification_payload(
         ConstructorUnificationFailure::ScopePreventsConstructorUnification(left, right) => {
             DiagnosticPayload::new(
                 DiagnosticId::ScopePreventsConstructorUnification,
-                vec![format!("{:?}", left.node), format!("{:?}", right.node)],
+                vec![format_constructor(left), format_constructor(right)],
             )
         }
     }
@@ -237,7 +237,7 @@ pub enum KindUnificationFailure {
 ///
 /// # Returns
 ///
-/// Single-line summary (uses `Debug` of kind nodes; for diagnostics only).
+/// Single-line summary (pretty-printed kinds; for diagnostics only).
 pub fn format_kind_unification_failure(failure: &KindUnificationFailure) -> String {
     render_diagnostic_body(&kind_unification_payload(failure), DiagnosticLocale::En)
 }
@@ -318,10 +318,7 @@ pub fn compile_error_from_constructor_elaboration_error(
             constructor.span.clone(),
             DiagnosticPayload::new(
                 DiagnosticId::ConstructorWrongKind,
-                vec![
-                    format!("{:?}", found_kind.node),
-                    format!("{:?}", expected_kind.node),
-                ],
+                vec![format_kind(found_kind), format_kind(expected_kind)],
             )
             .with_suffix(kind_unification_payload(kind_failure)),
             DiagnosticId::HintConstructorWrongKind,
@@ -354,7 +351,7 @@ pub fn compile_error_from_constructor_elaboration_error(
                 constructor.span.clone(),
                 DiagnosticPayload::new(
                     DiagnosticId::ProjectionKindMismatch,
-                    vec![format!("{:?}", kind.node)],
+                    vec![format_kind(kind)],
                 ),
                 DiagnosticId::HintProjectionKindMismatch,
                 Vec::new(),
@@ -507,8 +504,8 @@ pub fn compile_error_from_expression_elaboration_error(
             DiagnosticPayload::new(
                 DiagnosticId::ExpressionUnificationFailure,
                 vec![
-                    format!("{:?}", inferred_constructor.node),
-                    format!("{:?}", expected_constructor.node),
+                    format_constructor(inferred_constructor),
+                    format_constructor(expected_constructor),
                 ],
             )
             .with_suffix(constructor_unification_payload(unification_failure)),
@@ -544,7 +541,7 @@ pub fn compile_error_from_expression_elaboration_error(
                 left.span.clone(),
                 DiagnosticPayload::new(
                     DiagnosticId::IncompatibleConstructorsExpression,
-                    vec![format!("{:?}", left.node), format!("{:?}", right.node)],
+                    vec![format_constructor(left), format_constructor(right)],
                 ),
                 DiagnosticId::HintIncompatibleConstructorsExpression,
                 Vec::new(),
@@ -571,8 +568,8 @@ pub fn compile_error_from_expression_elaboration_error(
             DiagnosticPayload::new(
                 DiagnosticId::PatternUnificationFailure,
                 vec![
-                    format!("{:?}", inferred_constructor.node),
-                    format!("{:?}", expected_constructor.node),
+                    format_constructor(inferred_constructor),
+                    format_constructor(expected_constructor),
                 ],
             )
             .with_suffix(constructor_unification_payload(unification_failure)),
@@ -626,7 +623,7 @@ pub fn compile_error_from_expression_elaboration_error(
                 source_span.clone(),
                 DiagnosticPayload::new(
                     DiagnosticId::InexhaustiveCaseAnalysis,
-                    vec![format!("{:?}", pattern.node)],
+                    vec![format_pattern(pattern)],
                 ),
             )
         }
@@ -648,7 +645,7 @@ pub fn compile_error_from_expression_elaboration_error(
             source_span.clone(),
             DiagnosticPayload::new(
                 DiagnosticId::UnresolvableTypeClassInstance,
-                vec![format!("{:?}", class_constraint.node)],
+                vec![format_constructor(class_constraint)],
             ),
         ),
         ExpressionElaborationError::TypeClassWildcardOutOfContext(
@@ -657,8 +654,9 @@ pub fn compile_error_from_expression_elaboration_error(
         ) => {
             let detail = if let Some((function_expression, function_type)) = optional_context {
                 format!(
-                    "; function: {:?}, type: {:?}",
-                    function_expression.node, function_type.node
+                    "; function: {}, type: {}",
+                    format_expression(function_expression),
+                    format_constructor(function_type),
                 )
             } else {
                 String::new()
@@ -746,7 +744,7 @@ pub fn compile_error_from_declaration_elaboration_error(
         DeclarationElaborationError::TypeHoleFound(constructor) => {
             CompileError::Plain(DiagnosticPayload::new(
                 DiagnosticId::TypeHoleFoundInternal,
-                vec![format!("{:?}", constructor.node)],
+                vec![format_constructor(constructor)],
             ))
         }
     }
@@ -823,7 +821,7 @@ pub fn compile_error_from_signature_elaboration_error(
                 source_span.clone(),
                 DiagnosticPayload::new(
                     DiagnosticId::UnmatchedSignatureItem,
-                    vec![format!("{:?}", item.node)],
+                    vec![format_signature_item(item)],
                 ),
                 DiagnosticId::HintUnmatchedSignatureItem,
                 Vec::new(),
@@ -841,10 +839,10 @@ pub fn compile_error_from_signature_elaboration_error(
             DiagnosticPayload::new(
                 DiagnosticId::SignatureItemKindUnificationFailed,
                 vec![
-                    format!("{:?}", actual_item.node),
-                    format!("{:?}", actual_kind.node),
-                    format!("{:?}", expected_item.node),
-                    format!("{:?}", expected_kind.node),
+                    format_signature_item(actual_item),
+                    format_kind(actual_kind),
+                    format_signature_item(expected_item),
+                    format_kind(expected_kind),
                 ],
             )
             .with_suffix(kind_unification_payload(kind_failure)),
@@ -861,10 +859,10 @@ pub fn compile_error_from_signature_elaboration_error(
             DiagnosticPayload::new(
                 DiagnosticId::SignatureItemConstructorUnificationFailed,
                 vec![
-                    format!("{:?}", actual_item.node),
-                    format!("{:?}", actual_constructor.node),
-                    format!("{:?}", expected_item.node),
-                    format!("{:?}", expected_constructor.node),
+                    format_signature_item(actual_item),
+                    format_constructor(actual_constructor),
+                    format_signature_item(expected_item),
+                    format_constructor(expected_constructor),
                 ],
             )
             .with_suffix(constructor_unification_payload(constructor_failure)),
@@ -879,9 +877,9 @@ pub fn compile_error_from_signature_elaboration_error(
                 optional_unification_detail
             {
                 format!(
-                    "; unification error: {:?} vs {:?}; {}",
-                    left_constructor.node,
-                    right_constructor.node,
+                    "; unification error: {} vs {}; {}",
+                    format_constructor(left_constructor),
+                    format_constructor(right_constructor),
                     render_diagnostic_body(
                         &constructor_unification_payload(unification_failure),
                         DiagnosticLocale::En,
@@ -895,8 +893,8 @@ pub fn compile_error_from_signature_elaboration_error(
                 DiagnosticPayload::new(
                     DiagnosticId::SignatureItemDatatypeSpecificationsMismatch,
                     vec![
-                        format!("{:?}", first_item.node),
-                        format!("{:?}", second_item.node),
+                        format_signature_item(first_item),
+                        format_signature_item(second_item),
                         detail,
                     ],
                 ),
@@ -910,10 +908,7 @@ pub fn compile_error_from_signature_elaboration_error(
             source_span.clone(),
             DiagnosticPayload::new(
                 DiagnosticId::IncompatibleSignatureShapes,
-                vec![
-                    format!("{:?}", left_signature.node),
-                    format!("{:?}", right_signature.node),
-                ],
+                vec![format_signature(left_signature), format_signature(right_signature)],
             ),
         ),
         SignatureElaborationError::WhereClauseFieldUnavailable(signature, field_name) => {
@@ -936,8 +931,8 @@ pub fn compile_error_from_signature_elaboration_error(
             DiagnosticPayload::new(
                 DiagnosticId::WhereClauseKindMismatch,
                 vec![
-                    format!("{:?}", found_kind.node),
-                    format!("{:?}", expected_kind.node),
+                    format_kind(found_kind),
+                    format_kind(expected_kind),
                     render_diagnostic_body(
                         &kind_unification_payload(kind_failure),
                         DiagnosticLocale::En,
@@ -1085,9 +1080,9 @@ pub fn compile_error_from_structure_elaboration_error(
             DiagnosticPayload::new(
                 DiagnosticId::ValTypeKindIsNotType,
                 vec![
-                    format!("{:?}", kind.node),
-                    format!("{:?}", subkind_left.node),
-                    format!("{:?}", subkind_right.node),
+                    format_kind(kind),
+                    format_kind(subkind_left),
+                    format_kind(subkind_right),
                     render_diagnostic_body(
                         &kind_unification_payload(kind_failure),
                         DiagnosticLocale::En,

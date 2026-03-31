@@ -7,10 +7,18 @@ use std::env;
 use std::fs;
 use std::path::Path;
 
+use ur::cli_common::{
+    cli_diagnostic_text, diagnostic_locale_for_cli, writeln_stderr_display, writeln_stderr_line,
+};
+use ur::diagnostics::DiagnosticId;
+
+/// Parse three path arguments, run [`ur::compiler::compile_to_outputs`], write C and SQL files, or exit with an error line on stderr.
 fn main() {
     let args: Vec<String> = env::args().collect();
+    let locale = diagnostic_locale_for_cli(None);
     if args.len() != 4 {
-        eprintln!("usage: dump_output <path-to.urp> <output.c> <output.sql>");
+        let msg = cli_diagnostic_text(DiagnosticId::CliDumpOutputUsage, vec![], locale);
+        writeln_stderr_line(&msg);
         std::process::exit(1);
     }
     let urp_path = Path::new(&args[1]);
@@ -18,8 +26,13 @@ fn main() {
     let sql_out = &args[3];
 
     let project_dir = urp_path.parent().unwrap_or_else(|| Path::new("."));
-    if let Err(e) = env::set_current_dir(project_dir) {
-        eprintln!("error: could not chdir to {}: {}", project_dir.display(), e);
+    if let Err(chdir_error) = env::set_current_dir(project_dir) {
+        let msg = cli_diagnostic_text(
+            DiagnosticId::CliDumpOutputChdirFailed,
+            vec![project_dir.display().to_string(), chdir_error.to_string()],
+            locale,
+        );
+        writeln_stderr_display(msg);
         std::process::exit(1);
     }
 
@@ -34,8 +47,13 @@ fn main() {
             fs::write(c_out, c_code).expect("write C output");
             fs::write(sql_out, sql_ddl).expect("write SQL output");
         }
-        Err(e) => {
-            eprintln!("error: compile_to_outputs failed: {}", e);
+        Err(pipeline_error) => {
+            let msg = cli_diagnostic_text(
+                DiagnosticId::CliDumpOutputCompileFailed,
+                vec![pipeline_error.to_string()],
+                locale,
+            );
+            writeln_stderr_display(msg);
             std::process::exit(1);
         }
     }

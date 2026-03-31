@@ -127,6 +127,14 @@ CI also runs **mutation testing** (`cargo mutants`) in shards after the above pa
 
 ---
 
+## 8a. User-facing diagnostics vs observability (`tracing`)
+
+- **Diagnostics channel:** Text meant for Ur/Web authors and tool users (compiler stderr, `ur` / `ur-compile` failures, LSP startup lines on stderr, DAP error bodies you expect editors to show) should use the **diagnostic catalog** ([`DiagnosticId`](src/diagnostics/ids.rs), [`cli_diagnostic_text`](src/cli_common.rs), [`ur.toml` `[package] language`](src/cli_common.rs) / environment). Prefer stable IDs and templates in [`scripts/_catalog_cli.py`](scripts/_catalog_cli.py) over ad-hoc English.
+- **Observability channel:** [`tracing`](https://docs.rs/tracing) events in the compiler and pipeline should stay **English**, structured, and grep-friendly for developers and CI. Do not move routine `tracing::debug!` / `info!` message templates into the translation catalog. Optionally attach a catalog **`DiagnosticId`** (or similar) in fields when a log line corresponds to a user-visible diagnostic.
+- **Demo / internal tools:** [`src/demo.rs`](src/demo.rs) and other maintainer-oriented entrypoints may still use plain English until tightened; **user-installed binaries** (`ur-*`) should prefer the catalog for any message that reaches the terminal.
+
+---
+
 ## 9. Rust code style (mandatory)
 
 Applies to all **Rust** under `src/`, `crates/`, `tests/`, and `examples/`. Details also in [README.md](README.md) (Contributing → Rust code style).

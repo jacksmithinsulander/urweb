@@ -1476,7 +1476,10 @@ mod tests {
         assert!(!settings.debug, "default settings must have debug=false");
         let mut errors = ErrorReporter::new();
         check(&file, &settings, &mut errors);
-        assert!(!errors.has_errors(), "check must be no-op when debug=false");
+        assert!(
+            !errors.has_hard_errors(),
+            "check must be no-op when debug=false"
+        );
     }
 
     #[test]
@@ -1488,7 +1491,10 @@ mod tests {
         };
         let mut errors = ErrorReporter::new();
         check(&file, &settings, &mut errors);
-        assert!(!errors.has_errors(), "empty file must not produce errors");
+        assert!(
+            !errors.has_hard_errors(),
+            "empty file must not produce hard errors"
+        );
     }
 
     #[test]
@@ -1511,8 +1517,8 @@ mod tests {
         let mut errors = ErrorReporter::new();
         check(&file, &settings, &mut errors);
         assert!(
-            !errors.has_errors(),
-            "no policies declared → no iflow errors"
+            !errors.has_hard_errors(),
+            "no policies declared → no iflow hard errors"
         );
     }
 
@@ -1540,8 +1546,8 @@ mod tests {
         let mut errors = ErrorReporter::new();
         check(&file, &settings, &mut errors);
         assert!(
-            !errors.has_errors(),
-            "table covered by policy must not trigger iflow error"
+            !errors.has_hard_errors(),
+            "table covered by policy must not trigger iflow hard error"
         );
     }
 
@@ -1569,7 +1575,7 @@ mod tests {
         let mut errors = ErrorReporter::new();
         check(&file, &settings, &mut errors);
         assert!(
-            errors.has_errors(),
+            errors.has_hard_errors(),
             "table not covered by any policy must trigger iflow error"
         );
     }
@@ -1598,7 +1604,7 @@ mod tests {
         let mut errors = ErrorReporter::new();
         check(&file, &settings, &mut errors);
         assert!(
-            errors.has_errors(),
+            errors.has_hard_errors(),
             "ValRec bodies must also be checked for iflow violations"
         );
     }

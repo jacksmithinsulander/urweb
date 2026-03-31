@@ -23,9 +23,12 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Context, Result};
+use anyhow::Result;
 
+use crate::cli_common::cli_diagnostic_text;
 use crate::compiler::Job;
+use crate::diagnostics::{DiagnosticId, DiagnosticLocale, DiagnosticPayload};
+use crate::error_types::{CompileError, ErrorReporter, Pos, Span};
 use crate::settings::{Action, PathKind, PatternKind, Rewrite, Rule};
 
 // ---------------------------------------------------------------------------
@@ -40,14 +43,44 @@ use crate::settings::{Action, PathKind, PatternKind, Rewrite, Rule};
 ///
 /// # Errors
 ///
-/// I/O failure, malformed directive, unknown filter kind, or other parse errors (wrapped with [`anyhow::Context`]).
+/// I/O failure, malformed directive, unknown filter kind, or other parse errors (bodies use the diagnostic catalog when locale is known).
 ///
 /// # Returns
 ///
 /// [`Job`] with resolved paths (sources relative to the `.urp` directory unless absolute).
+///
+/// Warnings (nested `library` parse failure, unknown directives) go to stderr via a fresh English-default [`ErrorReporter`]; use [`parse_urp_with_reporter`] to merge into the main compile reporter.
 pub fn parse_urp(path: &Path) -> Result<Job> {
-    let content = std::fs::read_to_string(path)
-        .with_context(|| format!("reading project file {}", path.display()))?;
+    let mut errors = ErrorReporter::new();
+    parse_urp_with_reporter(path, &mut errors)
+}
+
+/// Parse a `.urp` project file and record soft failures on `errors` (locale-aware when `errors` was built from [`crate::settings::Settings`]).
+///
+/// # Arguments
+///
+/// * `path` — Filesystem path to the `.urp` file.
+/// * `errors` — Diagnostics sink (warnings do not fail the parse).
+///
+/// # Errors
+///
+/// Same as [`parse_urp`] for hard parse failures.
+///
+/// # Returns
+///
+/// [`Job`] on success.
+pub fn parse_urp_with_reporter(path: &Path, errors: &mut ErrorReporter) -> Result<Job> {
+    let locale = errors.diagnostic_locale;
+    let content = std::fs::read_to_string(path).map_err(|read_error| {
+        anyhow::anyhow!(
+            "{}",
+            cli_diagnostic_text(
+                DiagnosticId::CliFileReadFailed,
+                vec![path.display().to_string(), read_error.to_string()],
+                locale,
+            )
+        )
+    })?;
 
     let abs_path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
     let dir = abs_path
@@ -74,7 +107,8 @@ pub fn parse_urp(path: &Path) -> Result<Job> {
     let mut in_sources = false;
     let mut found_blank = false;
 
-    for raw in content.lines() {
+    for (line_idx, raw) in content.lines().enumerate() {
+        let source_line_no = line_idx + 1;
         // Strip comment: if '#' is at a position where only whitespace precedes it,
         // the whole line is a comment.
         let effective = match raw.find('#') {
@@ -99,8 +133,18 @@ pub fn parse_urp(path: &Path) -> Result<Job> {
             found_blank = true;
         } else if looks_like_directive(line) {
             // Parse directive
-            parse_directive(&mut job, line, &dir)
-                .with_context(|| format!("in directive: {line}"))?;
+            parse_directive(&mut job, line, &dir, errors, &abs_path, source_line_no).map_err(
+                |directive_error| {
+                    anyhow::anyhow!(
+                        "{}",
+                        cli_diagnostic_text(
+                            DiagnosticId::CliUrpDirectiveParseFailed,
+                            vec![line.to_string(), format!("{directive_error:#}")],
+                            locale,
+                        )
+                    )
+                },
+            )?;
         } else {
             // No directives yet and line looks like a source filename
             // This handles .urp files that are just a list of filenames with no blank line.
@@ -116,6 +160,24 @@ pub fn parse_urp(path: &Path) -> Result<Job> {
 
     job.sources = sources;
     Ok(job)
+}
+
+/// Build a [`Span`] for one physical line of a `.urp` file (column range covers the trimmed directive or keyword).
+fn urp_source_span(project_path: &Path, source_line_no: usize, line_len_chars: usize) -> Span {
+    let last_col = line_len_chars.max(1);
+    let line_u32 = u32::try_from(source_line_no).unwrap_or(u32::MAX);
+    let last_col_u32 = u32::try_from(last_col).unwrap_or(u32::MAX);
+    Span {
+        file: project_path.to_string_lossy().into_owned(),
+        first: Pos {
+            line: line_u32,
+            col: 1,
+        },
+        last: Pos {
+            line: line_u32,
+            col: last_col_u32,
+        },
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -180,23 +242,41 @@ fn resolve_path_abs(dir: &Path, s: &str) -> String {
 // ---------------------------------------------------------------------------
 
 /// Parse `Module.func` into `("Module", "func")`.
-fn parse_ffi(cmd: &str, arg: &str) -> Result<(String, String)> {
+fn parse_ffi(cmd: &str, arg: &str, locale: DiagnosticLocale) -> Result<(String, String)> {
     let parts: Vec<&str> = arg.splitn(2, '.').collect();
     if parts.len() != 2 || parts[0].is_empty() || parts[1].is_empty() {
-        bail!("{cmd} argument must be of the form Module.func, got: {arg}");
+        return Err(anyhow::anyhow!(
+            "{}",
+            cli_diagnostic_text(
+                DiagnosticId::CliUrpFfiExpectedModuleDotFunc,
+                vec![cmd.to_string(), arg.to_string()],
+                locale,
+            )
+        ));
     }
     Ok((parts[0].to_string(), parts[1].to_string()))
 }
 
 /// Parse `Module.func=jsname` into `(("Module","func"), "jsname")`.
-fn parse_ffi_map(cmd: &str, arg: &str) -> Result<((String, String), String)> {
+fn parse_ffi_map(
+    cmd: &str,
+    arg: &str,
+    locale: DiagnosticLocale,
+) -> Result<((String, String), String)> {
     let eq_parts: Vec<&str> = arg.splitn(2, '=').collect();
     if eq_parts.len() != 2 {
-        bail!("{cmd} argument must be Module.func=func', got: {arg}");
+        return Err(anyhow::anyhow!(
+            "{}",
+            cli_diagnostic_text(
+                DiagnosticId::CliUrpFfiMapExpectedModuleFuncEquals,
+                vec![cmd.to_string(), arg.to_string()],
+                locale,
+            )
+        ));
     }
     let f = eq_parts[0].trim();
     let s = eq_parts[1].trim();
-    let ffi = parse_ffi(cmd, f)?;
+    let ffi = parse_ffi(cmd, f, locale)?;
     Ok((ffi, s.to_string()))
 }
 
@@ -212,7 +292,7 @@ fn parse_pattern(s: &str) -> (PatternKind, String) {
     }
 }
 
-fn parse_path_kind(s: &str) -> Result<PathKind> {
+fn parse_path_kind(s: &str, locale: DiagnosticLocale) -> Result<PathKind> {
     Ok(match s {
         "all" => PathKind::Any,
         "url" => PathKind::Url,
@@ -222,7 +302,16 @@ fn parse_path_kind(s: &str) -> Result<PathKind> {
         "relation" => PathKind::Relation,
         "cookie" => PathKind::Cookie,
         "style" => PathKind::Style,
-        _ => bail!("unknown path kind: {s}"),
+        _ => {
+            return Err(anyhow::anyhow!(
+                "{}",
+                cli_diagnostic_text(
+                    DiagnosticId::CliUrpUnknownRewritePathKind,
+                    vec![s.to_string()],
+                    locale,
+                )
+            ));
+        }
     })
 }
 
@@ -230,7 +319,15 @@ fn parse_path_kind(s: &str) -> Result<PathKind> {
 // Directive parser
 // ---------------------------------------------------------------------------
 
-fn parse_directive(job: &mut Job, line: &str, dir: &Path) -> Result<()> {
+fn parse_directive(
+    job: &mut Job,
+    line: &str,
+    dir: &Path,
+    errors: &mut ErrorReporter,
+    project_path: &Path,
+    source_line_no: usize,
+) -> Result<()> {
+    let locale = errors.diagnostic_locale;
     // Split into command and (optional) argument
     let (cmd, arg) = match line.find(|c: char| c.is_whitespace()) {
         None => (line, ""),
@@ -270,9 +367,16 @@ fn parse_directive(job: &mut Job, line: &str, dir: &Path) -> Result<()> {
         "profile" => job.profile = true,
 
         "timeout" => {
-            job.timeout = arg
-                .parse::<u32>()
-                .with_context(|| format!("invalid timeout: {arg}"))?;
+            job.timeout = arg.parse::<u32>().map_err(|_| {
+                anyhow::anyhow!(
+                    "{}",
+                    cli_diagnostic_text(
+                        DiagnosticId::CliUrpInvalidUnsignedIntegerDirective,
+                        vec!["timeout".to_string(), arg.to_string()],
+                        locale,
+                    )
+                )
+            })?;
         }
 
         "ffi" => job.ffi.push(resolve_path(dir, arg)),
@@ -285,11 +389,11 @@ fn parse_directive(job: &mut Job, line: &str, dir: &Path) -> Result<()> {
 
         "script" => job.scripts.push(arg.to_string()),
 
-        "clientToServer" => job.client_to_server.push(parse_ffi(cmd, arg)?),
-        "effectful" => job.effectful.push(parse_ffi(cmd, arg)?),
-        "benignEffectful" => job.benign_effectful.push(parse_ffi(cmd, arg)?),
-        "clientOnly" => job.client_only.push(parse_ffi(cmd, arg)?),
-        "serverOnly" => job.server_only.push(parse_ffi(cmd, arg)?),
+        "clientToServer" => job.client_to_server.push(parse_ffi(cmd, arg, locale)?),
+        "effectful" => job.effectful.push(parse_ffi(cmd, arg, locale)?),
+        "benignEffectful" => job.benign_effectful.push(parse_ffi(cmd, arg, locale)?),
+        "clientOnly" => job.client_only.push(parse_ffi(cmd, arg, locale)?),
+        "serverOnly" => job.server_only.push(parse_ffi(cmd, arg, locale)?),
 
         "jsModule" => {
             if job.js_module.is_none() {
@@ -297,7 +401,7 @@ fn parse_directive(job: &mut Job, line: &str, dir: &Path) -> Result<()> {
             }
         }
 
-        "jsFunc" => job.js_funcs.push(parse_ffi_map(cmd, arg)?),
+        "jsFunc" => job.js_funcs.push(parse_ffi_map(cmd, arg, locale)?),
 
         "safeGetDefault" => job.safe_get_default = true,
         "safeGet" => job.safe_gets.push(arg.to_string()),
@@ -315,9 +419,16 @@ fn parse_directive(job: &mut Job, line: &str, dir: &Path) -> Result<()> {
         }
 
         "minHeap" => {
-            job.min_heap = arg
-                .parse::<u32>()
-                .with_context(|| format!("invalid minHeap: {arg}"))?;
+            job.min_heap = arg.parse::<u32>().map_err(|_| {
+                anyhow::anyhow!(
+                    "{}",
+                    cli_diagnostic_text(
+                        DiagnosticId::CliUrpInvalidUnsignedIntegerDirective,
+                        vec!["minHeap".to_string(), arg.to_string()],
+                        locale,
+                    )
+                )
+            })?;
         }
 
         "mimeTypes" => {
@@ -327,7 +438,14 @@ fn parse_directive(job: &mut Job, line: &str, dir: &Path) -> Result<()> {
         "onError" => {
             let parts: Vec<&str> = arg.split('.').collect();
             if parts.len() < 2 {
-                bail!("invalid onError argument: {arg}");
+                return Err(anyhow::anyhow!(
+                    "{}",
+                    cli_diagnostic_text(
+                        DiagnosticId::CliUrpOnErrorNeedsQualifiedName,
+                        vec![arg.to_string()],
+                        locale,
+                    )
+                ));
             }
             let m1 = parts[0].to_string();
             let last = parts[parts.len() - 1].to_string();
@@ -345,9 +463,18 @@ fn parse_directive(job: &mut Job, line: &str, dir: &Path) -> Result<()> {
                 [pkind, from, "[-]"] => (pkind, from, String::new(), true),
                 [pkind, from, to] => (pkind, from, to.to_string(), false),
                 [pkind, from] => (pkind, from, String::new(), false),
-                _ => bail!("bad 'rewrite' syntax: {arg}"),
+                _ => {
+                    return Err(anyhow::anyhow!(
+                        "{}",
+                        cli_diagnostic_text(
+                            DiagnosticId::CliUrpRewriteBadSyntax,
+                            vec![arg.to_string()],
+                            locale,
+                        )
+                    ));
+                }
             };
-            let pkind = parse_path_kind(pkind)?;
+            let pkind = parse_path_kind(pkind, locale)?;
             let (kind, from) = parse_pattern(from);
             job.rewrites.push(Rewrite {
                 pkind,
@@ -361,7 +488,14 @@ fn parse_directive(job: &mut Job, line: &str, dir: &Path) -> Result<()> {
         "allow" => {
             let tokens: Vec<&str> = arg.split_whitespace().collect();
             if tokens.len() != 2 {
-                bail!("bad 'allow' syntax: {arg}");
+                return Err(anyhow::anyhow!(
+                    "{}",
+                    cli_diagnostic_text(
+                        DiagnosticId::CliUrpAllowBadSyntax,
+                        vec![arg.to_string()],
+                        locale,
+                    )
+                ));
             }
             let (kind, pattern) = parse_pattern(tokens[1]);
             let rule = Rule {
@@ -369,13 +503,20 @@ fn parse_directive(job: &mut Job, line: &str, dir: &Path) -> Result<()> {
                 kind,
                 pattern,
             };
-            push_filter_rule(job, tokens[0], rule)?;
+            push_filter_rule(job, tokens[0], rule, locale)?;
         }
 
         "deny" => {
             let tokens: Vec<&str> = arg.split_whitespace().collect();
             if tokens.len() != 2 {
-                bail!("bad 'deny' syntax: {arg}");
+                return Err(anyhow::anyhow!(
+                    "{}",
+                    cli_diagnostic_text(
+                        DiagnosticId::CliUrpDenyBadSyntax,
+                        vec![arg.to_string()],
+                        locale,
+                    )
+                ));
             }
             let (kind, pattern) = parse_pattern(tokens[1]);
             let rule = Rule {
@@ -383,18 +524,26 @@ fn parse_directive(job: &mut Job, line: &str, dir: &Path) -> Result<()> {
                 kind,
                 pattern,
             };
-            push_filter_rule(job, tokens[0], rule)?;
+            push_filter_rule(job, tokens[0], rule, locale)?;
         }
 
         "library" => {
             // Recursively parse the library .urp and merge its sources/settings.
             // We do a simplified merge: just add its sources to our sources.
-            let lib_path = resolve_library_path(dir, arg);
+            let lib_path = resolve_library_path(dir, arg, locale);
             if let Ok(lib_path) = lib_path {
-                match parse_urp(&lib_path) {
+                match parse_urp_with_reporter(&lib_path, errors) {
                     Ok(lib_job) => merge_library(job, lib_job),
                     Err(e) => {
-                        eprintln!("warning: failed to parse library {arg}: {e}");
+                        let sp =
+                            urp_source_span(project_path, source_line_no, line.chars().count());
+                        errors.report(CompileError::warning_at(
+                            sp,
+                            DiagnosticPayload::new(
+                                DiagnosticId::UrpLibraryProjectParseFailed,
+                                vec![arg.to_string(), e.to_string()],
+                            ),
+                        ));
                     }
                 }
             }
@@ -415,7 +564,14 @@ fn parse_directive(job: &mut Job, line: &str, dir: &Path) -> Result<()> {
         }
 
         _ => {
-            eprintln!("warning: unrecognized .urp directive: {cmd}");
+            let sp = urp_source_span(project_path, source_line_no, line.chars().count());
+            errors.report(CompileError::warning_at(
+                sp,
+                DiagnosticPayload::new(
+                    DiagnosticId::UrpUnrecognizedDirective,
+                    vec![cmd.to_string()],
+                ),
+            ));
         }
     }
 
@@ -426,7 +582,7 @@ fn parse_directive(job: &mut Job, line: &str, dir: &Path) -> Result<()> {
 // Filter rule routing
 // ---------------------------------------------------------------------------
 
-fn push_filter_rule(job: &mut Job, kind: &str, rule: Rule) -> Result<()> {
+fn push_filter_rule(job: &mut Job, kind: &str, rule: Rule, locale: DiagnosticLocale) -> Result<()> {
     match kind {
         "url" => job.filter_url.push(rule),
         "mime" => job.filter_mime.push(rule),
@@ -434,7 +590,16 @@ fn push_filter_rule(job: &mut Job, kind: &str, rule: Rule) -> Result<()> {
         "responseHeader" => job.filter_response.push(rule),
         "env" => job.filter_env.push(rule),
         "meta" => job.filter_meta.push(rule),
-        _ => bail!("unknown filter kind: {kind}"),
+        _ => {
+            return Err(anyhow::anyhow!(
+                "{}",
+                cli_diagnostic_text(
+                    DiagnosticId::CliUrpUnknownFilterKind,
+                    vec![kind.to_string()],
+                    locale,
+                )
+            ));
+        }
     }
     Ok(())
 }
@@ -443,7 +608,7 @@ fn push_filter_rule(job: &mut Job, kind: &str, rule: Rule) -> Result<()> {
 // Library resolution & merge
 // ---------------------------------------------------------------------------
 
-fn resolve_library_path(dir: &Path, arg: &str) -> Result<PathBuf> {
+fn resolve_library_path(dir: &Path, arg: &str, locale: DiagnosticLocale) -> Result<PathBuf> {
     let base = dir.join(arg);
     // Try base.urp, then base/lib.urp
     let with_urp = base.with_extension("urp");
@@ -454,7 +619,14 @@ fn resolve_library_path(dir: &Path, arg: &str) -> Result<PathBuf> {
     if lib_urp.exists() {
         return Ok(lib_urp);
     }
-    bail!("library not found: {arg}")
+    Err(anyhow::anyhow!(
+        "{}",
+        cli_diagnostic_text(
+            DiagnosticId::CliUrpLibraryNotFound,
+            vec![arg.to_string()],
+            locale,
+        )
+    ))
 }
 
 fn merge_library(job: &mut Job, lib: Job) {

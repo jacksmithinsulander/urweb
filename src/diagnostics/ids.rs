@@ -577,4 +577,320 @@ pub enum DiagnosticId {
     CorifyUnknownPatternConstructorId = 286,
     /// Catalog entry 287.
     CorifyUnknownDataConstructorInModulePath = 287,
+    /// Catalog entry 288.
+    JscompInternalStrcatInvariant = 288,
+    /// Catalog entry 289.
+    JscompUnurlifyUnknownType = 289,
+    /// Catalog entry 290.
+    JscompUnsupportedFfiValueInJs = 290,
+    /// Catalog entry 291.
+    JscompUnsupportedFfiCallInJs = 291,
+    /// Catalog entry 292.
+    JscompUnknownUnaryOperatorInJs = 292,
+    /// Catalog entry 293.
+    JscompUnknownBinaryOperatorInJs = 293,
+    /// Catalog entry 294.
+    JscompClientConstructUnsupportedInJs = 294,
+    /// Catalog entry 295.
+    SideGetenvNotCompileTimeString = 295,
+    /// Catalog entry 296.
+    HintSideGetenvNotCompileTimeString = 296,
+    /// Catalog entry 297.
+    UrpLibraryProjectParseFailed = 297,
+    /// Catalog entry 298.
+    UrpUnrecognizedDirective = 298,
+    /// Catalog entry 299.
+    CompilerInternalLockPoisoned = 299,
+    /// Catalog entry 300.
+    CoreEspecializeMissingSpecializationMetadata = 300,
+    /// Catalog entry 301.
+    CoreLocalReductionStaticCaseArmMissing = 301,
+    /// Catalog entry 302.
+    CliManifestMissingOrchestrator = 302,
+    /// Catalog entry 303.
+    CliManifestMissingFmt = 303,
+    /// Catalog entry 304.
+    CliManifestEntryRequired = 304,
+    /// Catalog entry 305.
+    CliUrTomlReadFailed = 305,
+    /// Catalog entry 306.
+    CliUrTomlParseFailed = 306,
+    /// Catalog entry 307.
+    CliUrTomlMissingInstall = 307,
+    /// Catalog entry 308.
+    CliManifestDatabaseEngineInvalid = 308,
+    /// Catalog entry 309.
+    CliPeerBinaryNotFound = 309,
+    /// Catalog entry 310.
+    CliScssCompilationFailed = 310,
+    /// Catalog entry 311.
+    CliOrchestratorScssCompiling = 311,
+    /// Catalog entry 312.
+    CliOrchestratorBuildingApp = 312,
+    /// Catalog entry 313.
+    CliOrchestratorTypeCheckingLib = 313,
+    /// Catalog entry 314.
+    CliOrchestratorUsageMoreHelp = 314,
+    /// Catalog entry 315.
+    CliDispatchMissingSubcommand = 315,
+    /// Catalog entry 316.
+    CliDispatchRunHelpHint = 316,
+    /// Catalog entry 317.
+    CliUsageHeading = 317,
+    /// Catalog entry 318.
+    CliOrchestratorUsageLines = 318,
+    /// Catalog entry 319.
+    CliUrCompileHelpExtra = 319,
+    /// Catalog entry 320.
+    CliUrFmtHelp = 320,
+    /// Catalog entry 321.
+    CliUrFmtNoSourceFilesFound = 321,
+    /// Catalog entry 322.
+    CliUrFmtProjectUrpNotFound = 322,
+    /// Catalog entry 323.
+    CliUrFmtUnknownFlag = 323,
+    /// Catalog entry 324.
+    CliUrFmtNotUrFile = 324,
+    /// Catalog entry 325.
+    CliUrFmtFileMissing = 325,
+    /// Catalog entry 326.
+    CliUrFmtReadFailed = 326,
+    /// Catalog entry 327.
+    CliUrFmtCheckWouldChange = 327,
+    /// Catalog entry 328.
+    CliUrFmtWriteFailed = 328,
+    /// Catalog entry 329.
+    CliUrFmtParseFailedHeader = 329,
+    /// Catalog entry 330.
+    CliInstallPackagePresent = 330,
+    /// Catalog entry 331.
+    CliInstallInProgress = 331,
+    /// Catalog entry 332.
+    CliInstallSucceeded = 332,
+    /// Catalog entry 333.
+    CliInstallUrpHint = 333,
+    /// Catalog entry 334.
+    CliInstallGitFailed = 334,
+    /// Catalog entry 335.
+    CliInstallUsage = 335,
+    /// Catalog entry 336.
+    CliDaemonStopped = 336,
+    /// Catalog entry 337.
+    CliDaemonNotImplemented = 337,
+    /// Catalog entry 338.
+    CliDaemonUsage = 338,
+    /// Catalog entry 339.
+    CliUrNewCreated = 339,
+    /// Catalog entry 340.
+    CliUrNewGitNote = 340,
+    /// Catalog entry 341.
+    CliUrNewBuildHint = 341,
+    /// Catalog entry 342.
+    CliUrNewUsageApp = 342,
+    /// Catalog entry 343.
+    CliUrNewUsageLib = 343,
+    /// Catalog entry 344.
+    CliDemoRequiresDirectory = 344,
+    /// Catalog entry 345.
+    CliNoProjectSeeHelp = 345,
+    /// Catalog entry 346.
+    CliInvalidLimitNumber = 346,
+    /// Catalog entry 347.
+    CliUnknownCompilerFlag = 347,
+    /// Catalog entry 348.
+    CliCompilerWorkerSpawnFailed = 348,
+    /// Catalog entry 349.
+    CliCompilerWorkerPanicked = 349,
+    /// Catalog entry 350.
+    CliCompilerPhaseTiming = 350,
+    /// Catalog entry 351.
+    CliDumpOutputUsage = 351,
+    /// Catalog entry 352.
+    CliDumpOutputChdirFailed = 352,
+    /// Catalog entry 353.
+    CliDumpOutputCompileFailed = 353,
+    /// Catalog entry 354.
+    CliTestParseHasErrors = 354,
+    /// Catalog entry 355.
+    CliTestParseDeclCount = 355,
+    /// Catalog entry 356.
+    CliTestParseFailed = 356,
+    /// Catalog entry 357.
+    CliTestParseTwoDecls = 357,
+    /// Catalog entry 358.
+    CliTestParseTwoDeclsFailed = 358,
+    /// Catalog entry 359.
+    CliTestPpContextOk = 359,
+    /// Catalog entry 360.
+    CliFileReadFailed = 360,
+    /// Catalog entry 361.
+    CliTomlParseAtPathFailed = 361,
+    /// Catalog entry 362.
+    CliPackageLanguageInvalid = 362,
+    /// Catalog entry 363.
+    CliBuildDatabaseEngineMismatch = 363,
+    /// Catalog entry 364.
+    CliProjectNameEmpty = 364,
+    /// Catalog entry 365.
+    CliProjectNameMustStartWithLetter = 365,
+    /// Catalog entry 366.
+    CliProjectNameInvalidCharacters = 366,
+    /// Catalog entry 367.
+    CliUrNewDirectoryExists = 367,
+    /// Catalog entry 368.
+    CliUrNewScaffoldIoFailed = 368,
+    /// Catalog entry 369.
+    CliDatabaseBackendCliRejected = 369,
+    /// Catalog entry 370.
+    CliCompileResourceLimitConfiguration = 370,
+    /// Catalog entry 371.
+    CliDemoModeFailed = 371,
+    /// Catalog entry 372.
+    CliLspRunFailed = 372,
+    /// Catalog entry 373.
+    CliLspProjectOpenFailed = 373,
+    /// Catalog entry 374.
+    CliLspWorkspaceChdirFailed = 374,
+    /// Catalog entry 375.
+    CliLspWorkspaceReadDirFailed = 375,
+    /// Catalog entry 376.
+    CliLspWorkspaceDirEntryFailed = 376,
+    /// Catalog entry 377.
+    CliLspWorkspaceNoUrProjectFile = 377,
+    /// Catalog entry 378.
+    CliLspWorkspaceUrpPathInternal = 378,
+    /// Catalog entry 379.
+    CliLspWorkspaceMultipleUrProjectFiles = 379,
+    /// Catalog entry 380.
+    CliLspProjectResolveFailed = 380,
+    /// Catalog entry 381.
+    CliCompileStoppedAfterDiagnostics = 381,
+    /// Catalog entry 382.
+    CliCCompilerRejectedGeneratedFile = 382,
+    /// Catalog entry 383.
+    CliLinkerCouldNotProduceExecutable = 383,
+    /// Catalog entry 384.
+    CliWriteGeneratedCFileFailed = 384,
+    /// Catalog entry 385.
+    CliToolBannerCompileStopped = 385,
+    /// Catalog entry 386.
+    CliToolBannerCBuild = 386,
+    /// Catalog entry 387.
+    CliToolBannerLink = 387,
+    /// Catalog entry 388.
+    CliCompileWriteSqlFileFailed = 388,
+    /// Catalog entry 389.
+    CliUrpDirectiveParseFailed = 389,
+    /// Catalog entry 390.
+    CliUrpInvalidUnsignedIntegerDirective = 390,
+    /// Catalog entry 391.
+    CliSubprocessSpawnFailed = 391,
+    /// Catalog entry 392.
+    CliSubprocessPollFailed = 392,
+    /// Catalog entry 393.
+    CliSubprocessRunFailed = 393,
+    /// Catalog entry 394.
+    CliCompilerCcLinkTestDeadlineExceeded = 394,
+    /// Catalog entry 395.
+    CliUrpFfiExpectedModuleDotFunc = 395,
+    /// Catalog entry 396.
+    CliUrpFfiMapExpectedModuleFuncEquals = 396,
+    /// Catalog entry 397.
+    CliUrpUnknownRewritePathKind = 397,
+    /// Catalog entry 398.
+    CliUrpOnErrorNeedsQualifiedName = 398,
+    /// Catalog entry 399.
+    CliUrpRewriteBadSyntax = 399,
+    /// Catalog entry 400.
+    CliUrpAllowBadSyntax = 400,
+    /// Catalog entry 401.
+    CliUrpDenyBadSyntax = 401,
+    /// Catalog entry 402.
+    CliUrpUnknownFilterKind = 402,
+    /// Catalog entry 403.
+    CliUrpLibraryNotFound = 403,
+    /// Catalog entry 404.
+    CliDebuggerGdbStdoutClosed = 404,
+    /// Catalog entry 405.
+    CliDebuggerGdbLineQueueMutexPoisoned = 405,
+    /// Catalog entry 406.
+    CliDebuggerGdbMiReported = 406,
+    /// Catalog entry 407.
+    CliDebuggerSpawnMiBackendFailed = 407,
+    /// Catalog entry 408.
+    CliDebuggerSetVariableNameNotSimpleCIdentifier = 408,
+    /// Catalog entry 409.
+    CliDebuggerDapStaleVariablesReference = 409,
+    /// Catalog entry 410.
+    CliDebuggerDapVarCreateFailed = 410,
+    /// Catalog entry 411.
+    CliDebuggerDapNotVariableContainer = 411,
+    /// Catalog entry 412.
+    CliDebuggerDapFieldNotFound = 412,
+    /// Catalog entry 413.
+    CliDebuggerDapNoLaunchBeforeConfigurationDone = 413,
+    /// Catalog entry 414.
+    CliDebuggerDapAttachFailed = 414,
+    /// Catalog entry 415.
+    CliDebuggerDapLoadSymbolsFailed = 415,
+    /// Catalog entry 416.
+    CliDebuggerDapRunInferiorFailed = 416,
+    /// Catalog entry 417.
+    CliDebuggerDapGdbSessionMissing = 417,
+    /// Catalog entry 418.
+    CliDebuggerDapRequestBeforeLaunch = 418,
+    /// Catalog entry 419.
+    CliDebuggerDapReadSourceFailed = 419,
+    /// Catalog entry 420.
+    CliDebuggerDapDisassembleNeedsMemoryReference = 420,
+    /// Catalog entry 421.
+    CliDebuggerDapSourceRequiresPathProperty = 421,
+    /// Catalog entry 422.
+    CliDebuggerDapAttachRequiresProcessId = 422,
+    /// Catalog entry 423.
+    CliDebuggerDapLaunchRequiresProgram = 423,
+    /// Catalog entry 424.
+    CliDebuggerDapExceptionNoSignalDetailsThisThread = 424,
+    /// Catalog entry 425.
+    CliDebuggerDapExceptionNoInformation = 425,
+    /// Catalog entry 426.
+    CliDebuggerDapBreakpointPendingAfterConfigurationDone = 426,
+    /// Catalog entry 427.
+    CliDebuggerDapBreakpointGdbCouldNotSet = 427,
+    /// Catalog entry 428.
+    CliDebuggerDapStoppedSignalLabel = 428,
+    /// Catalog entry 429.
+    CliDebuggerDapExceptionDeliveredSignalDescription = 429,
+    /// Catalog entry 430.
+    CliDebuggerDapThreadDisplayName = 430,
+    /// Catalog entry 431.
+    CliDebuggerDapScopeLocalsName = 431,
+    /// Catalog entry 432.
+    CliDebuggerDapFilterLabelFatalSignals = 432,
+    /// Catalog entry 433.
+    CliDebuggerDapFilterLabelAllSignals = 433,
+    /// Catalog entry 434.
+    CliDebuggerDapFilterLabelCppThrow = 434,
+    /// Catalog entry 435.
+    CliDebuggerUnknownFlag = 435,
+    /// Catalog entry 436.
+    CliDebuggerMissingMode = 436,
+    /// Catalog entry 437.
+    CliDebuggerCliDapStdioFailed = 437,
+    /// Catalog entry 438.
+    CliDebuggerCliTtyRequiresProgramPath = 438,
+    /// Catalog entry 439.
+    CliDebuggerRunFailed = 439,
+    /// Catalog entry 440.
+    CliDebuggerGdbSpawnFailed = 440,
+    /// Catalog entry 441.
+    CliDebuggerGdbExecFailed = 441,
+    /// Catalog entry 442.
+    CliDebuggerGdbExitedNonZero = 442,
+    /// Catalog entry 443.
+    CliDebuggerUsageBody = 443,
+    /// Catalog entry 444.
+    CliDevPreprocessWindowFailed = 444,
+    /// Catalog entry 445.
+    CliPhaseIncompleteNoOutput = 445,
 }

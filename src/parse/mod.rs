@@ -2345,10 +2345,10 @@ mod tests {
             if c == '|' {
                 let s = i.saturating_sub(40);
                 let e = (i + 40).min(pp.len());
-                eprintln!("|@{}: {:?}", i, &pp[s..e]);
+                tracing::debug!(index = i, window = ?&pp[s..e], "preprocess_ur '|' bar location");
             }
         }
-        eprintln!("total len={}", pp.len());
+        tracing::debug!(total_len = pp.len(), "preprocess_ur cookie.ur scan");
     }
 
     #[test]
@@ -2361,8 +2361,8 @@ mod tests {
         let pos: usize = 504;
         let start = pos.saturating_sub(300);
         let end = (pos + 200).min(pp.len());
-        eprintln!("PREPROCESSED around {}:\n{}", pos, &pp[start..end]);
-        eprintln!("char at {}: {:?}", pos, pp.chars().nth(pos));
+        tracing::debug!(pos, window = %&pp[start..end], "preprocessed basis.urs window");
+        tracing::debug!(pos, char_at = ?pp.chars().nth(pos), "preprocessed char");
     }
 
     #[test]
@@ -2638,14 +2638,46 @@ mod tests {
     }
 
     #[test]
+    fn preprocess_top_folder_wraps_tf_binder_in_brackets() {
+        let src = r"(** Row folding *)
+
+con folder = K ==> fn r :: {K} =>
+                      tf :: ({K} -> Type)
+                      -> (nm :: Name -> v :: K -> r :: {K} -> [[nm] ~ r] =>
+                          tf r -> tf ([nm = v] ++ r))
+                      -> tf [] -> tf r
+
+";
+        let pre = preprocess_ur_for_parse(src);
+        assert!(
+            pre.contains("[tf :: ({K} -> Type)] ->"),
+            "bare kind binder `tf :: … ->` must rewrite to bracketed TCFun; got:\n{pre}"
+        );
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/lib/ur/top.ur");
+        let Ok(full) = std::fs::read_to_string(path) else {
+            return;
+        };
+        let pre_full = preprocess_ur_for_parse(&full);
+        assert!(
+            pre_full.contains("[tf :: ({K} -> Type)] ->"),
+            "full top.ur must bracket folder's tf binder; got fragment: {}",
+            pre_full
+                .split("con folder")
+                .nth(1)
+                .and_then(|s| s.get(..200))
+                .unwrap_or("<missing>")
+        );
+    }
+
+    #[test]
     fn debug_top_ur_pos_263() {
-        let src =
-            std::fs::read_to_string("/Users/jacksmith/prog/urweb/lib/ur/top.ur").expect("top.ur");
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/lib/ur/top.ur");
+        let src = std::fs::read_to_string(path).expect("top.ur");
         let pre = preprocess_ur_for_parse(&src);
         let pos = 263usize;
         let start = pos.saturating_sub(40);
         let end = (pos + 40).min(pre.len());
-        eprintln!("pos {}: {:?}", pos, pre.get(pos..pos + 1));
-        eprintln!("context around {}: {:?}", pos, &pre[start..end]);
+        tracing::debug!(pos, slice = ?pre.get(pos..pos + 1), "top.ur preprocess byte");
+        tracing::debug!(pos, context = ?&pre[start..end], "top.ur preprocess context");
     }
 }

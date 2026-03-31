@@ -33,7 +33,7 @@ echo "[$(_ts)] Building demo app (this may take a few minutes)..."
 echo "  (output logged to $builddir/demo-build.log; if it hangs, inspect that file for last phase)"
 ( while sleep 20; do echo "  [$(_ts)] Still building demo app..."; done ) &
 _demo_heartbeat=$!
-( $URWEB $URWEB_ARGS -boot -noEmacs -dbms sqlite -db "$TESTDB" -demo /Demo "$srcdir/demo"
+( cd "$srcdir" && export URWEB_BOOT_ROOT="$(pwd)" && $URWEB $URWEB_ARGS -boot -noEmacs -dbms sqlite -db "$TESTDB" -demo /Demo "$srcdir/demo"
   echo $? > "$builddir/.demo_exit"
 ) 2>&1 | tee "$builddir/demo-build.log"
 _exit=$(cat "$builddir/.demo_exit" 2>/dev/null || echo 1)

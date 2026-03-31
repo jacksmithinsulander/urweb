@@ -7,8 +7,9 @@
 //! - [`crate::file_io::resolve`]: resolve a relative name against a base directory
 //! - [`crate::file_io::most_recent_mod_time`] / [`crate::file_io::ModTime`]: clock used for incremental decisions
 
+use crate::cli_common::{cli_diagnostic_text, diagnostic_locale_for_cli};
 use crate::compiler_diagnostics::lock_for_compile;
-use anyhow::Context;
+use crate::diagnostics::DiagnosticId;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -91,12 +92,21 @@ pub fn most_recent_mod_time() -> ModTime {
 ///
 /// # Errors
 ///
-/// Input/output failures from the kernel, or invalid UTF-8 in the file (with context from [`anyhow::Context`]).
+/// Input/output failures from the kernel or invalid UTF-8 (message from the diagnostic catalog).
 pub fn open_text(path: impl AsRef<Path>) -> anyhow::Result<String> {
     let path = path.as_ref(); // Borrow as `Path`.
     update_mod_time(path); // Record mtime for incremental builds.
-    std::fs::read_to_string(path).with_context(|| format!("opening {}", path.display()))
-    // Utf-8 read.
+    let locale = diagnostic_locale_for_cli(None); // Same locale selection as other driver I/O.
+    std::fs::read_to_string(path).map_err(|read_error| {
+        anyhow::anyhow!(
+            "{}",
+            cli_diagnostic_text(
+                DiagnosticId::CliFileReadFailed,
+                vec![path.display().to_string(), read_error.to_string()],
+                locale,
+            )
+        )
+    }) // Utf-8 read.
 }
 
 /// Read a file as raw bytes and update the modification-time tracker (no Unicode validation).
@@ -111,11 +121,21 @@ pub fn open_text(path: impl AsRef<Path>) -> anyhow::Result<String> {
 ///
 /// # Errors
 ///
-/// Input/output failures from reading the file (with context from [`anyhow::Context`]).
+/// Input/output failures from reading the file (message from the diagnostic catalog).
 pub fn open_binary(path: impl AsRef<Path>) -> anyhow::Result<Vec<u8>> {
     let path = path.as_ref();
     update_mod_time(path);
-    std::fs::read(path).with_context(|| format!("opening {}", path.display()))
+    let locale = diagnostic_locale_for_cli(None);
+    std::fs::read(path).map_err(|read_error| {
+        anyhow::anyhow!(
+            "{}",
+            cli_diagnostic_text(
+                DiagnosticId::CliFileReadFailed,
+                vec![path.display().to_string(), read_error.to_string()],
+                locale,
+            )
+        )
+    })
 }
 
 /// Join `name` under `base`, unless `name` is already an absolute path (platform-specific).

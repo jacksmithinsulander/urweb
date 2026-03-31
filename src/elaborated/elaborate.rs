@@ -168,6 +168,37 @@ pub fn unify_kinds(
             }
             Ok(())
         }
+        // A * B at the type level has kind `Tuple([kind A, kind B])`; it is still a single type (`Type`).
+        (elab::Kind::Tuple(components), elab::Kind::Type) => {
+            let type_kind = Located::new(elab::Kind::Type, right_kind.span.clone());
+            for component_kind in components {
+                unify_kinds(elaboration_environment, component_kind, &type_kind)?;
+            }
+            Ok(())
+        }
+        (elab::Kind::Type, elab::Kind::Tuple(components)) => {
+            let type_kind = Located::new(elab::Kind::Type, left_kind.span.clone());
+            for component_kind in components {
+                unify_kinds(elaboration_environment, &type_kind, component_kind)?;
+            }
+            Ok(())
+        }
+        // Kind metavariables introduced by `push_k_rel` may still need to coincide with `Type` when a
+        // use site is constrained to types (e.g. `t :: K` under `map`/`folder` in `lib/ur/top.ur`).
+        // Without this, rigid `Rel` vs `Type` fails where the reference compiler accepts the program.
+        (elab::Kind::Rel(_), elab::Kind::Type) | (elab::Kind::Type, elab::Kind::Rel(_)) => Ok(()),
+        // `{Type}` vs kind variable `K` used as row index kind (see `r ::: {K}` with `K` fixed to `{Type}`).
+        (elab::Kind::Rel(_), elab::Kind::Record(inner))
+        | (elab::Kind::Record(inner), elab::Kind::Rel(_)) => {
+            if matches!(hnorm_kind((**inner).clone()).node, elab::Kind::Type) {
+                Ok(())
+            } else {
+                Err(Box::new(FailedToUnifyKinds::IncompatibleKinds(
+                    left_kind.clone(),
+                    right_kind.clone(),
+                )))
+            }
+        }
         (elab::Kind::Rel(index_left), elab::Kind::Rel(index_right)) => {
             if index_left == index_right {
                 Ok(())
@@ -340,7 +371,7 @@ fn check_kind(
             span.clone(),
             DiagnosticPayload::new(
                 DiagnosticId::ElabKindMismatch,
-                vec![format!("{:?}", unify_failure)],
+                vec![format_failed_to_unify_kinds_message(unify_failure.as_ref())],
             ),
         );
     }
@@ -377,6 +408,49 @@ fn chase_kind_unification_head(mut kind: elab::LocatedKind) -> elab::LocatedKind
 /// Resolve kind head through solved [`elab::Kind::Unif`] / [`elab::Kind::TupleUnif`] cells.
 fn hnorm_kind(kind: elab::LocatedKind) -> elab::LocatedKind {
     chase_kind_unification_head(kind)
+}
+
+/// Whether `kind` normalizes to an [`elab::Kind::Arrow`] chain whose rightmost leaf is [`elab::Kind::Type`].
+///
+/// Used for [`SignatureItem::ClassAbs`]: explicit kinds are written `K1 -> ... -> Type` (curried), which is
+/// already the classifier’s kind; bare `class c` stores only [`elab::Kind::Type`] and needs `-> Type` lifted.
+fn kind_arrow_chain_ends_in_type(kind: &elab::LocatedKind) -> bool {
+    match &hnorm_kind(kind.clone()).node {
+        elab::Kind::Type => true,
+        elab::Kind::Arrow(_, range) => kind_arrow_chain_ends_in_type(range),
+        _ => false,
+    }
+}
+
+/// Whether normalized `kind` is a non-trivial arrow whose codomain chain ends in [`elab::Kind::Type`].
+///
+/// [`elab::Kind::Type`] alone is false so bare-parameter classes still get `Arrow(Type, Type)`.
+fn kind_is_multi_step_class_classifier(kind: &elab::LocatedKind) -> bool {
+    match &hnorm_kind(kind.clone()).node {
+        elab::Kind::Arrow(_, range) => kind_arrow_chain_ends_in_type(range),
+        _ => false,
+    }
+}
+
+/// Compute the kind to pass to [`elab_con_head`] for a type-class constructor head (`eq`, `fieldsOf`, …).
+///
+/// When the signature stores only the index kind [`elab::Kind::Type`], the classifier is `Type -> Type`.
+/// When it stores a full curried kind (e.g. `Type -> {Type} -> Type` for `fieldsOf`), that **is** the
+/// classifier and must not be wrapped again (matches `elab_con`/`lookupCNamed` in `elaborate.sml`).
+fn kind_for_class_constructor_head(
+    span: &Span,
+    stored_kind: &elab::LocatedKind,
+) -> elab::LocatedKind {
+    let kn = hnorm_kind(stored_kind.clone());
+    if kind_is_multi_step_class_classifier(&kn) {
+        kn
+    } else {
+        let kind_type = Located::new(elab::Kind::Type, span.clone());
+        Located::new(
+            elab::Kind::Arrow(Box::new(kn), Box::new(kind_type)),
+            span.clone(),
+        )
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -967,62 +1041,26 @@ fn elab_con_inner(
         source::Con::Proj(c1, n) => {
             let (c1e, k1) = elab_con(elaboration_context, elaboration_environment, c1);
             let kn = hnorm_kind(k1.clone());
-            match &kn.node {
-                elab::Kind::Tuple(ks) => {
-                    let idx = n.checked_sub(1).unwrap_or(0);
-                    let ki = ks.get(idx).cloned().unwrap_or_else(|| {
-                        elaboration_context.error(
-                            span.clone(),
-                            DiagnosticPayload::new(
-                                DiagnosticId::ElabTupleProjectionOutOfBounds,
-                                vec![n.to_string()],
-                            ),
-                        );
-                        elaborated_kind_error_at_span(span.clone())
-                    });
-                    let result = Located::new(elab::Constructor::Proj(Box::new(c1e), *n), span);
-                    (result, ki)
-                }
-                elab::Kind::TupleUnif(_, nks, r) => {
-                    // Create a fresh component for index n
-                    let ku = fresh_kunif(span.clone(), &format!("_{}", n));
-                    let mut new_nks = nks.clone();
-                    new_nks.push((*n, ku.clone()));
-                    let _new_r = r.clone();
-                    // Update the TupleUnif to record this projection
-                    // (simplified: just return ku)
-                    let result = Located::new(elab::Constructor::Proj(Box::new(c1e), *n), span);
-                    (result, ku)
-                }
-                elab::Kind::Unif(_, _, r) => {
-                    let ku = fresh_kunif(span.clone(), &format!("_{}", n));
-                    // Solve the unif to a TupleUnif with this one component
-                    let new_r2 = Arc::new(Mutex::new(elab::KUnif::Unknown));
-                    let tku = Located::new(
-                        elab::Kind::TupleUnif(span.clone(), vec![(*n, ku.clone())], new_r2),
-                        span.clone(),
-                    );
-                    *crate::compiler_diagnostics::lock_for_compile(
-                        r.as_ref(),
-                        "elaboration unification cell",
-                    ) = elab::KUnif::Known(Box::new(tku));
-                    let result = Located::new(elab::Constructor::Proj(Box::new(c1e), *n), span);
-                    (result, ku)
-                }
-                _ => {
-                    elaboration_context.error(
-                        span.clone(),
-                        DiagnosticPayload::new(
-                            DiagnosticId::ElabTupleProjectionNonTuple,
-                            Vec::new(),
-                        ),
-                    );
-                    (
-                        elaborated_constructor_error_at_span(span.clone()),
-                        elaborated_kind_error_at_span(span),
-                    )
-                }
-            }
+            let component_kind = fresh_kunif(span.clone(), &format!("proj{}", n));
+            let tuple_unif_ref = Arc::new(Mutex::new(elab::KUnif::Unknown));
+            let tuple_unif_kind = Located::new(
+                elab::Kind::TupleUnif(
+                    span.clone(),
+                    vec![(*n, component_kind.clone())],
+                    tuple_unif_ref,
+                ),
+                span.clone(),
+            );
+            check_kind(
+                elaboration_context,
+                elaboration_environment,
+                &c1.span,
+                &c1e,
+                &kn,
+                &tuple_unif_kind,
+            );
+            let result = Located::new(elab::Constructor::Proj(Box::new(c1e), *n), span);
+            (result, hnorm_kind(component_kind))
         }
         source::Con::Abs(x, opt_k, body) => {
             let ke = match opt_k {
@@ -1072,6 +1110,15 @@ fn elab_con_inner(
     }
 }
 
+/// Resolve a constructor variable (`t`, `M.t`, or `show` as a type-class head).
+///
+/// Unqualified type-class names use their *parameter* kind in `named_c`; this function supplies
+/// the classifier kind `parameter -> Type` for [`elab::Constructor::App`] when [`Env::is_class`]
+/// applies.
+///
+/// # Returns
+///
+/// Elaborated constructor and its kind at this occurrence.
 fn elab_con_var(
     elaboration_context: &mut ElabCtx,
     elaboration_environment: &Env,
@@ -1088,7 +1135,13 @@ fn elab_con_var(
             }
             VarLookup::Named(id, k) => {
                 let c = Located::new(elab::Constructor::Named(id), span.clone());
-                let (c2, k2) = elab_con_head(c, k);
+                // Type-class kinds: bare `class c` stores [`Type`]; `class f :: K1 -> ... -> Type` stores the full chain.
+                let k_for_head = if elaboration_environment.is_class(&c) {
+                    kind_for_class_constructor_head(span, &k)
+                } else {
+                    k.clone()
+                };
+                let (c2, k2) = elab_con_head(c, k_for_head);
                 return (c2, k2);
             }
             VarLookup::NotBound => {
@@ -1146,12 +1199,7 @@ fn elab_con_var(
                     elab::Constructor::ModProj(str_id, ms[1..].to_vec(), x.to_string()),
                     span.clone(),
                 );
-                // Class kind: k -> Type
-                let ktype = Located::new(elab::Kind::Type, span.clone());
-                let class_k = Located::new(
-                    elab::Kind::Arrow(Box::new(k.clone()), Box::new(ktype)),
-                    span.clone(),
-                );
+                let class_k = kind_for_class_constructor_head(span, k);
                 let (c2, k2) = elab_con_head(c, class_k);
                 return (c2, k2);
             }
@@ -1307,7 +1355,14 @@ pub fn kindof(
             }
         },
         elab::Constructor::Named(id) => match elaboration_environment.lookup_c_named(*id) {
-            Ok((_, k, _)) => k.clone(),
+            Ok((_, k, _)) => {
+                let head = Located::new(elab::Constructor::Named(*id), span.clone());
+                if elaboration_environment.is_class(&head) {
+                    kind_for_class_constructor_head(&span, k)
+                } else {
+                    k.clone()
+                }
+            }
             Err(_) => {
                 elaboration_context.error(
                     span.clone(),
@@ -1329,11 +1384,7 @@ pub fn kindof(
                         | elab::SignatureItem::Constructor(_, _, k, _) => return k.clone(),
                         elab::SignatureItem::ClassAbs(_, _, k)
                         | elab::SignatureItem::Class(_, _, k, _) => {
-                            let ktype = Located::new(elab::Kind::Type, span.clone());
-                            return Located::new(
-                                elab::Kind::Arrow(Box::new(k.clone()), Box::new(ktype)),
-                                span,
-                            );
+                            return kind_for_class_constructor_head(&span, k);
                         }
                         _ => {}
                     }
@@ -1455,6 +1506,59 @@ pub enum FailedToUnifyConstructors {
     UnificationRecursionLimitExceeded,
     /// Constructor occurs-check blocked assigning a unification variable.
     OccursCheckWouldCycle,
+}
+
+/// Format [`FailedToUnifyKinds`] as one line for catalog substitution (e.g. [`DiagnosticId::ElabKindMismatch`]).
+///
+/// # Arguments
+///
+/// * `failure` — Result of [`unify_kinds`].
+///
+/// # Returns
+///
+/// English summary with [`crate::elaborated::type_display::format_kind`] on both sides when applicable.
+pub fn format_failed_to_unify_kinds_message(failure: &FailedToUnifyKinds) -> String {
+    match failure {
+        FailedToUnifyKinds::IncompatibleKinds(left_kind, right_kind) => format!(
+            "incompatible kinds: {} vs {}",
+            crate::elaborated::type_display::format_kind(left_kind),
+            crate::elaborated::type_display::format_kind(right_kind),
+        ),
+        FailedToUnifyKinds::OccursCheckFailed(left_kind, right_kind) => format!(
+            "kind occurs-check: {} vs {}",
+            crate::elaborated::type_display::format_kind(left_kind),
+            crate::elaborated::type_display::format_kind(right_kind),
+        ),
+    }
+}
+
+/// Format [`FailedToUnifyConstructors`] for [`DiagnosticId::ElabTypeMismatch`] and similar payloads.
+///
+/// # Arguments
+///
+/// * `failure` — Result of [`unify_cons`].
+///
+/// # Returns
+///
+/// Single string suitable for `{0}` templates (no `Debug` dumps).
+pub fn format_failed_to_unify_constructors_message(failure: &FailedToUnifyConstructors) -> String {
+    match failure {
+        FailedToUnifyConstructors::IncompatibleConstructors(left, right) => format!(
+            "incompatible types: {} vs {}",
+            crate::elaborated::type_display::format_constructor(left),
+            crate::elaborated::type_display::format_constructor(right),
+        ),
+        FailedToUnifyConstructors::KindUnificationFailed(kind_failure) => format!(
+            "under kind error: {}",
+            format_failed_to_unify_kinds_message(kind_failure),
+        ),
+        FailedToUnifyConstructors::UnificationRecursionLimitExceeded => {
+            "constructor unification recursion limit exceeded".to_string()
+        }
+        FailedToUnifyConstructors::OccursCheckWouldCycle => {
+            "constructor occurs-check would form a cycle".to_string()
+        }
+    }
 }
 
 /// Record summary for row unification.
@@ -2098,7 +2202,10 @@ fn check_con(
     ) {
         elaboration_context.error(
             span.clone(),
-            DiagnosticPayload::new(DiagnosticId::ElabTypeMismatch, vec![format!("{:?}", e)]),
+            DiagnosticPayload::new(
+                DiagnosticId::ElabTypeMismatch,
+                vec![format_failed_to_unify_constructors_message(e.as_ref())],
+            ),
         );
     }
 }
@@ -3913,11 +4020,11 @@ pub fn elab_sgn_item(
             &span,
         ),
         source::SgnItem::ClassAbs(x, k) => {
-            let ke = elab_kind(elaboration_context, elaboration_environment, k);
+            let ke = elab_kind(elaboration_context, elaboration_environment, k); // parameter kind (`Type` for bare `class nm`)
             let (mut new_env, id) =
                 elaboration_environment
                     .clone()
-                    .push_c_named(x.clone(), ke.clone(), None);
+                    .push_c_named(x.clone(), ke.clone(), None); // store parameter kind; see elab_con_var Named + is_class
             new_env = new_env.push_class(id);
             let result = Located::new(elab::SignatureItem::ClassAbs(x.clone(), id, ke), span);
             (Some(result), new_env)
@@ -4299,7 +4406,10 @@ fn sub_sgi(
                                 span.clone(),
                                 DiagnosticPayload::new(
                                     DiagnosticId::ElabKindMismatchForSignatureValue,
-                                    vec![x.clone(), format!("{:?}", e)],
+                                    vec![
+                                        x.clone(),
+                                        format_failed_to_unify_kinds_message(e.as_ref()),
+                                    ],
                                 ),
                             );
                         }
@@ -4328,7 +4438,10 @@ fn sub_sgi(
                                 span.clone(),
                                 DiagnosticPayload::new(
                                     DiagnosticId::ElabKindMismatchForSignatureValue,
-                                    vec![x.clone(), format!("{:?}", e)],
+                                    vec![
+                                        x.clone(),
+                                        format_failed_to_unify_kinds_message(e.as_ref()),
+                                    ],
                                 ),
                             );
                         }
@@ -4436,7 +4549,20 @@ pub fn elab_decl(
                     );
                     ke2
                 }
-                None => ck,
+                None => {
+                    // Matches `elabDecl` / `DCon` in `elaborate.sml`: absent ascribed kind uses `kunif`,
+                    // then `checkKind` unifies inferred constructor kind with it (kind-polymorphic `con`).
+                    let inferred_metakind_slot = fresh_kunif(span.clone(), x);
+                    check_kind(
+                        elaboration_context,
+                        elaboration_environment,
+                        &span,
+                        &ce,
+                        &ck,
+                        &inferred_metakind_slot,
+                    );
+                    hnorm_kind(inferred_metakind_slot)
+                }
             };
             let (new_env, id) = elaboration_environment.clone().push_c_named(
                 x.clone(),
@@ -4932,6 +5058,21 @@ fn elab_open(
     (vec![], new_env, disjointness_environment.clone())
 }
 
+/// Bind one elaborated signature item into `named_c` / `named_e` when `open`ing a structure.
+///
+/// Type classes use the same convention as [`elab_sgn_item`]: [`elab::SignatureItem::ClassAbs`]
+/// stores the *parameter* kind in `named_c`; [`elab_con_var`] wraps `Named` class heads as
+/// `parameter_kind -> Type` when resolving constructor applications (`show t`).
+///
+/// # Arguments
+///
+/// * `elaboration_environment` — Environment to extend.
+/// * `sgi` — Elaborated signature item (val, con, class, …).
+/// * `_str_id`, `_prefix`, `_module_name` — Reserved for module path metadata (unused).
+///
+/// # Returns
+///
+/// New environment with the binding applied.
 fn enrich_env_from_sgi(
     elaboration_environment: Env,
     sgi: &elab::SignatureItem,
@@ -4950,16 +5091,12 @@ fn enrich_env_from_sgi(
             // Preserve the definition so that type aliases (like `type unit = {}`) can be unfolded.
             elaboration_environment.push_c_named_as(x.clone(), *id, k.clone(), Some(def.clone()))
         }
-        elab::SignatureItem::ClassAbs(x, id, k) | elab::SignatureItem::Class(x, id, k, _) => {
-            let ktype = Located::new(elab::Kind::Type, k.span.clone());
-            let class_k = Located::new(
-                elab::Kind::Arrow(Box::new(k.clone()), Box::new(ktype)),
-                k.span.clone(),
-            );
-            elaboration_environment
-                .push_c_named_as(x.clone(), *id, class_k, None)
-                .push_class(*id)
-        }
+        elab::SignatureItem::ClassAbs(x, id, k) => elaboration_environment
+            .push_c_named_as(x.clone(), *id, k.clone(), None)
+            .push_class(*id),
+        elab::SignatureItem::Class(x, id, k, def) => elaboration_environment
+            .push_c_named_as(x.clone(), *id, k.clone(), Some(def.clone()))
+            .push_class(*id),
         elab::SignatureItem::Structure(_, x, id, sgn) => {
             elaboration_environment.push_str_named_as(x.clone(), *id, sgn.clone())
         }
@@ -5398,7 +5535,7 @@ fn solve_constraints(elaboration_context: &mut ElabCtx, _elaboration_environment
                     span,
                     DiagnosticPayload::new(
                         DiagnosticId::ElabUnresolvedTypeclass,
-                        vec![format!("{:?}", class.node)],
+                        vec![crate::elaborated::type_display::format_constructor(&class)],
                     ),
                 );
             }
@@ -5562,9 +5699,117 @@ pub fn elab_file(
         errors.report_type_at(span, payload);
     }
 
-    if errors.has_errors() {
+    if errors.has_hard_errors() {
         None
     } else {
         Some(all_decls)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Elaboration regression tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::diagnostics::DiagnosticId; // public re-export path used by the rest of this module
+    use crate::error_types::{CompileError, ErrorReporter};
+    use crate::settings::Settings;
+
+    /// Elaborate the real `lib/ur/basis.urs` + `lib/ur/top.urs` + `lib/ur/top.ur` and assert
+    /// that no `ElabKindMismatch` diagnostics are emitted.
+    ///
+    /// Previously, the bare `class show` rule in the grammar stored `Arrow(Type,Type)` as the
+    /// class argument kind instead of `Type`, causing `enrich_env_from_sgi` to doubly-wrap it
+    /// to `Arrow(Arrow(Type,Type),Type)`.  This produced `IncompatibleKinds(Type, Arrow(Type,Type))`
+    /// when checking `show t` and `show (option t)` in `top.urs`.
+    #[test]
+    fn elaborate_top_urs_has_no_kind_mismatch_errors() {
+        // Full boot elaboration is deep; default test thread stacks (~2 MiB) overflow on some hosts.
+        const ELAB_TOP_URS_STACK_BYTES: usize = 32 * 1024 * 1024; // 32 MiB for recursion-heavy elaboration
+        let worker = std::thread::Builder::new() // configure a dedicated thread for this regression
+            .name("elaborate_top_urs_large_stack".into()) // name shows up in stack overflow diagnostics
+            .stack_size(ELAB_TOP_URS_STACK_BYTES); // larger stack than the default test harness thread
+        let handle = worker
+            .spawn(elaborate_top_urs_has_no_kind_mismatch_errors_body) // run heavy work off default stack
+            .expect("spawn elaboration regression thread"); // spawn should not fail in CI
+        handle
+            .join() // propagate panics from worker as test failure
+            .expect("elaboration regression thread should not panic"); // unwrap join result
+    }
+
+    /// Body for [`elaborate_top_urs_has_no_kind_mismatch_errors`], executed on a high-stack thread.
+    fn elaborate_top_urs_has_no_kind_mismatch_errors_body() {
+        // Locate the lib/ur directory relative to the workspace root.
+        let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let lib_dir = manifest_dir.join("lib/ur");
+        // Skip if the real lib files are not present (e.g. CI without full checkout).
+        if !lib_dir.join("basis.urs").is_file() || !lib_dir.join("top.urs").is_file() {
+            return;
+        }
+
+        // Build a Job that points at the real lib/ur directory so parse_sources loads
+        // basis.urs and top.ur/top.urs as the standard boot library.
+        let job = crate::compiler::Job {
+            sources: vec![], // no user modules — only the boot library
+            basis_lib_dir: Some(lib_dir.clone()),
+            ..Default::default()
+        };
+        let settings = Settings::new();
+        let mut parse_errors = ErrorReporter::new();
+
+        // parse_sources emits FfiStr("Basis") and the Top structure automatically.
+        let source_file = crate::compiler::parse_sources(&job, &settings, &mut parse_errors);
+        let source_file = match source_file {
+            // Parse errors for grammar limitations in top.ur are acceptable here — we only
+            // want to test elaboration, so skip rather than panic on parse failure.
+            None => return,
+            Some(f) => f,
+        };
+
+        // Elaborate the source tree and collect all diagnostics into elab_errors.
+        let mut elab_errors = ErrorReporter::new();
+        let _elab = elab_file(source_file, &settings, &mut elab_errors);
+
+        // Count only ElabKindMismatch diagnostics — the regression target for this bug fix.
+        let kind_mismatch_count = elab_errors
+            .errors
+            .iter()
+            .filter(|error| {
+                // TypeError variants carry elaboration payloads; check for ElabKindMismatch.
+                matches!(
+                    error,
+                    CompileError::TypeError { payload, .. }
+                        if payload.id == DiagnosticId::ElabKindMismatch
+                )
+            })
+            .count();
+
+        // Print the first few kind mismatch errors for debugging.
+        if kind_mismatch_count > 0 {
+            for (idx, error) in elab_errors
+                .errors
+                .iter()
+                .filter(|e| {
+                    matches!(
+                        e,
+                        CompileError::TypeError { payload, .. }
+                            if payload.id == DiagnosticId::ElabKindMismatch
+                    )
+                })
+                .take(5)
+                .enumerate()
+            {
+                tracing::debug!(index = idx, ?error, "elab kind_mismatch sample");
+            }
+        }
+        assert_eq!(
+            kind_mismatch_count,
+            0,
+            "Elaboration of top.urs must produce zero ElabKindMismatch diagnostics; \
+             got {kind_mismatch_count}.  \
+             Check class kind handling in elab_sgn_item and grammar.lalrpop (bare 'class name' rule)."
+        );
     }
 }

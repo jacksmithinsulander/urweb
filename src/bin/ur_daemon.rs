@@ -4,6 +4,9 @@
 
 use std::process;
 
+use ur::cli_common::{self, cli_diagnostic_text, diagnostic_locale_for_cli, writeln_stdout_line};
+use ur::diagnostics::DiagnosticId;
+
 /// Filesystem path marker for a future socket file (`stop` removes it best-effort).
 const SOCKET_PATH: &str = ".ur_daemon";
 
@@ -11,20 +14,22 @@ const SOCKET_PATH: &str = ".ur_daemon";
 ///
 /// Returns `0` for `stop` or the placeholder `start`, `1` on bad usage.
 fn daemon_command(args: &[String]) -> i32 {
-    match args.first().map(|s| s.as_str()) {
+    let locale = diagnostic_locale_for_cli(None);
+    match args.first().map(|token| token.as_str()) {
         Some("stop") => {
-            // Best-effort removal of the socket file; ignore errors if absent.
             let _ = std::fs::remove_file(SOCKET_PATH);
-            println!("Daemon stopped.");
+            let msg = cli_diagnostic_text(DiagnosticId::CliDaemonStopped, vec![], locale);
+            writeln_stdout_line(&msg);
             0
         }
         Some("start") => {
-            // Placeholder until a real daemon process is implemented.
-            eprintln!("note: daemon not yet implemented");
+            let msg = cli_diagnostic_text(DiagnosticId::CliDaemonNotImplemented, vec![], locale);
+            cli_common::writeln_stderr_display(msg);
             0
         }
         _ => {
-            eprintln!("usage: ur-daemon [start|stop]");
+            let usage = cli_diagnostic_text(DiagnosticId::CliDaemonUsage, vec![], locale);
+            ur::cli_common::writeln_stderr_display(usage);
             1
         }
     }

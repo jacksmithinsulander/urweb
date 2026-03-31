@@ -46,17 +46,23 @@ fn postprocess_grammar_rs(path: &std::path::Path) {
     let _ = std::fs::write(path, s);
 }
 
+/// Run LALRPOP on `src/parse/grammar.lalrpop`, normalize emitted Rust, and print `cargo:` lines for cfg/output.
 fn main() {
-    println!("cargo::rustc-check-cfg=cfg(generated_parser)");
-    if let Err(e) = lalrpop::Configuration::new()
+    use std::io::Write as _; // `writeln!` to stderr without `eprintln!`.
+
+    println!("cargo::rustc-check-cfg=cfg(generated_parser)"); // Declare `generated_parser` for `cfg` checking.
+    if let Err(lalrpop_error) = lalrpop::Configuration::new() // Parser generation from the LALRPOP grammar file.
         .use_cargo_dir_conventions()
         .process_file("src/parse/grammar.lalrpop")
     {
-        eprintln!(
-            "lalrpop failed to build the parser from src/parse/grammar.lalrpop:\n{e}\n\
+        let mut lock = std::io::stderr().lock(); // Single-writer lock for the failure message.
+        let _ =
+            writeln!( // Surface LALRPOP errors on stderr before exiting.
+            lock,
+            "lalrpop failed to build the parser from src/parse/grammar.lalrpop:\n{lalrpop_error}\n\
              Fix grammar conflicts or errors, then run cargo build again."
         );
-        std::process::exit(1);
+        std::process::exit(1); // Signal failure to Cargo.
     }
 
     postprocess_grammar_rs(

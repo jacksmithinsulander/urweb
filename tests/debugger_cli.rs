@@ -1,26 +1,10 @@
 //! Integration tests for `ur-debugger` argument dispatch (`src/bin/ur_debugger.rs`).
 
-use std::path::PathBuf;
+mod common;
+
 use std::process::Command;
 
-fn cargo_bin(name: &str) -> PathBuf {
-    let underscored = name.replace('-', "_");
-    let key = format!("CARGO_BIN_EXE_{underscored}");
-    if let Some(p) = std::env::var_os(&key) {
-        return PathBuf::from(p);
-    }
-    let profile = std::env::var("PROFILE").unwrap_or_else(|_| "debug".into());
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("target")
-        .join(&profile)
-        .join(name);
-    assert!(
-        path.exists(),
-        "missing {name}: set {key} or build tests — looked for {:?}",
-        path
-    );
-    path
-}
+use common::ur_package_binary as cargo_bin;
 
 fn gdb_available() -> bool {
     Command::new("gdb")
@@ -91,8 +75,8 @@ fn ur_debugger_unknown_dash_flag_fails() {
     assert!(!output.status.success());
     let err = String::from_utf8_lossy(&output.stderr);
     assert!(
-        err.contains("unknown") || err.contains("bad"),
-        "unknown flags should be reported: {err:?}"
+        err.contains("not-a-real-cli-flag-xyz"),
+        "unknown flags should name the token: {err:?}"
     );
 }
 

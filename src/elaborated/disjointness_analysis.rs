@@ -90,7 +90,7 @@ pub fn empty_env() -> DisjointEnv {
     BTreeMap::new()
 }
 
-/// Print `disjointness_map` to stderr (`DENV:` header, one line per recorded disjoint pair).
+/// Log `disjointness_map` at [`tracing::Level::DEBUG`] (`DENV` snapshot, one event per disjoint pair).
 ///
 /// # Arguments
 ///
@@ -100,13 +100,13 @@ pub fn empty_env() -> DisjointEnv {
 ///
 /// Nothing.
 pub fn print_env(disjointness_map: &DisjointEnv) {
-    eprintln!("\nDENV:");
+    tracing::debug!("DENV: {} roots", disjointness_map.len());
     for (left_piece, disjoint_right_set) in disjointness_map {
         for right_piece in disjoint_right_set {
-            eprintln!(
-                "{} ~ {}",
-                rp_to_string(left_piece),
-                rp_to_string(right_piece)
+            tracing::debug!(
+                left = %rp_to_string(left_piece),
+                right = %rp_to_string(right_piece),
+                "DENV pair"
             );
         }
     }

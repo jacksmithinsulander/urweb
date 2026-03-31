@@ -42,6 +42,11 @@ fn try_elaborate_single_module(ur_src: &str) -> Result<(), String> {
         .flatten()
 }
 
+/// Elaborate one synthetic module in a temp dir (locked, larger stack via caller).
+///
+/// # Errors
+///
+/// I/O, parse, boot settings, `parse_sources`, elaboration, or reported hard errors as `String`.
 fn try_elaborate_single_module_on_thread(ur_src: &str) -> Result<(), String> {
     let _guard = CORPUS_LOCK
         .lock()
@@ -54,7 +59,19 @@ fn try_elaborate_single_module_on_thread(ur_src: &str) -> Result<(), String> {
     let mut job = compiler::parse_urp(&urp).map_err(|parse_error| parse_error.to_string())?;
     let mut settings = Settings::new();
     settings.boot_linking = true;
-    compiler::apply_boot_settings(&mut job, &mut settings);
+    // Temp `.urp` jobs have no `lib/ur` beside them; pin boot root to this crate so Basis resolves in CI.
+    let workspace_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let workspace_basis = workspace_root.join("lib/ur/basis.urs");
+    let previous_boot_root = std::env::var_os("URWEB_BOOT_ROOT");
+    if workspace_basis.is_file() {
+        std::env::set_var("URWEB_BOOT_ROOT", &workspace_root); // Point boot discovery at the repo tree.
+    }
+    let boot_apply = compiler::apply_boot_settings(&mut job, &mut settings); // May require `URWEB_BOOT_ROOT` when job has no local `lib/ur`.
+    match &previous_boot_root {
+        None => std::env::remove_var("URWEB_BOOT_ROOT"), // Avoid leaking boot override into other tests.
+        Some(value) => std::env::set_var("URWEB_BOOT_ROOT", value), // Restore prior env for test isolation.
+    }
+    boot_apply?; // Propagate missing Basis / invalid boot root as a clear failure.
     let mut errors = ErrorReporter::new_silent();
     let Some(file) = compiler::parse_sources(&job, &settings, &mut errors) else {
         return Err(format!("parse_sources: {errors:?}"));
@@ -62,7 +79,7 @@ fn try_elaborate_single_module_on_thread(ur_src: &str) -> Result<(), String> {
     let Some(_elab) = compiler::elaborate(file, &settings, &mut errors) else {
         return Err(format!("elaborate returned None: {errors:?}"));
     };
-    if errors.has_errors() {
+    if errors.has_hard_errors() {
         return Err(format!("elaborate errors: {errors:?}"));
     }
     Ok(())

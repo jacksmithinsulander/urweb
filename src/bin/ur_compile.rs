@@ -6,48 +6,33 @@
 //! **Style:** [README.md](../../README.md) Rust conventions when this file is edited.
 
 use std::process;
-use ur::cli_common;
+
+use ur::cli_common::{
+    self, cli_diagnostic_text, diagnostic_locale_for_cli, writeln_stderr_display,
+    writeln_stderr_line, writeln_stdout_display, writeln_stdout_line,
+};
+use ur::diagnostics::DiagnosticId;
+use ur::error_types::{format_compile_error_for_terminal, CompileError};
 use ur::settings::Settings;
 
 const VERSION_STRING: &str = env!("CARGO_PKG_VERSION");
 
-/// Print usage: shared orchestrator lines plus compiler-specific flags.
+/// Print usage: orchestrator lines from the catalog plus compiler-specific flags.
 ///
 /// `-dbms` picks the database engine; `-tc` stops after type checking (no code generation).
-fn print_usage(_settings: &Settings) {
-    let _name = std::env::args()
-        .next()
-        .unwrap_or_else(|| "ur-compile".into());
-    println!("usage:");
-    for line in cli_common::UR_ORCHESTRATOR_USAGE_LINES {
-        println!("{}", line);
+fn print_usage(settings: &Settings) {
+    let locale = settings.diagnostic_locale;
+    let usage_heading = cli_diagnostic_text(DiagnosticId::CliUsageHeading, vec![], locale);
+    writeln_stdout_line(&usage_heading);
+    let orchestrator_block =
+        cli_diagnostic_text(DiagnosticId::CliOrchestratorUsageLines, vec![], locale);
+    for line in orchestrator_block.lines() {
+        writeln_stdout_line(line);
     }
-    println!("Standard options: -h, --help; -V, --version; -o, --output=FILE");
-    println!("Supported flags include:");
-    println!("  -h, -help, --help    print this overview");
-    println!("  -V, -version         print version and exit");
-    println!("  -ccompiler <prog>    set C compiler");
-    println!(
-        "  -dbms <engine>       select database engine [sqlite|mysql|postgres|persy|rocksdb|ndb|tigerbeetle]"
-    );
-    println!("  -db <connstr>        database connection string");
-    println!("  -prefix <prefix>     URL prefix");
-    println!("  -sql <file>          output SQL DDL to <file>");
-    println!("  -o, -output <file>    output executable to <file> (or --output=FILE)");
-    println!("  -tc                  stop after type checking");
-    println!("  -debug               save intermediate C files");
-    println!(
-        "  -v, -vv, … -vvvvv   verbosity (Foundry-style; stderr tracing via `tracing`, max 5)"
-    );
-    println!("  -verbose             legacy alias for a higher default verbosity (-vv)");
-    println!("  -timing              print coarse phase wall times on stderr");
-    println!(
-        "  RUST_LOG             optional `tracing-subscriber` filter (overrides default `ur=…`)"
-    );
-    println!("  -iflow               run information-flow analysis");
-    println!("  -limit <class> <n>   set resource limit");
-    println!("  -startLspServer      run ur-lsp (Language Server Protocol on stdio)");
-    println!("  -moduleOf <file>     print module name of <file>");
+    let extra = cli_diagnostic_text(DiagnosticId::CliUrCompileHelpExtra, vec![], locale);
+    for line in extra.lines() {
+        writeln_stdout_line(line);
+    }
 }
 
 /// Parse `ur-compile` arguments and run the full pipeline through C output and Structured Query Language artifacts when requested.
@@ -68,8 +53,8 @@ pub fn run_compiler_args(args: &[String]) -> i32 {
     while let Some(arg) = args_iter.next() {
         let raw = arg.trim_start_matches('-');
         let (flag, opt_val) = if let Some(eq) = raw.find('=') {
-            let (f, v) = raw.split_at(eq);
-            (f, Some(v[1..].to_string()))
+            let (flag_part, value_part) = raw.split_at(eq);
+            (flag_part, Some(value_part[1..].to_string()))
         } else {
             (raw, None)
         };
@@ -79,19 +64,19 @@ pub fn run_compiler_args(args: &[String]) -> i32 {
                 return 0;
             }
             "version" | "V" => {
-                println!("{}", VERSION_STRING);
+                writeln_stdout_display(VERSION_STRING);
                 return 0;
             }
             "numeric-version" => {
-                println!("{}", VERSION_STRING);
+                writeln_stdout_display(VERSION_STRING);
                 return 0;
             }
             "print-ccompiler" => {
-                println!("{}", settings.config_c_compiler);
+                writeln_stdout_display(&settings.config_c_compiler);
                 return 0;
             }
             "print-cinclude" => {
-                println!("{}", settings.config_include);
+                writeln_stdout_display(&settings.config_include);
                 return 0;
             }
             "ccompiler" => {
@@ -100,24 +85,32 @@ pub fn run_compiler_args(args: &[String]) -> i32 {
                 }
             }
             "protocol" => {
-                if let Some(p) = opt_val.or_else(|| args_iter.next().cloned()) {
-                    settings.protocol = p;
+                if let Some(protocol_value) = opt_val.or_else(|| args_iter.next().cloned()) {
+                    settings.protocol = protocol_value;
                 }
             }
             "prefix" => {
-                if let Some(p) = opt_val.or_else(|| args_iter.next().cloned()) {
-                    settings.set_url_prefix(&p);
+                if let Some(prefix_value) = opt_val.or_else(|| args_iter.next().cloned()) {
+                    settings.set_url_prefix(&prefix_value);
                 }
             }
             "db" => {
-                if let Some(db) = opt_val.or_else(|| args_iter.next().cloned()) {
-                    settings.dbstring = Some(db);
+                if let Some(db_value) = opt_val.or_else(|| args_iter.next().cloned()) {
+                    settings.dbstring = Some(db_value);
                 }
             }
             "dbms" => {
-                if let Some(db) = opt_val.or_else(|| args_iter.next().cloned()) {
-                    if let Err(e) = ur::db::set_backend_from_cli_token(&mut settings, &db) {
-                        eprintln!("error: {}", e);
+                if let Some(db_token) = opt_val.or_else(|| args_iter.next().cloned()) {
+                    if let Err(backend_error) =
+                        ur::db::set_backend_from_cli_token(&mut settings, &db_token)
+                    {
+                        let locale = settings.diagnostic_locale;
+                        let msg = cli_diagnostic_text(
+                            DiagnosticId::CliDatabaseBackendCliRejected,
+                            vec![backend_error],
+                            locale,
+                        );
+                        cli_common::writeln_stderr_display(msg);
                         return 1;
                     }
                 }
@@ -140,18 +133,18 @@ pub fn run_compiler_args(args: &[String]) -> i32 {
                 _dump_source = true;
             }
             "output" | "o" => {
-                if let Some(f) = opt_val.or_else(|| args_iter.next().cloned()) {
-                    settings.exe = Some(f);
+                if let Some(path) = opt_val.or_else(|| args_iter.next().cloned()) {
+                    settings.exe = Some(path);
                 }
             }
             "sql" => {
-                if let Some(f) = opt_val.or_else(|| args_iter.next().cloned()) {
-                    settings.sql = Some(f);
+                if let Some(path) = opt_val.or_else(|| args_iter.next().cloned()) {
+                    settings.sql = Some(path);
                 }
             }
             "endpoints" => {
-                if let Some(f) = opt_val.or_else(|| args_iter.next().cloned()) {
-                    settings.endpoints = Some(f);
+                if let Some(path) = opt_val.or_else(|| args_iter.next().cloned()) {
+                    settings.endpoints = Some(path);
                 }
             }
             "static" => {
@@ -161,8 +154,8 @@ pub fn run_compiler_args(args: &[String]) -> i32 {
                 settings.boot_linking = true;
             }
             "sigfile" => {
-                if let Some(f) = opt_val.or_else(|| args_iter.next().cloned()) {
-                    settings.sig_file = Some(f);
+                if let Some(path) = opt_val.or_else(|| args_iter.next().cloned()) {
+                    settings.sig_file = Some(path);
                 }
             }
             "iflow" => {
@@ -175,8 +168,8 @@ pub fn run_compiler_args(args: &[String]) -> i32 {
                 settings.disable_sql_structure_check = true;
             }
             "moduleOf" => {
-                if let Some(f) = opt_val.or_else(|| args_iter.next().cloned()) {
-                    println!("{}", ur::compiler::module_of(&f));
+                if let Some(path) = opt_val.or_else(|| args_iter.next().cloned()) {
+                    writeln_stdout_display(ur::compiler::module_of(&path));
                 }
                 return 0;
             }
@@ -184,42 +177,53 @@ pub fn run_compiler_args(args: &[String]) -> i32 {
                 let class = args_iter.next().cloned().unwrap_or_default();
                 let num_str = args_iter.next().cloned().unwrap_or_default();
                 match num_str.parse::<i32>() {
-                    Ok(n) if cli_common::is_valid_limit(n) => {
-                        if let Err(e) = settings.add_limit(&class, n) {
-                            eprintln!("error: {}", e);
+                    Ok(limit_n) if cli_common::is_valid_limit(limit_n) => {
+                        if let Err(limit_error) = settings.add_limit(&class, limit_n) {
+                            let locale = settings.diagnostic_locale;
+                            let msg = cli_diagnostic_text(
+                                DiagnosticId::CliCompileResourceLimitConfiguration,
+                                vec![limit_error],
+                                locale,
+                            );
+                            cli_common::writeln_stderr_display(msg);
                             return 1;
                         }
                     }
                     _ => {
-                        eprintln!("error: invalid limit number '{}'", num_str);
+                        let locale = settings.diagnostic_locale;
+                        let msg = cli_diagnostic_text(
+                            DiagnosticId::CliInvalidLimitNumber,
+                            vec![num_str.clone()],
+                            locale,
+                        );
+                        cli_common::writeln_stderr_display(msg);
                         return 1;
                     }
                 }
             }
             "demo" => {
-                if let Some(p) = opt_val.or_else(|| args_iter.next().cloned()) {
-                    demo_prefix = Some(p);
+                if let Some(prefix) = opt_val.or_else(|| args_iter.next().cloned()) {
+                    demo_prefix = Some(prefix);
                     demo_guided = false;
                 }
             }
             "guided-demo" => {
-                if let Some(p) = opt_val.or_else(|| args_iter.next().cloned()) {
-                    demo_prefix = Some(p);
+                if let Some(prefix) = opt_val.or_else(|| args_iter.next().cloned()) {
+                    demo_prefix = Some(prefix);
                     demo_guided = true;
                 }
             }
-            // Ignored flags (SML compiler compat)
             "noEmacs" => {}
             "partialBuild" => {
-                if let Some(m) = opt_val.or_else(|| args_iter.next().cloned()) {
-                    _partial_build = Some(m);
+                if let Some(module_name) = opt_val.or_else(|| args_iter.next().cloned()) {
+                    _partial_build = Some(module_name);
                 }
             }
             "startLspServer" => {
                 return cli_common::exec_peer_bin("ur-lsp", &[]);
             }
-            _ if !flag.is_empty() && flag.len() <= 5 && flag.chars().all(|c| c == 'v') => {
-                cli_common::apply_verbosity_v_flag(&mut settings, flag);
+            other if !other.is_empty() && other.len() <= 5 && other.chars().all(|ch| ch == 'v') => {
+                cli_common::apply_verbosity_v_flag(&mut settings, other);
             }
             "path" => {
                 let _ = args_iter.next();
@@ -231,7 +235,13 @@ pub fn run_compiler_args(args: &[String]) -> i32 {
             }
             other => {
                 if cli_common::is_unknown_compiler_flag(other, arg) {
-                    eprintln!("error: unknown flag -{}", other);
+                    let locale = settings.diagnostic_locale;
+                    let msg = cli_diagnostic_text(
+                        DiagnosticId::CliUnknownCompilerFlag,
+                        vec![arg.clone()],
+                        locale,
+                    );
+                    cli_common::writeln_stderr_display(msg);
                     return 1;
                 }
                 project_file = Some(arg.clone());
@@ -239,29 +249,39 @@ pub fn run_compiler_args(args: &[String]) -> i32 {
         }
     }
 
-    // Demo mode: -demo <prefix> <dirname>
     if let Some(prefix) = demo_prefix {
         let dirname = match project_file {
-            Some(p) => p,
+            Some(dir) => dir,
             None => {
-                eprintln!("error: -demo requires a directory argument");
+                let locale = settings.diagnostic_locale;
+                let msg =
+                    cli_diagnostic_text(DiagnosticId::CliDemoRequiresDirectory, vec![], locale);
+                cli_common::writeln_stderr_display(msg);
                 return 1;
             }
         };
         match ur::demo::make(&prefix, &dirname, &mut settings, demo_guided) {
             Ok(true) => return 0,
             Ok(false) => return 1,
-            Err(e) => {
-                eprintln!("{}", e);
+            Err(demo_error) => {
+                let locale = settings.diagnostic_locale;
+                let msg = cli_diagnostic_text(
+                    DiagnosticId::CliDemoModeFailed,
+                    vec![format!("{demo_error:#}")],
+                    locale,
+                );
+                cli_common::writeln_stderr_display(msg);
                 return 1;
             }
         }
     }
 
     let project = match project_file {
-        Some(p) => p,
+        Some(path) => path,
         None => {
-            eprintln!("error: no project specified, see -help");
+            let locale = settings.diagnostic_locale;
+            let msg = cli_diagnostic_text(DiagnosticId::CliNoProjectSeeHelp, vec![], locale);
+            cli_common::writeln_stderr_display(msg);
             return 1;
         }
     };
@@ -269,8 +289,13 @@ pub fn run_compiler_args(args: &[String]) -> i32 {
     let urp_path = std::path::Path::new(&project);
     match ur::compiler::compile(urp_path, &mut settings).into_result() {
         Ok(_exe) => 0,
-        Err(e) => {
-            eprintln!("{}", e);
+        Err(compile_error) => {
+            let locale = settings.diagnostic_locale;
+            let text = match compile_error.downcast::<CompileError>() {
+                Ok(ce) => format_compile_error_for_terminal(&ce, locale),
+                Err(err) => format!("{err:#}"),
+            };
+            cli_common::writeln_stderr_display(text);
             1
         }
     }
@@ -281,28 +306,31 @@ pub fn run_compiler_args(args: &[String]) -> i32 {
 /// Stack size is [`ur::COMPILE_THREAD_STACK_BYTES`] so deep elaboration (type inference) does not overflow the default thread stack.
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    // Run in a thread with 64MB stack to handle deep elaboration recursion.
     let worker = match std::thread::Builder::new()
         .stack_size(ur::COMPILE_THREAD_STACK_BYTES)
         .spawn(move || run_compiler_args(&args[1..]))
     {
-        Ok(h) => h,
-        Err(e) => {
-            eprintln!(
-                "Could not start the compiler worker thread (stack size {} bytes): {e}\n\
-                 Try closing other heavy processes or raising the stack limit.",
-                ur::COMPILE_THREAD_STACK_BYTES
+        Ok(handle) => handle,
+        Err(thread_error) => {
+            let locale = diagnostic_locale_for_cli(None);
+            let text = cli_diagnostic_text(
+                DiagnosticId::CliCompilerWorkerSpawnFailed,
+                vec![
+                    ur::COMPILE_THREAD_STACK_BYTES.to_string(),
+                    thread_error.to_string(),
+                ],
+                locale,
             );
+            writeln_stderr_display(text);
             process::exit(1);
         }
     };
     let code = match worker.join() {
         Ok(exit) => exit,
         Err(_) => {
-            eprintln!(
-                "The compiler worker thread panicked. This is usually a compiler bug.\n\
-                 If you can reproduce it with a small project, please report it."
-            );
+            let locale = diagnostic_locale_for_cli(None);
+            let text = cli_diagnostic_text(DiagnosticId::CliCompilerWorkerPanicked, vec![], locale);
+            writeln_stderr_line(&text);
             1
         }
     };

@@ -15,6 +15,7 @@
 mod dap_framing;
 mod dap_session;
 mod dap_shared;
+mod diagnostic_locale;
 mod gdb_session;
 mod mi_parse;
 

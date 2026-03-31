@@ -10,12 +10,13 @@
 //!
 //! **Style:** new/edited Rust here follows [README.md](../README.md) Rust code style (exceptions documented there).
 
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, Result};
 use std::path::{Path, PathBuf};
 #[cfg(test)]
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use crate::diagnostics::{DiagnosticId, DiagnosticPayload};
+use crate::cli_common::cli_diagnostic_text;
+use crate::diagnostics::{DiagnosticId, DiagnosticLocale, DiagnosticPayload};
 use crate::error_types::ErrorReporter;
 use crate::settings::Settings;
 
@@ -32,21 +33,39 @@ pub(crate) static APPEND_NATIVE_LIBDIR_FALLBACK_INVOCATIONS: AtomicUsize = Atomi
 #[cfg(test)]
 pub(crate) static RESOLVE_BOOT_ROOT_INVOCATIONS: AtomicUsize = AtomicUsize::new(0);
 
-/// When diagnostics were already printed to stderr, summarize why compilation stops.
-fn bail_if_errors_reported(errors: &ErrorReporter, phase: &str) -> Result<()> {
-    if !errors.has_errors() {
+/// When diagnostics were already printed to stderr, summarize why compilation stops (catalog copy).
+fn bail_if_errors_reported(
+    errors: &ErrorReporter,
+    phase: &str,
+    locale: DiagnosticLocale,
+) -> Result<()> {
+    if !errors.has_hard_errors() {
         return Ok(());
     }
-    let n = errors.errors.len();
+    let diagnostic_count = errors.errors.len();
+    let body = cli_diagnostic_text(
+        DiagnosticId::CliCompileStoppedAfterDiagnostics,
+        vec![phase.to_string(), diagnostic_count.to_string()],
+        locale,
+    );
+    let banner_label =
+        cli_diagnostic_text(DiagnosticId::CliToolBannerCompileStopped, vec![], locale);
     bail!(
         "{}",
-        crate::error_types::format_tool_diagnostic_banner_and_body(
-            "COMPILE STOPPED",
-            &format!(
-                "{phase} finished with {n} diagnostic(s) above.\n\nEach one uses the same layout as the Ur/Web Rust compiler (`-- TYPE`, `-- PARSE`, `-- SQL`, …). Scroll up, fix the first error, and try again — later messages are often knock-on effects."
-            ),
-        )
+        crate::error_types::format_tool_diagnostic_banner_and_body(&banner_label, &body)
     );
+}
+
+/// Wrap “phase returned `None`” in a catalog message for `?` conversion.
+fn anyhow_phase_incomplete(settings: &Settings, phase_label: &str) -> anyhow::Error {
+    anyhow::anyhow!(
+        "{}",
+        cli_diagnostic_text(
+            DiagnosticId::CliPhaseIncompleteNoOutput,
+            vec![phase_label.to_string()],
+            settings.diagnostic_locale,
+        )
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -218,12 +237,31 @@ fn boot_root_from(start: PathBuf) -> Option<PathBuf> {
     }
 }
 
-/// Project root containing `lib/ur/basis.urs`: walk up from the test binary / `ur-compile`
-/// executable first, then from [`std::env::current_dir`] (supports temp-project tests that symlink
-/// `lib/ur` into an isolated directory).
+/// Environment variable naming an explicit Ur/Web checkout root (directory that contains `lib/ur/basis.urs`).
+const URWEB_BOOT_ROOT_ENV: &str = "URWEB_BOOT_ROOT";
+
+/// Locate the Ur/Web distribution root: optional `URWEB_BOOT_ROOT`, then parents of `current_exe`, then `current_dir`.
+///
+/// Order matters for installs whose binary path does not lie under the checkout and for demo builds
+/// where the shell’s current working directory is not the repository root.
+///
+/// # Returns
+///
+/// `Some(root)` when `root/lib/ur/basis.urs` exists; `None` if no candidate applies.
 fn resolve_boot_root() -> Option<PathBuf> {
     #[cfg(test)]
     RESOLVE_BOOT_ROOT_INVOCATIONS.fetch_add(1, Ordering::SeqCst);
+    if let Ok(raw) = std::env::var(URWEB_BOOT_ROOT_ENV) {
+        let trimmed = raw.trim();
+        if !trimmed.is_empty() {
+            // Prefer an absolute root so relative `URWEB_BOOT_ROOT` survives `cd` in shell wrappers.
+            let candidate = PathBuf::from(trimmed);
+            let candidate = std::fs::canonicalize(&candidate).unwrap_or(candidate);
+            if candidate.join("lib/ur/basis.urs").is_file() {
+                return Some(candidate);
+            }
+        }
+    }
     if let Ok(exe) = std::env::current_exe() {
         if let Some(p) = exe.parent() {
             if let Some(r) = boot_root_from(p.to_path_buf()) {
@@ -287,29 +325,39 @@ fn append_urweb_native_libdir_fallback(link_cmd: &mut std::process::Command) {
     }
 }
 
-/// When `settings.boot_linking` is set, walk up from the current executable to find the checkout root
-/// (directory containing `lib/ur/basis.urs`) and populate `job.basis_lib_dir` and `config_*` paths.
+/// When `settings.boot_linking` is set, resolve the checkout root and set `job.basis_lib_dir` to `lib/ur` under that root.
+///
+/// Also fills empty `config_*` paths from the same root when present. **`basis_lib_dir` is always
+/// replaced** when a boot root is found so a stale or job-parsed path cannot skip loading `basis.urs` / `top.ur`.
 ///
 /// # Arguments
 ///
-/// * `job` — Project job to augment (basis library directory).
-/// * `settings` — Compiler settings to augment (`config_include`, `config_lib`, TLS library paths).
+/// * `job` — Project job to augment (`basis_lib_dir`).
+/// * `settings` — Compiler settings to augment (`config_include`, `config_lib`, TLS-related library paths).
 ///
 /// # Returns
 ///
-/// Nothing; no-op when `boot_linking` is false or the root cannot be found.
-pub fn apply_boot_settings(job: &mut Job, settings: &mut Settings) {
+/// `Ok(())` when `boot_linking` is false, or when a boot root is found. **`Err`** when `-boot` is in
+/// effect but no tree containing `lib/ur/basis.urs` is found (set [`URWEB_BOOT_ROOT_ENV`] or run from
+/// the distribution root).
+///
+/// # Errors
+///
+/// Missing boot tree under `-boot` / `boot_linking` — message names `URWEB_BOOT_ROOT` and `lib/ur/basis.urs`.
+pub fn apply_boot_settings(job: &mut Job, settings: &mut Settings) -> Result<(), String> {
     #[cfg(test)]
     APPLY_BOOT_SETTINGS_CALLS.fetch_add(1, Ordering::SeqCst);
     if !settings.boot_linking {
-        return;
+        return Ok(());
     }
     let Some(root) = resolve_boot_root() else {
-        return;
+        return Err(format!(
+            "-boot requires the Ur/Web library tree (lib/ur/basis.urs). Set {} to the checkout root, or run the compiler from that tree.",
+            URWEB_BOOT_ROOT_ENV
+        ));
     };
-    if job.basis_lib_dir.is_none() {
-        job.basis_lib_dir = Some(root.join("lib/ur"));
-    }
+    let lib_ur = root.join("lib/ur");
+    job.basis_lib_dir = Some(lib_ur);
     if settings.config_include.is_empty() {
         let inc = root.join("include/urweb");
         if inc.exists() {
@@ -336,6 +384,7 @@ pub fn apply_boot_settings(job: &mut Job, settings: &mut Settings) {
             settings.config_libunistring_libs = "-lunistring".into();
         }
     }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -819,6 +868,14 @@ pub fn core_reduce_local(file: crate::core::File) -> crate::core::File {
     crate::core::local_reduction::reduce(file)
 }
 
+/// Like [`core_reduce_local`] but forwards recoverable internal diagnostics to `errors` when `Some`.
+pub fn core_reduce_local_with_errors(
+    file: crate::core::File,
+    errors: &mut Option<&mut ErrorReporter>,
+) -> crate::core::File {
+    crate::core::local_reduction::reduce_with_errors(file, errors)
+}
+
 /// Core phase: dead-code elimination (“shake”).
 ///
 /// # Returns
@@ -849,6 +906,14 @@ pub fn core_reduce(file: crate::core::File, settings: &Settings) -> crate::core:
 /// Transformed [`crate::core::File`].
 pub fn core_especialize(file: crate::core::File) -> crate::core::File {
     crate::core::especialize::especialize(file)
+}
+
+/// Like [`core_especialize`] but forwards recoverable internal diagnostics to `errors` when `Some`.
+pub fn core_especialize_with_errors(
+    file: crate::core::File,
+    errors: &mut Option<&mut ErrorReporter>,
+) -> crate::core::File {
+    crate::core::especialize::especialize_with_reporter(file, errors)
 }
 
 /// Core phase: remove polymorphism where possible.
@@ -1170,7 +1235,7 @@ pub fn mono_filecache(
     crate::monomorphized::filecache::instrument(file, settings)
 }
 
-/// Information-flow analysis in debug builds; `None` if `errors` is non-empty afterward.
+/// Information-flow analysis in debug builds; `None` if a non-warning diagnostic was reported.
 ///
 /// # Returns
 ///
@@ -1181,7 +1246,7 @@ pub fn mono_iflow(
     errors: &mut ErrorReporter,
 ) -> Option<crate::monomorphized::File> {
     crate::monomorphized::iflow::check(&file, settings, errors);
-    if errors.has_errors() {
+    if errors.has_hard_errors() {
         None
     } else {
         Some(file)
@@ -1318,20 +1383,43 @@ const CC_LINK_TEST_DEADLINE: std::time::Duration = std::time::Duration::from_sec
 fn command_status_deadline(
     cmd: &mut std::process::Command,
     what: &str,
+    locale: DiagnosticLocale,
 ) -> Result<std::process::ExitStatus> {
     use std::time::{Duration, Instant};
-    let mut child = cmd.spawn().with_context(|| format!("spawn {what}"))?;
+    let mut child = cmd.spawn().map_err(|spawn_error| {
+        anyhow::anyhow!(
+            "{}",
+            cli_diagnostic_text(
+                DiagnosticId::CliSubprocessSpawnFailed,
+                vec![what.to_string(), spawn_error.to_string()],
+                locale,
+            )
+        )
+    })?;
     let start = Instant::now();
     loop {
-        if let Some(st) = child.try_wait().with_context(|| format!("poll {what}"))? {
+        if let Some(st) = child.try_wait().map_err(|poll_error| {
+            anyhow::anyhow!(
+                "{}",
+                cli_diagnostic_text(
+                    DiagnosticId::CliSubprocessPollFailed,
+                    vec![what.to_string(), poll_error.to_string()],
+                    locale,
+                )
+            )
+        })? {
             return Ok(st);
         }
         if start.elapsed() > CC_LINK_TEST_DEADLINE {
             let _ = child.kill();
             let _ = child.wait();
             bail!(
-                "{what} timed out after {:?} (likely bad argv from a mutant)",
-                CC_LINK_TEST_DEADLINE
+                "{}",
+                cli_diagnostic_text(
+                    DiagnosticId::CliCompilerCcLinkTestDeadlineExceeded,
+                    vec![what.to_string(), format!("{CC_LINK_TEST_DEADLINE:?}")],
+                    locale,
+                )
             );
         }
         std::thread::sleep(Duration::from_millis(25));
@@ -1342,8 +1430,18 @@ fn command_status_deadline(
 fn command_status_deadline(
     cmd: &mut std::process::Command,
     what: &str,
+    locale: DiagnosticLocale,
 ) -> Result<std::process::ExitStatus> {
-    cmd.status().with_context(|| format!("running {what}"))
+    cmd.status().map_err(|run_error| {
+        anyhow::anyhow!(
+            "{}",
+            cli_diagnostic_text(
+                DiagnosticId::CliSubprocessRunFailed,
+                vec![what.to_string(), run_error.to_string()],
+                locale,
+            )
+        )
+    })
 }
 
 /// Write `c_source` to a `.c` file next to `output`, compile to `.o`, then link the executable at `output`.
@@ -1363,7 +1461,7 @@ fn command_status_deadline(
 ///
 /// # Errors
 ///
-/// Write failures, non-zero `cc`/`ld` status, or subprocess errors (context from [`anyhow::Context`]).
+/// Write failures, non-zero `cc`/`ld` status, or subprocess errors (messages use the diagnostic catalog where applicable).
 pub fn cc_and_link(c_source: &str, output: &Path, job: &Job, settings: &Settings) -> Result<()> {
     use std::process::Command;
     #[cfg(test)]
@@ -1386,8 +1484,24 @@ pub fn cc_and_link(c_source: &str, output: &Path, job: &Job, settings: &Settings
             .to_string_lossy()
     ));
 
-    std::fs::write(&c_file, c_source)
-        .with_context(|| format!("writing C source to {}", c_file.display()))?;
+    let c_build_banner = cli_diagnostic_text(
+        DiagnosticId::CliToolBannerCBuild,
+        vec![],
+        settings.diagnostic_locale,
+    );
+    std::fs::write(&c_file, c_source).map_err(|write_error| {
+        anyhow::anyhow!(
+            "{}",
+            crate::error_types::format_tool_diagnostic_banner_and_body(
+                &c_build_banner,
+                &cli_diagnostic_text(
+                    DiagnosticId::CliWriteGeneratedCFileFailed,
+                    vec![c_file.display().to_string(), write_error.to_string()],
+                    settings.diagnostic_locale,
+                ),
+            )
+        )
+    })?;
 
     let cc = if settings.config_c_compiler.is_empty() {
         "cc"
@@ -1455,18 +1569,28 @@ pub fn cc_and_link(c_source: &str, output: &Path, job: &Job, settings: &Settings
             "C compile (object) step"
         );
     }
-    let compile_status = command_status_deadline(&mut compile_cmd, &format!("C compiler '{cc}'"))?;
+    let compile_status = command_status_deadline(
+        &mut compile_cmd,
+        &format!("C compiler '{cc}'"),
+        settings.diagnostic_locale,
+    )?;
     match compile_status.success() {
         true => {}
         false => {
+            let detail = cli_diagnostic_text(
+                DiagnosticId::CliCCompilerRejectedGeneratedFile,
+                vec![
+                    cc.to_string(),
+                    format!("{compile_status}"),
+                    c_file.display().to_string(),
+                ],
+                settings.diagnostic_locale,
+            );
             bail!(
                 "{}",
                 crate::error_types::format_tool_diagnostic_banner_and_body(
-                    "C BUILD",
-                    &format!(
-                        "The C compiler (`{cc}`, exit {compile_status}) rejected the generated file `{}`.\n\nUr/Web already produced this C from your `.ur` sources — the problem is now at the C toolchain layer. Typical causes: wrong `-I` path to the Ur/Web runtime headers, a bad `ccompiler` in your project config, or an internal codegen bug.\n\nTry running the same compile command manually (copy from `ur-compile -verbose` if needed) so the compiler prints the exact line number; then open the `.c` file there or report the issue with a small repro.",
-                        c_file.display()
-                    ),
+                    &c_build_banner,
+                    &detail
                 )
             );
         }
@@ -1553,21 +1677,32 @@ pub fn cc_and_link(c_source: &str, output: &Path, job: &Job, settings: &Settings
             "C link step"
         );
     }
-    let link_status =
-        command_status_deadline(&mut link_cmd, &format!("linker '{linker_cmd_base}'"))?;
+    let link_banner = cli_diagnostic_text(
+        DiagnosticId::CliToolBannerLink,
+        vec![],
+        settings.diagnostic_locale,
+    );
+    let link_status = command_status_deadline(
+        &mut link_cmd,
+        &format!("linker '{linker_cmd_base}'"),
+        settings.diagnostic_locale,
+    )?;
     match link_status.success() {
         true => {}
         false => {
+            let detail = cli_diagnostic_text(
+                DiagnosticId::CliLinkerCouldNotProduceExecutable,
+                vec![
+                    linker_cmd_base.to_string(),
+                    format!("{link_status}"),
+                    output.display().to_string(),
+                    o_file.display().to_string(),
+                ],
+                settings.diagnostic_locale,
+            );
             bail!(
                 "{}",
-                crate::error_types::format_tool_diagnostic_banner_and_body(
-                    "LINK",
-                    &format!(
-                        "The linker (`{linker_cmd_base}`, exit {link_status}) could not produce `{}`.\n\nThe object file `{}` was built successfully. Check that `liburweb` and your database driver libraries are installed and visible (`-L` paths), and that optional flags like BearSSL / `URWEB_NATIVE_LIB_DIR` match your machine.",
-                        output.display(),
-                        o_file.display()
-                    ),
-                )
+                crate::error_types::format_tool_diagnostic_banner_and_body(&link_banner, &detail)
             );
         }
     }
@@ -1622,7 +1757,7 @@ pub fn resolve_project_job_and_settings(urp_path: &Path) -> Result<(Job, Setting
     let mut job = parse_urp(urp_path).map_err(|e| e.to_string())?;
     let mut settings = Settings::new();
     settings.boot_linking = true;
-    apply_boot_settings(&mut job, &mut settings);
+    apply_boot_settings(&mut job, &mut settings)?;
     apply_job_db_settings(&job, &mut settings).map_err(|e| e.to_string())?;
     let urp = resolve_urp_project_path(urp_path);
     crate::db::apply_urp_manifest_db_defaults(&urp, &mut settings)?;
@@ -1646,8 +1781,20 @@ pub fn resolve_project_settings_for_urp(urp_path: &Path) -> Result<Settings, Str
 pub fn effective_project_db_for_workspace_root(
     workspace_root: &std::path::Path,
 ) -> Result<crate::db::ProjectDb, String> {
-    let urp_path = crate::lsp_workspace::discover_unique_urp(workspace_root)?;
-    let (_, settings) = resolve_project_job_and_settings(&urp_path)?;
+    let locale =
+        crate::cli_common::diagnostic_locale_from_manifest_path(&workspace_root.join("ur.toml"));
+    let urp_path = crate::lsp_workspace::discover_unique_urp(workspace_root)
+        .map_err(|discovery_error| discovery_error.to_diagnostic_text(locale))?;
+    let (_, settings) = resolve_project_job_and_settings(&urp_path).map_err(|resolver_error| {
+        crate::cli_common::cli_diagnostic_text(
+            DiagnosticId::CliLspProjectResolveFailed,
+            vec![
+                urp_path.display().to_string(),
+                format!("{resolver_error:#}"),
+            ],
+            locale,
+        )
+    })?;
     Ok(crate::db::effective_project_db(&settings))
 }
 
@@ -1672,18 +1819,19 @@ fn run_compile(urp_path: &Path, settings: &mut Settings) -> Result<PathBuf> {
 
     // Phase 1: parse project file (append .urp if not already present)
     let urp_path_buf = resolve_urp_project_path(urp_path);
-    let mut job = parse_urp(&urp_path_buf)?;
-
-    apply_boot_settings(&mut job, settings);
-    apply_job_db_settings(&job, settings).map_err(|e| anyhow::anyhow!("{}", e))?;
-    crate::db::apply_urp_manifest_db_defaults(&urp_path_buf, settings)
-        .map_err(|e| anyhow::anyhow!("{}", e))?;
     crate::db::apply_urp_manifest_diagnostic_locale(&urp_path_buf, settings)
-        .map_err(|e| anyhow::anyhow!("{}", e))?;
-    crate::db::reconcile_ur_manifest_with_resolved_db(&urp_path_buf, settings)
-        .map_err(|e| anyhow::anyhow!("{}", e))?;
-
+        .map_err(|error_message| anyhow::anyhow!(error_message))?;
     let mut errors = ErrorReporter::from_settings(settings);
+    let mut job = crate::urp_parser::parse_urp_with_reporter(&urp_path_buf, &mut errors)?;
+
+    apply_boot_settings(&mut job, settings)
+        .map_err(|error_message| anyhow::anyhow!(error_message))?;
+    apply_job_db_settings(&job, settings)
+        .map_err(|error_message| anyhow::anyhow!(error_message))?;
+    crate::db::apply_urp_manifest_db_defaults(&urp_path_buf, settings)
+        .map_err(|error_message| anyhow::anyhow!(error_message))?;
+    crate::db::reconcile_ur_manifest_with_resolved_db(&urp_path_buf, settings)
+        .map_err(|error_message| anyhow::anyhow!(error_message))?;
 
     // Apply job settings globally
     settings.set_url_prefix(&job.prefix);
@@ -1698,56 +1846,69 @@ fn run_compile(urp_path: &Path, settings: &mut Settings) -> Result<PathBuf> {
     let mut phase_t = Instant::now();
     // Phase 2: parse sources
     let source_file = parse_sources(&job, settings, &mut errors)
-        .ok_or_else(|| anyhow::anyhow!("Parse failed"))?;
-    bail_if_errors_reported(&errors, "Parsing")?;
+        .ok_or_else(|| anyhow_phase_incomplete(settings, "parsing"))?;
+    bail_if_errors_reported(&errors, "Parsing", settings.diagnostic_locale)?;
     crate::compiler_tracing::log_phase_complete(settings, "parse", phase_t);
 
     phase_t = Instant::now();
     // Phase 3: elaborate
     let elab_file = elaborate(source_file, settings, &mut errors)
-        .ok_or_else(|| anyhow::anyhow!("Elaboration failed"))?;
-    bail_if_errors_reported(&errors, "Elaboration (types and modules)")?;
+        .ok_or_else(|| anyhow_phase_incomplete(settings, "elaboration"))?;
+    bail_if_errors_reported(
+        &errors,
+        "Elaboration (types and modules)",
+        settings.diagnostic_locale,
+    )?;
 
     // Phase 3.5: unnest
     let elab_file = unnest(elab_file, &mut errors);
-    bail_if_errors_reported(&errors, "Unnest (lambda lifting)")?;
+    bail_if_errors_reported(
+        &errors,
+        "Unnest (lambda lifting)",
+        settings.diagnostic_locale,
+    )?;
     crate::compiler_tracing::log_phase_complete(settings, "elaborate", phase_t);
 
     phase_t = Instant::now();
     // Phase 4: explify
-    let expl_file =
-        explify(elab_file, &mut errors).ok_or_else(|| anyhow::anyhow!("Explify failed"))?;
+    let expl_file = explify(elab_file, &mut errors)
+        .ok_or_else(|| anyhow_phase_incomplete(settings, "explify"))?;
 
     // Phase 5: corify
-    let core_file =
-        corify(expl_file, settings, &mut errors).ok_or_else(|| anyhow::anyhow!("Corify failed"))?;
+    let core_file = corify(expl_file, settings, &mut errors)
+        .ok_or_else(|| anyhow_phase_incomplete(settings, "corify"))?;
     crate::compiler_tracing::log_phase_complete(settings, "explify_corify", phase_t);
 
     phase_t = Instant::now();
     // Core passes
     let core_file = core_untangle(core_file);
-    let core_file = core_reduce_local(core_file);
+    let mut core_recovery_reporter: Option<&mut ErrorReporter> = Some(&mut errors);
+    let core_file = core_reduce_local_with_errors(core_file, &mut core_recovery_reporter);
     let core_file = core_shake(core_file);
     let core_file = core_reduce(core_file, settings);
-    let core_file = core_especialize(core_file);
+    let core_file = core_especialize_with_errors(core_file, &mut core_recovery_reporter);
     let core_file = core_unpoly(core_file);
     let core_file = core_specialize(core_file);
     let core_file = core_rpcify(core_file, settings, &mut errors)
-        .ok_or_else(|| anyhow::anyhow!("Rpcify failed"))?;
-    let core_file =
-        core_tag(core_file, settings, &mut errors).ok_or_else(|| anyhow::anyhow!("Tag failed"))?;
+        .ok_or_else(|| anyhow_phase_incomplete(settings, "rpcify"))?;
+    let core_file = core_tag(core_file, settings, &mut errors)
+        .ok_or_else(|| anyhow_phase_incomplete(settings, "tag"))?;
     let core_file = core_effectize(core_file, settings);
 
     // Core checks
     check_marshal(&core_file, settings, &mut errors);
     check_termination(&core_file, &mut errors);
-    bail_if_errors_reported(&errors, "Core verification (marshalling / termination)")?;
+    bail_if_errors_reported(
+        &errors,
+        "Core verification (marshalling / termination)",
+        settings.diagnostic_locale,
+    )?;
     crate::compiler_tracing::log_phase_complete(settings, "core", phase_t);
 
     phase_t = Instant::now();
     // Monoize
     let mono_file = monoize(core_file, settings, &mut errors)
-        .ok_or_else(|| anyhow::anyhow!("Monoize failed"))?;
+        .ok_or_else(|| anyhow_phase_incomplete(settings, "monomorphization"))?;
 
     // Collect endpoint metadata (endpoints.sml) — side output, file unchanged.
     let (mono_file, _endpoints) = mono_endpoints(mono_file);
@@ -1770,13 +1931,17 @@ fn run_compile(urp_path: &Path, settings: &mut Settings) -> Result<PathBuf> {
     let (mono_file, _env_vars) = mono_side_check(mono_file, settings, &mut errors);
     let mono_file = mono_sig_check(mono_file);
     let mono_file = mono_dbmode_check(mono_file);
-    bail_if_errors_reported(&errors, "Monomorphization checks")?;
+    bail_if_errors_reported(
+        &errors,
+        "Monomorphization checks",
+        settings.diagnostic_locale,
+    )?;
     crate::compiler_tracing::log_phase_complete(settings, "mono", phase_t);
 
     phase_t = Instant::now();
     let mono_file = if settings.debug {
         mono_iflow(mono_file, settings, &mut errors)
-            .ok_or_else(|| anyhow::anyhow!("Iflow failed"))?
+            .ok_or_else(|| anyhow_phase_incomplete(settings, "information-flow analysis"))?
     } else {
         mono_file
     };
@@ -1788,7 +1953,7 @@ fn run_compile(urp_path: &Path, settings: &mut Settings) -> Result<PathBuf> {
 
     let mono_file = if settings.sqlcache {
         mono_sqlcache(mono_file, settings, &mut errors)
-            .ok_or_else(|| anyhow::anyhow!("Sqlcache failed"))?
+            .ok_or_else(|| anyhow_phase_incomplete(settings, "SQL cache"))?
     } else {
         mono_file
     };
@@ -1797,9 +1962,9 @@ fn run_compile(urp_path: &Path, settings: &mut Settings) -> Result<PathBuf> {
     let _js = js_compile(&mono_file, settings, &mut errors);
 
     // CJRize
-    let cjr_file =
-        cjrize(mono_file, &mut errors).ok_or_else(|| anyhow::anyhow!("CJRize failed"))?;
-    bail_if_errors_reported(&errors, "C back-end (CJR)")?;
+    let cjr_file = cjrize(mono_file, &mut errors)
+        .ok_or_else(|| anyhow_phase_incomplete(settings, "C back-end lowering"))?;
+    bail_if_errors_reported(&errors, "C back-end (CJR)", settings.diagnostic_locale)?;
 
     // Prepare SQL statements and annotate nested queries
     let cjr_file = cjr_prepare(cjr_file, settings);
@@ -1813,8 +1978,17 @@ fn run_compile(urp_path: &Path, settings: &mut Settings) -> Result<PathBuf> {
 
     // Write SQL if requested
     if let Some(sql_path) = &job.sql {
-        std::fs::write(sql_path, &sql_ddl)
-            .with_context(|| format!("writing SQL to {}", sql_path))?;
+        let locale = settings.diagnostic_locale;
+        std::fs::write(sql_path, &sql_ddl).map_err(|write_error| {
+            anyhow::anyhow!(
+                "{}",
+                cli_diagnostic_text(
+                    DiagnosticId::CliCompileWriteSqlFileFailed,
+                    vec![sql_path.clone(), write_error.to_string()],
+                    locale,
+                )
+            )
+        })?;
     }
 
     phase_t = Instant::now();
@@ -1842,17 +2016,18 @@ pub fn compile_to_outputs(urp_path: &Path, settings: &mut Settings) -> Result<(S
     use std::time::Instant;
 
     let urp_path_buf = resolve_urp_project_path(urp_path);
-    let mut job = parse_urp(&urp_path_buf)?;
-    apply_boot_settings(&mut job, settings);
-    apply_job_db_settings(&job, settings).map_err(|e| anyhow::anyhow!("{}", e))?;
-    crate::db::apply_urp_manifest_db_defaults(&urp_path_buf, settings)
-        .map_err(|e| anyhow::anyhow!("{}", e))?;
     crate::db::apply_urp_manifest_diagnostic_locale(&urp_path_buf, settings)
-        .map_err(|e| anyhow::anyhow!("{}", e))?;
-    crate::db::reconcile_ur_manifest_with_resolved_db(&urp_path_buf, settings)
-        .map_err(|e| anyhow::anyhow!("{}", e))?;
-
+        .map_err(|error_message| anyhow::anyhow!(error_message))?;
     let mut errors = ErrorReporter::from_settings(settings);
+    let mut job = crate::urp_parser::parse_urp_with_reporter(&urp_path_buf, &mut errors)?;
+    apply_boot_settings(&mut job, settings)
+        .map_err(|error_message| anyhow::anyhow!(error_message))?;
+    apply_job_db_settings(&job, settings)
+        .map_err(|error_message| anyhow::anyhow!(error_message))?;
+    crate::db::apply_urp_manifest_db_defaults(&urp_path_buf, settings)
+        .map_err(|error_message| anyhow::anyhow!(error_message))?;
+    crate::db::reconcile_ur_manifest_with_resolved_db(&urp_path_buf, settings)
+        .map_err(|error_message| anyhow::anyhow!(error_message))?;
 
     settings.set_url_prefix(&job.prefix);
     settings.timeout = job.timeout;
@@ -1865,48 +2040,61 @@ pub fn compile_to_outputs(urp_path: &Path, settings: &mut Settings) -> Result<(S
 
     let mut phase_t = Instant::now();
     let source_file = parse_sources(&job, settings, &mut errors)
-        .ok_or_else(|| anyhow::anyhow!("Parse failed"))?;
-    bail_if_errors_reported(&errors, "Parsing")?;
+        .ok_or_else(|| anyhow_phase_incomplete(settings, "parsing"))?;
+    bail_if_errors_reported(&errors, "Parsing", settings.diagnostic_locale)?;
     crate::compiler_tracing::log_phase_complete(settings, "parse", phase_t);
 
     phase_t = Instant::now();
     let elab_file = elaborate(source_file, settings, &mut errors)
-        .ok_or_else(|| anyhow::anyhow!("Elaboration failed"))?;
-    bail_if_errors_reported(&errors, "Elaboration (types and modules)")?;
+        .ok_or_else(|| anyhow_phase_incomplete(settings, "elaboration"))?;
+    bail_if_errors_reported(
+        &errors,
+        "Elaboration (types and modules)",
+        settings.diagnostic_locale,
+    )?;
 
     let elab_file = unnest(elab_file, &mut errors);
-    bail_if_errors_reported(&errors, "Unnest (lambda lifting)")?;
+    bail_if_errors_reported(
+        &errors,
+        "Unnest (lambda lifting)",
+        settings.diagnostic_locale,
+    )?;
     crate::compiler_tracing::log_phase_complete(settings, "elaborate", phase_t);
 
     phase_t = Instant::now();
-    let expl_file =
-        explify(elab_file, &mut errors).ok_or_else(|| anyhow::anyhow!("Explify failed"))?;
-    let core_file =
-        corify(expl_file, settings, &mut errors).ok_or_else(|| anyhow::anyhow!("Corify failed"))?;
+    let expl_file = explify(elab_file, &mut errors)
+        .ok_or_else(|| anyhow_phase_incomplete(settings, "explify"))?;
+    let core_file = corify(expl_file, settings, &mut errors)
+        .ok_or_else(|| anyhow_phase_incomplete(settings, "corify"))?;
     crate::compiler_tracing::log_phase_complete(settings, "explify_corify", phase_t);
 
     phase_t = Instant::now();
     let core_file = core_untangle(core_file);
-    let core_file = core_reduce_local(core_file);
+    let mut core_recovery_reporter: Option<&mut ErrorReporter> = Some(&mut errors);
+    let core_file = core_reduce_local_with_errors(core_file, &mut core_recovery_reporter);
     let core_file = core_shake(core_file);
     let core_file = core_reduce(core_file, settings);
-    let core_file = core_especialize(core_file);
+    let core_file = core_especialize_with_errors(core_file, &mut core_recovery_reporter);
     let core_file = core_unpoly(core_file);
     let core_file = core_specialize(core_file);
     let core_file = core_rpcify(core_file, settings, &mut errors)
-        .ok_or_else(|| anyhow::anyhow!("Rpcify failed"))?;
-    let core_file =
-        core_tag(core_file, settings, &mut errors).ok_or_else(|| anyhow::anyhow!("Tag failed"))?;
+        .ok_or_else(|| anyhow_phase_incomplete(settings, "rpcify"))?;
+    let core_file = core_tag(core_file, settings, &mut errors)
+        .ok_or_else(|| anyhow_phase_incomplete(settings, "tag"))?;
     let core_file = core_effectize(core_file, settings);
 
     check_marshal(&core_file, settings, &mut errors);
     check_termination(&core_file, &mut errors);
-    bail_if_errors_reported(&errors, "Core verification (marshalling / termination)")?;
+    bail_if_errors_reported(
+        &errors,
+        "Core verification (marshalling / termination)",
+        settings.diagnostic_locale,
+    )?;
     crate::compiler_tracing::log_phase_complete(settings, "core", phase_t);
 
     phase_t = Instant::now();
     let mono_file = monoize(core_file, settings, &mut errors)
-        .ok_or_else(|| anyhow::anyhow!("Monoize failed"))?;
+        .ok_or_else(|| anyhow_phase_incomplete(settings, "monomorphization"))?;
     let (mono_file, _endpoints) = mono_endpoints(mono_file);
     let mono_file = mono_untangle(mono_file);
     let mono_file = mono_fuse(mono_file);
@@ -1920,28 +2108,32 @@ pub fn compile_to_outputs(urp_path: &Path, settings: &mut Settings) -> Result<(S
     let (mono_file, _env_vars) = mono_side_check(mono_file, settings, &mut errors);
     let mono_file = mono_sig_check(mono_file);
     let mono_file = mono_dbmode_check(mono_file);
-    bail_if_errors_reported(&errors, "Monomorphization checks")?;
+    bail_if_errors_reported(
+        &errors,
+        "Monomorphization checks",
+        settings.diagnostic_locale,
+    )?;
     crate::compiler_tracing::log_phase_complete(settings, "mono", phase_t);
 
     phase_t = Instant::now();
     let mono_file = if settings.debug {
         mono_iflow(mono_file, settings, &mut errors)
-            .ok_or_else(|| anyhow::anyhow!("Iflow failed"))?
+            .ok_or_else(|| anyhow_phase_incomplete(settings, "information-flow analysis"))?
     } else {
         mono_file
     };
     let mono_file = mono_name_js(mono_file);
     let mono_file = if settings.sqlcache {
         mono_sqlcache(mono_file, settings, &mut errors)
-            .ok_or_else(|| anyhow::anyhow!("Sqlcache failed"))?
+            .ok_or_else(|| anyhow_phase_incomplete(settings, "SQL cache"))?
     } else {
         mono_file
     };
 
     let _js = js_compile(&mono_file, settings, &mut errors);
-    let cjr_file =
-        cjrize(mono_file, &mut errors).ok_or_else(|| anyhow::anyhow!("CJRize failed"))?;
-    bail_if_errors_reported(&errors, "C back-end (CJR)")?;
+    let cjr_file = cjrize(mono_file, &mut errors)
+        .ok_or_else(|| anyhow_phase_incomplete(settings, "C back-end lowering"))?;
+    bail_if_errors_reported(&errors, "C back-end (CJR)", settings.diagnostic_locale)?;
 
     let cjr_file = cjr_prepare(cjr_file, settings);
     let cjr_file = cjr_check_nest(cjr_file);
@@ -2040,6 +2232,23 @@ mod tests {
         )
     }
 
+    /// Assert `left` and `right` denote the same location after [`std::fs::canonicalize`].
+    ///
+    /// Temporary directories on macOS often use `/var/folders/...` while canonical paths use
+    /// `/private/var/folders/...`; [`super::resolve_boot_root`] also canonicalizes `URWEB_BOOT_ROOT`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if either path cannot be canonicalized or the canonical [`std::path::PathBuf`] values differ.
+    fn assert_paths_canonically_equal(left: &Path, right: &Path) {
+        let left_canonical = std::fs::canonicalize(left).expect("canonicalize left test path"); // symlinks, /private on macOS
+        let right_canonical = std::fs::canonicalize(right).expect("canonicalize right test path"); // same for other operand
+        assert_eq!(
+            left_canonical, right_canonical,
+            "expected the same directory after canonicalization (macOS /private prefix, symlinks)"
+        ); // surface both paths when they mismatch
+    }
+
     #[test]
     fn module_of_simple() {
         assert_eq!(module_of("foo.ur"), "Foo");
@@ -2069,7 +2278,7 @@ mod tests {
         errors.report(crate::error_types::CompileError::Plain(
             DiagnosticPayload::new(DiagnosticId::MutationTestingBadPlaceholder, Vec::new()),
         ));
-        let out = bail_if_errors_reported(&errors, "Parsing");
+        let out = bail_if_errors_reported(&errors, "Parsing", DiagnosticLocale::En);
         assert!(
             out.is_err(),
             "must stop the pipeline when the error buffer is non-empty"
@@ -2086,8 +2295,24 @@ mod tests {
     fn bail_if_errors_reported_ok_when_no_diagnostics() {
         let errors = ErrorReporter::new();
         assert!(
-            bail_if_errors_reported(&errors, "Parsing").is_ok(),
+            bail_if_errors_reported(&errors, "Parsing", DiagnosticLocale::En).is_ok(),
             "empty error buffer must not bail"
+        );
+    }
+
+    /// Warnings stored on the reporter must not abort batch compile (`.urp` soft failures, core recovery).
+    #[test]
+    fn bail_if_errors_reported_ok_when_only_warnings() {
+        use crate::error_types::{CompileError, Span};
+
+        let mut errors = ErrorReporter::new();
+        errors.report(CompileError::warning_at(
+            Span::dummy(),
+            DiagnosticPayload::new(DiagnosticId::MutationTestingBadPlaceholder, Vec::new()),
+        ));
+        assert!(
+            bail_if_errors_reported(&errors, "Parsing", DiagnosticLocale::En).is_ok(),
+            "warning-only buffer must not bail"
         );
     }
 
@@ -2106,6 +2331,65 @@ mod tests {
             Some(tmp.path()),
             "expected parent scan to find directory containing lib/ur/basis.urs"
         );
+    }
+
+    /// [`super::resolve_boot_root`] must prefer [`super::URWEB_BOOT_ROOT_ENV`] when it points at a valid tree.
+    #[test]
+    fn resolve_boot_root_honors_urweb_boot_root_env() {
+        let _guard = crate::compiler_diagnostics::lock_for_compile(
+            &crate::compiler_diagnostics::TEST_CWD_LOCK,
+            "resolve_boot_root URWEB_BOOT_ROOT",
+        );
+        let tmp = tempfile::tempdir().unwrap();
+        let basis_dir = tmp.path().join("lib/ur");
+        std::fs::create_dir_all(&basis_dir).unwrap();
+        std::fs::write(basis_dir.join("basis.urs"), "(* test sig *)").unwrap();
+        let previous = std::env::var_os(URWEB_BOOT_ROOT_ENV);
+        std::env::set_var(URWEB_BOOT_ROOT_ENV, tmp.path());
+        let root = resolve_boot_root();
+        match &previous {
+            None => std::env::remove_var(URWEB_BOOT_ROOT_ENV),
+            Some(value) => std::env::set_var(URWEB_BOOT_ROOT_ENV, value),
+        }
+        let root_path = root
+            .as_deref()
+            .expect("URWEB_BOOT_ROOT with basis.urs must resolve"); // resolver returns Some(...)
+        assert_paths_canonically_equal(root_path, tmp.path()); // string compare fails across /var vs /private
+    }
+
+    /// [`super::apply_boot_settings`] must replace an existing `basis_lib_dir` when boot linking resolves a root.
+    #[test]
+    fn apply_boot_settings_overrides_basis_lib_dir_when_boot_root_known() {
+        let _guard = crate::compiler_diagnostics::lock_for_compile(
+            &crate::compiler_diagnostics::TEST_CWD_LOCK,
+            "apply_boot_settings basis_lib_dir override",
+        );
+        let tmp = tempfile::tempdir().unwrap();
+        let basis_dir = tmp.path().join("lib/ur");
+        std::fs::create_dir_all(&basis_dir).unwrap();
+        std::fs::write(basis_dir.join("basis.urs"), "(* test sig *)").unwrap();
+        let previous = std::env::var_os(URWEB_BOOT_ROOT_ENV);
+        std::env::set_var(URWEB_BOOT_ROOT_ENV, tmp.path());
+        let wrong = tmp.path().join("not_lib_ur");
+        let mut job = Job {
+            basis_lib_dir: Some(wrong),
+            ..Default::default()
+        };
+        let mut settings = Settings {
+            boot_linking: true,
+            ..Default::default()
+        };
+        apply_boot_settings(&mut job, &mut settings)
+            .expect("apply_boot_settings with temp URWEB_BOOT_ROOT");
+        match &previous {
+            None => std::env::remove_var(URWEB_BOOT_ROOT_ENV),
+            Some(value) => std::env::set_var(URWEB_BOOT_ROOT_ENV, value),
+        }
+        let configured_basis = job
+            .basis_lib_dir
+            .as_deref()
+            .expect("apply_boot_settings sets basis"); // overwritten from boot root
+        assert_paths_canonically_equal(configured_basis, basis_dir.as_path()); // canonical root/lib/ur vs temp paths
     }
 
     /// [`super::ur_disk_paths_same`] is used for LSP overlay selection; `true`/`false` mutants mis-apply editor buffers.
@@ -2314,6 +2598,10 @@ db = "sqlite"
     /// [`effective_project_db_for_workspace_root`] must follow the same resolution as batch compile (not `ProjectDb::default()`).
     #[test]
     fn effective_project_db_for_workspace_root_matches_manifest_sqlite() {
+        let _guard = crate::compiler_diagnostics::lock_for_compile(
+            &crate::compiler_diagnostics::TEST_CWD_LOCK,
+            "effective_project_db URWEB_BOOT_ROOT",
+        );
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("w.urp"), "Main\n").unwrap();
         std::fs::write(dir.path().join("Main.ur"), "val x = 1\n").unwrap();
@@ -2329,7 +2617,14 @@ db = "sqlite"
 "#,
         )
         .unwrap();
-        let db = effective_project_db_for_workspace_root(dir.path()).expect("project db");
+        let previous_boot_root = std::env::var_os(URWEB_BOOT_ROOT_ENV);
+        std::env::set_var(URWEB_BOOT_ROOT_ENV, env!("CARGO_MANIFEST_DIR")); // temp tree lacks lib/ur; point at workspace root
+        let db_result = effective_project_db_for_workspace_root(dir.path());
+        match &previous_boot_root {
+            None => std::env::remove_var(URWEB_BOOT_ROOT_ENV),
+            Some(value) => std::env::set_var(URWEB_BOOT_ROOT_ENV, value),
+        }
+        let db = db_result.expect("project db");
         assert_eq!(
             db.canonical_name(),
             "sqlite",

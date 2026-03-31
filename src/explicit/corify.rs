@@ -2784,7 +2784,7 @@ pub fn corify(
         out.extend(ds);
     }
 
-    if cfx.errors.has_errors() {
+    if cfx.errors.has_hard_errors() {
         None
     } else {
         Some(out)

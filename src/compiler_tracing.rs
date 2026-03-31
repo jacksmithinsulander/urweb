@@ -8,6 +8,9 @@ use std::sync::Once;
 
 use tracing_subscriber::EnvFilter;
 
+use crate::cli_common::{cli_diagnostic_text, writeln_stderr_line};
+use crate::diagnostics::DiagnosticId;
+
 /// Maximum meaningful repetition for Forge-style `-v` flags (five levels beyond quiet).
 pub const MAX_COMPILER_VERBOSITY: u8 = 5;
 
@@ -75,9 +78,15 @@ pub fn log_phase_complete(
     phase: &'static str,
     started: std::time::Instant,
 ) {
-    let ms = started.elapsed().as_millis();
-    tracing::debug!(phase, elapsed_ms = ms, "phase complete");
+    let millis = started.elapsed().as_millis();
+    tracing::debug!(phase, elapsed_ms = millis, "phase complete");
     if settings.emit_phase_timing || settings.verbosity >= 4 {
-        eprintln!("  · {phase}: {ms} ms");
+        let locale = settings.diagnostic_locale; // Follow project language from job / manifest when set.
+        let line = cli_diagnostic_text(
+            DiagnosticId::CliCompilerPhaseTiming,
+            vec![phase.to_string(), millis.to_string()],
+            locale,
+        ); // Catalog-driven phase timing line (localized like other CLI text).
+        writeln_stderr_line(&line); // One stderr line per phase when timing is enabled.
     }
 }

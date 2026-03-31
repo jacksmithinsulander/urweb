@@ -1,9 +1,13 @@
 //! CLI integration tests: run the ur orchestrator and sub-binaries.
 //! Catches mutants in ur, ur-new, ur-compile, ur-fmt, etc.
 
+mod common;
+
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Mutex;
+
+use common::{ur_package_bin_dir, ur_package_binary};
 
 static CWD_LOCK: Mutex<()> = Mutex::new(());
 
@@ -18,15 +22,12 @@ fn cwd_lock_guard() -> std::sync::MutexGuard<'static, ()> {
 }
 
 fn target_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_ur"))
-        .parent()
-        .unwrap()
-        .to_path_buf()
+    ur_package_bin_dir()
 }
 
 /// Returns Command for `ur` with PATH set so ur-new, ur-compile, etc. are findable.
 fn ur() -> Command {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_ur"));
+    let mut cmd = Command::new(ur_package_binary("ur"));
     let bin_dir = target_dir();
     let path_sep = if cfg!(windows) { ";" } else { ":" };
     let path_env = format!(
@@ -51,8 +52,10 @@ fn cli_no_args_prints_usage() {
     let out = ur().output().unwrap();
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("usage:") || stderr.contains("ur <command>"),
-        "ur with no args must print usage: {}",
+        stderr.contains("usage:")
+            || stderr.contains("subcommand")
+            || stderr.contains("ur <command>"),
+        "ur with no args must print usage guidance: {}",
         stderr
     );
 }
@@ -123,7 +126,11 @@ fn cli_build_with_toml_does_not_say_not_found() {
     let dir = tempfile::tempdir().unwrap();
     let cwd = std::env::current_dir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
-    std::fs::write("ur.toml", "[package]\nname=\"x\"\n[build]\nentry=\"x\"\n").unwrap();
+    std::fs::write(
+        "ur.toml",
+        "[package]\nname=\"x\"\nlanguage=\"sv\"\n[build]\nentry=\"x\"\n",
+    )
+    .unwrap();
     std::fs::write("x.urp", "x.ur").unwrap();
     std::fs::write("x.ur", "val x = 1").unwrap();
     let out = ur().arg("build").output().unwrap();
@@ -141,6 +148,8 @@ fn cli_build_with_toml_does_not_say_not_found() {
     assert!(
         stderr.contains("C compilation")
             || stderr.contains("C BUILD")
+            || stderr.contains("C-BYGG")
+            || stderr.contains("LÄNKNING")
             || stderr.contains("C compiler")
             || stderr.contains("urweb.h")
             || stderr.contains("Elaboration")
@@ -197,8 +206,8 @@ fn cli_unknown_flag_prints_error() {
     let out = ur().args(["-badflag", "myproj"]).output().unwrap();
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("unknown flag"),
-        "expected 'unknown flag' in stderr: {}",
+        stderr.to_ascii_lowercase().contains("flag"),
+        "expected flag rejection in stderr: {}",
         stderr
     );
 }
@@ -248,7 +257,7 @@ fn cli_limit_valid_number_not_rejected() {
         .unwrap();
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        !stderr.contains("invalid limit number"),
+        !stderr.contains("not a valid integer"),
         "valid limit 5 must not be rejected: {}",
         stderr
     );
@@ -262,7 +271,7 @@ fn cli_limit_negative_rejected() {
         .unwrap();
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("invalid limit number"),
+        stderr.contains("-5") && stderr.contains("not a valid integer"),
         "negative limit -5 must be rejected (catches is_valid_limit mutant): {}",
         stderr
     );
@@ -371,7 +380,7 @@ fn cli_build_with_scss_fails_when_sass_exits_nonzero() {
         "when sass exits 1, build must fail (exit code)"
     );
     assert!(
-        stderr.contains("SCSS compilation failed"),
+        stderr.contains("SCSS") && stderr.contains("failed"),
         "when sass fails, must report SCSS error (catches ! in build_project): {}",
         stderr
     );
@@ -402,7 +411,7 @@ fn cli_install_from_project_dir_does_not_say_toml_not_found() {
         stderr
     );
     assert!(
-        stderr.contains("git submodule add failed"),
+        stderr.contains("git submodule") && stderr.contains("did not finish"),
         "install failure must report git error: {}",
         stderr
     );
