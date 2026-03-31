@@ -35,6 +35,7 @@
 //!
 //! **Style:** new/edited Rust here follows [README.md](../../README.md) Rust code style (exceptions documented there).
 
+pub mod expected_symbol_labels;
 pub mod expr_langsec;
 pub mod grammar_helpers;
 pub mod lexical_analyzer;
@@ -2128,6 +2129,51 @@ pub fn preprocess_ur_for_parse(src: &str) -> String {
     )))
 }
 
+/// Turn a LALRPOP [`lalrpop_util::ParseError`] into a short user-facing line (not full `Debug`).
+///
+/// # Arguments
+///
+/// * `parse_error` — Parser failure after [`lexical_analyzer::XmlAwareLexer`].
+///
+/// # Returns
+///
+/// One or two sentences suitable for catalog placeholder `{1}` on parse failures.
+#[cfg(generated_parser)]
+fn format_parse_error_for_user(
+    parse_error: &lalrpop_util::ParseError<
+        usize,
+        lexical_analyzer::Token,
+        lexical_analyzer::LexError,
+    >,
+) -> String {
+    use lalrpop_util::ParseError;
+    match parse_error {
+        ParseError::InvalidToken { location } => {
+            format!("invalid token at byte offset {location}")
+        }
+        ParseError::UnrecognizedEof { location, expected } => {
+            format!(
+                "unexpected end of input at byte {location}; expected one of: {}",
+                expected_symbol_labels::join_friendly_expected_labels(expected),
+            )
+        }
+        ParseError::UnrecognizedToken { token, expected } => {
+            let (start, unexpected_token, end) = token;
+            format!(
+                "unexpected token {unexpected_token} at bytes {start}–{end}; expected one of: {}",
+                expected_symbol_labels::join_friendly_expected_labels(expected),
+            )
+        }
+        ParseError::ExtraToken { token } => {
+            let (start, extra_token, end) = token;
+            format!("extra token {extra_token} at bytes {start}–{end}")
+        }
+        ParseError::User { error } => {
+            format!("lexical error: {}", error.message)
+        }
+    }
+}
+
 /// Parse one `.ur` module after the standard preprocessor chain and LALRPOP parse.
 ///
 /// # Arguments
@@ -2158,8 +2204,8 @@ pub fn parse_ur(
         let lexer = lexical_analyzer::XmlAwareLexer::new(&pre);
         match grammar::FileParser::new().parse(lexer) {
             Ok(file) => Some(file),
-            Err(e) => {
-                let detail = format!("{:?}", e);
+            Err(parse_error) => {
+                let detail = format_parse_error_for_user(&parse_error);
                 let label_span = Span {
                     file: _filename.to_string(),
                     ..Span::dummy()
@@ -2263,8 +2309,8 @@ pub fn parse_urs(
         let lexer = lexical_analyzer::XmlAwareLexer::new(&preprocessed);
         match grammar::SgnItemsParser::new().parse(lexer) {
             Ok(items) => Some(items),
-            Err(e) => {
-                let detail = format!("{:?}", e);
+            Err(parse_error) => {
+                let detail = format_parse_error_for_user(&parse_error);
                 let label_span = Span {
                     file: _filename.to_string(),
                     ..Span::dummy()
@@ -2315,7 +2361,7 @@ mod tests {
 
     #[test]
     fn parse_ur_returns_none_without_generated_parser() {
-        let mut errors = ErrorReporter::new();
+        let mut errors = ErrorReporter::new_silent();
         let result = parse_ur(
             "test.ur",
             "val x = 1",
@@ -2380,7 +2426,7 @@ mod tests {
 
     #[test]
     fn parse_top_level_decl_count_tracks_parser() {
-        let mut errors = ErrorReporter::new();
+        let mut errors = ErrorReporter::new_silent();
         let n = parse_top_level_decl_count("test.ur", "val x = 1", &mut errors);
         #[cfg(not(generated_parser))]
         {
@@ -2395,7 +2441,7 @@ mod tests {
 
     #[test]
     fn parse_ur_two_vals_requires_two_decls() {
-        let mut errors = ErrorReporter::new();
+        let mut errors = ErrorReporter::new_silent();
         let n = parse_ur(
             "t.ur",
             "val a = 1\nval b = 2",
@@ -2419,8 +2465,8 @@ mod tests {
 
     #[test]
     fn parse_top_level_decl_count_matches_parse_ur_len() {
-        let mut e1 = ErrorReporter::new();
-        let mut e2 = ErrorReporter::new();
+        let mut e1 = ErrorReporter::new_silent();
+        let mut e2 = ErrorReporter::new_silent();
         let src = "val p = 1\nval q = 2\nval r = 3";
         let a = parse_top_level_decl_count("m.ur", src, &mut e1);
         let b = parse_ur("m.ur", src, &mut e2, crate::db::ProjectDb::default()).map(|f| f.len());
@@ -2431,7 +2477,7 @@ mod tests {
 
     #[test]
     fn parse_urs_returns_none_without_generated_parser() {
-        let mut errors = ErrorReporter::new();
+        let mut errors = ErrorReporter::new_silent();
         let result = parse_urs("test.urs", "val x : int", &mut errors);
         #[cfg(not(generated_parser))]
         {
@@ -2595,7 +2641,7 @@ mod tests {
             ];
             for expr in cases {
                 let file_src = format!("val _ = {}\n", expr);
-                let mut errs = ErrorReporter::new();
+                let mut errs = ErrorReporter::new_silent();
                 let Some(file) = parse_ur(
                     "equiv.ur",
                     &file_src,

@@ -5642,7 +5642,8 @@ fn try_match_class(
 
 /// Type-check and elaborate a parsed [`crate::source::File`] into an elaborated [`crate::elaborated::File`].
 ///
-/// Runs declaration-by-declaration (including auto-open of `Basis` after `FfiStr("Basis", ...)`).
+/// Runs declaration-by-declaration (including auto-open of `Basis` after `FfiStr("Basis", ...)`,
+/// and auto-open of `Top` after `Str("Top", ...)` — matching SML `elabFile`'s `dopen` on both).
 ///
 /// # Arguments
 ///
@@ -5686,6 +5687,24 @@ pub fn elab_file(
                     &disjointness_environment,
                     &["Basis".to_string()],
                     &basis_span,
+                );
+                elaboration_environment = open_env;
+                disjointness_environment = open_denv;
+                all_decls.extend(open_ds);
+            }
+        }
+        // After the `Top` structure (from `top.ur` / `top.urs`), SML `elabFile` does
+        // `dopen env' {str = top_n, ...}` so `folder`, `mapU`, `foldUR`, `txt`, … are in scope
+        // for user modules (`elabFile` around `dopen` on Top in `elaborate.sml`).
+        if let crate::source::Decl::Str(name, _, _, _, _) = &decl.node {
+            if name == "Top" {
+                let top_span = decl.span.clone();
+                let (open_ds, open_env, open_denv) = elab_open(
+                    &mut elaboration_context,
+                    &elaboration_environment,
+                    &disjointness_environment,
+                    &["Top".to_string()],
+                    &top_span,
                 );
                 elaboration_environment = open_env;
                 disjointness_environment = open_denv;
@@ -5757,7 +5776,7 @@ mod tests {
             ..Default::default()
         };
         let settings = Settings::new();
-        let mut parse_errors = ErrorReporter::new();
+        let mut parse_errors = ErrorReporter::new_silent();
 
         // parse_sources emits FfiStr("Basis") and the Top structure automatically.
         let source_file = crate::compiler::parse_sources(&job, &settings, &mut parse_errors);
@@ -5769,7 +5788,7 @@ mod tests {
         };
 
         // Elaborate the source tree and collect all diagnostics into elab_errors.
-        let mut elab_errors = ErrorReporter::new();
+        let mut elab_errors = ErrorReporter::new_silent();
         let _elab = elab_file(source_file, &settings, &mut elab_errors);
 
         // Count only ElabKindMismatch diagnostics — the regression target for this bug fix.

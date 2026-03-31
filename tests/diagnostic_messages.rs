@@ -7,8 +7,8 @@ use ur::elaborated::elaboration_errors::{
     compile_error_from_expression_elaboration_error, compile_error_from_kind_elaboration_error,
     ExpressionElaborationError, KindElaborationError,
 };
-use ur::elaborated::{Constructor, Located};
-use ur::error_types::{CompileError, Pos, Span};
+use ur::elaborated::Constructor;
+use ur::error_types::{CompileError, Located, Pos, Span};
 
 /// Build a compact [`Span`] used only to exercise [`CompileError`] rendering.
 fn sample_span() -> Span {

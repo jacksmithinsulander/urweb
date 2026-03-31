@@ -13,13 +13,13 @@
 use crate::diagnostics::{
     render_diagnostic_body, DiagnosticId, DiagnosticLocale, DiagnosticPayload,
 };
-use crate::elaborated::{
-    LocatedConstructor, LocatedDeclaration, LocatedExpression, LocatedKind, LocatedPattern,
-    LocatedSignature, LocatedSignatureItem,
-};
 use crate::elaborated::type_display::{
     format_constructor, format_expression, format_kind, format_pattern, format_signature,
     format_signature_item,
+};
+use crate::elaborated::{
+    LocatedConstructor, LocatedDeclaration, LocatedExpression, LocatedKind, LocatedPattern,
+    LocatedSignature, LocatedSignatureItem,
 };
 use crate::error_types::{CompileError, Span};
 
@@ -37,19 +37,13 @@ pub fn kind_unification_payload(failure: &KindUnificationFailure) -> DiagnosticP
         KindUnificationFailure::OccursCheckFailed(found_kind, expected_kind) => {
             DiagnosticPayload::new(
                 DiagnosticId::KindOccursCheckFailed,
-                vec![
-                    format_kind(found_kind),
-                    format_kind(expected_kind),
-                ],
+                vec![format_kind(found_kind), format_kind(expected_kind)],
             )
         }
         KindUnificationFailure::IncompatibleKinds(found_kind, expected_kind) => {
             DiagnosticPayload::new(
                 DiagnosticId::IncompatibleKinds,
-                vec![
-                    format_kind(found_kind),
-                    format_kind(expected_kind),
-                ],
+                vec![format_kind(found_kind), format_kind(expected_kind)],
             )
         }
         KindUnificationFailure::ScopePreventsUnification(first_kind, second_kind) => {
@@ -908,7 +902,10 @@ pub fn compile_error_from_signature_elaboration_error(
             source_span.clone(),
             DiagnosticPayload::new(
                 DiagnosticId::IncompatibleSignatureShapes,
-                vec![format_signature(left_signature), format_signature(right_signature)],
+                vec![
+                    format_signature(left_signature),
+                    format_signature(right_signature),
+                ],
             ),
         ),
         SignatureElaborationError::WhereClauseFieldUnavailable(signature, field_name) => {

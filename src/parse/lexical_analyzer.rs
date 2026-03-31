@@ -456,6 +456,166 @@ pub enum Token {
     Eof,
 }
 
+/// Human-oriented token descriptions for catalog parse details (not [`Debug`](std::fmt::Debug)).
+impl std::fmt::Display for Token {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Shorten long string literals inside error lines.
+        fn push_truncated_string(
+            formatter: &mut std::fmt::Formatter<'_>,
+            prefix: &str,
+            text: &str,
+            closing: &str,
+        ) -> std::fmt::Result {
+            const MAX_CHARS: usize = 32;
+            let shortened: String = text.chars().take(MAX_CHARS).collect();
+            let ellipsis = if text.chars().count() > MAX_CHARS {
+                "…"
+            } else {
+                ""
+            };
+            write!(formatter, "{prefix}{shortened}{ellipsis}{closing}")
+        }
+        match self {
+            Token::Int(value) => write!(formatter, "integer literal `{value}`"),
+            Token::Float(value) => write!(formatter, "float literal `{value}`"),
+            Token::String(text) => {
+                write!(formatter, "string literal \"")?;
+                push_truncated_string(formatter, "", text, "\"")?;
+                Ok(())
+            }
+            Token::Char(character) => write!(formatter, "character literal `#\"{character}\"`"),
+            Token::Whitespace => write!(formatter, "<whitespace>"),
+            Token::Comment => write!(formatter, "<comment>"),
+            Token::Unit => write!(formatter, "`()`"),
+            Token::Minusminusminus => write!(formatter, "`---`"),
+            Token::Dcolonwild => write!(formatter, "`::::`"),
+            Token::Underunderunder => write!(formatter, "`___`"),
+            Token::SgnAbs => write!(formatter, "`sgn_abs`"),
+            Token::SgnDefCon => write!(formatter, "`sgn_def_con`"),
+            Token::CaseBar => write!(formatter, "`case_bar`"),
+            Token::ArmSep => write!(formatter, "`arm_sep`"),
+            Token::CaseEnd => write!(formatter, "`case_end`"),
+            Token::DtypeOf => write!(formatter, "`dtype_of`"),
+            Token::DtCon0 => write!(formatter, "`dt_con0`"),
+            Token::DtBar => write!(formatter, "`dt_bar`"),
+            Token::DtDone => write!(formatter, "`dt_done`"),
+            Token::Dkarrow => write!(formatter, "`==>`"),
+            Token::Dotdotdot => write!(formatter, "`...`"),
+            Token::Ne => write!(formatter, "`<>`"),
+            Token::Larrow => write!(formatter, "`<-`"),
+            Token::Arrow => write!(formatter, "`->`"),
+            Token::Darrow => write!(formatter, "`=>`"),
+            Token::Karrow => write!(formatter, "`-->`"),
+            Token::Plusplus => write!(formatter, "`++`"),
+            Token::Minusminus => write!(formatter, "`--`"),
+            Token::Dcolon => write!(formatter, "`::`"),
+            Token::Tcolonwild => write!(formatter, "`:::`"),
+            Token::Underunder => write!(formatter, "`__`"),
+            Token::Fwdapp => write!(formatter, "`|>`"),
+            Token::Revapp => write!(formatter, "`<|`"),
+            Token::Le => write!(formatter, "`<=`"),
+            Token::Ge => write!(formatter, "`>=`"),
+            Token::Lparen => write!(formatter, "`(`"),
+            Token::Rparen => write!(formatter, "`)`"),
+            Token::Lbrack => write!(formatter, "`[`"),
+            Token::Rbrack => write!(formatter, "`]`"),
+            Token::Lbrace => write!(formatter, "`{{`"),
+            Token::Rbrace => write!(formatter, "`}}`"),
+            Token::Caret => write!(formatter, "`^`"),
+            Token::Eq => write!(formatter, "`=`"),
+            Token::Lt => write!(formatter, "`<`"),
+            Token::Gt => write!(formatter, "`>`"),
+            Token::Comma => write!(formatter, "`,`"),
+            Token::Colon => write!(formatter, "`:`"),
+            Token::Dot => write!(formatter, "`.`"),
+            Token::Dollar => write!(formatter, "`$`"),
+            Token::Hash => write!(formatter, "`#`"),
+            Token::Under => write!(formatter, "`_`"),
+            Token::Twiddle => write!(formatter, "`~`"),
+            Token::Bar => write!(formatter, "`|`"),
+            Token::Star => write!(formatter, "`*`"),
+            Token::Semi => write!(formatter, "`;`"),
+            Token::Bang => write!(formatter, "`!`"),
+            Token::Plus => write!(formatter, "`+`"),
+            Token::Minus => write!(formatter, "`-`"),
+            Token::Divide => write!(formatter, "`/`"),
+            Token::Mod => write!(formatter, "`%`"),
+            Token::At => write!(formatter, "`@`"),
+            Token::And => write!(formatter, "`and`"),
+            Token::Andalso => write!(formatter, "`andalso`"),
+            Token::Case => write!(formatter, "`case`"),
+            Token::Class => write!(formatter, "`class`"),
+            Token::Con => write!(formatter, "`con`"),
+            Token::Constraint => write!(formatter, "`constraint`"),
+            Token::Constraints => write!(formatter, "`constraints`"),
+            Token::Cookie => write!(formatter, "`cookie`"),
+            Token::Datatype => write!(formatter, "`datatype`"),
+            Token::Else => write!(formatter, "`else`"),
+            Token::End => write!(formatter, "`end`"),
+            Token::Export => write!(formatter, "`export`"),
+            Token::False => write!(formatter, "`false`"),
+            Token::Ffi => write!(formatter, "`ffi`"),
+            Token::Fn => write!(formatter, "`fn`"),
+            Token::Fun => write!(formatter, "`fun`"),
+            Token::Functor => write!(formatter, "`functor`"),
+            Token::If => write!(formatter, "`if`"),
+            Token::In => write!(formatter, "`in`"),
+            Token::Include => write!(formatter, "`include`"),
+            Token::Let => write!(formatter, "`let`"),
+            Token::Map => write!(formatter, "`map`"),
+            Token::Of => write!(formatter, "`of`"),
+            Token::Open => write!(formatter, "`open`"),
+            Token::Orelse => write!(formatter, "`orelse`"),
+            Token::Policy => write!(formatter, "`policy`"),
+            Token::Rec => write!(formatter, "`rec`"),
+            Token::Sequence => write!(formatter, "`sequence`"),
+            Token::Sig => write!(formatter, "`sig`"),
+            Token::Signature => write!(formatter, "`signature`"),
+            Token::Struct => write!(formatter, "`struct`"),
+            Token::Structure => write!(formatter, "`structure`"),
+            Token::Style => write!(formatter, "`style`"),
+            Token::Table => write!(formatter, "`table`"),
+            Token::Task => write!(formatter, "`task`"),
+            Token::Then => write!(formatter, "`then`"),
+            Token::True => write!(formatter, "`true`"),
+            Token::Type => write!(formatter, "`type`"),
+            Token::Val => write!(formatter, "`val`"),
+            Token::View => write!(formatter, "`view`"),
+            Token::UrwebPut => write!(formatter, "`urweb_put`"),
+            Token::UrwebGet => write!(formatter, "`urweb_get`"),
+            Token::UrwebTbTransfer => write!(formatter, "`urweb_tb_transfer`"),
+            Token::Where => write!(formatter, "`sgn_where`"),
+            Token::SgnSubwhere => write!(formatter, "`sgn_subwhere`"),
+            Token::Name => write!(formatter, "`Name`"),
+            Token::KindType => write!(formatter, "`Type`"),
+            Token::KindUnit => write!(formatter, "`Unit`"),
+            Token::UpperIdent(name) => write!(formatter, "upper identifier `{name}`"),
+            Token::Ident(name) => write!(formatter, "identifier `{name}`"),
+            Token::BacktickPath(path) => write!(formatter, "backtick path `{path}`"),
+            Token::BeginTag(name) => write!(formatter, "XML `<{name}`"),
+            Token::EndTag(name) => write!(formatter, "XML `</{name}>`"),
+            Token::XmlBeginEnd => write!(formatter, "XML self-closing `/>`"),
+            Token::Notags(text) => {
+                write!(formatter, "XML text \"")?;
+                push_truncated_string(formatter, "", text, "\"")?;
+                Ok(())
+            }
+            Token::Action => write!(formatter, "`ACTION`"),
+            Token::All => write!(formatter, "`ALL`"),
+            Token::Cconstraint => write!(formatter, "`CONSTRAINT`"),
+            Token::Cif => write!(formatter, "`IF`"),
+            Token::Cthen => write!(formatter, "`THEN`"),
+            Token::Celse => write!(formatter, "`ELSE`"),
+            Token::Cwhere => write!(formatter, "`WHERE`"),
+            Token::Csymbol(symbol) => write!(formatter, "cookie/policy symbol `{symbol}`"),
+            Token::XmlAttrNameEq(name) => write!(formatter, "XML attribute `{name}` (=`...)"),
+            Token::XmlAttrNameBare(name) => write!(formatter, "XML attribute `{name}` (boolean)"),
+            Token::WildAnnot => write!(formatter, "`_ ::`"),
+            Token::Eof => write!(formatter, "<end of input>"),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Lexer iterator — wraps logos and yields `(start, Token, end)` triples
 // ---------------------------------------------------------------------------
@@ -1267,6 +1427,21 @@ mod tests {
             .filter_map(|r| r.ok())
             .filter(|t| *t != Token::Whitespace && *t != Token::Comment)
             .collect()
+    }
+
+    #[test]
+    fn token_display_uses_friendly_phrases_not_token_enum_debug() {
+        let keyword = format!("{}", Token::Fun);
+        assert!(
+            keyword.contains('`') && keyword.contains("fun"),
+            "expected backticked keyword: {keyword}"
+        );
+        assert!(
+            !keyword.contains("Token::"),
+            "Display must not look like Debug: {keyword}"
+        );
+        let id = format!("{}", Token::Ident("counter".into()));
+        assert!(id.contains("counter"), "{id}");
     }
 
     #[test]

@@ -2517,6 +2517,51 @@ mod tests {
         );
     }
 
+    /// Real `demo/sum.ur` uses `folder` / `foldUR` at top level; SML `elabFile` opens `Top` after linking
+    /// `top.ur` (`dopen` on Top). Rust must do the same — otherwise elaboration reports unbound `folder`.
+    #[test]
+    fn elaborate_demo_sum_finds_top_bindings_after_boot() {
+        const STACK: usize = 32 * 1024 * 1024;
+        std::thread::Builder::new()
+            .name("elaborate_demo_sum_large_stack".into())
+            .stack_size(STACK)
+            .spawn(elaborate_demo_sum_finds_top_bindings_after_boot_body)
+            .expect("spawn demo/sum elaboration thread")
+            .join()
+            .expect("demo/sum elaboration thread join");
+    }
+
+    /// Worker for [`elaborate_demo_sum_finds_top_bindings_after_boot`] (large stack for `top.ur`).
+    fn elaborate_demo_sum_finds_top_bindings_after_boot_body() {
+        let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let lib_dir = manifest_dir.join("lib/ur");
+        let sum_ur = manifest_dir.join("demo/sum.ur");
+        if !lib_dir.join("basis.urs").is_file() || !sum_ur.is_file() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::copy(&sum_ur, dir.path().join("sum.ur")).expect("copy demo/sum.ur");
+        let job = Job {
+            sources: vec!["sum".into()],
+            basis_lib_dir: Some(lib_dir),
+            ..Default::default()
+        };
+        let mut parse_errors = ErrorReporter::new_silent();
+        let settings = Settings::new();
+        let tree = with_parse_test_cwd(dir.path(), || {
+            parse_sources(&job, &settings, &mut parse_errors)
+        });
+        let tree =
+            tree.unwrap_or_else(|| panic!("parse_sources failed: {:?}", parse_errors.errors));
+        let mut elab_errors = ErrorReporter::new_silent();
+        let out = elaborate(tree, &settings, &mut elab_errors);
+        assert!(
+            out.is_some(),
+            "demo/sum.ur must elaborate with full boot (Top opened like SML elabFile): {:?}",
+            elab_errors.errors
+        );
+    }
+
     /// Synthetic UrwebNative FFI items must stay non-empty with stable names (empty `vec!` mutants break native-surface projects).
     #[test]
     fn urweb_native_ffi_sgn_items_contains_expected_vals() {

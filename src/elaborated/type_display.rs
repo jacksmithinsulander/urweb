@@ -290,6 +290,17 @@ pub fn format_expression(expression: &LocatedExpression) -> String {
     output_buffer
 }
 
+/// Append one [`SignatureItem`] summary into `output_buffer`, respecting `recursion_depth`.
+///
+/// # Parameters
+///
+/// * `output_buffer` — Destination string.
+/// * `item` — Signature item to describe.
+/// * `recursion_depth` — Current recursion level (caps at [`MAX_RECURSION_DEPTH`]).
+///
+/// # Errors
+///
+/// Returns [`std::fmt::Error`] only if writing fails.
 fn write_signature_item_into(
     output_buffer: &mut String,
     item: &LocatedSignatureItem,
@@ -321,7 +332,9 @@ fn write_signature_item_into(
                 write!(output_buffer, "datatype <empty>")
             }
         }
-        SignatureItem::DatatypeImp { name, .. } => write!(output_buffer, "datatype `{}` (import)", name),
+        SignatureItem::DatatypeImp { name, .. } => {
+            write!(output_buffer, "datatype `{}` (import)", name)
+        }
         SignatureItem::Val(name, _, constructor) => {
             write!(output_buffer, "val `{}` : ", name)?;
             write_constructor_into(output_buffer, constructor, recursion_depth + 1)
@@ -357,6 +370,13 @@ fn write_signature_item_into(
     }
 }
 
+/// Append a [`Signature`] summary (braced functor / `where` / projection forms).
+///
+/// # Parameters
+///
+/// * `output_buffer` — Destination string.
+/// * `signature` — Signature tree to print.
+/// * `recursion_depth` — Current recursion level against [`MAX_RECURSION_DEPTH`].
 fn write_signature_into(
     output_buffer: &mut String,
     signature: &LocatedSignature,
@@ -429,7 +449,16 @@ fn write_pattern_constructor_into(
     }
 }
 
-fn write_datatype_kind_hint(output_buffer: &mut String, datatype_kind: DatatypeKind) -> std::fmt::Result {
+/// Emit a short `[enum]` / `[option]` / `[dt]` tag before datatype pattern heads.
+///
+/// # Parameters
+///
+/// * `output_buffer` — Destination string.
+/// * `datatype_kind` — Runtime representation class for the datatype.
+fn write_datatype_kind_hint(
+    output_buffer: &mut String,
+    datatype_kind: DatatypeKind,
+) -> std::fmt::Result {
     let label = match datatype_kind {
         DatatypeKind::Enum => "enum",
         DatatypeKind::Option => "option",
@@ -438,6 +467,13 @@ fn write_datatype_kind_hint(output_buffer: &mut String, datatype_kind: DatatypeK
     write!(output_buffer, "[{}] ", label)
 }
 
+/// Recursively append a [`Pattern`] for diagnostics.
+///
+/// # Parameters
+///
+/// * `output_buffer` — Destination string.
+/// * `pattern` — Elaborated pattern.
+/// * `recursion_depth` — Depth guard shared with constructor printing.
 fn write_pattern_into(
     output_buffer: &mut String,
     pattern: &LocatedPattern,
@@ -452,7 +488,12 @@ fn write_pattern_into(
             write_constructor_into(output_buffer, annotated_type, recursion_depth + 1)
         }
         Pattern::Prim(primitive) => write_prim_short(output_buffer, primitive),
-        Pattern::Constructor(datatype_kind, pattern_constructor, type_arguments, optional_subpattern) => {
+        Pattern::Constructor(
+            datatype_kind,
+            pattern_constructor,
+            type_arguments,
+            optional_subpattern,
+        ) => {
             write_datatype_kind_hint(output_buffer, *datatype_kind)?;
             write_pattern_constructor_into(output_buffer, pattern_constructor)?;
             if !type_arguments.is_empty() {
@@ -473,7 +514,9 @@ fn write_pattern_into(
         }
         Pattern::Record(field_rows) => {
             write!(output_buffer, "{{ ")?;
-            for (field_index, (field_label, subpattern, _field_type)) in field_rows.iter().enumerate() {
+            for (field_index, (field_label, subpattern, _field_type)) in
+                field_rows.iter().enumerate()
+            {
                 if field_index > 0 {
                     write!(output_buffer, ", ")?;
                 }
@@ -485,6 +528,12 @@ fn write_pattern_into(
     }
 }
 
+/// Compact literal for [`Prim`] (truncate long strings).
+///
+/// # Parameters
+///
+/// * `output_buffer` — Destination string.
+/// * `primitive` — Primitive value from the elaborator.
 fn write_prim_short(output_buffer: &mut String, primitive: &Prim) -> std::fmt::Result {
     match primitive {
         Prim::Int(value) => write!(output_buffer, "{}", value),
@@ -498,6 +547,13 @@ fn write_prim_short(output_buffer: &mut String, primitive: &Prim) -> std::fmt::R
     }
 }
 
+/// Recursively append an [`Expression`] for wildcard / context messages.
+///
+/// # Parameters
+///
+/// * `output_buffer` — Destination string.
+/// * `expression` — Elaborated expression.
+/// * `recursion_depth` — Depth guard aligned with [`write_constructor_into`].
 fn write_expression_into(
     output_buffer: &mut String,
     expression: &LocatedExpression,
@@ -522,12 +578,7 @@ fn write_expression_into(
             write!(output_buffer, " ")?;
             write_expression_into(output_buffer, argument, recursion_depth + 1)
         }
-        Expression::Abs(
-            binder_name,
-            domain_constructor,
-            codomain_constructor,
-            body,
-        ) => {
+        Expression::Abs(binder_name, domain_constructor, codomain_constructor, body) => {
             write!(
                 output_buffer,
                 "\\{} : {} ; {} . ",

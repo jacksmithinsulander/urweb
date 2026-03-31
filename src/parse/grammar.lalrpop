@@ -27,6 +27,8 @@ grammar;
 extern {
     type Location = usize;
     type Error = crate::parse::lexical_analyzer::LexError;
+    // LangSec / UX: when you add a terminal here, also add a friendly label in
+    // `src/parse/expected_symbol_labels.rs` so parse errors stay readable.
 
     enum crate::parse::lexical_analyzer::Token {
         // Literals
