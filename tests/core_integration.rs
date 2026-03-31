@@ -1892,7 +1892,12 @@ fn integration_export_tagging_tag_minimal() {
     ));
     let file: ur::core::File = vec![decl];
     let mut reported = Vec::new();
-    let out = ur::core::export_tagging::tag(file, &mut |_s, m| reported.push(m.to_string()));
+    let out = ur::core::export_tagging::tag(file, &mut |_s, payload| {
+        reported.push(ur::diagnostics::render_diagnostic_body(
+            &payload,
+            ur::diagnostics::DiagnosticLocale::En,
+        ));
+    });
     assert_eq!(out.len(), 1);
 }
 
@@ -2341,7 +2346,12 @@ fn integration_export_tagging_database() {
     let decl = Located::dummy(Declaration::Database("db".into()));
     let file: ur::core::File = vec![decl];
     let mut reported = Vec::new();
-    let out = ur::core::export_tagging::tag(file, &mut |_s, m| reported.push(m.to_string()));
+    let out = ur::core::export_tagging::tag(file, &mut |_s, payload| {
+        reported.push(ur::diagnostics::render_diagnostic_body(
+            &payload,
+            ur::diagnostics::DiagnosticLocale::En,
+        ));
+    });
     assert_eq!(out.len(), 1);
 }
 

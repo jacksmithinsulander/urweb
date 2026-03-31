@@ -12,6 +12,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::db::{ProjectDb, ProjectDbCtx};
+use crate::diagnostics::DiagnosticLocale;
 
 /// An FFI function identifier: `(module_name, function_name)`.
 pub type Ffi = (String, String);
@@ -251,6 +252,15 @@ pub struct Settings {
 
     // Debug
     pub debug: bool,
+
+    /// Foundry-style `-v` … `-vvvvv` (capped at [`crate::compiler_tracing::MAX_COMPILER_VERBOSITY`]); `0` keeps default tracing quiet unless `RUST_LOG` is set.
+    pub verbosity: u8,
+
+    /// Legacy `-timing`: print coarse phase wall times on stderr; also enabled when `verbosity >= 4`.
+    pub emit_phase_timing: bool,
+
+    /// User-facing diagnostic language from `ur.toml` `[package].language` (`en` / `sv` / `es`).
+    pub diagnostic_locale: DiagnosticLocale,
 
     // Static files
     pub file_path: String,
@@ -625,6 +635,9 @@ impl Settings {
             sqlcache: false,
             mime_file_path: "/etc/mime.types".into(),
             debug: false,
+            verbosity: 0,
+            emit_phase_timing: false,
+            diagnostic_locale: DiagnosticLocale::default(),
             file_path: ".".into(),
             js_output: None,
         }

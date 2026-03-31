@@ -22,7 +22,13 @@ use anyhow::{Context, Result};
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if let Err(e) = run(args) {
-        eprintln!("ur-debugger: {e:#}");
+        eprintln!(
+            "{}",
+            ur::error_types::format_tool_diagnostic_banner_and_body(
+                "ur-debugger",
+                &format!("{e:#}")
+            )
+        );
         std::process::exit(1);
     }
 }
@@ -40,13 +46,28 @@ fn run(args: Vec<String>) -> Result<()> {
         Some("--gdb") => gdb_mi_passthrough(&args[1..]),
         Some("--tty") => gdb_tty(&args[1..]),
         Some(other) if other.starts_with('-') => {
-            eprintln!("unknown option: {other}\n");
+            eprintln!(
+                "{}",
+                ur::error_types::format_tool_diagnostic_banner_and_body(
+                    "ur-debugger",
+                    &format!(
+                        "I do not recognize the flag `{other}`.\n\nRun `ur-debugger --help` for valid modes (--dap, --gdb, --tty)."
+                    )
+                )
+            );
             print_usage();
-            Err(anyhow::anyhow!("bad arguments"))
+            Err(anyhow::anyhow!("unknown option"))
         }
         _ => {
+            eprintln!(
+                "{}",
+                ur::error_types::format_tool_diagnostic_banner_and_body(
+                    "ur-debugger",
+                    "Say which mode you want:\n  --dap   Debug Adapter Protocol on stdin/stdout\n  --gdb   Raw GDB/MI passthrough\n  --tty   Interactive GDB terminal\n\nTry: ur-debugger --help"
+                )
+            );
             print_usage();
-            Err(anyhow::anyhow!("missing mode; use --dap, --gdb, or --tty"))
+            Err(anyhow::anyhow!("missing mode"))
         }
     }
 }

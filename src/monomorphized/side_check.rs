@@ -6,6 +6,7 @@
 
 use std::collections::HashSet;
 
+use crate::diagnostics::{DiagnosticId, DiagnosticPayload};
 use crate::error_types::ErrorReporter;
 use crate::monomorphized::{Decl, Exp, File, LocExp, Sidedness};
 use crate::primitives::Prim;
@@ -37,12 +38,14 @@ fn check_exp(
                 } else {
                     x.clone()
                 };
-                errors.report_at(
+                errors.report_at_with_hint(
                     e.span.clone(),
-                    format!(
-                        "Server-side code uses client-side-only identifier \"{}.{}\"",
-                        m, display
+                    DiagnosticPayload::new(
+                        DiagnosticId::SideServerCallsClientOnlyFfi,
+                        vec![m.clone(), display],
                     ),
+                    DiagnosticId::HintSideServerCallsClientOnlyFfi,
+                    vec![],
                 );
             }
         }
@@ -73,12 +76,14 @@ fn check_exp(
                     } else {
                         x.clone()
                     };
-                    errors.report_at(
+                    errors.report_at_with_hint(
                         e.span.clone(),
-                        format!(
-                            "Server-side code uses client-side-only identifier \"{}.{}\"",
-                            m, display
+                        DiagnosticPayload::new(
+                            DiagnosticId::SideServerCallsClientOnlyFfi,
+                            vec![m.clone(), display],
                         ),
+                        DiagnosticId::HintSideServerCallsClientOnlyFfi,
+                        vec![],
                     );
                 }
             }

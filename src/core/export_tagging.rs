@@ -10,6 +10,7 @@ use std::collections::HashMap;
 
 use crate::core::environment::Env;
 use crate::core::*;
+use crate::diagnostics::{DiagnosticId, DiagnosticPayload};
 use crate::error_types::Span;
 use crate::export::{Effect, ExportKind};
 
@@ -84,18 +85,28 @@ pub(crate) fn unravel_app(
 fn _report_dup_url(
     span: &Span,
     prefix_message: &str,
-    error_reporter: &mut impl FnMut(&Span, &str),
+    error_reporter: &mut impl FnMut(&Span, DiagnosticPayload),
 ) {
-    error_reporter(span, &format!("Duplicate URL prefix {}", prefix_message));
+    error_reporter(
+        span,
+        DiagnosticPayload::new(
+            DiagnosticId::ExportDuplicateUrlPrefix,
+            vec![prefix_message.to_string()],
+        ),
+    );
 }
 
 /// Emits an error for conflicting export kinds.
-fn _report_both(span: &Span, function_name: &str, error_reporter: &mut impl FnMut(&Span, &str)) {
+fn _report_both(
+    span: &Span,
+    function_name: &str,
+    error_reporter: &mut impl FnMut(&Span, DiagnosticPayload),
+) {
     error_reporter(
         span,
-        &format!(
-            "Function {} needed for multiple modes (link, form, RPC handler).",
-            function_name
+        DiagnosticPayload::new(
+            DiagnosticId::ExportFunctionMultipleModes,
+            vec![function_name.to_string()],
         ),
     );
 }
@@ -109,13 +120,19 @@ fn tag_it(
     source_names: &HashMap<usize, String>,
     uf: &UnionFind,
     _env: &Env,
-    error_reporter: &mut impl FnMut(&Span, &str),
+    error_reporter: &mut impl FnMut(&Span, DiagnosticPayload),
 ) -> LocatedExpression {
     let span = e.span.clone();
 
     match unravel_app(&e) {
         None => {
-            error_reporter(&span, &format!("Invalid {} expression", new_attr));
+            error_reporter(
+                &span,
+                DiagnosticPayload::new(
+                    DiagnosticId::ExportInvalidTagExpression,
+                    vec![new_attr.to_string()],
+                ),
+            );
             e
         }
         Some((f_raw, args)) => {
@@ -142,14 +159,20 @@ fn tag_it(
                 }
                 Some((ek2, f2)) => {
                     if *f2 != f {
-                        error_reporter(&span, &format!("Duplicate URL prefix {}", src_name));
+                        error_reporter(
+                            &span,
+                            DiagnosticPayload::new(
+                                DiagnosticId::ExportDuplicateUrlPrefix,
+                                vec![src_name.clone()],
+                            ),
+                        );
                     }
                     if export_kind_discriminant(&ek) != export_kind_discriminant(ek2) {
                         error_reporter(
                             &span,
-                            &format!(
-                                "Function {} needed for multiple modes (link, form, RPC handler).",
-                                src_name
+                            DiagnosticPayload::new(
+                                DiagnosticId::ExportFunctionMultipleModes,
+                                vec![src_name.clone()],
                             ),
                         );
                     }
@@ -183,7 +206,7 @@ fn rewrite_exp(
     source_names: &HashMap<usize, String>,
     uf: &UnionFind,
     env: &Env,
-    error_reporter: &mut impl FnMut(&Span, &str),
+    error_reporter: &mut impl FnMut(&Span, DiagnosticPayload),
 ) -> LocatedExpression {
     let span = e.span.clone();
     match e.node {
@@ -591,7 +614,7 @@ fn make_wrapper(
 // ---------------------------------------------------------------------------
 
 /// Rewrite URL links and form actions as closures, generate wrapper functions.
-pub fn tag(file: File, error_reporter: &mut impl FnMut(&Span, &str)) -> File {
+pub fn tag(file: File, error_reporter: &mut impl FnMut(&Span, DiagnosticPayload)) -> File {
     // Build source-name lookup map from Val declarations
     let mut source_names: HashMap<usize, String> = HashMap::new();
     for d in &file {
@@ -632,7 +655,10 @@ pub fn tag(file: File, error_reporter: &mut impl FnMut(&Span, &str)) -> File {
                         if export_kind_discriminant(ek) != export_kind_discriminant(ek2) {
                             error_reporter(
                                 &span,
-                                &format!("Function {} needed for multiple modes", src_name),
+                                DiagnosticPayload::new(
+                                    DiagnosticId::ExportFunctionMultipleModesShort,
+                                    vec![src_name.clone()],
+                                ),
                             );
                         }
                         // Remove duplicate export

@@ -1109,9 +1109,12 @@ AtomExp: LocExp = {
 /// One parameter in a fn/fun binding: a term pattern or a constructor-level arg.
 FnLamParam: FunParam = {
     <p:AtomPat> => FunParam::Term(p),
-    // Implicit constructor variable (kind inferred): [nm] or [K]
+    // Implicit constructor/type variable (kind inferred): [nm] where nm is lowercase.
+    // Produces ECAbs (constructor abstraction), matching `eargp: LBRACK SYMBOL RBRACK`.
     "[" <nm:"IDENT"> "]" => FunParam::ConArg(Explicitness::Implicit, nm, None),
-    "[" <nm:"UIDENT"> "]" => FunParam::ConArg(Explicitness::Implicit, nm, None),
+    // Kind variable binder: [K] where K is uppercase.
+    // Produces EKAbs (kind abstraction), matching `eargp: LBRACK CSYMBOL RBRACK` in urweb.grm.
+    "[" <nm:"UIDENT"> "]" => FunParam::KindArg(nm),
     // Explicit constructor variable with kind: [nm :: K] or [K :: Kind]
     "[" <nm:"IDENT"> "::" <k:Kind> "]" => FunParam::ConArg(Explicitness::Explicit, nm, Some(k)),
     "[" <nm:"UIDENT"> "::" <k:Kind> "]" => FunParam::ConArg(Explicitness::Explicit, nm, Some(k)),
@@ -1143,9 +1146,11 @@ LambdaParam: FunParam = {
     ))),
     // Unnannotated or parenthesized pattern (handles (x : FullType) via AtomPat)
     <p:AtomPat> => FunParam::Term(p),
-    // Implicit constructor variable (kind inferred): [nm] or [K]
+    // Implicit constructor/type variable (kind inferred): [nm] where nm is lowercase.
     "[" <nm:"IDENT"> "]" => FunParam::ConArg(Explicitness::Implicit, nm, None),
-    "[" <nm:"UIDENT"> "]" => FunParam::ConArg(Explicitness::Implicit, nm, None),
+    // Kind variable binder: [K] where K is uppercase.
+    // Matches `eargp: LBRACK CSYMBOL RBRACK → EKAbs` in urweb.grm.
+    "[" <nm:"UIDENT"> "]" => FunParam::KindArg(nm),
     // Explicit constructor variable with kind: [nm :: K] or [K :: Kind]
     "[" <nm:"IDENT"> "::" <k:Kind> "]" => FunParam::ConArg(Explicitness::Explicit, nm, Some(k)),
     "[" <nm:"UIDENT"> "::" <k:Kind> "]" => FunParam::ConArg(Explicitness::Explicit, nm, Some(k)),
@@ -1192,6 +1197,11 @@ AtomExpNode: Exp = {
             Box::new(e),
         )
     },
+    // Empty list literal `[]` → Basis.Nil.
+    // `Con` is not nullable, so after `[`, lookahead `]` unambiguously
+    // selects this rule over `PostfixOp: "[" Con "]"` (which requires non-empty Con).
+    // This matches the SML urweb.grm `eterm: LBRACK RBRACK => EVar(["Basis"], "Nil")`.
+    "[" "]" => Exp::Var(vec!["Basis".into()], "Nil".into(), Inference::DontInfer),
     // Record expressions — explicit empty and non-empty cases to avoid
     // nullable ExpFields conflict
     "{" "}" => Exp::Record(vec![], false),
@@ -1236,6 +1246,7 @@ ExpTupleTail: Vec<LocExp> = {
     <e:Exp> => vec![e],
     <es:ExpTupleTail> "," <e:Exp> => { let mut v = es; v.push(e); v },
 };
+
 
 // ---------------------------------------------------------------------------
 // XML rules

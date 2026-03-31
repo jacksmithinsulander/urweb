@@ -36,7 +36,14 @@ fn print_usage(_settings: &Settings) {
     println!("  -o, -output <file>    output executable to <file> (or --output=FILE)");
     println!("  -tc                  stop after type checking");
     println!("  -debug               save intermediate C files");
-    println!("  -verbose             verbose output");
+    println!(
+        "  -v, -vv, … -vvvvv   verbosity (Foundry-style; stderr tracing via `tracing`, max 5)"
+    );
+    println!("  -verbose             legacy alias for a higher default verbosity (-vv)");
+    println!("  -timing              print coarse phase wall times on stderr");
+    println!(
+        "  RUST_LOG             optional `tracing-subscriber` filter (overrides default `ur=…`)"
+    );
     println!("  -iflow               run information-flow analysis");
     println!("  -limit <class> <n>   set resource limit");
     println!("  -startLspServer      run ur-lsp (Language Server Protocol on stdio)");
@@ -51,8 +58,6 @@ pub fn run_compiler_args(args: &[String]) -> i32 {
     let mut settings = Settings::new();
     let mut project_file: Option<String> = None;
     let mut _tc_only = false;
-    let mut _verbose = false;
-    let mut _timing = false;
     let mut _dump_source = false;
     let mut _do_iflow = false;
     let mut _partial_build: Option<String> = None;
@@ -121,10 +126,12 @@ pub fn run_compiler_args(args: &[String]) -> i32 {
                 settings.debug = true;
             }
             "verbose" => {
-                _verbose = true;
+                settings.verbosity = settings
+                    .verbosity
+                    .clamp(2, ur::compiler_tracing::MAX_COMPILER_VERBOSITY);
             }
             "timing" => {
-                _timing = true;
+                settings.emit_phase_timing = true;
             }
             "tc" => {
                 _tc_only = true;
@@ -210,6 +217,9 @@ pub fn run_compiler_args(args: &[String]) -> i32 {
             }
             "startLspServer" => {
                 return cli_common::exec_peer_bin("ur-lsp", &[]);
+            }
+            _ if !flag.is_empty() && flag.len() <= 5 && flag.chars().all(|c| c == 'v') => {
+                cli_common::apply_verbosity_v_flag(&mut settings, flag);
             }
             "path" => {
                 let _ = args_iter.next();

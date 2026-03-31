@@ -1,5 +1,9 @@
 //! Core surface checks aligned with the Ur/Web manual (lexical / core syntax / elaboration).
 //! Uses the real Basis when discoverable from the test binary (same boot resolution as `compiler` tests).
+//!
+//! Boot-linked elaboration of the full Basis can recurse deeply enough to overflow the **default**
+//! Rust test thread stack on some platforms. [`try_elaborate_single_module`] runs the compile on a
+//! child thread with [`ELABORATION_TEST_STACK_BYTES`] via [`std::thread::Builder::stack_size`].
 
 use std::fs;
 use std::sync::Mutex;
@@ -9,16 +13,45 @@ use ur::compiler;
 use ur::error_types::ErrorReporter;
 use ur::settings::Settings;
 
+/// Stack size for threads that run full boot + elaboration in this integration test crate.
+///
+/// Matches the lower bound that reliably passes `corpus_core_*` on the CI stack (8 MiB).
+const ELABORATION_TEST_STACK_BYTES: usize = 8 * 1024 * 1024;
+
 static CORPUS_LOCK: Mutex<()> = Mutex::new(());
 
+/// Run `body` on a fresh OS thread with [`ELABORATION_TEST_STACK_BYTES`] and propagate its result.
+///
+/// # Errors
+///
+/// Maps spawn failure or a panicking `body` (failed [`std::thread::JoinHandle::join`]) to `Err(String)`.
+fn run_with_elaboration_stack<T: Send + 'static>(
+    body: impl FnOnce() -> T + Send + 'static,
+) -> Result<T, String> {
+    std::thread::Builder::new()
+        .stack_size(ELABORATION_TEST_STACK_BYTES)
+        .spawn(body)
+        .map_err(|spawn_error| format!("corpus elaboration thread spawn: {spawn_error}"))?
+        .join()
+        .map_err(|_| "corpus elaboration thread panicked".to_string())
+}
+
 fn try_elaborate_single_module(ur_src: &str) -> Result<(), String> {
-    let _g = CORPUS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let dir = tempdir().map_err(|e| e.to_string())?;
+    let source_text = ur_src.to_string();
+    run_with_elaboration_stack(move || try_elaborate_single_module_on_thread(&source_text))
+        .flatten()
+}
+
+fn try_elaborate_single_module_on_thread(ur_src: &str) -> Result<(), String> {
+    let _guard = CORPUS_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let dir = tempdir().map_err(|tempfile_error| tempfile_error.to_string())?;
     let root = dir.path();
-    fs::write(root.join("app.urp"), "CoreMod\n").map_err(|e| e.to_string())?;
-    fs::write(root.join("CoreMod.ur"), ur_src).map_err(|e| e.to_string())?;
+    fs::write(root.join("app.urp"), "CoreMod\n").map_err(|io_error| io_error.to_string())?;
+    fs::write(root.join("CoreMod.ur"), ur_src).map_err(|io_error| io_error.to_string())?;
     let urp = root.join("app.urp");
-    let mut job = compiler::parse_urp(&urp).map_err(|e| e.to_string())?;
+    let mut job = compiler::parse_urp(&urp).map_err(|parse_error| parse_error.to_string())?;
     let mut settings = Settings::new();
     settings.boot_linking = true;
     compiler::apply_boot_settings(&mut job, &mut settings);

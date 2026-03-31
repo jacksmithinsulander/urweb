@@ -15,6 +15,7 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
+use crate::diagnostics::{DiagnosticId, DiagnosticPayload};
 use crate::elaborated as elab;
 use crate::elaborated::disjointness_analysis as disjoint;
 use crate::elaborated::environment::{hnorm_sgn, new_named_id, ConstructorInfo, Env, VarLookup};
@@ -136,55 +137,8 @@ pub fn unify_kinds(
     left_kind: &elab::LocatedKind,
     right_kind: &elab::LocatedKind,
 ) -> Result<(), Box<FailedToUnifyKinds>> {
-    // Chase known unif vars first
-    if let elab::Kind::Unif(_, _, reference) = &left_kind.node {
-        let guard = crate::compiler_diagnostics::lock_for_compile(
-            reference.as_ref(),
-            "elaboration unification cell",
-        );
-        if let elab::KUnif::Known(inner) = &*guard {
-            let inner = *inner.clone();
-            drop(guard);
-            return unify_kinds(elaboration_environment, &inner, right_kind);
-        }
-        drop(guard);
-    }
-    if let elab::Kind::Unif(_, _, reference) = &right_kind.node {
-        let guard = crate::compiler_diagnostics::lock_for_compile(
-            reference.as_ref(),
-            "elaboration unification cell",
-        );
-        if let elab::KUnif::Known(inner) = &*guard {
-            let inner = *inner.clone();
-            drop(guard);
-            return unify_kinds(elaboration_environment, left_kind, &inner);
-        }
-        drop(guard);
-    }
-    if let elab::Kind::TupleUnif(_, _, reference) = &left_kind.node {
-        let guard = crate::compiler_diagnostics::lock_for_compile(
-            reference.as_ref(),
-            "elaboration unification cell",
-        );
-        if let elab::KUnif::Known(inner) = &*guard {
-            let inner = *inner.clone();
-            drop(guard);
-            return unify_kinds(elaboration_environment, &inner, right_kind);
-        }
-        drop(guard);
-    }
-    if let elab::Kind::TupleUnif(_, _, reference) = &right_kind.node {
-        let guard = crate::compiler_diagnostics::lock_for_compile(
-            reference.as_ref(),
-            "elaboration unification cell",
-        );
-        if let elab::KUnif::Known(inner) = &*guard {
-            let inner = *inner.clone();
-            drop(guard);
-            return unify_kinds(elaboration_environment, left_kind, &inner);
-        }
-        drop(guard);
-    }
+    let left_kind = chase_kind_unification_head(left_kind.clone());
+    let right_kind = chase_kind_unification_head(right_kind.clone());
 
     match (&left_kind.node, &right_kind.node) {
         (elab::Kind::Type, elab::Kind::Type) => Ok(()),
@@ -236,7 +190,7 @@ pub fn unify_kinds(
             if Arc::ptr_eq(ref_left, ref_right) {
                 return Ok(());
             }
-            if occurs_kind(ref_left, right_kind) {
+            if occurs_kind(ref_left, &right_kind) {
                 return Err(Box::new(FailedToUnifyKinds::OccursCheckFailed(
                     left_kind.clone(),
                     right_kind.clone(),
@@ -250,7 +204,7 @@ pub fn unify_kinds(
         }
         // Unif(r) ~ right: solve
         (elab::Kind::Unif(_, _, reference), _) => {
-            if occurs_kind(reference, right_kind) {
+            if occurs_kind(reference, &right_kind) {
                 return Err(Box::new(FailedToUnifyKinds::OccursCheckFailed(
                     left_kind.clone(),
                     right_kind.clone(),
@@ -264,7 +218,7 @@ pub fn unify_kinds(
         }
         // left ~ Unif(r): solve
         (_, elab::Kind::Unif(_, _, reference)) => {
-            if occurs_kind(reference, left_kind) {
+            if occurs_kind(reference, &left_kind) {
                 return Err(Box::new(FailedToUnifyKinds::OccursCheckFailed(
                     left_kind.clone(),
                     right_kind.clone(),
@@ -370,16 +324,25 @@ pub fn unify_kinds(
     }
 }
 
+/// Unify `got` with `expected` for the kind of `constructor_under_check`; record a diagnostic on failure.
+///
+/// `constructor_under_check` is kept for call-site parity with upstream error context (not formatted today).
 fn check_kind(
     elaboration_context: &mut ElabCtx,
     elaboration_environment: &Env,
     span: &Span,
-    _con: &elab::LocatedConstructor,
+    _constructor_under_check: &elab::LocatedConstructor,
     got: &elab::LocatedKind,
     expected: &elab::LocatedKind,
 ) {
-    if let Err(e) = unify_kinds(elaboration_environment, got, expected) {
-        elaboration_context.error(span.clone(), format!("Kind mismatch: {:?}", e));
+    if let Err(unify_failure) = unify_kinds(elaboration_environment, got, expected) {
+        elaboration_context.error(
+            span.clone(),
+            DiagnosticPayload::new(
+                DiagnosticId::ElabKindMismatch,
+                vec![format!("{:?}", unify_failure)],
+            ),
+        );
     }
 }
 
@@ -387,38 +350,33 @@ fn check_kind(
 // Kind head-normalization
 // ---------------------------------------------------------------------------
 
-fn hnorm_kind(k: elab::LocatedKind) -> elab::LocatedKind {
-    match &k.node {
-        elab::Kind::Unif(_, _, r) => {
-            let guard = crate::compiler_diagnostics::lock_for_compile(
-                r.as_ref(),
-                "elaboration unification cell",
-            );
-            if let elab::KUnif::Known(inner) = &*guard {
-                let inner = *inner.clone();
-                drop(guard);
-                hnorm_kind(inner)
-            } else {
-                drop(guard);
-                k
-            }
+/// Follow solved [`elab::Kind::Unif`] / [`elab::Kind::TupleUnif`] cells to the representative head.
+///
+/// Implemented as a loop so long union-find chains (no path compression) cannot overflow the stack.
+fn chase_kind_unification_head(mut kind: elab::LocatedKind) -> elab::LocatedKind {
+    loop {
+        let reference = match &kind.node {
+            elab::Kind::Unif(_, _, reference) | elab::Kind::TupleUnif(_, _, reference) => reference,
+            _ => return kind,
+        };
+        let guard = crate::compiler_diagnostics::lock_for_compile(
+            reference.as_ref(),
+            "elaboration unification cell",
+        );
+        if let elab::KUnif::Known(inner) = &*guard {
+            let next = *inner.clone();
+            drop(guard);
+            kind = next;
+        } else {
+            drop(guard);
+            return kind;
         }
-        elab::Kind::TupleUnif(_, _, r) => {
-            let guard = crate::compiler_diagnostics::lock_for_compile(
-                r.as_ref(),
-                "elaboration unification cell",
-            );
-            if let elab::KUnif::Known(inner) = &*guard {
-                let inner = *inner.clone();
-                drop(guard);
-                hnorm_kind(inner)
-            } else {
-                drop(guard);
-                k
-            }
-        }
-        _ => k,
     }
+}
+
+/// Resolve kind head through solved [`elab::Kind::Unif`] / [`elab::Kind::TupleUnif`] cells.
+fn hnorm_kind(kind: elab::LocatedKind) -> elab::LocatedKind {
+    chase_kind_unification_head(kind)
 }
 
 // ---------------------------------------------------------------------------
@@ -445,7 +403,7 @@ pub enum Constraint {
 /// Mutable state threaded through elaboration.
 pub struct ElabCtx {
     /// Errors collected so far.
-    pub errors: Vec<(Span, String)>,
+    pub errors: Vec<(Span, DiagnosticPayload)>,
     /// Pending constraints to solve at end of each declaration.
     pub constraints: Vec<Constraint>,
     /// The id of the Basis structure.
@@ -489,8 +447,8 @@ impl ElabCtx {
         }
     }
 
-    pub fn error(&mut self, span: Span, msg: String) {
-        self.errors.push((span, msg));
+    pub fn error(&mut self, span: Span, payload: DiagnosticPayload) {
+        self.errors.push((span, payload));
     }
 
     pub fn has_errors(&self) -> bool {
@@ -593,7 +551,13 @@ pub fn elab_kind(
             if let Some(idx) = elaboration_environment.lookup_k(x) {
                 Located::new(elab::Kind::Rel(idx), span)
             } else {
-                elaboration_context.error(span.clone(), format!("Unbound kind variable `{}`", x));
+                elaboration_context.error(
+                    span.clone(),
+                    DiagnosticPayload::new(
+                        DiagnosticId::ElabUnboundKindVariableTemplate,
+                        vec![x.to_string()],
+                    ),
+                );
                 elaborated_kind_error_at_span(span)
             }
         }
@@ -625,26 +589,39 @@ pub fn elab_kind(
 // Constructor head elaboration (for implicit kind args)
 // ---------------------------------------------------------------------------
 
-/// Insert implicit kind applications at the head of a constructor.
-/// Mirrors `elabConHead`.
+/// Insert implicit [`elab::Constructor::KApp`] nodes while `kind` is [`elab::Kind::Fun`] (iterative loop).
+///
+/// Mirrors `elabConHead`: supplies inferred kind arguments for polymorphic type constructors.
+///
+/// # Arguments
+///
+/// * `constructor` — Elaborated constructor spine.
+/// * `kind` — Its kind (possibly several `Kind::Fun` binders after normalization).
+///
+/// # Returns
+///
+/// The wrapped constructor and the remaining non-`Fun` kind head.
 fn elab_con_head(
-    c: elab::LocatedConstructor,
-    k: &elab::LocatedKind,
+    mut constructor: elab::LocatedConstructor,
+    mut kind: elab::LocatedKind,
 ) -> (elab::LocatedConstructor, elab::LocatedKind) {
-    let span = c.span.clone();
-    let kn = hnorm_kind(k.clone());
-    match &kn.node {
-        elab::Kind::Fun(x, body) => {
-            let ku = fresh_kunif(span.clone(), x);
-            let new_c = Located::new(
-                elab::Constructor::KApp(Box::new(c), Box::new(ku.clone())),
-                span.clone(),
-            );
-            // substitute ku for Rel(0) in body
-            let body_subst = sub_kind_in_kind(0, &ku, *body.clone());
-            elab_con_head(new_c, &body_subst)
+    let span = constructor.span.clone();
+    loop {
+        let normalized_kind = hnorm_kind(kind);
+        match &normalized_kind.node {
+            elab::Kind::Fun(binder_name, body_kind) => {
+                let fresh_kind_meta = fresh_kunif(span.clone(), binder_name);
+                constructor = Located::new(
+                    elab::Constructor::KApp(
+                        Box::new(constructor),
+                        Box::new(fresh_kind_meta.clone()),
+                    ),
+                    span.clone(),
+                );
+                kind = sub_kind_in_kind(0, &fresh_kind_meta, *body_kind.clone());
+            }
+            _ => return (constructor, normalized_kind),
         }
-        _ => (c, kn),
     }
 }
 
@@ -684,8 +661,7 @@ pub fn elab_con(
         let span = c.span.clone();
         elaboration_context.error(
             span.clone(),
-            "Elaboration: constructor recursion depth exceeded 500 (internal limit — simplify types or report a bug)"
-                .to_string(),
+            DiagnosticPayload::new(DiagnosticId::ElabConstructorRecursionDepth, Vec::new()),
         );
         return (
             elaborated_constructor_error_at_span(span.clone()),
@@ -771,7 +747,10 @@ fn elab_con_inner(
                 _ => {
                     elaboration_context.error(
                         span.clone(),
-                        "Constructor application to non-arrow kind".to_string(),
+                        DiagnosticPayload::new(
+                            DiagnosticId::ElabConstructorAppNonArrow,
+                            Vec::new(),
+                        ),
                     );
                     (
                         elaborated_constructor_error_at_span(span.clone()),
@@ -994,7 +973,10 @@ fn elab_con_inner(
                     let ki = ks.get(idx).cloned().unwrap_or_else(|| {
                         elaboration_context.error(
                             span.clone(),
-                            format!("Tuple projection out of bounds: {}", n),
+                            DiagnosticPayload::new(
+                                DiagnosticId::ElabTupleProjectionOutOfBounds,
+                                vec![n.to_string()],
+                            ),
                         );
                         elaborated_kind_error_at_span(span.clone())
                     });
@@ -1030,7 +1012,10 @@ fn elab_con_inner(
                 _ => {
                     elaboration_context.error(
                         span.clone(),
-                        "Tuple projection from non-tuple kind".to_string(),
+                        DiagnosticPayload::new(
+                            DiagnosticId::ElabTupleProjectionNonTuple,
+                            Vec::new(),
+                        ),
                     );
                     (
                         elaborated_constructor_error_at_span(span.clone()),
@@ -1098,12 +1083,12 @@ fn elab_con_var(
         match elaboration_environment.lookup_c(x) {
             VarLookup::Rel(idx, k) => {
                 let c = Located::new(elab::Constructor::Rel(idx), span.clone());
-                let (c2, k2) = elab_con_head(c, &k);
+                let (c2, k2) = elab_con_head(c, k);
                 return (c2, k2);
             }
             VarLookup::Named(id, k) => {
                 let c = Located::new(elab::Constructor::Named(id), span.clone());
-                let (c2, k2) = elab_con_head(c, &k);
+                let (c2, k2) = elab_con_head(c, k);
                 return (c2, k2);
             }
             VarLookup::NotBound => {
@@ -1115,8 +1100,13 @@ fn elab_con_var(
                     let c = Located::new(elab::Constructor::Name(x.to_string()), span.clone());
                     return (c, kname);
                 }
-                elaboration_context
-                    .error(span.clone(), format!("Unbound type constructor `{}`", x));
+                elaboration_context.error(
+                    span.clone(),
+                    DiagnosticPayload::new(
+                        DiagnosticId::ElabUnboundTypeConstructor,
+                        vec![x.to_string()],
+                    ),
+                );
                 return (
                     elaborated_constructor_error_at_span(span.clone()),
                     elaborated_kind_error_at_span(span.clone()),
@@ -1148,7 +1138,7 @@ fn elab_con_var(
                     elab::Constructor::ModProj(str_id, ms[1..].to_vec(), x.to_string()),
                     span.clone(),
                 );
-                let (c2, k2) = elab_con_head(c, k);
+                let (c2, k2) = elab_con_head(c, k.clone());
                 return (c2, k2);
             }
             elab::SignatureItem::ClassAbs(_, _id, k) | elab::SignatureItem::Class(_, _id, k, _) => {
@@ -1162,14 +1152,20 @@ fn elab_con_var(
                     elab::Kind::Arrow(Box::new(k.clone()), Box::new(ktype)),
                     span.clone(),
                 );
-                let (c2, k2) = elab_con_head(c, &class_k);
+                let (c2, k2) = elab_con_head(c, class_k);
                 return (c2, k2);
             }
             _ => {}
         }
     }
 
-    elaboration_context.error(span.clone(), format!("Unbound type constructor `{}`", x));
+    elaboration_context.error(
+        span.clone(),
+        DiagnosticPayload::new(
+            DiagnosticId::ElabUnboundTypeConstructor,
+            vec![x.to_string()],
+        ),
+    );
     (
         elaborated_constructor_error_at_span(span.clone()),
         elaborated_kind_error_at_span(span.clone()),
@@ -1193,7 +1189,10 @@ fn resolve_module_path(
     let (root_id, mut sgn) = match elaboration_environment.lookup_str(first) {
         Some((sid, s)) => (*sid, s.clone()),
         None => {
-            elaboration_context.error(span.clone(), format!("Unbound module `{}`", first));
+            elaboration_context.error(
+                span.clone(),
+                DiagnosticPayload::new(DiagnosticId::ElabUnboundModuleFirst, vec![first.clone()]),
+            );
             return None;
         }
     };
@@ -1205,7 +1204,10 @@ fn resolve_module_path(
         _ => {
             elaboration_context.error(
                 span.clone(),
-                format!("Module `{}` has non-const signature", first),
+                DiagnosticPayload::new(
+                    DiagnosticId::ElabModuleNonConstSignature,
+                    vec![first.clone()],
+                ),
             );
             return None;
         }
@@ -1222,19 +1224,28 @@ fn resolve_module_path(
                         _ => {
                             elaboration_context.error(
                                 span.clone(),
-                                format!("Sub-module `{}` has non-const signature", m),
+                                DiagnosticPayload::new(
+                                    DiagnosticId::ElabSubModuleNonConstSignature,
+                                    vec![m.clone()],
+                                ),
                             );
                             return None;
                         }
                     };
                 }
                 _ => {
-                    elaboration_context.error(span.clone(), format!("`{}` is not a structure", m));
+                    elaboration_context.error(
+                        span.clone(),
+                        DiagnosticPayload::new(DiagnosticId::ElabNotAStructure, vec![m.clone()]),
+                    );
                     return None;
                 }
             }
         } else {
-            elaboration_context.error(span.clone(), format!("Unbound module `{}`", m));
+            elaboration_context.error(
+                span.clone(),
+                DiagnosticPayload::new(DiagnosticId::ElabUnboundModule, vec![m.clone()]),
+            );
             return None;
         }
     }
@@ -1285,15 +1296,26 @@ pub fn kindof(
         elab::Constructor::Rel(n) => match elaboration_environment.lookup_c_rel(*n) {
             Ok((_, k)) => k.clone(),
             Err(_) => {
-                elaboration_context.error(span.clone(), format!("Unbound constructor Rel({})", n));
+                elaboration_context.error(
+                    span.clone(),
+                    DiagnosticPayload::new(
+                        DiagnosticId::ElabUnboundRelConstructor,
+                        vec![n.to_string()],
+                    ),
+                );
                 elaborated_kind_error_at_span(span)
             }
         },
         elab::Constructor::Named(id) => match elaboration_environment.lookup_c_named(*id) {
             Ok((_, k, _)) => k.clone(),
             Err(_) => {
-                elaboration_context
-                    .error(span.clone(), format!("Unbound named constructor {}", id));
+                elaboration_context.error(
+                    span.clone(),
+                    DiagnosticPayload::new(
+                        DiagnosticId::ElabUnboundNamedConstructor,
+                        vec![id.to_string()],
+                    ),
+                );
                 elaborated_kind_error_at_span(span)
             }
         },
@@ -1325,8 +1347,13 @@ pub fn kindof(
             match kfn.node {
                 elab::Kind::Arrow(_, kr) => *kr,
                 _ => {
-                    elaboration_context
-                        .error(span.clone(), "Application to non-arrow kind".to_string());
+                    elaboration_context.error(
+                        span.clone(),
+                        DiagnosticPayload::new(
+                            DiagnosticId::ElabApplicationNonArrowKind,
+                            Vec::new(),
+                        ),
+                    );
                     elaborated_kind_error_at_span(span)
                 }
             }
@@ -1349,7 +1376,10 @@ pub fn kindof(
             match kfn.node {
                 elab::Kind::Fun(_, body) => sub_kind_in_kind(0, k, *body),
                 _ => {
-                    elaboration_context.error(span.clone(), "KApp to non-KFun kind".to_string());
+                    elaboration_context.error(
+                        span.clone(),
+                        DiagnosticPayload::new(DiagnosticId::ElabKAppNonKFun, Vec::new()),
+                    );
                     elaborated_kind_error_at_span(span)
                 }
             }
@@ -2066,7 +2096,10 @@ fn check_con(
         got,
         expected,
     ) {
-        elaboration_context.error(span.clone(), format!("Type mismatch: {:?}", e));
+        elaboration_context.error(
+            span.clone(),
+            DiagnosticPayload::new(DiagnosticId::ElabTypeMismatch, vec![format!("{:?}", e)]),
+        );
     }
 }
 
@@ -2219,7 +2252,10 @@ fn elab_pat_con(
             } else {
                 elaboration_context.error(
                     span.clone(),
-                    format!("Constructor `{}` expects an argument", x),
+                    DiagnosticPayload::new(
+                        DiagnosticId::ElabConstructorExpectsArgument,
+                        vec![x.to_string()],
+                    ),
                 );
                 (None, elaboration_environment.clone())
             }
@@ -2227,7 +2263,10 @@ fn elab_pat_con(
             if arg_opt.is_some() {
                 elaboration_context.error(
                     span.clone(),
-                    format!("Constructor `{}` does not take an argument", x),
+                    DiagnosticPayload::new(
+                        DiagnosticId::ElabConstructorDoesNotTakeArgument,
+                        vec![x.to_string()],
+                    ),
                 );
             }
             (None, elaboration_environment.clone())
@@ -2240,7 +2279,10 @@ fn elab_pat_con(
         );
         (pat, new_env)
     } else {
-        elaboration_context.error(span.clone(), format!("Unbound constructor `{}`", x));
+        elaboration_context.error(
+            span.clone(),
+            DiagnosticPayload::new(DiagnosticId::ElabUnboundConstructor, vec![x.to_string()]),
+        );
         let pat = Located::new(
             elab::Pattern::Var("_".to_string(), expected_type.clone()),
             span.clone(),
@@ -2383,8 +2425,7 @@ pub fn elab_exp(
         let span = e.span.clone();
         elaboration_context.error(
             span.clone(),
-            "Elaboration: expression recursion depth exceeded 200 (internal limit — simplify the expression or report a bug)"
-                .to_string(),
+            DiagnosticPayload::new(DiagnosticId::ElabExpressionRecursionDepth, Vec::new()),
         );
         return (
             elaborated_expression_error_at_span(span.clone()),
@@ -2512,7 +2553,10 @@ fn elab_exp_inner(
                 _other => {
                     elaboration_context.error(
                         f.span.clone(),
-                        "Application to non-function type".to_string(),
+                        DiagnosticPayload::new(
+                            DiagnosticId::ElabApplicationNonFunction,
+                            Vec::new(),
+                        ),
                     );
                     (
                         elaborated_expression_error_at_span(span.clone()),
@@ -2580,7 +2624,10 @@ fn elab_exp_inner(
                 _ => {
                     elaboration_context.error(
                         e1.span.clone(),
-                        "Constructor application to non-TCFun type".to_string(),
+                        DiagnosticPayload::new(
+                            DiagnosticId::ElabConstructorAppNonTcFun,
+                            Vec::new(),
+                        ),
                     );
                     (
                         elaborated_expression_error_at_span(span.clone()),
@@ -3272,7 +3319,10 @@ fn elab_exp_var(
                 if let Some(info) = elaboration_environment.lookup_constructor(x) {
                     return make_con_exp(info, elaboration_environment, span);
                 }
-                elaboration_context.error(span.clone(), format!("Unbound variable `{}`", x));
+                elaboration_context.error(
+                    span.clone(),
+                    DiagnosticPayload::new(DiagnosticId::ElabUnboundVariable, vec![x.to_string()]),
+                );
                 return (
                     elaborated_expression_error_at_span(span.clone()),
                     elaborated_constructor_error_at_span(span.clone()),
@@ -3343,7 +3393,10 @@ fn elab_exp_var(
         return (e, con_type);
     }
 
-    elaboration_context.error(span.clone(), format!("Unbound variable `{}`", x));
+    elaboration_context.error(
+        span.clone(),
+        DiagnosticPayload::new(DiagnosticId::ElabUnboundVariable, vec![x.to_string()]),
+    );
     (
         elaborated_expression_error_at_span(span.clone()),
         elaborated_constructor_error_at_span(span.clone()),
@@ -3501,8 +3554,7 @@ fn elab_head_inner(
     if depth > 50 {
         elaboration_context.error(
             span.clone(),
-            "Elaboration: implicit argument insertion exceeded 50 iterations (possible infinite type expansion — report a bug if this persists)"
-                .to_string(),
+            DiagnosticPayload::new(DiagnosticId::ElabImplicitArgIterationLimit, Vec::new()),
         );
         return (
             elaborated_expression_error_at_span(span.clone()),
@@ -4035,7 +4087,10 @@ fn elab_datatype_imp_sig(
         return (Some(result), new_env);
     }
 
-    elaboration_context.error(span.clone(), format!("Unbound datatype `{}`", y));
+    elaboration_context.error(
+        span.clone(),
+        DiagnosticPayload::new(DiagnosticId::ElabUnboundDatatype, vec![y.to_string()]),
+    );
     (None, elaboration_environment.clone())
 }
 
@@ -4079,7 +4134,10 @@ pub fn elab_sgn(
         source::Sgn::Var(x) => match elaboration_environment.lookup_sgn(x) {
             Some((id, _)) => Located::new(elab::Signature::Var(*id), span),
             None => {
-                elaboration_context.error(span.clone(), format!("Unbound signature `{}`", x));
+                elaboration_context.error(
+                    span.clone(),
+                    DiagnosticPayload::new(DiagnosticId::ElabUnboundSignature, vec![x.clone()]),
+                );
                 elaborated_signature_error_at_span(span)
             }
         },
@@ -4116,7 +4174,13 @@ pub fn elab_sgn(
         source::Sgn::Proj(m, ms, x) => match elaboration_environment.lookup_str(m) {
             Some((id, _)) => Located::new(elab::Signature::Proj(*id, ms.clone(), x.clone()), span),
             None => {
-                elaboration_context.error(span.clone(), format!("Unbound module `{}`", m));
+                elaboration_context.error(
+                    span.clone(),
+                    DiagnosticPayload::new(
+                        DiagnosticId::ElabUnboundModuleForSignature,
+                        vec![m.clone()],
+                    ),
+                );
                 elaborated_signature_error_at_span(span)
             }
         },
@@ -4193,7 +4257,10 @@ pub fn sub_sgn(
         }
 
         _ => {
-            elaboration_context.error(span.clone(), "Signature mismatch".to_string());
+            elaboration_context.error(
+                span.clone(),
+                DiagnosticPayload::new(DiagnosticId::ElabSignatureMismatch, Vec::new()),
+            );
         }
     }
 }
@@ -4213,7 +4280,13 @@ fn sub_sgi(
                     check_con(elaboration_context, elaboration_environment, span, t1, t2);
                 }
             } else {
-                elaboration_context.error(span.clone(), format!("Signature missing value `{}`", x));
+                elaboration_context.error(
+                    span.clone(),
+                    DiagnosticPayload::new(
+                        DiagnosticId::ElabSignatureMissingValue,
+                        vec![x.clone()],
+                    ),
+                );
             }
         }
         elab::SignatureItem::ConAbs(x, _, k2) => {
@@ -4222,15 +4295,28 @@ fn sub_sgi(
                     elab::SignatureItem::ConAbs(_, _, k1)
                     | elab::SignatureItem::Constructor(_, _, k1, _) => {
                         if let Err(e) = unify_kinds(elaboration_environment, k1, k2) {
-                            elaboration_context
-                                .error(span.clone(), format!("Kind mismatch for `{}`: {:?}", x, e));
+                            elaboration_context.error(
+                                span.clone(),
+                                DiagnosticPayload::new(
+                                    DiagnosticId::ElabKindMismatchForSignatureValue,
+                                    vec![x.clone(), format!("{:?}", e)],
+                                ),
+                            );
                         }
                     }
-                    _ => elaboration_context
-                        .error(span.clone(), format!("Wrong constructor kind for `{}`", x)),
+                    _ => elaboration_context.error(
+                        span.clone(),
+                        DiagnosticPayload::new(
+                            DiagnosticId::ElabWrongConstructorKindFor,
+                            vec![x.clone()],
+                        ),
+                    ),
                 }
             } else {
-                elaboration_context.error(span.clone(), format!("Signature missing type `{}`", x));
+                elaboration_context.error(
+                    span.clone(),
+                    DiagnosticPayload::new(DiagnosticId::ElabSignatureMissingType, vec![x.clone()]),
+                );
             }
         }
         elab::SignatureItem::Constructor(x, _, k2, c2) => {
@@ -4238,15 +4324,29 @@ fn sub_sgi(
                 match sgi1 {
                     elab::SignatureItem::Constructor(_, _, k1, c1) => {
                         if let Err(e) = unify_kinds(elaboration_environment, k1, k2) {
-                            elaboration_context
-                                .error(span.clone(), format!("Kind mismatch for `{}`: {:?}", x, e));
+                            elaboration_context.error(
+                                span.clone(),
+                                DiagnosticPayload::new(
+                                    DiagnosticId::ElabKindMismatchForSignatureValue,
+                                    vec![x.clone(), format!("{:?}", e)],
+                                ),
+                            );
                         }
                         check_con(elaboration_context, elaboration_environment, span, c1, c2);
                     }
-                    _ => elaboration_context.error(span.clone(), format!("Wrong type for `{}`", x)),
+                    _ => elaboration_context.error(
+                        span.clone(),
+                        DiagnosticPayload::new(
+                            DiagnosticId::ElabWrongTypeForSignature,
+                            vec![x.clone()],
+                        ),
+                    ),
                 }
             } else {
-                elaboration_context.error(span.clone(), format!("Signature missing type `{}`", x));
+                elaboration_context.error(
+                    span.clone(),
+                    DiagnosticPayload::new(DiagnosticId::ElabSignatureMissingType, vec![x.clone()]),
+                );
             }
         }
         elab::SignatureItem::Structure(_, x, _, sgn2) => {
@@ -4262,8 +4362,13 @@ fn sub_sgi(
                     );
                 }
             } else {
-                elaboration_context
-                    .error(span.clone(), format!("Signature missing structure `{}`", x));
+                elaboration_context.error(
+                    span.clone(),
+                    DiagnosticPayload::new(
+                        DiagnosticId::ElabSignatureMissingStructure,
+                        vec![x.clone()],
+                    ),
+                );
             }
         }
         elab::SignatureItem::Constraint(c1, c2) => {
@@ -4708,7 +4813,7 @@ pub fn elab_decl(
             if items.is_empty() && !matches!(h.node, elab::Signature::Const(_)) {
                 elaboration_context.error(
                     span.clone(),
-                    "cannot open structure: signature is not a constant module".to_string(),
+                    DiagnosticPayload::new(DiagnosticId::ElabCannotOpenNonConstModule, Vec::new()),
                 );
                 (
                     vec![],
@@ -5004,7 +5109,10 @@ pub fn elab_str(
                 (str_out, sgn.clone())
             }
             None => {
-                elaboration_context.error(span.clone(), format!("Unbound structure `{}`", x));
+                elaboration_context.error(
+                    span.clone(),
+                    DiagnosticPayload::new(DiagnosticId::ElabUnboundStructure, vec![x.clone()]),
+                );
                 (
                     elaborated_structure_error_at_span(span.clone()),
                     elaborated_signature_error_at_span(span),
@@ -5029,7 +5137,10 @@ pub fn elab_str(
                 );
                 return (str_out, sgn.clone());
             }
-            elaboration_context.error(span.clone(), format!("No structure `{}` in module", field));
+            elaboration_context.error(
+                span.clone(),
+                DiagnosticPayload::new(DiagnosticId::ElabNoStructureInModule, vec![field.clone()]),
+            );
             (
                 elaborated_structure_error_at_span(span.clone()),
                 elaborated_signature_error_at_span(span),
@@ -5106,7 +5217,10 @@ pub fn elab_str(
                 _ => {
                     elaboration_context.error(
                         span.clone(),
-                        "Application of non-functor structure".to_string(),
+                        DiagnosticPayload::new(
+                            DiagnosticId::ElabApplicationNonFunctorStructure,
+                            Vec::new(),
+                        ),
                     );
                     (
                         elaborated_structure_error_at_span(span.clone()),
@@ -5274,12 +5388,18 @@ fn solve_constraints(elaboration_context: &mut ElabCtx, _elaboration_environment
     for c in remaining {
         match c {
             Constraint::Disjoint { span, goal: _, .. } => {
-                elaboration_context.error(span, "Unresolved disjointness constraint".to_string());
+                elaboration_context.error(
+                    span,
+                    DiagnosticPayload::new(DiagnosticId::ElabUnresolvedDisjointness, Vec::new()),
+                );
             }
             Constraint::TypeClass { span, class, .. } => {
                 elaboration_context.error(
                     span,
-                    format!("Unresolved typeclass constraint: {:?}", class.node),
+                    DiagnosticPayload::new(
+                        DiagnosticId::ElabUnresolvedTypeclass,
+                        vec![format!("{:?}", class.node)],
+                    ),
                 );
             }
         }
@@ -5438,8 +5558,8 @@ pub fn elab_file(
     }
 
     // Report all errors
-    for (span, msg) in elaboration_context.errors {
-        errors.report_at(span, msg);
+    for (span, payload) in elaboration_context.errors {
+        errors.report_type_at(span, payload);
     }
 
     if errors.has_errors() {

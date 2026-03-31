@@ -709,6 +709,34 @@ pub fn mlift_con_in_con(
     lift_con_in_con_bound(binder_count, 0, constructor)
 }
 
+/// Peel a chain of solved [`Constructor::Unif`] heads in one go (no one-frame-per-link recursion).
+///
+/// Long `Known` pointer chains from constructor unification can otherwise exhaust the stack before
+/// [`hnorm_con`]'s depth counter runs out.
+///
+/// # Arguments
+///
+/// * `constructor` — Elaborated constructor whose outermost nodes may be solved unifiers.
+///
+/// # Returns
+///
+/// First non-`Unif`, or the first `Unif` whose cell is still [`CUnif::Unknown`].
+fn peel_solved_constructor_unif_chain(mut constructor: LocatedConstructor) -> LocatedConstructor {
+    loop {
+        match &constructor.node {
+            Constructor::Unif(binder_count, _, _, _, reference) => {
+                if let Some(inner) = read_cunif(reference) {
+                    // Follow one solved cell and lift indices back through `binder_count` binders.
+                    constructor = mlift_con_in_con(*binder_count, inner);
+                } else {
+                    return constructor;
+                }
+            }
+            _ => return constructor,
+        }
+    }
+}
+
 /// Head-normalize a constructor: peel solved [`Constructor::Unif`], beta/eta, `KApp`/`Map`/`Concat`/`Proj` rules.
 ///
 /// Translation of `hnormCon` from `elab_ops.sml`. No [`crate::elaborated::environment::Env`]:
@@ -736,6 +764,8 @@ pub fn hnorm_con(constructor: LocatedConstructor) -> LocatedConstructor {
         let span = constructor.span.clone();
         return Located::new(Constructor::Error, span);
     }
+    // Collapse solved-unifier prefixes iteratively so depth-200 only limits beta/eta steps, not chain length.
+    let constructor = peel_solved_constructor_unif_chain(constructor);
     let result = hnorm_con_inner(constructor);
     HNORM_DEPTH.with(|c| c.set(d));
     result

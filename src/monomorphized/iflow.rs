@@ -32,6 +32,7 @@
 
 use std::collections::BTreeSet;
 
+use crate::diagnostics::{DiagnosticId, DiagnosticPayload};
 use crate::error_types::{CompileError, ErrorReporter, Span};
 use crate::monomorphized::{Decl, Exp, File, LocDecl, LocExp, Pat, Policy};
 use crate::primitives::Prim;
@@ -620,9 +621,11 @@ impl IflowState {
                 }
             }
         }
-        errors.report(CompileError::at(
+        errors.report(CompileError::type_at_with_hint(
             span.clone(),
-            "The information flow policy may be violated here.".to_string(),
+            DiagnosticPayload::new(DiagnosticId::InformationFlowPolicyViolation, vec![]),
+            DiagnosticId::HintInformationFlowPolicyViolation,
+            vec![],
         ));
     }
 
@@ -648,9 +651,14 @@ impl IflowState {
                 return;
             }
         }
-        errors.report(CompileError::at(
+        errors.report(CompileError::type_at_with_hint(
             span.clone(),
-            format!("The database {} policy may be violated here.", action),
+            DiagnosticPayload::new(
+                DiagnosticId::DatabasePolicyMayViolate,
+                vec![action.to_string()],
+            ),
+            DiagnosticId::HintDatabasePolicyMayViolate,
+            vec![],
         ));
     }
 

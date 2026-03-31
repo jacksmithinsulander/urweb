@@ -304,6 +304,9 @@ pub struct UrTomlPackageStrict {
     pub name: Option<String>,
     #[serde(default = "default_pkg_kind")]
     pub kind: String,
+    /// `en`, `sv`, or `es` (see [`crate::diagnostics::DiagnosticLocale::parse_manifest_token`]).
+    #[serde(default)]
+    pub language: String,
 }
 
 /// `[package].kind` default when omitted in `ur.toml`.
@@ -344,6 +347,7 @@ impl Default for UrTomlPackageStrict {
         Self {
             name: None,
             kind: default_pkg_kind(),
+            language: String::new(),
         }
     }
 }
@@ -487,6 +491,45 @@ pub fn is_file_arg(arg: &str) -> bool {
 /// Whether the line should be ignored as blank or comment.
 pub fn should_skip_urp_line(line: &str) -> bool {
     line.is_empty() || line.starts_with('#')
+}
+
+/// Merge one Foundry-style verbosity flag body (text after the leading `-`, only `v` characters) into [`crate::settings::Settings::verbosity`].
+///
+/// A lone `v` increments by one; `vv` or longer sets verbosity to at least that length. Capped at [`crate::compiler_tracing::MAX_COMPILER_VERBOSITY`].
+pub fn apply_verbosity_v_flag(settings: &mut crate::settings::Settings, flag_body: &str) {
+    if flag_body.is_empty() || flag_body.len() > 5 || !flag_body.chars().all(|c| c == 'v') {
+        return;
+    }
+    let level = flag_body.len() as u8;
+    settings.verbosity = match level == 1 {
+        true => (settings.verbosity + 1).min(crate::compiler_tracing::MAX_COMPILER_VERBOSITY),
+        false => settings
+            .verbosity
+            .max(level)
+            .min(crate::compiler_tracing::MAX_COMPILER_VERBOSITY),
+    };
+}
+
+/// Collect leading `-v` / `-vv` / `-verbose` tokens from `ur build …` argv so they can be forwarded to `ur-compile`.
+pub fn leading_build_verbosity_flags(build_args: &[String]) -> Vec<String> {
+    let mut forwarded = Vec::new();
+    for token in build_args {
+        let raw = token.trim_start_matches('-');
+        let repeats_v_only = token.starts_with('-')
+            && !raw.is_empty()
+            && raw.len() <= 5
+            && raw.chars().all(|c| c == 'v');
+        if repeats_v_only {
+            forwarded.push(token.clone());
+            continue;
+        }
+        if token.starts_with('-') && raw == "verbose" {
+            forwarded.push("-verbose".to_string());
+            continue;
+        }
+        break;
+    }
+    forwarded
 }
 
 /// Used by formatter lenient flag handling: empty flag or argv looks like another flag.
@@ -811,6 +854,31 @@ k = "hello""#;
         assert!(is_unknown_compiler_flag("", "-"));
         assert!(is_unknown_compiler_flag("bad", "-bad"));
         assert!(!is_unknown_compiler_flag("myproj", "myproj"));
+    }
+
+    #[test]
+    fn apply_verbosity_v_flag_increments_and_caps() {
+        let mut s = crate::settings::Settings::new();
+        apply_verbosity_v_flag(&mut s, "v");
+        assert_eq!(s.verbosity, 1);
+        apply_verbosity_v_flag(&mut s, "v");
+        assert_eq!(s.verbosity, 2);
+        apply_verbosity_v_flag(&mut s, "vvvvv");
+        assert_eq!(s.verbosity, crate::compiler_tracing::MAX_COMPILER_VERBOSITY);
+        apply_verbosity_v_flag(&mut s, "v");
+        assert_eq!(s.verbosity, crate::compiler_tracing::MAX_COMPILER_VERBOSITY);
+    }
+
+    #[test]
+    fn leading_build_verbosity_collects_prefix_only() {
+        let args = vec![
+            "-vv".to_string(),
+            "-verbose".to_string(),
+            "rest".to_string(),
+        ];
+        let v = leading_build_verbosity_flags(&args);
+        assert_eq!(v.len(), 2);
+        assert_eq!(v[0], "-vv");
     }
 
     #[test]

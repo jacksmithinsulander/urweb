@@ -699,7 +699,7 @@ pub fn p_exp(env: &CjrEnv, e: &LocExp, settings: &Settings) -> String {
             // Division/modulo: guard against divide by zero
             if s == "/" || s == "%" {
                 return format!(
-                    "({{\nuw_Basis_int dividend = {}, divisor = {};\nif (divisor == 0)\nuw_error(ctx, FATAL, \"division by zero\");\ndividend {} divisor;\n}})",
+                    "({{\nuw_Basis_int dividend = {}, divisor = {};\nif (divisor == 0)\nuw_error(ctx, FATAL, \"Ur/Web runtime: integer division or modulus by zero.\");\ndividend {} divisor;\n}})",
                     e1_s, e2_s, s
                 );
             }
@@ -734,7 +734,7 @@ pub fn p_exp(env: &CjrEnv, e: &LocExp, settings: &Settings) -> String {
 
             // Build ternary chain (like SML: cond ? ({binds; body}) : (next_cond ? ... : error))
             let error_fallback = format!(
-                "({{\n{} tmp;\nuw_error(ctx, FATAL, \"pattern match failure\");\ntmp;\n}})",
+                "({{\n{} tmp;\nuw_error(ctx, FATAL, \"Ur/Web runtime: case/of exhausted — none of the patterns matched this value.\");\ntmp;\n}})",
                 result_t
             );
 
@@ -832,16 +832,16 @@ pub fn p_exp(env: &CjrEnv, e: &LocExp, settings: &Settings) -> String {
                 format!(
                     "if (res == NULL) {{\n\
                        uw_try_reconnecting_and_restarting(ctx);\n\
-                       uw_error(ctx, FATAL, \"Can't allocate NEXTVAL result; database server may be down.\");\n\
+                       uw_error(ctx, FATAL, \"Ur/Web / SQL: could not run NEXTVAL (out of memory or database unreachable).\");\n\
                      }}\n\
                      if (PQresultStatus(res) != PGRES_TUPLES_OK) {{\n\
                        PQclear(res);\n\
-                       uw_error(ctx, FATAL, \"nextval: Query failed:\\n%s\\n%s\", {q}, PQerrorMessage(conn));\n\
+                       uw_error(ctx, FATAL, \"Ur/Web / SQL: NEXTVAL failed.\\nSQL: %s\\nServer: %s\", {q}, PQerrorMessage(conn));\n\
                      }}\n\
                      n = PQntuples(res);\n\
                      if (n != 1) {{\n\
                        PQclear(res);\n\
-                       uw_error(ctx, FATAL, \"nextval: Wrong number of result rows:\\n%s\\n%s\", {q}, PQerrorMessage(conn));\n\
+                       uw_error(ctx, FATAL, \"Ur/Web / SQL: NEXTVAL returned the wrong row count (expected 1, got %d).\\nSQL: %s\\nServer: %s\", n, {q}, PQerrorMessage(conn));\n\
                      }}\n\
                      n = uw_Basis_stringToInt_error(ctx, PQgetvalue(res, 0, 0));\n\
                      PQclear(res);\n",
@@ -884,7 +884,7 @@ pub fn p_exp(env: &CjrEnv, e: &LocExp, settings: &Settings) -> String {
             let seq_s = p_exp(env, seq, settings);
             let count_s = p_exp(env, count, settings);
             format!(
-                "({{\nuw_ensure_transaction(ctx);\nPGconn *conn = uw_get_db(ctx);\nchar *query = uw_Basis_strcat(ctx, \"SELECT SETVAL('\", uw_Basis_strcat(ctx, {seq}, uw_Basis_strcat(ctx, \"', \", uw_Basis_strcat(ctx, uw_Basis_sqlifyInt(ctx, {count}), \")\"))));\nPGresult *res = PQexecParams(conn, query, 0, NULL, NULL, NULL, NULL, 0);\nif (res == NULL) {{ uw_try_reconnecting_and_restarting(ctx); uw_error(ctx, FATAL, \"Can't allocate SETVAL result; database server may be down.\"); }}\nif (PQresultStatus(res) != PGRES_TUPLES_OK) {{ PQclear(res); uw_error(ctx, FATAL, \"setval: Query failed:\\n%s\\n%s\", query, PQerrorMessage(conn)); }}\nPQclear(res);\n0;\n}})",
+                "({{\nuw_ensure_transaction(ctx);\nPGconn *conn = uw_get_db(ctx);\nchar *query = uw_Basis_strcat(ctx, \"SELECT SETVAL('\", uw_Basis_strcat(ctx, {seq}, uw_Basis_strcat(ctx, \"', \", uw_Basis_strcat(ctx, uw_Basis_sqlifyInt(ctx, {count}), \")\"))));\nPGresult *res = PQexecParams(conn, query, 0, NULL, NULL, NULL, NULL, 0);\nif (res == NULL) {{ uw_try_reconnecting_and_restarting(ctx); uw_error(ctx, FATAL, \"Ur/Web / SQL: could not allocate memory for SETVAL (database may be unreachable).\"); }}\nif (PQresultStatus(res) != PGRES_TUPLES_OK) {{ PQclear(res); uw_error(ctx, FATAL, \"Ur/Web / SQL: SETVAL query failed.\\nSQL: %s\\nServer: %s\", query, PQerrorMessage(conn)); }}\nPQclear(res);\n0;\n}})",
                 seq = seq_s,
                 count = count_s,
             )
@@ -1024,7 +1024,7 @@ fn p_getcol(
         _ => {
             let value_expr = p_unsql(t, &getvalue, &getlength, wont_leak_strings);
             format!(
-                "(PQgetisnull(res, i, {col}) ? ({{ {ctype} tmp; uw_error(ctx, FATAL, \"{loc}: Unexpectedly NULL field #{col}\"); tmp; }}) : {value_expr})",
+                "(PQgetisnull(res, i, {col}) ? ({{ {ctype} tmp; uw_error(ctx, FATAL, \"{loc}: Ur/Web / SQL: the database returned NULL for column {col}, but this type does not allow missing values.\"); tmp; }}) : {value_expr})",
                 col = col,
                 ctype = t.c_type(),
                 loc = loc_str,
@@ -1096,24 +1096,24 @@ fn query_common(
         "int n, i;\n\
          if (res == NULL) {{\n\
            uw_try_reconnecting_and_restarting(ctx);\n\
-           uw_error(ctx, FATAL, \"Can't allocate query result; database server may be down.\");\n\
+           uw_error(ctx, FATAL, \"Ur/Web / SQL: could not allocate memory for query result (database may be unreachable).\");\n\
          }}\n\
          if (PQresultStatus(res) != PGRES_TUPLES_OK) {{\n\
            if (!strcmp_nullsafe(PQresultErrorField(res, PG_DIAG_SQLSTATE), \"40001\")) {{\n\
              PQclear(res);\n\
-             uw_error(ctx, UNLIMITED_RETRY, \"Serialization failure\");\n\
+             uw_error(ctx, UNLIMITED_RETRY, \"Ur/Web / SQL: serialization conflict — retrying this transaction.\");\n\
            }}\n\
            if (!strcmp_nullsafe(PQresultErrorField(res, PG_DIAG_SQLSTATE), \"40P01\")) {{\n\
              PQclear(res);\n\
-             uw_error(ctx, UNLIMITED_RETRY, \"Deadlock detected\");\n\
+             uw_error(ctx, UNLIMITED_RETRY, \"Ur/Web / SQL: deadlock detected — retrying this transaction.\");\n\
            }}\n\
            PQclear(res);\n\
-           uw_error(ctx, FATAL, \"{loc}: Query failed:\\n%s\\n%s\", {q}, PQerrorMessage(conn));\n\
+           uw_error(ctx, FATAL, \"{loc}: Ur/Web / SQL: query failed.\\nSQL: %s\\nServer: %s\", {q}, PQerrorMessage(conn));\n\
          }}\n\
          if (PQnfields(res) != {nf}) {{\n\
            int nf = PQnfields(res);\n\
            PQclear(res);\n\
-           uw_error(ctx, FATAL, \"{loc}: Query returned %d columns instead of {nf}:\\n%s\\n%s\", nf, {q}, PQerrorMessage(conn));\n\
+           uw_error(ctx, FATAL, \"{loc}: Ur/Web / SQL: each result row should have {nf} column(s), but the database returned %d.\\nSQL: %s\\nServer: %s\", nf, {q}, PQerrorMessage(conn));\n\
          }}\n\
          uw_end_region(ctx);\n\
          uw_push_cleanup(ctx, (void (*)(void *))PQclear, res);\n\
@@ -1386,8 +1386,8 @@ fn p_exp_dml(env: &CjrEnv, dm: &DmlMeta, settings: &Settings) -> String {
     let make_savepoint = match dm.mode {
         FailureMode::None => {
             "PGresult *res = PQexec(conn, \"SAVEPOINT s\");\n\
-             if (res == NULL) { uw_try_reconnecting_and_restarting(ctx); uw_error(ctx, FATAL, \"Can't allocate DML SAVEPOINT result; database server may be down.\"); }\n\
-             if (PQresultStatus(res) != PGRES_COMMAND_OK) { PQclear(res); uw_error(ctx, FATAL, \"Error creating SAVEPOINT\"); }\n\
+             if (res == NULL) { uw_try_reconnecting_and_restarting(ctx); uw_error(ctx, FATAL, \"Ur/Web / SQL: could not allocate memory for SAVEPOINT (database may be unreachable).\"); }\n\
+             if (PQresultStatus(res) != PGRES_COMMAND_OK) { PQclear(res); uw_error(ctx, FATAL, \"Ur/Web / SQL: SAVEPOINT failed (nested transaction could not start).\"); }\n\
              PQclear(res);\n\n"
         }
         FailureMode::Error => "",
@@ -1396,15 +1396,15 @@ fn p_exp_dml(env: &CjrEnv, dm: &DmlMeta, settings: &Settings) -> String {
     let dml_common = |dml_expr: &str| -> String {
         let error_case = match dm.mode {
             FailureMode::Error => format!(
-                "PQclear(res);\nuw_error(ctx, FATAL, \"{loc}: DML failed:\\n%s\\n%s\", {dml}, PQerrorMessage(conn));",
+                "PQclear(res);\nuw_error(ctx, FATAL, \"{loc}: Ur/Web / SQL: insert/update/delete failed.\\nSQL: %s\\nServer: %s\", {dml}, PQerrorMessage(conn));",
                 loc = loc_str,
                 dml = dml_expr,
             ),
             FailureMode::None => format!(
                 "uw_set_error_message(ctx, PQerrorMessage(conn));\n\
                  res = PQexec(conn, \"ROLLBACK TO s\");\n\
-                 if (res == NULL) {{ uw_try_reconnecting_and_restarting(ctx); uw_error(ctx, FATAL, \"Can't allocate DML ROLLBACK result; database server may be down.\"); }}\n\
-                 if (PQresultStatus(res) != PGRES_COMMAND_OK) {{ PQclear(res); uw_error(ctx, FATAL, \"{loc}: ROLLBACK TO failed:\\n%s\\n%s\", {dml}, PQerrorMessage(conn)); }}\n\
+                 if (res == NULL) {{ uw_try_reconnecting_and_restarting(ctx); uw_error(ctx, FATAL, \"Ur/Web / SQL: could not allocate memory for ROLLBACK TO (database may be unreachable).\"); }}\n\
+                 if (PQresultStatus(res) != PGRES_COMMAND_OK) {{ PQclear(res); uw_error(ctx, FATAL, \"{loc}: Ur/Web / SQL: ROLLBACK TO SAVEPOINT failed after a DML error.\\nSQL: %s\\nServer: %s\", {dml}, PQerrorMessage(conn)); }}\n\
                  PQclear(res);",
                 loc = loc_str,
                 dml = dml_expr,
@@ -1416,8 +1416,8 @@ fn p_exp_dml(env: &CjrEnv, dm: &DmlMeta, settings: &Settings) -> String {
                 " else {{\n\
                  PQclear(res);\n\
                  res = PQexec(conn, \"RELEASE s\");\n\
-                 if (res == NULL) {{ uw_try_reconnecting_and_restarting(ctx); uw_error(ctx, FATAL, \"Can't allocate DML RELEASE result; database server may be down.\"); }}\n\
-                 if (PQresultStatus(res) != PGRES_COMMAND_OK) {{ PQclear(res); uw_error(ctx, FATAL, \"{loc}: RELEASE failed:\\n%s\\n%s\", {dml}, PQerrorMessage(conn)); }}\n\
+                 if (res == NULL) {{ uw_try_reconnecting_and_restarting(ctx); uw_error(ctx, FATAL, \"Ur/Web / SQL: could not allocate memory for RELEASE SAVEPOINT (database may be unreachable).\"); }}\n\
+                 if (PQresultStatus(res) != PGRES_COMMAND_OK) {{ PQclear(res); uw_error(ctx, FATAL, \"{loc}: Ur/Web / SQL: RELEASE SAVEPOINT failed.\\nSQL: %s\\nServer: %s\", {dml}, PQerrorMessage(conn)); }}\n\
                  PQclear(res);\n}}\n",
                 loc = loc_str,
                 dml = dml_expr,
@@ -1426,11 +1426,11 @@ fn p_exp_dml(env: &CjrEnv, dm: &DmlMeta, settings: &Settings) -> String {
         format!(
             "if (res == NULL) {{\n\
                uw_try_reconnecting_and_restarting(ctx);\n\
-               uw_error(ctx, FATAL, \"Can't allocate DML result; database server may be down.\");\n\
+               uw_error(ctx, FATAL, \"Ur/Web / SQL: could not allocate memory for DML result (database may be unreachable).\");\n\
              }}\n\
              if (PQresultStatus(res) != PGRES_COMMAND_OK) {{\n\
-               if (!strcmp_nullsafe(PQresultErrorField(res, PG_DIAG_SQLSTATE), \"40001\")) {{ PQclear(res); uw_error(ctx, UNLIMITED_RETRY, \"Serialization failure\"); }}\n\
-               if (!strcmp_nullsafe(PQresultErrorField(res, PG_DIAG_SQLSTATE), \"40P01\")) {{ PQclear(res); uw_error(ctx, UNLIMITED_RETRY, \"Deadlock detected\"); }}\n\
+               if (!strcmp_nullsafe(PQresultErrorField(res, PG_DIAG_SQLSTATE), \"40001\")) {{ PQclear(res); uw_error(ctx, UNLIMITED_RETRY, \"Ur/Web / SQL: serialization conflict — retrying this transaction.\"); }}\n\
+               if (!strcmp_nullsafe(PQresultErrorField(res, PG_DIAG_SQLSTATE), \"40P01\")) {{ PQclear(res); uw_error(ctx, UNLIMITED_RETRY, \"Ur/Web / SQL: deadlock detected — retrying this transaction.\"); }}\n\
                {error}\n\
              }}{success}",
             error = error_case,
@@ -1835,7 +1835,7 @@ fn do_em_enum(
     cjr_test_tick();
     match xncs {
         [] => format!(
-            "(uw_error(ctx, FATAL, \"Error unurlifying datatype {x}\"), \
+            "(uw_error(ctx, FATAL, \"Ur/Web: could not decode the URL segment for datatype `{x}` (no matching constructor).\"), \
              (enum __uwe_{x_ident}_{i})0)",
             x_ident = ident(x)
         ),
@@ -1865,7 +1865,7 @@ fn do_em_default(
 ) -> String {
     cjr_test_tick();
     match xncs {
-        [] => format!("(uw_error(ctx, FATAL, \"Error unurlifying datatype {x}\"), NULL)"),
+        [] => format!("(uw_error(ctx, FATAL, \"Ur/Web: could not decode the URL segment for datatype `{x}` (no matching constructor).\"), NULL)"),
         [(x_, n, to), rest @ ..] => {
             let x_ident = ident(x_);
             let x_dt_ident = ident(x);
@@ -2006,7 +2006,7 @@ fn unurlify_req(request: &str, t: &LocTyp, env: &CjrEnv, from_client: bool) -> S
                         ((*request)[0] == '/' ? ++*request : NULL),\n\
                         {has_arg_body})\n\
                      : (uw_error(ctx, FATAL, \
-                        \"Error unurlifying datatype {x}\"), NULL))));\n}}\n"
+                        \"Ur/Web: could not decode datatype `{x}` from the URL (expected `None` or `Some/…`).\"), NULL))));\n}}\n"
                 );
                 add_url_handler(proto, def);
                 format!("unurlify_{i}(ctx, {})", de_star(request))
@@ -2066,7 +2066,7 @@ fn unurlify_req(request: &str, t: &LocTyp, env: &CjrEnv, from_client: bool) -> S
                      ? (*request += 4, ((*request)[0] == '/' ? ++*request : NULL),\n\
                         ({{\n{list_t}tmp = uw_malloc(ctx, sizeof(struct __uws_{i}));\n\
                         *tmp = {inner_s};\ntmp;\n}})) \
-                     : (uw_error(ctx, FATAL, \"Error unurlifying list: %s\", *request), NULL))));\n}}\n"
+                     : (uw_error(ctx, FATAL, \"Ur/Web: could not decode a list from the URL at this point in the path: %s\", *request), NULL))));\n}}\n"
                 );
                 add_url_handler(proto, def);
                 format!("unurlify_list_{i}(ctx, {})", de_star(request))
@@ -2085,7 +2085,7 @@ fn unurlify_req(request: &str, t: &LocTyp, env: &CjrEnv, from_client: bool) -> S
                  ? ({request} += 5, \
                     ({{ {inner_t} *tmp = uw_malloc(ctx, sizeof({inner_t})); \
                     *tmp = {inner_unurl}; tmp; }}) \
-                 : (uw_error(ctx, FATAL, \"Error unurlifying option type\"), NULL))))"
+                 : (uw_error(ctx, FATAL, \"Ur/Web: expected `None` or `Some/…` in the URL path for an option value\"), NULL))))"
             )
         }
         _ => format!("/* unurlify unknown type */ ({}){{}}", p_typ(env, t)),
@@ -2274,7 +2274,7 @@ fn urlify_enum_stmts(
 ) -> String {
     cjr_test_tick();
     match xncs {
-        [] => format!("uw_error(ctx, FATAL, \"Error urlifying datatype {x}\");\n"),
+        [] => format!("uw_error(ctx, FATAL, \"Ur/Web: could not encode datatype `{x}` into the URL path (no matching case for this value).\");\n"),
         [(x_, n, _), rest @ ..] => {
             let x_ident = ident(x_);
             let rest_s = urlify_enum_stmts(level, rest, x, _i);
@@ -2296,7 +2296,7 @@ fn urlify_default_stmts(
 ) -> String {
     cjr_test_tick();
     match xncs {
-        [] => format!("uw_error(ctx, FATAL, \"Error urlifying datatype {x} (%d)\", it0->data);\n"),
+        [] => format!("uw_error(ctx, FATAL, \"Ur/Web: could not encode datatype `{x}` into the URL path (unexpected tag %d).\", it0->data);\n"),
         [(x_, n, to), rest @ ..] => {
             let x_ident = ident(x_);
             let rest_s = urlify_default_stmts(rest, x, _i, env);
@@ -2370,9 +2370,9 @@ fn p_page(
         body.push_str(
             "{\n\
              uw_Basis_string sig = uw_Basis_requestHeader(ctx, \"UrWeb-Sig\");\n\
-             if (sig == NULL) uw_error(ctx, FATAL, \"Missing cookie signature\");\n\
+             if (sig == NULL) uw_error(ctx, FATAL, \"Ur/Web security: missing UrWeb-Sig header (CSRF token). Resubmit the form from this app, or open a fresh page.\");\n\
              if (!uw_streq(sig, uw_cookie_sig(ctx)))\n\
-             uw_error(ctx, FATAL, \"Wrong cookie signature\");\n\
+             uw_error(ctx, FATAL, \"Ur/Web security: UrWeb-Sig does not match this session (possible CSRF, stale tab, or outdated form).\");\n\
              }\n",
         );
     }
@@ -3945,7 +3945,9 @@ mod tests {
         let div = dummy(Exp::Binop("/".into(), Box::new(a), Box::new(b)));
         let s = p_exp(&env, &div, &settings);
         assert!(
-            s.contains("division by zero") && s.contains("dividend") && s.contains("divisor"),
+            s.contains("integer division or modulus by zero")
+                && s.contains("dividend")
+                && s.contains("divisor"),
             "Division must emit zero guard, got: {}",
             s
         );

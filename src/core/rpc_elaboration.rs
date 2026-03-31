@@ -10,6 +10,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::core::*;
+use crate::diagnostics::{DiagnosticId, DiagnosticPayload};
 use crate::error_types::{Located, Span};
 use crate::export::{Effect, ExportKind};
 use crate::settings::FailureMode;
@@ -57,7 +58,7 @@ fn get_app(
 // Main transform
 // ---------------------------------------------------------------------------
 
-pub fn rpcify(file: File, error_reporter: &mut impl FnMut(&Span, &str)) -> File {
+pub fn rpcify(file: File, error_reporter: &mut impl FnMut(&Span, DiagnosticPayload)) -> File {
     // Pass 1: find base IDs for Basis.rpc and Basis.tryRpc (may be aliased)
     let mut rpc_base_ids: HashSet<usize> = HashSet::new();
     let mut trpc_base_ids: HashSet<usize> = HashSet::new();
@@ -187,7 +188,7 @@ fn rewrite_decl(
     trpc_base_ids: &HashSet<usize>,
     tfuncs: &HashMap<usize, TFunc>,
     state: &mut State,
-    error_reporter: &mut impl FnMut(&Span, &str),
+    error_reporter: &mut impl FnMut(&Span, DiagnosticPayload),
 ) -> LocatedDeclaration {
     let span = d.span.clone();
     let node = match d.node {
@@ -260,7 +261,7 @@ fn rewrite_exp(
     trpc_base_ids: &HashSet<usize>,
     tfuncs: &HashMap<usize, TFunc>,
     state: &mut State,
-    error_reporter: &mut impl FnMut(&Span, &str),
+    error_reporter: &mut impl FnMut(&Span, DiagnosticPayload),
 ) -> LocatedExpression {
     let span = e.span.clone();
 
@@ -297,8 +298,7 @@ fn rewrite_exp(
             None => {
                 error_reporter(
                     &span,
-                    "Internal compiler error: rpc/tryRpc application is missing the translation expression.\n\
-                     This is unexpected — if you can reproduce it with a small program, please report a bug.",
+                    DiagnosticPayload::new(DiagnosticId::RpcInternalMissingTranslation, vec![]),
                 );
                 e
             }
@@ -536,19 +536,25 @@ fn new_rpc(
     fm: FailureMode,
     tfuncs: &HashMap<usize, TFunc>,
     state: &mut State,
-    error_reporter: &mut impl FnMut(&Span, &str),
+    error_reporter: &mut impl FnMut(&Span, DiagnosticPayload),
     span: &Span,
 ) -> LocatedExpression {
     match get_app(&trans.node, Vec::new()) {
         None => {
-            error_reporter(span, "RPC code doesn't use a named function or transaction");
+            error_reporter(
+                span,
+                DiagnosticPayload::new(DiagnosticId::RpcCodeNotNamedFunction, vec![]),
+            );
             trans
         }
         Some((n, args)) => match tfuncs.get(&n) {
             None => {
                 // This can happen if rpcify is called before tfuncs is populated
                 // In practice this is a compiler bug
-                error_reporter(span, "Rpcify: undetected transaction function");
+                error_reporter(
+                    span,
+                    DiagnosticPayload::new(DiagnosticId::RpcUndetectedTransactionFunction, vec![]),
+                );
                 trans
             }
             Some(tf) => {

@@ -34,7 +34,8 @@ pub use project_db::{
     KV_BACKENDS, NON_SQL_BACKENDS, NON_SQL_BACKEND_DOC_MARKERS, SQL_BACKENDS,
 };
 pub use project_resolution::{
-    apply_urp_manifest_db_defaults, effective_project_db, read_manifest_project_db_next_to_urp,
+    apply_urp_manifest_db_defaults, apply_urp_manifest_diagnostic_locale, effective_project_db,
+    read_manifest_project_db_next_to_urp,
 };
 
 use anyhow::Result;

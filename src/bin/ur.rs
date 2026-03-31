@@ -14,7 +14,9 @@ use ur::cli_common;
 /// `-db` supplies the connection string for local `.db` files in the default application layout.
 ///
 /// Returns `0` on success, `1` on manifest, stylesheet, or compiler failure (same exit code as the peer binary).
-fn build_project() -> i32 {
+///
+/// `verbosity_forward` — leading `-v` / `-vv` / `-verbose` tokens from `ur build` to pass through to `ur-compile`.
+fn build_project(verbosity_forward: &[String]) -> i32 {
     // Load strict project manifest from the current working directory.
     let cfg = match cli_common::load_ur_manifest_cwd() {
         Ok(c) => c, // Parsed `ur.toml` is valid.
@@ -106,6 +108,7 @@ fn build_project() -> i32 {
         ]);
     }
 
+    args.extend(verbosity_forward.iter().cloned());
     // Delegate to the real compiler binary on `PATH`.
     cli_common::exec_peer_bin("ur-compile", &args)
 }
@@ -142,7 +145,10 @@ fn dispatch(args: &[String]) -> i32 {
             let rest: Vec<String> = args[1..].to_vec();
             cli_common::exec_peer_bin("ur-new", &rest)
         }
-        Some("build") => build_project(),
+        Some("build") => {
+            let verbosity = cli_common::leading_build_verbosity_flags(&args[1..]);
+            build_project(&verbosity)
+        }
         Some("install") => {
             let rest: Vec<String> = args[1..].to_vec();
             cli_common::exec_peer_bin("ur-install", &rest)

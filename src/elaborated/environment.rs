@@ -22,7 +22,7 @@
 //!
 //! Public binders and [`hnorm_sgn`] document `# Arguments` / `# Returns`; [`new_named_id`] is thread-safe.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 
 use super::type_operations;
@@ -1983,11 +1983,26 @@ pub fn hnorm_sgn(elaboration_environment: &Env, signature: &LocatedSignature) ->
         // Already in head-normal form.
         Signature::Const(_) | Signature::Fun(_, _, _, _) | Signature::Error => signature.clone(),
 
-        // Chase a named signature variable.
-        Signature::Var(id) => match elaboration_environment.lookup_sgn_named(*id) {
-            Ok((_, inner_sgn)) => hnorm_sgn(elaboration_environment, &inner_sgn.clone()),
-            Err(_) => signature.clone(),
-        },
+        // Chase a named signature variable (iteratively: long alias chains must not overflow the stack).
+        Signature::Var(start_signature_id) => {
+            let mut current_signature_id = *start_signature_id;
+            let mut visited_signature_ids: HashSet<usize> = HashSet::new();
+            loop {
+                if !visited_signature_ids.insert(current_signature_id) {
+                    // Cycle in signature aliases: treat as stuck, matching a failed lookup.
+                    return signature.clone();
+                }
+                match elaboration_environment.lookup_sgn_named(current_signature_id) {
+                    Ok((_, next_signature)) => match &next_signature.node {
+                        Signature::Var(next_id) => {
+                            current_signature_id = *next_id;
+                        }
+                        _ => return hnorm_sgn(elaboration_environment, next_signature),
+                    },
+                    Err(_) => return signature.clone(),
+                }
+            }
+        }
 
         // SgnProj(m, ms, x) — walk structure `m` through path `ms`, then project out `x`.
         Signature::Proj(m, ms, x) => {

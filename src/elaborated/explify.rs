@@ -7,6 +7,7 @@
 //!
 //! Mirrors `explify.sml`.
 
+use crate::diagnostics::{DiagnosticId, DiagnosticPayload};
 use crate::elaborated as elab;
 use crate::error_types::{ErrorReporter, Located, Span};
 use crate::explicit as expl;
@@ -85,9 +86,11 @@ fn explify_kind(k: elab::LocatedKind, errors: &mut ErrorReporter) -> expl::Locat
             span,
         ),
         elab::Kind::Error => {
-            errors.report_at(
+            errors.report_type_at_with_hint(
                 span.clone(),
-                "Explify: unexpected kind error placeholder (elaboration should have failed earlier)",
+                DiagnosticPayload::new(DiagnosticId::ExplifyKindErrorPlaceholder, vec![]),
+                DiagnosticId::HintExplifyKindErrorPlaceholder,
+                vec![],
             );
             recovery_kind(span)
         }
@@ -103,9 +106,11 @@ fn explify_kind(k: elab::LocatedKind, errors: &mut ErrorReporter) -> expl::Locat
                     explify_kind(k, errors)
                 }
                 elab::KUnif::Unknown => {
-                    errors.report_at(
+                    errors.report_type_at_with_hint(
                         unif_span.clone(),
-                        "Explify: kind unification still unknown (try rebuilding or report a compiler bug)",
+                        DiagnosticPayload::new(DiagnosticId::ExplifyKindMetavarUnknown, vec![]),
+                        DiagnosticId::HintExplifyKindMetavarUnknown,
+                        vec![],
                     );
                     recovery_kind(span)
                 }
@@ -123,9 +128,14 @@ fn explify_kind(k: elab::LocatedKind, errors: &mut ErrorReporter) -> expl::Locat
                     explify_kind(k, errors)
                 }
                 elab::KUnif::Unknown => {
-                    errors.report_at(
+                    errors.report_type_at_with_hint(
                         unif_span.clone(),
-                        "Explify: tuple kind unification still unknown",
+                        DiagnosticPayload::new(
+                            DiagnosticId::ExplifyTupleKindMetavarUnknown,
+                            vec![],
+                        ),
+                        DiagnosticId::HintExplifyTupleKindMetavarUnknown,
+                        vec![],
                     );
                     recovery_kind(span)
                 }
@@ -237,9 +247,9 @@ fn explify_con(
             span,
         ),
         elab::Constructor::Error => {
-            errors.report_at(
+            errors.report_type_at(
                 span.clone(),
-                "Explify: unexpected constructor error placeholder",
+                DiagnosticPayload::new(DiagnosticId::ExplifyUnexpectedConstructorError, vec![]),
             );
             recovery_con(span)
         }
@@ -256,7 +266,15 @@ fn explify_con(
                     explify_con(lifted, errors)
                 }
                 elab::CUnif::Unknown => {
-                    errors.report_at(span.clone(), "Explify: type unification still unknown");
+                    errors.report_type_at_with_hint(
+                        span.clone(),
+                        DiagnosticPayload::new(
+                            DiagnosticId::ExplifyConstructorMetavarUnknown,
+                            vec![],
+                        ),
+                        DiagnosticId::HintExplifyConstructorMetavarUnknown,
+                        vec![],
+                    );
                     recovery_con(span)
                 }
             }
@@ -423,9 +441,9 @@ fn explify_exp(e: elab::LocatedExpression, errors: &mut ErrorReporter) -> expl::
             span,
         ),
         elab::Expression::Error => {
-            errors.report_at(
+            errors.report_type_at(
                 span.clone(),
-                "Explify: unexpected expression error placeholder",
+                DiagnosticPayload::new(DiagnosticId::ExplifyUnexpectedExpressionError, vec![]),
             );
             recovery_exp(span)
         }
@@ -441,18 +459,21 @@ fn explify_exp(e: elab::LocatedExpression, errors: &mut ErrorReporter) -> expl::
                     explify_exp(e, errors)
                 }
                 None => {
-                    errors.report_at(
+                    errors.report_type_at(
                         span.clone(),
-                        "Explify: expression unification still unknown",
+                        DiagnosticPayload::new(
+                            DiagnosticId::ExplifyExpressionUnificationUnknown,
+                            vec![],
+                        ),
                     );
                     recovery_exp(span)
                 }
             }
         }
         elab::Expression::Hole(_) => {
-            errors.report_at(
+            errors.report_type_at(
                 span.clone(),
-                "Explify: typed hole remains (fill the hole or fix the type error)",
+                DiagnosticPayload::new(DiagnosticId::ExplifyTypedHoleRemains, vec![]),
             );
             recovery_exp(span)
         }
@@ -464,9 +485,12 @@ fn explify_exp(e: elab::LocatedExpression, errors: &mut ErrorReporter) -> expl::
                 let de_span = de.span.clone();
                 acc = match de.node {
                     elab::ElaboratedDeclaration::ValRec(_) => {
-                        errors.report_at(
+                        errors.report_type_at(
                             de_span.clone(),
-                            "Explify: local `val rec` should have been lifted by unnest",
+                            DiagnosticPayload::new(
+                                DiagnosticId::ExplifyLocalValRecShouldBeLifted,
+                                vec![],
+                            ),
                         );
                         acc
                     }
@@ -639,7 +663,12 @@ fn explify_sgn(sgn: elab::LocatedSignature, errors: &mut ErrorReporter) -> expl:
         ),
         elab::Signature::Proj(m, ms, x) => Located::new(expl::Signature::Proj(m, ms, x), span),
         elab::Signature::Error => {
-            errors.report_at(span.clone(), "Explify: signature error placeholder");
+            errors.report_type_at_with_hint(
+                span.clone(),
+                DiagnosticPayload::new(DiagnosticId::ExplifySignatureErrorPlaceholder, vec![]),
+                DiagnosticId::HintExplifySignatureErrorPlaceholder,
+                vec![],
+            );
             recovery_sgn(span)
         }
     }
@@ -683,7 +712,12 @@ fn explify_str(str_: elab::LocatedStructure, errors: &mut ErrorReporter) -> expl
             span,
         ),
         elab::Structure::Error => {
-            errors.report_at(span.clone(), "Explify: structure error placeholder");
+            errors.report_type_at_with_hint(
+                span.clone(),
+                DiagnosticPayload::new(DiagnosticId::ExplifyStructureErrorPlaceholder, vec![]),
+                DiagnosticId::HintExplifyStructureErrorPlaceholder,
+                vec![],
+            );
             recovery_str(span)
         }
     }

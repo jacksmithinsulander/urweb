@@ -12,6 +12,12 @@ use ur::settings::Settings;
 /// instead of running until cargo-mutants' whole-crate test timeout (~108s).
 pub const COMPILE_TO_OUTPUTS_TEST_TIMEOUT: Duration = Duration::from_secs(45);
 
+/// Stack size for the compile worker thread (bytes).
+///
+/// [`compiler::compile_to_outputs`] runs the whole pipeline; debug builds can recurse deeply enough
+/// to overflow the default per-thread stack (often ~2 MiB), especially on macOS.
+const COMPILE_THREAD_STACK_SIZE: usize = 16 * 1024 * 1024;
+
 /// Run [`compile_to_outputs`](compiler::compile_to_outputs) in a joinable context with a hard
 /// timeout. Preserves `Ok` / `Err` from the compiler; maps hangs to `Err`.
 pub fn compile_to_outputs_bounded(
@@ -21,12 +27,16 @@ pub fn compile_to_outputs_bounded(
     type R = anyhow::Result<(String, String)>;
     let urp_display = urp.display().to_string();
     let (tx, rx) = mpsc::channel::<R>();
-    thread::spawn(move || {
-        let mut settings = Settings::new();
-        configure(&mut settings);
-        let r = compiler::compile_to_outputs(&urp, &mut settings);
-        let _ = tx.send(r);
-    });
+    // Larger stack avoids stack overflow in full pipeline + boot-linked Basis under `--test`.
+    thread::Builder::new()
+        .stack_size(COMPILE_THREAD_STACK_SIZE)
+        .spawn(move || {
+            let mut settings = Settings::new();
+            configure(&mut settings);
+            let r = compiler::compile_to_outputs(&urp, &mut settings);
+            let _ = tx.send(r);
+        })
+        .map_err(|e| anyhow::anyhow!("failed to spawn compile thread: {e}"))?;
     match rx.recv_timeout(COMPILE_TO_OUTPUTS_TEST_TIMEOUT) {
         Ok(r) => r,
         Err(mpsc::RecvTimeoutError::Timeout) => Err(anyhow::anyhow!(

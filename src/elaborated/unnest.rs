@@ -12,6 +12,7 @@
 
 use std::collections::BTreeSet;
 
+use crate::diagnostics::{DiagnosticId, DiagnosticPayload};
 use crate::elaborated::{
     Constructor, Declaration, ElaboratedDeclaration, Explicitness, Expression, File, Kind,
     LocatedConstructor, LocatedDeclaration, LocatedElaboratedDeclaration, LocatedExpression,
@@ -501,17 +502,16 @@ fn position_of(
     span: &crate::error_types::Span,
     errors: &mut ErrorReporter,
 ) -> usize {
-    list.iter()
-        .position(|&v| v == x)
-        .unwrap_or_else(|| {
-            errors.report_at(
-                span.clone(),
-                format!(
-                    "Internal: unnest remap failed (free-var index {x} missing from {list:?}) — report a bug"
-                ),
-            );
-            0
-        })
+    list.iter().position(|&v| v == x).unwrap_or_else(|| {
+        errors.report_type_at(
+            span.clone(),
+            DiagnosticPayload::new(
+                DiagnosticId::UnnestRemapFailedInternal,
+                vec![x.to_string(), format!("{list:?}")],
+            ),
+        );
+        0
+    })
 }
 
 /// Remap free constructor variables in `c` to use positions in `kfv`/`cfv`.

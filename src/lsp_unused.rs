@@ -3,6 +3,7 @@
 use std::collections::HashSet;
 use std::path::Path;
 
+use crate::diagnostics::{DiagnosticId, DiagnosticPayload};
 use crate::elaborated::{
     Declaration, ElaboratedDeclaration, Expression, File as ElabFile, LocatedExpression,
     LocatedSignature, Signature, SignatureItem, Structure,
@@ -198,22 +199,28 @@ pub fn report_unused_top_level_values(
         match &d.node {
             Declaration::Val(name, id, _, _) => {
                 if paths_match_given_open_normalized(oref, &d.span.file) && !used.contains(id) {
-                    errors.report(CompileError::warning_at(
+                    errors.report(CompileError::warning_at_with_hint(
                         d.span.clone(),
-                        format!(
-                            "unused value `{name}` (not reachable from exports, tables, views, or other entry declarations)"
+                        DiagnosticPayload::new(
+                            DiagnosticId::LspUnusedValueNeverUsedFromEntry,
+                            vec![name.clone()],
                         ),
+                        DiagnosticId::HintLspUnusedValueNeverUsedFromEntry,
+                        vec![],
                     ));
                 }
             }
             Declaration::ValRec(recs) => {
                 for (name, id, _, _) in recs {
                     if paths_match_given_open_normalized(oref, &d.span.file) && !used.contains(id) {
-                        errors.report(CompileError::warning_at(
+                        errors.report(CompileError::warning_at_with_hint(
                             d.span.clone(),
-                            format!(
-                                "unused value `{name}` in this `val rec` group (not reachable from entry declarations)"
+                            DiagnosticPayload::new(
+                                DiagnosticId::LspUnusedValRecNotReachable,
+                                vec![name.clone()],
                             ),
+                            DiagnosticId::HintLspUnusedValRecNotReachable,
+                            vec![],
                         ));
                     }
                 }

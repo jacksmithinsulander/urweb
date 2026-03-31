@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 #[cfg(test)]
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use crate::diagnostics::{DiagnosticId, DiagnosticPayload};
 use crate::error_types::ErrorReporter;
 use crate::settings::Settings;
 
@@ -38,8 +39,13 @@ fn bail_if_errors_reported(errors: &ErrorReporter, phase: &str) -> Result<()> {
     }
     let n = errors.errors.len();
     bail!(
-        "{phase} reported {n} error(s). Messages above list each issue with file and location.\n\
-         Fix those problems, then run the compiler again."
+        "{}",
+        crate::error_types::format_tool_diagnostic_banner_and_body(
+            "COMPILE STOPPED",
+            &format!(
+                "{phase} finished with {n} diagnostic(s) above.\n\nEach one uses the same layout as the Ur/Web Rust compiler (`-- TYPE`, `-- PARSE`, `-- SQL`, …). Scroll up, fix the first error, and try again — later messages are often knock-on effects."
+            ),
+        )
     );
 }
 
@@ -461,10 +467,9 @@ fn parse_sources_inner(
             match std::fs::read_to_string(&urs_path) {
                 Ok(src) => crate::parse::parse_urs(&urs_path.to_string_lossy(), &src, errors)?,
                 Err(e) => {
-                    errors.report(CompileError::Plain(format!(
-                        "cannot read basis library {}: {}",
-                        urs_path.display(),
-                        e
+                    errors.report(CompileError::Plain(DiagnosticPayload::new(
+                        DiagnosticId::CouldNotReadBasisUrs,
+                        vec![urs_path.to_string_lossy().into_owned(), e.to_string()],
                     )));
                     return None;
                 }
@@ -497,10 +502,9 @@ fn parse_sources_inner(
                 None => return None,
             },
             Err(e) => {
-                errors.report(CompileError::Plain(format!(
-                    "cannot read top library {}: {}",
-                    top_urs_path.display(),
-                    e
+                errors.report(CompileError::Plain(DiagnosticPayload::new(
+                    DiagnosticId::CouldNotReadTopUrs,
+                    vec![top_urs_path.to_string_lossy().into_owned(), e.to_string()],
                 )));
                 return None;
             }
@@ -525,10 +529,9 @@ fn parse_sources_inner(
                 }
             }
             Err(e) => {
-                errors.report(CompileError::Plain(format!(
-                    "cannot read top library {}: {}",
-                    top_ur_path.display(),
-                    e
+                errors.report(CompileError::Plain(DiagnosticPayload::new(
+                    DiagnosticId::CouldNotReadTopUr,
+                    vec![top_ur_path.to_string_lossy().into_owned(), e.to_string()],
                 )));
                 return None;
             }
@@ -579,8 +582,9 @@ fn parse_sources_inner(
         let urs_src = match std::fs::read_to_string(&urs_path) {
             Ok(s) => s,
             Err(e) => {
-                errors.report(CompileError::Plain(format!(
-                    "cannot read FFI signature {urs_path}: {e}"
+                errors.report(CompileError::Plain(DiagnosticPayload::new(
+                    DiagnosticId::CouldNotReadFfiUrs,
+                    vec![urs_path.clone(), e.to_string()],
                 )));
                 had_errors = true;
                 continue;
@@ -614,7 +618,10 @@ fn parse_sources_inner(
                 match std::fs::read_to_string(&ur_path) {
                     Ok(s) => s,
                     Err(e) => {
-                        errors.report(CompileError::Plain(format!("cannot read {ur_path}: {e}")));
+                        errors.report(CompileError::Plain(DiagnosticPayload::new(
+                            DiagnosticId::CouldNotReadSourceUr,
+                            vec![ur_path.clone(), e.to_string()],
+                        )));
                         had_errors = true;
                         continue;
                     }
@@ -624,7 +631,10 @@ fn parse_sources_inner(
             match std::fs::read_to_string(&ur_path) {
                 Ok(s) => s,
                 Err(e) => {
-                    errors.report(CompileError::Plain(format!("cannot read {ur_path}: {e}")));
+                    errors.report(CompileError::Plain(DiagnosticPayload::new(
+                        DiagnosticId::CouldNotReadSourceUr,
+                        vec![ur_path.clone(), e.to_string()],
+                    )));
                     had_errors = true;
                     continue;
                 }
@@ -635,7 +645,10 @@ fn parse_sources_inner(
         let sgn_opt = if Path::new(&urs_path).exists() {
             match std::fs::read_to_string(&urs_path) {
                 Err(e) => {
-                    errors.report(CompileError::Plain(format!("cannot read {urs_path}: {e}")));
+                    errors.report(CompileError::Plain(DiagnosticPayload::new(
+                        DiagnosticId::CouldNotReadSignatureUrs,
+                        vec![urs_path.clone(), e.to_string()],
+                    )));
                     had_errors = true;
                     None
                 }
@@ -873,8 +886,8 @@ pub fn core_rpcify(
     errors: &mut ErrorReporter,
 ) -> Option<crate::core::File> {
     let mut had_errors = false;
-    let result = crate::core::rpc_elaboration::rpcify(file, &mut |span, msg| {
-        errors.report_at(span.clone(), msg);
+    let result = crate::core::rpc_elaboration::rpcify(file, &mut |span, payload| {
+        errors.report_type_at(span.clone(), payload);
         had_errors = true;
     });
     if had_errors {
@@ -901,8 +914,8 @@ pub fn core_tag(
     errors: &mut ErrorReporter,
 ) -> Option<crate::core::File> {
     let mut had_errors = false;
-    let result = crate::core::export_tagging::tag(file, &mut |span, msg| {
-        errors.report_at(span.clone(), msg);
+    let result = crate::core::export_tagging::tag(file, &mut |span, payload| {
+        errors.report_type_at(span.clone(), payload);
         had_errors = true;
     });
     if had_errors {
@@ -1107,7 +1120,7 @@ pub fn mono_inline(
     settings: &Settings,
 ) -> crate::monomorphized::File {
     use std::sync::atomic::Ordering;
-    let mut errors = ErrorReporter::new();
+    let mut errors = ErrorReporter::from_settings(settings);
     // Mirror SML mono_inline.sml: set fullMode=true and mono_inline=max before reducing.
     let old_full = crate::monomorphized::mono_reduce::FULL_MODE.swap(true, Ordering::Relaxed);
     let mut full_settings = settings.clone();
@@ -1434,10 +1447,29 @@ pub fn cc_and_link(c_source: &str, output: &Path, job: &Job, settings: &Settings
         compile_cmd.arg("-pg");
     }
 
+    if settings.verbosity >= 2 {
+        tracing::debug!(
+            cc = %cc,
+            c_file = %c_file.display(),
+            o_file = %o_file.display(),
+            "C compile (object) step"
+        );
+    }
     let compile_status = command_status_deadline(&mut compile_cmd, &format!("C compiler '{cc}'"))?;
     match compile_status.success() {
         true => {}
-        false => bail!("C compilation failed (exit {})", compile_status),
+        false => {
+            bail!(
+                "{}",
+                crate::error_types::format_tool_diagnostic_banner_and_body(
+                    "C BUILD",
+                    &format!(
+                        "The C compiler (`{cc}`, exit {compile_status}) rejected the generated file `{}`.\n\nUr/Web already produced this C from your `.ur` sources — the problem is now at the C toolchain layer. Typical causes: wrong `-I` path to the Ur/Web runtime headers, a bad `ccompiler` in your project config, or an internal codegen bug.\n\nTry running the same compile command manually (copy from `ur-compile -verbose` if needed) so the compiler prints the exact line number; then open the `.c` file there or report the issue with a small repro.",
+                        c_file.display()
+                    ),
+                )
+            );
+        }
     }
 
     // Link step.
@@ -1514,11 +1546,30 @@ pub fn cc_and_link(c_source: &str, output: &Path, job: &Job, settings: &Settings
         link_cmd.arg("-pg");
     }
 
+    if settings.verbosity >= 2 {
+        tracing::debug!(
+            linker = %linker_cmd_base,
+            output = %output.display(),
+            "C link step"
+        );
+    }
     let link_status =
         command_status_deadline(&mut link_cmd, &format!("linker '{linker_cmd_base}'"))?;
     match link_status.success() {
         true => {}
-        false => bail!("Linking failed (exit {})", link_status),
+        false => {
+            bail!(
+                "{}",
+                crate::error_types::format_tool_diagnostic_banner_and_body(
+                    "LINK",
+                    &format!(
+                        "The linker (`{linker_cmd_base}`, exit {link_status}) could not produce `{}`.\n\nThe object file `{}` was built successfully. Check that `liburweb` and your database driver libraries are installed and visible (`-L` paths), and that optional flags like BearSSL / `URWEB_NATIVE_LIB_DIR` match your machine.",
+                        output.display(),
+                        o_file.display()
+                    ),
+                )
+            );
+        }
     }
 
     Ok(())
@@ -1575,6 +1626,7 @@ pub fn resolve_project_job_and_settings(urp_path: &Path) -> Result<(Job, Setting
     apply_job_db_settings(&job, &mut settings).map_err(|e| e.to_string())?;
     let urp = resolve_urp_project_path(urp_path);
     crate::db::apply_urp_manifest_db_defaults(&urp, &mut settings)?;
+    crate::db::apply_urp_manifest_diagnostic_locale(&urp, &mut settings)?;
     crate::db::reconcile_ur_manifest_with_resolved_db(&urp, &settings)?;
     Ok((job, settings))
 }
@@ -1616,7 +1668,7 @@ pub fn compile(urp_path: &Path, settings: &mut Settings) -> CompileResult {
 }
 
 fn run_compile(urp_path: &Path, settings: &mut Settings) -> Result<PathBuf> {
-    let mut errors = ErrorReporter::new();
+    use std::time::Instant;
 
     // Phase 1: parse project file (append .urp if not already present)
     let urp_path_buf = resolve_urp_project_path(urp_path);
@@ -1626,8 +1678,12 @@ fn run_compile(urp_path: &Path, settings: &mut Settings) -> Result<PathBuf> {
     apply_job_db_settings(&job, settings).map_err(|e| anyhow::anyhow!("{}", e))?;
     crate::db::apply_urp_manifest_db_defaults(&urp_path_buf, settings)
         .map_err(|e| anyhow::anyhow!("{}", e))?;
+    crate::db::apply_urp_manifest_diagnostic_locale(&urp_path_buf, settings)
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
     crate::db::reconcile_ur_manifest_with_resolved_db(&urp_path_buf, settings)
         .map_err(|e| anyhow::anyhow!("{}", e))?;
+
+    let mut errors = ErrorReporter::from_settings(settings);
 
     // Apply job settings globally
     settings.set_url_prefix(&job.prefix);
@@ -1636,11 +1692,17 @@ fn run_compile(urp_path: &Path, settings: &mut Settings) -> Result<PathBuf> {
     settings.scripts = job.scripts.clone();
     settings.debug = job.debug;
 
+    crate::compiler_tracing::init_compiler_tracing(settings);
+    tracing::info!(urp = %urp_path_buf.display(), verbosity = settings.verbosity, "starting Ur/Web compilation");
+
+    let mut phase_t = Instant::now();
     // Phase 2: parse sources
     let source_file = parse_sources(&job, settings, &mut errors)
         .ok_or_else(|| anyhow::anyhow!("Parse failed"))?;
     bail_if_errors_reported(&errors, "Parsing")?;
+    crate::compiler_tracing::log_phase_complete(settings, "parse", phase_t);
 
+    phase_t = Instant::now();
     // Phase 3: elaborate
     let elab_file = elaborate(source_file, settings, &mut errors)
         .ok_or_else(|| anyhow::anyhow!("Elaboration failed"))?;
@@ -1649,7 +1711,9 @@ fn run_compile(urp_path: &Path, settings: &mut Settings) -> Result<PathBuf> {
     // Phase 3.5: unnest
     let elab_file = unnest(elab_file, &mut errors);
     bail_if_errors_reported(&errors, "Unnest (lambda lifting)")?;
+    crate::compiler_tracing::log_phase_complete(settings, "elaborate", phase_t);
 
+    phase_t = Instant::now();
     // Phase 4: explify
     let expl_file =
         explify(elab_file, &mut errors).ok_or_else(|| anyhow::anyhow!("Explify failed"))?;
@@ -1657,7 +1721,9 @@ fn run_compile(urp_path: &Path, settings: &mut Settings) -> Result<PathBuf> {
     // Phase 5: corify
     let core_file =
         corify(expl_file, settings, &mut errors).ok_or_else(|| anyhow::anyhow!("Corify failed"))?;
+    crate::compiler_tracing::log_phase_complete(settings, "explify_corify", phase_t);
 
+    phase_t = Instant::now();
     // Core passes
     let core_file = core_untangle(core_file);
     let core_file = core_reduce_local(core_file);
@@ -1676,7 +1742,9 @@ fn run_compile(urp_path: &Path, settings: &mut Settings) -> Result<PathBuf> {
     check_marshal(&core_file, settings, &mut errors);
     check_termination(&core_file, &mut errors);
     bail_if_errors_reported(&errors, "Core verification (marshalling / termination)")?;
+    crate::compiler_tracing::log_phase_complete(settings, "core", phase_t);
 
+    phase_t = Instant::now();
     // Monoize
     let mono_file = monoize(core_file, settings, &mut errors)
         .ok_or_else(|| anyhow::anyhow!("Monoize failed"))?;
@@ -1703,7 +1771,9 @@ fn run_compile(urp_path: &Path, settings: &mut Settings) -> Result<PathBuf> {
     let mono_file = mono_sig_check(mono_file);
     let mono_file = mono_dbmode_check(mono_file);
     bail_if_errors_reported(&errors, "Monomorphization checks")?;
+    crate::compiler_tracing::log_phase_complete(settings, "mono", phase_t);
 
+    phase_t = Instant::now();
     let mono_file = if settings.debug {
         mono_iflow(mono_file, settings, &mut errors)
             .ok_or_else(|| anyhow::anyhow!("Iflow failed"))?
@@ -1739,6 +1809,7 @@ fn run_compile(urp_path: &Path, settings: &mut Settings) -> Result<PathBuf> {
     crate::db::require_sql_codegen_from_option(&settings.db_backend)?;
     let c_code = cjr_print(&cjr_file, settings);
     let sql_ddl = sql_generate(&cjr_file, settings);
+    crate::compiler_tracing::log_phase_complete(settings, "codegen", phase_t);
 
     // Write SQL if requested
     if let Some(sql_path) = &job.sql {
@@ -1746,10 +1817,13 @@ fn run_compile(urp_path: &Path, settings: &mut Settings) -> Result<PathBuf> {
             .with_context(|| format!("writing SQL to {}", sql_path))?;
     }
 
+    phase_t = Instant::now();
     // Compile and link
     let exe_path = PathBuf::from(&job.exe);
     cc_and_link(&c_code, &exe_path, &job, settings)?;
+    crate::compiler_tracing::log_phase_complete(settings, "link", phase_t);
 
+    tracing::info!(exe = %exe_path.display(), "Ur/Web compilation finished");
     Ok(exe_path)
 }
 
@@ -1765,7 +1839,7 @@ fn run_compile(urp_path: &Path, settings: &mut Settings) -> Result<PathBuf> {
 ///
 /// Same classes of failure as the full pipeline (parse, elaborate, mono, CJR, …).
 pub fn compile_to_outputs(urp_path: &Path, settings: &mut Settings) -> Result<(String, String)> {
-    let mut errors = ErrorReporter::new();
+    use std::time::Instant;
 
     let urp_path_buf = resolve_urp_project_path(urp_path);
     let mut job = parse_urp(&urp_path_buf)?;
@@ -1773,29 +1847,45 @@ pub fn compile_to_outputs(urp_path: &Path, settings: &mut Settings) -> Result<(S
     apply_job_db_settings(&job, settings).map_err(|e| anyhow::anyhow!("{}", e))?;
     crate::db::apply_urp_manifest_db_defaults(&urp_path_buf, settings)
         .map_err(|e| anyhow::anyhow!("{}", e))?;
+    crate::db::apply_urp_manifest_diagnostic_locale(&urp_path_buf, settings)
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
     crate::db::reconcile_ur_manifest_with_resolved_db(&urp_path_buf, settings)
         .map_err(|e| anyhow::anyhow!("{}", e))?;
+
+    let mut errors = ErrorReporter::from_settings(settings);
+
     settings.set_url_prefix(&job.prefix);
     settings.timeout = job.timeout;
     settings.headers = job.headers.clone();
     settings.scripts = job.scripts.clone();
     settings.debug = job.debug;
 
+    crate::compiler_tracing::init_compiler_tracing(settings);
+    tracing::info!(urp = %urp_path_buf.display(), mode = "compile_to_outputs", "starting Ur/Web pipeline");
+
+    let mut phase_t = Instant::now();
     let source_file = parse_sources(&job, settings, &mut errors)
         .ok_or_else(|| anyhow::anyhow!("Parse failed"))?;
     bail_if_errors_reported(&errors, "Parsing")?;
+    crate::compiler_tracing::log_phase_complete(settings, "parse", phase_t);
 
+    phase_t = Instant::now();
     let elab_file = elaborate(source_file, settings, &mut errors)
         .ok_or_else(|| anyhow::anyhow!("Elaboration failed"))?;
     bail_if_errors_reported(&errors, "Elaboration (types and modules)")?;
 
     let elab_file = unnest(elab_file, &mut errors);
     bail_if_errors_reported(&errors, "Unnest (lambda lifting)")?;
+    crate::compiler_tracing::log_phase_complete(settings, "elaborate", phase_t);
+
+    phase_t = Instant::now();
     let expl_file =
         explify(elab_file, &mut errors).ok_or_else(|| anyhow::anyhow!("Explify failed"))?;
     let core_file =
         corify(expl_file, settings, &mut errors).ok_or_else(|| anyhow::anyhow!("Corify failed"))?;
+    crate::compiler_tracing::log_phase_complete(settings, "explify_corify", phase_t);
 
+    phase_t = Instant::now();
     let core_file = core_untangle(core_file);
     let core_file = core_reduce_local(core_file);
     let core_file = core_shake(core_file);
@@ -1812,7 +1902,9 @@ pub fn compile_to_outputs(urp_path: &Path, settings: &mut Settings) -> Result<(S
     check_marshal(&core_file, settings, &mut errors);
     check_termination(&core_file, &mut errors);
     bail_if_errors_reported(&errors, "Core verification (marshalling / termination)")?;
+    crate::compiler_tracing::log_phase_complete(settings, "core", phase_t);
 
+    phase_t = Instant::now();
     let mono_file = monoize(core_file, settings, &mut errors)
         .ok_or_else(|| anyhow::anyhow!("Monoize failed"))?;
     let (mono_file, _endpoints) = mono_endpoints(mono_file);
@@ -1829,7 +1921,9 @@ pub fn compile_to_outputs(urp_path: &Path, settings: &mut Settings) -> Result<(S
     let mono_file = mono_sig_check(mono_file);
     let mono_file = mono_dbmode_check(mono_file);
     bail_if_errors_reported(&errors, "Monomorphization checks")?;
+    crate::compiler_tracing::log_phase_complete(settings, "mono", phase_t);
 
+    phase_t = Instant::now();
     let mono_file = if settings.debug {
         mono_iflow(mono_file, settings, &mut errors)
             .ok_or_else(|| anyhow::anyhow!("Iflow failed"))?
@@ -1855,6 +1949,8 @@ pub fn compile_to_outputs(urp_path: &Path, settings: &mut Settings) -> Result<(S
     crate::db::require_sql_codegen_from_option(&settings.db_backend)?;
     let c_code = cjr_print(&cjr_file, settings);
     let sql_ddl = sql_generate(&cjr_file, settings);
+    crate::compiler_tracing::log_phase_complete(settings, "codegen", phase_t);
+    tracing::info!("compile_to_outputs finished (no link step)");
     Ok((c_code, sql_ddl))
 }
 
@@ -1970,7 +2066,9 @@ mod tests {
     #[test]
     fn bail_if_errors_reported_fails_when_diagnostics_present() {
         let mut errors = ErrorReporter::new();
-        errors.report(crate::error_types::CompileError::Plain("bad".into()));
+        errors.report(crate::error_types::CompileError::Plain(
+            DiagnosticPayload::new(DiagnosticId::MutationTestingBadPlaceholder, Vec::new()),
+        ));
         let out = bail_if_errors_reported(&errors, "Parsing");
         assert!(
             out.is_err(),

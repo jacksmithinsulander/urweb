@@ -8,6 +8,7 @@
 use std::cell::RefCell;
 
 use crate::db::ProjectDbCtx;
+use crate::diagnostics::{DiagnosticId, DiagnosticPayload};
 use crate::error_types::{ErrorReporter, Located, Span};
 use crate::monomorphized::{utilities, Exp, LocDecl, LocExp, Typ};
 use crate::primitives::{Prim, StringMode};
@@ -1232,7 +1233,10 @@ fn opt_exp_peephole(
                         if !check_data(s) {
                             errors.borrow_mut().report_at(
                                 args[0].0.span.clone(),
-                                format!("Invalid HTML5 data-* attribute {}", s),
+                                DiagnosticPayload::new(
+                                    DiagnosticId::InvalidHtml5DataAttribute,
+                                    vec![s.clone()],
+                                ),
                             );
                         }
                         return args[0].0.node.clone();
@@ -1244,7 +1248,10 @@ fn opt_exp_peephole(
                         if !check_url(s, settings) {
                             errors.borrow_mut().report_at(
                                 args[0].0.span.clone(),
-                                format!("Invalid URL {} passed to 'bless'", s),
+                                DiagnosticPayload::new(
+                                    DiagnosticId::InvalidUrlPassedToBless,
+                                    vec![s.clone()],
+                                ),
                             );
                         }
                         return args[0].0.node.clone();
@@ -1270,7 +1277,10 @@ fn opt_exp_peephole(
                         if !settings.check_mime(s) {
                             errors.borrow_mut().report_at(
                                 args[0].0.span.clone(),
-                                format!("Invalid string {} passed to 'blessMime'", s),
+                                DiagnosticPayload::new(
+                                    DiagnosticId::InvalidStringPassedToBlessMime,
+                                    vec![s.clone()],
+                                ),
                             );
                         }
                         return args[0].0.node.clone();
@@ -1296,7 +1306,10 @@ fn opt_exp_peephole(
                         if !check_atom(s) {
                             errors.borrow_mut().report_at(
                                 args[0].0.span.clone(),
-                                format!("Invalid string {} passed to 'atom'", s),
+                                DiagnosticPayload::new(
+                                    DiagnosticId::InvalidStringPassedToAtom,
+                                    vec![s.clone()],
+                                ),
                             );
                         }
                         return args[0].0.node.clone();
@@ -1308,7 +1321,10 @@ fn opt_exp_peephole(
                         if !check_css_url(s) {
                             errors.borrow_mut().report_at(
                                 args[0].0.span.clone(),
-                                format!("Invalid URL {} passed to 'css_url'", s),
+                                DiagnosticPayload::new(
+                                    DiagnosticId::InvalidUrlPassedToCssUrl,
+                                    vec![s.clone()],
+                                ),
                             );
                         }
                         return args[0].0.node.clone();
@@ -1320,7 +1336,10 @@ fn opt_exp_peephole(
                         if !check_property(s) {
                             errors.borrow_mut().report_at(
                                 args[0].0.span.clone(),
-                                format!("Invalid string {} passed to 'property'", s),
+                                DiagnosticPayload::new(
+                                    DiagnosticId::InvalidStringPassedToProperty,
+                                    vec![s.clone()],
+                                ),
                             );
                         }
                         return args[0].0.node.clone();
@@ -1332,7 +1351,10 @@ fn opt_exp_peephole(
                         if !settings.check_request_header(s) {
                             errors.borrow_mut().report_at(
                                 args[0].0.span.clone(),
-                                format!("Invalid string {} passed to 'blessRequestHeader'", s),
+                                DiagnosticPayload::new(
+                                    DiagnosticId::InvalidStringPassedToBlessRequestHeader,
+                                    vec![s.clone()],
+                                ),
                             );
                         }
                         return args[0].0.node.clone();
@@ -1358,7 +1380,10 @@ fn opt_exp_peephole(
                         if !settings.check_response_header(s) {
                             errors.borrow_mut().report_at(
                                 args[0].0.span.clone(),
-                                format!("Invalid string {} passed to 'blessResponseHeader'", s),
+                                DiagnosticPayload::new(
+                                    DiagnosticId::InvalidStringPassedToBlessResponseHeader,
+                                    vec![s.clone()],
+                                ),
                             );
                         }
                         return args[0].0.node.clone();
@@ -1384,7 +1409,10 @@ fn opt_exp_peephole(
                         if !settings.check_env_var(s) {
                             errors.borrow_mut().report_at(
                                 args[0].0.span.clone(),
-                                format!("Invalid string {} passed to 'blessEnvVar'", s),
+                                DiagnosticPayload::new(
+                                    DiagnosticId::InvalidStringPassedToBlessEnvVar,
+                                    vec![s.clone()],
+                                ),
                             );
                         }
                         return args[0].0.node.clone();
@@ -1410,7 +1438,10 @@ fn opt_exp_peephole(
                         if !settings.check_meta(s) {
                             errors.borrow_mut().report_at(
                                 args[0].0.span.clone(),
-                                format!("Invalid string {} passed to 'blessMeta'", s),
+                                DiagnosticPayload::new(
+                                    DiagnosticId::InvalidStringPassedToBlessMeta,
+                                    vec![s.clone()],
+                                ),
                             );
                         }
                         return args[0].0.node.clone();

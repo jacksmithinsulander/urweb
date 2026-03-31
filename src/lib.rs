@@ -31,6 +31,8 @@ pub mod cli_common;
 pub mod compiler;
 /// Shared compiler diagnostics (locks, ICE messages).
 pub mod compiler_diagnostics;
+/// Foundry-style verbosity and [`tracing`] setup for the batch driver.
+pub mod compiler_tracing;
 /// Project database choice (`ProjectDb`, SQL flavors, reserved backends, mangling, codegen gates).
 pub mod db;
 /// Re-exports [`db`] for older `ur::dbms` paths.
@@ -45,6 +47,8 @@ pub mod datatype_kind;
 pub mod debugger;
 /// Demo mode: build a combined demo application from a demo directory.
 pub mod demo;
+/// Localized diagnostic catalog (`DiagnosticId`, templates, [`DiagnosticPayload`]).
+pub mod diagnostics;
 /// Elaborated AST — after type inference, with unification variables.
 pub mod elaborated;
 /// Errors, spans, and source locations.

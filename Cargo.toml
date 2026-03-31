@@ -54,7 +54,6 @@ tempfile = "3"
 [dependencies]
 logos     = "0.14"
 lalrpop-util = { version = "0.20", features = ["lexer"] }
-thiserror = "2"
 anyhow    = "1"
 toml      = "0.8"
 lsp-server = "0.7"
@@ -62,6 +61,13 @@ lsp-types = "0.97"
 crossbeam-channel = "0.5"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = [
+    "ansi",
+    "env-filter",
+    "fmt",
+    "std",
+] }
 
 [build-dependencies]
 lalrpop = "0.20"

@@ -54,6 +54,7 @@ mod grammar {
     include!(concat!(env!("OUT_DIR"), "/parse/grammar.rs"));
 }
 
+use crate::diagnostics::{render_diagnostic_body, DiagnosticId, DiagnosticPayload};
 use crate::error_types::{CompileError, ErrorReporter, Span};
 use crate::source::{File, LocSgnItem};
 
@@ -2158,19 +2159,42 @@ pub fn parse_ur(
         match grammar::FileParser::new().parse(lexer) {
             Ok(file) => Some(file),
             Err(e) => {
-                let msg = format!("{:?}", e);
-                // Debug: print context around the error position
-                if let Some(start) = msg.find("token: (") {
-                    if let Some(end) = msg[start + 8..].find(',') {
-                        if let Ok(pos) = msg[start + 8..start + 8 + end].parse::<usize>() {
-                            let lo = pos.saturating_sub(150);
-                            let hi = (pos + 80).min(pre.len());
-                            eprintln!("parse_ur context around {}: {:?}", pos, &pre[lo..hi]);
-                        }
-                    }
+                let detail = format!("{:?}", e);
+                let label_span = Span {
+                    file: _filename.to_string(),
+                    ..Span::dummy()
+                };
+                let markup_heuristic = pre.contains("<xml") || pre.contains("<XML");
+                let xml_note = if markup_heuristic {
+                    format!(
+                        "\n\n{}",
+                        render_diagnostic_body(
+                            &DiagnosticPayload::new(DiagnosticId::ParseUrXmlHeuristicNote, vec![]),
+                            errors.diagnostic_locale,
+                        )
+                    )
+                } else {
+                    String::new()
+                };
+                let payload = DiagnosticPayload::new(
+                    DiagnosticId::ParseUrSyntaxFailed,
+                    vec![_filename.to_string(), detail, xml_note],
+                );
+                if markup_heuristic {
+                    errors.report(CompileError::xml_at_with_hint(
+                        label_span,
+                        payload,
+                        DiagnosticId::HintParseUrSyntax,
+                        vec![],
+                    ));
+                } else {
+                    errors.report(CompileError::parse_at_with_hint(
+                        label_span,
+                        payload,
+                        DiagnosticId::HintParseUrSyntax,
+                        vec![],
+                    ));
                 }
-                eprintln!("parse_ur({}) error: {}", _filename, msg);
-                errors.report(CompileError::at(Span::dummy(), msg));
                 None
             }
         }
@@ -2178,9 +2202,10 @@ pub fn parse_ur(
     #[cfg(not(generated_parser))]
     {
         let _ = (_filename, source, project_db);
-        errors.report(CompileError::Plain(
-            "parse_ur: parser not available — rebuild with URWEB_GEN_PARSER=1".into(),
-        ));
+        errors.report(CompileError::Plain(DiagnosticPayload::new(
+            DiagnosticId::ParserNotLinkedUr,
+            vec![],
+        )));
         None
     }
 }
@@ -2239,9 +2264,20 @@ pub fn parse_urs(
         match grammar::SgnItemsParser::new().parse(lexer) {
             Ok(items) => Some(items),
             Err(e) => {
-                let msg = format!("{:?}", e);
-                eprintln!("parse_urs({}) error: {}", _filename, msg);
-                errors.report(CompileError::at(Span::dummy(), msg));
+                let detail = format!("{:?}", e);
+                let label_span = Span {
+                    file: _filename.to_string(),
+                    ..Span::dummy()
+                };
+                errors.report(CompileError::parse_at_with_hint(
+                    label_span,
+                    DiagnosticPayload::new(
+                        DiagnosticId::ParseUrsSyntaxFailed,
+                        vec![_filename.to_string(), detail],
+                    ),
+                    DiagnosticId::HintParseUrsSyntax,
+                    vec![],
+                ));
                 None
             }
         }
@@ -2249,9 +2285,10 @@ pub fn parse_urs(
     #[cfg(not(generated_parser))]
     {
         let _ = (_filename, source);
-        errors.report(CompileError::Plain(
-            "parse_urs: parser not available — rebuild with URWEB_GEN_PARSER=1".into(),
-        ));
+        errors.report(CompileError::Plain(DiagnosticPayload::new(
+            DiagnosticId::ParserNotLinkedUrs,
+            vec![],
+        )));
         None
     }
 }
