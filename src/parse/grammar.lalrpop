@@ -898,11 +898,11 @@ NonSeqExpNode: Exp = {
     <e1:NonSeqExp> "andalso" <e2:BoolExp> => Exp::Case(Box::new(e1), vec![
         (Located::dummy(Pat::Con(vec!["Basis".into()], "True".into(), None)), e2),
         (Located::dummy(Pat::Con(vec!["Basis".into()], "False".into(), None)),
-         Located::dummy(Exp::Var(vec!["Basis".into()], "False".into(), Inference::DontInfer))),
+         Located::dummy(Exp::Var(vec!["Basis".into()], "False".into(), Inference::Infer))),
     ]),
     <e1:NonSeqExp> "orelse" <e2:BoolExp> => Exp::Case(Box::new(e1), vec![
         (Located::dummy(Pat::Con(vec!["Basis".into()], "True".into(), None)),
-         Located::dummy(Exp::Var(vec!["Basis".into()], "True".into(), Inference::DontInfer))),
+         Located::dummy(Exp::Var(vec!["Basis".into()], "True".into(), Inference::Infer))),
         (Located::dummy(Pat::Con(vec!["Basis".into()], "False".into(), None)), e2),
     ]),
     <e:BoolExp> => e.node,
@@ -1043,7 +1043,7 @@ ArithExp: LocExp = {
     <l:@L> <e1:ArithExp> "^" <e2:ArithExp> <r:@R> => {
         let pos = Span::from_offsets("", l, r, &[]);
         let strcat = Located::new(
-            Exp::Var(vec!["Basis".into()], "strcat".into(), Inference::DontInfer),
+            Exp::Var(vec!["Basis".into()], "strcat".into(), Inference::Infer),
             pos.clone(),
         );
         let app1 = Located::new(Exp::App(Box::new(strcat), Box::new(e1)), pos.clone());
@@ -1179,14 +1179,16 @@ AtomExpNode: Exp = {
     <f:"FLOAT">  => Exp::Prim(crate::primitives::Prim::Float(f)),
     <s:"STRING"> => Exp::Prim(crate::primitives::Prim::String(crate::primitives::StringMode::Normal, s)),
     <ch:"CHAR">  => Exp::Prim(crate::primitives::Prim::Char(ch)),
-    "true"  => Exp::Var(vec!["Basis".into()], "True".into(), Inference::DontInfer),
-    "false" => Exp::Var(vec!["Basis".into()], "False".into(), Inference::DontInfer),
-    "urweb_put" => Exp::Var(vec!["UrwebNative".into()], "urweb_put".into(), Inference::DontInfer),
-    "urweb_get" => Exp::Var(vec!["UrwebNative".into()], "urweb_get".into(), Inference::DontInfer),
-    "urweb_tb_transfer" => Exp::Var(vec!["UrwebNative".into()], "urweb_tb_transfer".into(), Inference::DontInfer),
+    // Match `urweb.mlton.grm.sml`: surface identifiers use `Infer` so `elabHead` inserts implicits
+    // (`unravel`); `DontInfer` is reserved for `unravelKind`-only paths (e.g. some `path [@]` rules).
+    "true"  => Exp::Var(vec!["Basis".into()], "True".into(), Inference::Infer),
+    "false" => Exp::Var(vec!["Basis".into()], "False".into(), Inference::Infer),
+    "urweb_put" => Exp::Var(vec!["UrwebNative".into()], "urweb_put".into(), Inference::Infer),
+    "urweb_get" => Exp::Var(vec!["UrwebNative".into()], "urweb_get".into(), Inference::Infer),
+    "urweb_tb_transfer" => Exp::Var(vec!["UrwebNative".into()], "urweb_tb_transfer".into(), Inference::Infer),
     // Simple identifier (no dots — dots handled in PostfixOp)
-    <name:"IDENT">  => Exp::Var(vec![], name, Inference::DontInfer),
-    <name:"UIDENT"> => Exp::Var(vec![], name, Inference::DontInfer),
+    <name:"IDENT">  => Exp::Var(vec![], name, Inference::Infer),
+    <name:"UIDENT"> => Exp::Var(vec![], name, Inference::Infer),
     // SQL/XML text-splice in expression context: `{[e]}` → Top.txt e
     // Used inside SQL parameter substitutions like `VALUES ({[id]}, {[s]})`
     <l:@L> "{" "[" <e:Exp> "]" "}" <r:@R> => {
@@ -1203,7 +1205,7 @@ AtomExpNode: Exp = {
     // `Con` is not nullable, so after `[`, lookahead `]` unambiguously
     // selects this rule over `PostfixOp: "[" Con "]"` (which requires non-empty Con).
     // This matches the SML urweb.grm `eterm: LBRACK RBRACK => EVar(["Basis"], "Nil")`.
-    "[" "]" => Exp::Var(vec!["Basis".into()], "Nil".into(), Inference::DontInfer),
+    "[" "]" => Exp::Var(vec!["Basis".into()], "Nil".into(), Inference::Infer),
     // Record expressions — explicit empty and non-empty cases to avoid
     // nullable ExpFields conflict
     "{" "}" => Exp::Record(vec![], false),

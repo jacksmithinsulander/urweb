@@ -2428,7 +2428,7 @@ fn sgi_binds_datatype(
 /// `∀ 'a :: * → ∀ 'b :: * → U -> T 'a 'b`
 ///
 /// Mirrors the type-building logic in `sgiBinds` in `elab_env.sml`.
-fn build_constructor_type(
+pub(crate) fn build_constructor_type(
     datatype_id: usize,
     type_params: &[String],
     arg_type: Option<&LocatedConstructor>,

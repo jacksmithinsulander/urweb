@@ -8,6 +8,11 @@
 //!
 //! **Style:** new/edited Rust here follows [README.md](../../README.md) Rust code style (exceptions documented there).
 
+mod span_attach;
+
+pub(crate) use span_attach::attach_file_label_to_signature_items;
+pub(crate) use span_attach::attach_file_label_to_source_file;
+
 use crate::error_types::Located;
 use crate::primitives::Prim;
 

@@ -86,6 +86,15 @@ impl Span {
         }
     }
 
+    /// Set [`Span::file`] when the parser left it empty (LALRPOP actions use `Span::from_offsets("", …)`).
+    ///
+    /// Wrapper declarations that already use labels like `"<basis>"` are unchanged.
+    pub fn ensure_file_label(&mut self, file_label: &str) {
+        if self.file.is_empty() {
+            self.file = file_label.to_string();
+        }
+    }
+
     /// Build a span from Unicode UTF-8 byte offsets and a sorted list of newline byte offsets in the same buffer.
     ///
     /// # Arguments
@@ -120,6 +129,44 @@ impl Span {
             first: pos_of(start),
             last: pos_of(end),
         }
+    }
+
+    /// UTF-8 byte indices of every `\n` in `source`, sorted (same convention as [`Span::from_offsets`] tests).
+    pub(crate) fn newline_byte_indices_in_utf8_source(source: &str) -> Vec<usize> {
+        source
+            .char_indices()
+            .filter_map(|(byte_offset, ch)| (ch == '\n').then_some(byte_offset))
+            .collect()
+    }
+
+    /// Turn LALRPOP placeholder spans (`from_offsets("", l, r, &[])`) into real line/column using lexer bytes.
+    ///
+    /// Those spans store UTF-8 **byte offsets** from the start of the preprocessed buffer as
+    /// `line == 1`, `col == offset`. Pass the **exact** string the lexer parsed (preprocessed `.ur` / `.urs`).
+    pub fn remap_after_lalrpop_parse(&mut self, file_label: &str, preprocessed: &str) {
+        if self.first.line == 0 || self.last.line == 0 {
+            self.ensure_file_label(file_label);
+            return;
+        }
+        if self.first.line != 1 || self.last.line != 1 {
+            self.ensure_file_label(file_label);
+            return;
+        }
+        if preprocessed.is_empty() {
+            self.ensure_file_label(file_label);
+            return;
+        }
+        let start_byte = self.first.col as usize;
+        let end_byte = self.last.col as usize;
+        if start_byte > end_byte {
+            self.ensure_file_label(file_label);
+            return;
+        }
+        let last_byte = preprocessed.len().saturating_sub(1);
+        let start_byte = start_byte.min(last_byte);
+        let end_byte = end_byte.min(last_byte).max(start_byte);
+        let line_table = Span::newline_byte_indices_in_utf8_source(preprocessed);
+        *self = Span::from_offsets(file_label, start_byte, end_byte, &line_table);
     }
 }
 
@@ -1339,6 +1386,16 @@ mod tests {
         assert_eq!(s.first.line, 1);
         assert_eq!(s.first.col, 3);
         assert_eq!(s.last.col, 7);
+    }
+
+    #[test]
+    fn span_remap_after_lalrpop_parse_fixes_placeholder_line() {
+        let pre = "hi\nyo";
+        let mut s = Span::from_offsets("", 4, 5, &[]);
+        s.remap_after_lalrpop_parse("f.ur", pre);
+        assert_eq!(s.file, "f.ur");
+        assert_eq!(s.first.line, 2);
+        assert_eq!(s.last.line, 2);
     }
 
     #[test]

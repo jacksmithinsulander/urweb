@@ -2203,7 +2203,10 @@ pub fn parse_ur(
         let pre = preprocess_ur_for_parse(source);
         let lexer = lexical_analyzer::XmlAwareLexer::new(&pre);
         match grammar::FileParser::new().parse(lexer) {
-            Ok(file) => Some(file),
+            Ok(mut file) => {
+                crate::source::attach_file_label_to_source_file(&mut file, _filename, &pre);
+                Some(file)
+            }
             Err(parse_error) => {
                 let detail = format_parse_error_for_user(&parse_error);
                 let label_span = Span {
@@ -2308,7 +2311,14 @@ pub fn parse_urs(
         let preprocessed = preprocess_urs(source);
         let lexer = lexical_analyzer::XmlAwareLexer::new(&preprocessed);
         match grammar::SgnItemsParser::new().parse(lexer) {
-            Ok(items) => Some(items),
+            Ok(mut items) => {
+                crate::source::attach_file_label_to_signature_items(
+                    &mut items,
+                    _filename,
+                    &preprocessed,
+                );
+                Some(items)
+            }
             Err(parse_error) => {
                 let detail = format_parse_error_for_user(&parse_error);
                 let label_span = Span {
@@ -2378,6 +2388,49 @@ mod tests {
             let file = result.expect("val x = 1 should parse");
             assert_eq!(file.len(), 1, "single top-level val decl");
         }
+    }
+
+    /// LALRPOP actions use empty `Span::file`; post-parse attach must fill it for diagnostics.
+    #[test]
+    #[cfg(generated_parser)]
+    fn parse_ur_sets_file_on_inner_spans() {
+        use crate::source::Decl;
+        let mut errors = ErrorReporter::new_silent();
+        let path = "dir/Example.ur";
+        let file = parse_ur(
+            path,
+            "val x = 1",
+            &mut errors,
+            crate::db::ProjectDb::default(),
+        )
+        .expect("parse");
+        let Decl::Val(pat, exp) = &file[0].node else {
+            panic!("expected Val decl");
+        };
+        assert_eq!(pat.span.file, path);
+        assert_eq!(exp.span.file, path);
+        assert_eq!(exp.span.first.line, 1);
+    }
+
+    #[test]
+    #[cfg(generated_parser)]
+    fn parse_ur_remapped_spans_track_multiline_line_numbers() {
+        use crate::source::Decl;
+        let mut errors = ErrorReporter::new_silent();
+        let file = parse_ur(
+            "m.ur",
+            "val a = 1\nval b = 2",
+            &mut errors,
+            crate::db::ProjectDb::default(),
+        )
+        .expect("parse");
+        let Decl::Val(_, exp_b) = &file[1].node else {
+            panic!("expected second Val");
+        };
+        assert_eq!(
+            exp_b.span.first.line, 2,
+            "second declaration should remap to physical line 2"
+        );
     }
 
     #[test]
@@ -2494,6 +2547,19 @@ mod tests {
         }
     }
 
+    #[test]
+    #[cfg(generated_parser)]
+    fn parse_urs_sets_file_on_inner_spans() {
+        use crate::source::SgnItem;
+        let mut errors = ErrorReporter::new_silent();
+        let path = "sig/M.urs";
+        let items = parse_urs(path, "val x : int", &mut errors).expect("parse");
+        let SgnItem::Val(_, c) = &items[0].node else {
+            panic!("expected Val item");
+        };
+        assert_eq!(c.span.file, path);
+    }
+
     /// LALRPOP `ArithExp` vs [`expr_langsec::parse_cmp_app_spine`] on the same token stream
     /// (subset: atoms + paren / arithmetic / cons / strcat; no postfix `.` / `[Con]`).
     #[cfg(generated_parser)]
@@ -2563,7 +2629,7 @@ mod tests {
                     let name = name.clone();
                     cur.bump();
                     Ok(Located::new(
-                        Exp::Var(vec![], name, Inference::DontInfer),
+                        Exp::Var(vec![], name, Inference::Infer),
                         span_at(cur.file, cur.line_starts, l, r),
                     ))
                 }

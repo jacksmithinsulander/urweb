@@ -229,10 +229,10 @@ fn apply_postfix(base: LocExp, op: ExpPostfixOp) -> LocExp {
                             q.push(last);
                             Exp::App(f2, Box::new(Located::new(Exp::Var(q, name, inf), xspan)))
                         }
-                        _ => Exp::Var(vec![], name, Inference::DontInfer),
+                        _ => Exp::Var(vec![], name, Inference::Infer),
                     }
                 }
-                _ => Exp::Var(vec![], name, Inference::DontInfer),
+                _ => Exp::Var(vec![], name, Inference::Infer),
             };
             Located::new(exp, fspan)
         }
@@ -382,7 +382,7 @@ where
                 let hi = cur.last_consumed_end().unwrap_or(l);
                 let pos = span_bytes(cur.file, cur.line_starts, l, hi);
                 let strcat = Located::new(
-                    Exp::Var(vec!["Basis".into()], "strcat".into(), Inference::DontInfer),
+                    Exp::Var(vec!["Basis".into()], "strcat".into(), Inference::Infer),
                     pos.clone(),
                 );
                 let app1 = Located::new(Exp::App(Box::new(strcat), Box::new(lhs)), pos.clone());
@@ -460,7 +460,7 @@ fn parse_test_primary(cur: &mut TokenCursor<'_>) -> Result<LocExp, ExprRecognize
             let name = name.clone();
             cur.bump();
             Ok(Located::new(
-                Exp::Var(vec![], name, Inference::DontInfer),
+                Exp::Var(vec![], name, Inference::Infer),
                 span_bytes(cur.file, cur.line_starts, l, r),
             ))
         }

@@ -825,6 +825,18 @@ fn hnorm_con_inner(constructor: LocatedConstructor) -> LocatedConstructor {
                         }
                     }
                 }
+                // Type quantification at constructor level: `(:::) t :: K => body)  c` ~ `body[c/0]`.
+                Constructor::TCFun(_, _, _, cb) => {
+                    let c2_norm = hnorm_con(*c2);
+                    if let Ok(sub) = sub_con_in_con(0, &c2_norm, *cb) {
+                        hnorm_con(sub)
+                    } else {
+                        Located {
+                            node: Constructor::App(Box::new(c1_norm), Box::new(c2_norm)),
+                            span,
+                        }
+                    }
+                }
                 Constructor::App(c1p, f) => {
                     // Map fusion / distributivity / identity
                     let c2_norm = hnorm_con(*c2);
@@ -1491,7 +1503,7 @@ fn cons_eq_simple_normed(left: &LocatedConstructor, right: &LocatedConstructor) 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::elaborated::{Constructor, Kind};
+    use crate::elaborated::{Constructor, Explicitness, Kind};
     use crate::error_types::Located;
 
     fn dummy<T>(node: T) -> Located<T> {
@@ -1638,6 +1650,22 @@ mod tests {
             vec![(dummy(Constructor::Name("x".into())), u)],
         ));
         assert!(cons_eq_simple(&r, &r));
+    }
+
+    #[test]
+    fn hnorm_beta_reduces_app_of_tcfun_like_abs() {
+        let k = dummy(Kind::Type);
+        let body = dummy(Constructor::Rel(0));
+        let head = dummy(Constructor::TCFun(
+            Explicitness::Implicit,
+            "a".into(),
+            Box::new(k),
+            Box::new(body),
+        ));
+        let arg = dummy(Constructor::Unit);
+        let app = dummy(Constructor::App(Box::new(head), Box::new(arg)));
+        let out = hnorm_con(app);
+        assert!(matches!(out.node, Constructor::Unit));
     }
 
     #[test]
