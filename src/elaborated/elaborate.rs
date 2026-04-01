@@ -18,7 +18,9 @@ use std::sync::{Arc, Mutex};
 use crate::diagnostics::{DiagnosticId, DiagnosticPayload};
 use crate::elaborated as elab;
 use crate::elaborated::disjointness_analysis as disjoint;
-use crate::elaborated::environment::{hnorm_sgn, new_named_id, ConstructorInfo, Env, VarLookup};
+use crate::elaborated::environment::{
+    hnorm_con_constructor_abstraction, hnorm_sgn, new_named_id, ConstructorInfo, Env, VarLookup,
+};
 use crate::elaborated::type_operations::{
     cons_eq_simple, hnorm_con, mlift_con_in_con, occurs_cunif, reduce_con, sub_con_in_con,
     sub_kind_in_con, sub_kind_in_kind,
@@ -60,96 +62,6 @@ fn elaborated_signature_error_at_span(source_span: Span) -> elab::LocatedSignatu
 
 fn elaborated_structure_error_at_span(source_span: Span) -> elab::LocatedStructure {
     Located::new(elab::Structure::Error, source_span)
-}
-
-// ---------------------------------------------------------------------------
-// Head normalisation with `CNamed` unfolding (`Env::lookup_c_named`)
-// ---------------------------------------------------------------------------
-
-/// Inline [`elab::Constructor::Named`] definitions so [`hnorm_con`] can beta-reduce `App` / `KApp` spines.
-///
-/// [`hnorm_con`] ignores `Named` (no environment). Kind-polymorphic abbreviations such as `folder`
-/// reach use sites as `KApp(Named id, kind_meta)`; without inlining, `KApp` never reduces.
-///
-/// # Arguments
-///
-/// * `elaboration_environment` — Holds `named_c` definitions.
-/// * `constructor` — Spine to expand (not mutated).
-///
-/// # Returns
-///
-/// Constructor with visible `Named` abbreviations inlined one structural step (chained aliases recurse).
-fn expand_named_abbrev_in_constructor(
-    elaboration_environment: &Env,
-    constructor: &elab::LocatedConstructor,
-) -> elab::LocatedConstructor {
-    match &constructor.node {
-        elab::Constructor::Named(id) => {
-            if let Ok((_, _, Some(definition))) = elaboration_environment.lookup_c_named(*id) {
-                return expand_named_abbrev_in_constructor(elaboration_environment, definition);
-            }
-            constructor.clone()
-        }
-        elab::Constructor::App(function_constructor, argument_constructor) => {
-            let expanded_head =
-                expand_named_abbrev_in_constructor(elaboration_environment, function_constructor);
-            let expanded_argument =
-                expand_named_abbrev_in_constructor(elaboration_environment, argument_constructor);
-            if let elab::Constructor::Named(named_id) = expanded_head.node {
-                if let Ok((_, _, Some(definition))) =
-                    elaboration_environment.lookup_c_named(named_id)
-                {
-                    return Located::new(
-                        elab::Constructor::App(
-                            Box::new(definition.clone()),
-                            Box::new(expanded_argument),
-                        ),
-                        constructor.span.clone(),
-                    );
-                }
-            }
-            Located::new(
-                elab::Constructor::App(Box::new(expanded_head), Box::new(expanded_argument)),
-                constructor.span.clone(),
-            )
-        }
-        elab::Constructor::KApp(constructor_head, kind_argument) => {
-            let expanded_head =
-                expand_named_abbrev_in_constructor(elaboration_environment, constructor_head);
-            if let elab::Constructor::Named(named_id) = expanded_head.node {
-                if let Ok((_, _, Some(definition))) =
-                    elaboration_environment.lookup_c_named(named_id)
-                {
-                    return Located::new(
-                        elab::Constructor::KApp(
-                            Box::new(definition.clone()),
-                            kind_argument.clone(),
-                        ),
-                        constructor.span.clone(),
-                    );
-                }
-            }
-            Located::new(
-                elab::Constructor::KApp(Box::new(expanded_head), kind_argument.clone()),
-                constructor.span.clone(),
-            )
-        }
-        _ => constructor.clone(),
-    }
-}
-
-/// [`expand_named_abbrev_in_constructor`] then [`hnorm_con`], iterated for deep alias chains.
-fn hnorm_con_elab(
-    elaboration_environment: &Env,
-    mut constructor: elab::LocatedConstructor,
-) -> elab::LocatedConstructor {
-    for _ in 0u32..32u32 {
-        constructor = hnorm_con(expand_named_abbrev_in_constructor(
-            elaboration_environment,
-            &constructor,
-        ));
-    }
-    constructor
 }
 
 // ---------------------------------------------------------------------------
@@ -1225,7 +1137,6 @@ fn elab_con_var(
             }
             VarLookup::Named(id, k) => {
                 let c = Located::new(elab::Constructor::Named(id), span.clone());
-                // Type-class kinds: bare `class c` stores [`Type`]; `class f :: K1 -> ... -> Type` stores the full chain.
                 let k_for_head = if elaboration_environment.is_class(&c) {
                     kind_for_class_constructor_head(span, &k)
                 } else {
@@ -1665,12 +1576,12 @@ struct RecordSummary {
 /// Head-normalise a constructor and decompose a row constructor into a RecordSummary.
 /// Named type aliases are unfolded via `elaboration_environment` so their fields are visible to the row unifier.
 fn record_summary(elaboration_environment: &Env, c: elab::LocatedConstructor) -> RecordSummary {
-    let cn = hnorm_con_elab(elaboration_environment, c.clone());
+    let cn = hnorm_con(c.clone());
     match cn.node {
         elab::Constructor::Record(_, xcs) => {
             let mut fields = Vec::new();
             for (nc, vc) in xcs {
-                let ncn = hnorm_con_elab(elaboration_environment, nc);
+                let ncn = hnorm_con(nc);
                 if let elab::Constructor::Name(s) = ncn.node {
                     fields.push((s, vc));
                 }
@@ -1771,8 +1682,8 @@ fn unify_cons_inner(
     }
 
     // Chase known unif vars first (expand named abbreviations like ML normCon)
-    let left_normalized = hnorm_con_elab(elaboration_environment, left_constructor.clone());
-    let right_normalized = hnorm_con_elab(elaboration_environment, right_constructor.clone());
+    let left_normalized = hnorm_con(left_constructor.clone());
+    let right_normalized = hnorm_con(right_constructor.clone());
 
     // Quick structural equality check
     if cons_eq_simple(&left_normalized, &right_normalized) {
@@ -2424,6 +2335,89 @@ pub fn elab_pat(
     }
 }
 
+/// Finish elaborating a constructor pattern after resolving the datatype (unqualified or qualified module path).
+///
+/// Builds fresh type arguments for the datatype, unifies with `expected_type`, and optionally elaborates
+/// the constructor payload pattern.
+fn elab_pat_con_after_resolve(
+    elaboration_context: &mut ElabCtx,
+    elaboration_environment: &Env,
+    datatype_kind: crate::datatype_kind::DatatypeKind,
+    pattern_constructor: elab::PatternConstructor,
+    datatype_id: usize,
+    type_params: &[String],
+    arg_type: Option<&elab::LocatedConstructor>,
+    arg_opt: Option<&source::LocPat>,
+    expected_type: &elab::LocatedConstructor,
+    ctor_name_for_errors: &str,
+    span: &Span,
+) -> (elab::LocatedPattern, Env) {
+    let ktype = Located::new(elab::Kind::Type, span.clone());
+    let type_args: Vec<elab::LocatedConstructor> = type_params
+        .iter()
+        .map(|_| fresh_cunif(elaboration_environment, span.clone(), ktype.clone(), "_"))
+        .collect();
+
+    let dt_con = {
+        let base = Located::new(elab::Constructor::Named(datatype_id), span.clone());
+        type_args.iter().fold(base, |acc, arg| {
+            Located::new(
+                elab::Constructor::App(Box::new(acc), Box::new(arg.clone())),
+                span.clone(),
+            )
+        })
+    };
+
+    check_con(
+        elaboration_context,
+        elaboration_environment,
+        span,
+        &dt_con,
+        expected_type,
+    );
+
+    let (arg_pat_opt, new_env) = if let Some(at) = arg_type {
+        let mut at2 = at.clone();
+        for (i, ta) in type_args.iter().enumerate() {
+            let idx = type_params.len() - 1 - i;
+            at2 = match sub_con_in_con(idx, ta, at2) {
+                Ok(c) => c,
+                Err(_) => elaborated_constructor_error_at_span(span.clone()),
+            };
+        }
+        if let Some(ap) = arg_opt {
+            let (ap_e, new_env) = elab_pat(elaboration_context, elaboration_environment, ap, &at2);
+            (Some(Box::new(ap_e)), new_env)
+        } else {
+            elaboration_context.error(
+                span.clone(),
+                DiagnosticPayload::new(
+                    DiagnosticId::ElabConstructorExpectsArgument,
+                    vec![ctor_name_for_errors.to_string()],
+                ),
+            );
+            (None, elaboration_environment.clone())
+        }
+    } else {
+        if arg_opt.is_some() {
+            elaboration_context.error(
+                span.clone(),
+                DiagnosticPayload::new(
+                    DiagnosticId::ElabConstructorDoesNotTakeArgument,
+                    vec![ctor_name_for_errors.to_string()],
+                ),
+            );
+        }
+        (None, elaboration_environment.clone())
+    };
+
+    let pat = Located::new(
+        elab::Pattern::Constructor(datatype_kind, pattern_constructor, type_args, arg_pat_opt),
+        span.clone(),
+    );
+    (pat, new_env)
+}
+
 fn elab_pat_con(
     elaboration_context: &mut ElabCtx,
     elaboration_environment: &Env,
@@ -2433,101 +2427,74 @@ fn elab_pat_con(
     expected_type: &elab::LocatedConstructor,
     span: &Span,
 ) -> (elab::LocatedPattern, Env) {
-    // Look up the constructor
-    let constr_info = if ms.is_empty() {
-        elaboration_environment.lookup_constructor(x).cloned()
-    } else {
-        None // module-qualified constructors handled below
-    };
-
-    if let Some(info) = constr_info {
-        let dk = info.datatype_kind;
-        let con_id = info.constructor_id;
-        let dt_id = info.datatype_id;
-        let type_params = info.type_params.clone();
-        let arg_type_opt = info.arg_type.clone();
-
-        // Build fresh unification variables for type parameters
-        let ktype = Located::new(elab::Kind::Type, span.clone());
-        let type_args: Vec<elab::LocatedConstructor> = type_params
-            .iter()
-            .map(|_| fresh_cunif(elaboration_environment, span.clone(), ktype.clone(), "_"))
-            .collect();
-
-        // The datatype constructor applied to type args
-        let dt_con = {
-            let base = Located::new(elab::Constructor::Named(dt_id), span.clone());
-            type_args.iter().fold(base, |acc, arg| {
-                Located::new(
-                    elab::Constructor::App(Box::new(acc), Box::new(arg.clone())),
-                    span.clone(),
-                )
-            })
-        };
-
-        check_con(
-            elaboration_context,
-            elaboration_environment,
-            span,
-            &dt_con,
-            expected_type,
-        );
-
-        // If constructor takes an argument, elaborate it
-        let (arg_pat_opt, new_env) = if let Some(at) = arg_type_opt {
-            // Substitute type_args into at
-            let mut at2 = at;
-            for (i, ta) in type_args.iter().enumerate() {
-                let idx = type_params.len() - 1 - i;
-                at2 = match sub_con_in_con(idx, ta, at2) {
-                    Ok(c) => c,
-                    Err(_) => elaborated_constructor_error_at_span(span.clone()),
+    if !ms.is_empty() {
+        if let Some((str_id, items)) =
+            resolve_module_path(elaboration_context, elaboration_environment, ms, span)
+        {
+            if let Some((_con_id, dt_id, type_params, arg_type)) = sgi_find_datatype_con(&items, x)
+            {
+                let datatype_kind = match elaboration_environment.lookup_datatype(dt_id) {
+                    Ok(dt_info) => {
+                        let specs: Vec<(String, usize, Option<elab::LocatedConstructor>)> = dt_info
+                            .constructors_by_id
+                            .iter()
+                            .map(|(cid, (nm, at))| (nm.clone(), *cid, at.clone()))
+                            .collect();
+                        crate::elaborated::utilities::classify_datatype(&specs)
+                    }
+                    Err(_) => crate::datatype_kind::DatatypeKind::Default,
                 };
-            }
-            if let Some(ap) = arg_opt {
-                let (ap_e, new_env) =
-                    elab_pat(elaboration_context, elaboration_environment, ap, &at2);
-                (Some(Box::new(ap_e)), new_env)
-            } else {
-                elaboration_context.error(
-                    span.clone(),
-                    DiagnosticPayload::new(
-                        DiagnosticId::ElabConstructorExpectsArgument,
-                        vec![x.to_string()],
-                    ),
+                let pat_con =
+                    elab::PatternConstructor::Proj(str_id, ms[1..].to_vec(), x.to_string());
+                return elab_pat_con_after_resolve(
+                    elaboration_context,
+                    elaboration_environment,
+                    datatype_kind,
+                    pat_con,
+                    dt_id,
+                    type_params,
+                    arg_type.as_ref(),
+                    arg_opt,
+                    expected_type,
+                    x,
+                    span,
                 );
-                (None, elaboration_environment.clone())
             }
         } else {
-            if arg_opt.is_some() {
-                elaboration_context.error(
-                    span.clone(),
-                    DiagnosticPayload::new(
-                        DiagnosticId::ElabConstructorDoesNotTakeArgument,
-                        vec![x.to_string()],
-                    ),
-                );
-            }
-            (None, elaboration_environment.clone())
-        };
-
-        let pat_con = elab::PatternConstructor::Var(con_id);
-        let pat = Located::new(
-            elab::Pattern::Constructor(dk, pat_con, type_args, arg_pat_opt),
-            span.clone(),
-        );
-        (pat, new_env)
-    } else {
-        elaboration_context.error(
-            span.clone(),
-            DiagnosticPayload::new(DiagnosticId::ElabUnboundConstructor, vec![x.to_string()]),
-        );
-        let pat = Located::new(
-            elab::Pattern::Var("_".to_string(), expected_type.clone()),
-            span.clone(),
-        );
-        (pat, elaboration_environment.clone())
+            let pat = Located::new(
+                elab::Pattern::Var("_".to_string(), expected_type.clone()),
+                span.clone(),
+            );
+            return (pat, elaboration_environment.clone());
+        }
     }
+
+    if let Some(info) = elaboration_environment.lookup_constructor(x).cloned() {
+        let pat_con = elab::PatternConstructor::Var(info.constructor_id);
+        return elab_pat_con_after_resolve(
+            elaboration_context,
+            elaboration_environment,
+            info.datatype_kind,
+            pat_con,
+            info.datatype_id,
+            &info.type_params,
+            info.arg_type.as_ref(),
+            arg_opt,
+            expected_type,
+            x,
+            span,
+        );
+    }
+
+    elaboration_context.error(
+        span.clone(),
+        DiagnosticPayload::new(DiagnosticId::ElabUnboundConstructor, vec![x.to_string()]),
+    );
+    let pat = Located::new(
+        elab::Pattern::Var("_".to_string(), expected_type.clone()),
+        span.clone(),
+    );
+    (pat, elaboration_environment.clone())
 }
 
 fn elab_pat_record(
@@ -2732,7 +2699,9 @@ fn elab_exp_inner(
                 disjointness_environment,
                 f,
             );
-            let ftn = hnorm_con_elab(elaboration_environment, ft);
+            // Full `named_c` unfolding on the function type so `folder r`-style abbreviations
+            // reduce for `f e` (same helper as `e[c]` heads; boot stayed neutral with left-spine only).
+            let ftn = hnorm_con_constructor_abstraction(elaboration_environment, ft);
             match ftn.node.clone() {
                 elab::Constructor::TFun(dom, ran) => {
                     let (ae, at) = elab_exp(
@@ -2873,7 +2842,9 @@ fn elab_exp_inner(
                 e1,
             );
             let (ce, ck) = elab_con(elaboration_context, elaboration_environment, c);
-            let e1tn = hnorm_con_elab(elaboration_environment, e1t);
+            // `CApp` needs full-tree `named_c` expansion (`lib/ur/top.ur`); see
+            // [`hnorm_con_constructor_abstraction`] (not `f e`, not `unify_cons`).
+            let e1tn = hnorm_con_constructor_abstraction(elaboration_environment, e1t);
             match e1tn.node {
                 elab::Constructor::TCFun(_, _x, k, body) => {
                     check_kind(
@@ -2994,13 +2965,68 @@ fn elab_exp_inner(
         }
 
         source::Exp::DisjointApp(body) => {
-            // Used for implicit disjointness arg: just elaborate body
-            elab_exp(
+            // `!` postfix (`urweb.grm` `eapps BANG`) and rare bare `@` + atom (non-path) use this;
+            // `@v` / `@@v` on names parse as [`Exp::Var`] via [`Token::AtTypesOnlyPath`].
+            let (body_e, body_t) = elab_exp(
                 elaboration_context,
                 elaboration_environment,
                 disjointness_environment,
                 body,
-            )
+            );
+            let k1_inner = fresh_kunif(span.clone(), "_dj_elem_1");
+            let kind_left_row = Located::new(elab::Kind::Record(Box::new(k1_inner)), span.clone());
+            let disjoint_left_row = fresh_cunif(
+                elaboration_environment,
+                span.clone(),
+                kind_left_row,
+                "_dj_left",
+            );
+            let k2_inner = fresh_kunif(span.clone(), "_dj_elem_2");
+            let kind_right_row = Located::new(elab::Kind::Record(Box::new(k2_inner)), span.clone());
+            let disjoint_right_row = fresh_cunif(
+                elaboration_environment,
+                span.clone(),
+                kind_right_row,
+                "_dj_right",
+            );
+            let inner_type_kind = Located::new(elab::Kind::Type, span.clone());
+            let inner_result_type = fresh_cunif(
+                elaboration_environment,
+                span.clone(),
+                inner_type_kind,
+                "_dj_result",
+            );
+            let expected_disjoint = Located::new(
+                elab::Constructor::TDisjoint(
+                    Box::new(disjoint_left_row.clone()),
+                    Box::new(disjoint_right_row.clone()),
+                    Box::new(inner_result_type.clone()),
+                ),
+                span.clone(),
+            );
+            check_con(
+                elaboration_context,
+                elaboration_environment,
+                &span,
+                &body_t,
+                &expected_disjoint,
+            );
+            let disjoint_goals = disjoint::prove(
+                span.clone(),
+                disjointness_environment,
+                disjoint_left_row,
+                disjoint_right_row,
+            );
+            if !disjoint_goals.is_empty() {
+                for goal in disjoint_goals {
+                    elaboration_context.constraints.push(Constraint::Disjoint {
+                        span: span.clone(),
+                        elaboration_environment: elaboration_environment.clone(),
+                        goal,
+                    });
+                }
+            }
+            (body_e, hnorm_con(inner_result_type))
         }
 
         source::Exp::Record(xes, _spread) => elab_exp_record(
@@ -3932,7 +3958,7 @@ fn elab_head_inner(
             elaborated_constructor_error_at_span(span.clone()),
         );
     }
-    let tn = hnorm_con_elab(elaboration_environment, t.clone());
+    let tn = hnorm_con(t.clone());
     match (&tn.node, inference) {
         (elab::Constructor::TKFun(x, body), _) => {
             let ku = fresh_kunif(span.clone(), x);
@@ -4075,7 +4101,7 @@ fn elab_head_inner(
                             elaboration_environment,
                             disjointness_environment,
                             e,
-                            hnorm_con_elab(elaboration_environment, result),
+                            hnorm_con(result),
                             span,
                             depth + 1,
                             inference,
@@ -5903,7 +5929,7 @@ fn resolve_class(
 ) -> Option<(elab::LocatedExpression, elab::LocatedConstructor)> {
     // Try all classes in the environment
     for rules in elaboration_environment.classes().values() {
-        let class_n = hnorm_con_elab(elaboration_environment, class.clone());
+        let class_n = hnorm_con(class.clone());
         // Try closed rules first
         for (nq, hyps, head, witness) in &rules.closed_rules {
             let (inst_head, inst_hyps) =
@@ -5936,14 +5962,14 @@ fn resolve_class(
 }
 
 fn try_match_class(
-    elaboration_environment: &Env,
+    _elaboration_environment: &Env,
     class: &elab::LocatedConstructor,
     head: &elab::LocatedConstructor,
     _num_quantifiers: usize,
 ) -> bool {
     // Simplified: just check if they have the same head constructor
-    let cn = hnorm_con_elab(elaboration_environment, class.clone());
-    let hn = hnorm_con_elab(elaboration_environment, head.clone());
+    let cn = hnorm_con(class.clone());
+    let hn = hnorm_con(head.clone());
     fn get_head(c: &elab::LocatedConstructor) -> Option<usize> {
         match &c.node {
             elab::Constructor::Named(id) => Some(*id),
@@ -5989,44 +6015,42 @@ pub fn elab_file(
             &disjointness_environment,
             decl,
         );
-        elaboration_environment = new_env;
-        disjointness_environment = new_denv;
-        all_decls.extend(ds);
+        elaboration_environment = new_env; // Step: env after `elab_decl` on this AST node.
+        disjointness_environment = new_denv; // Step: parallel disjointness state.
+        all_decls.extend(ds); // Accumulate elaborated declarations.
 
-        // After elaborating `FfiStr("Basis", ...)`, automatically open Basis
-        // so that `unit`, `transaction`, `return`, etc. are in scope without
-        // qualification — matching the SML `dopen elaboration_environment' {str = basis_n, ...}`.
-        if let crate::source::Decl::FfiStr(name, _, _) = &decl.node {
-            if name == "Basis" {
-                let basis_span = decl.span.clone();
-                let (open_ds, open_env, open_denv) = elab_open(
+        // Mirror SML `elabFile` `dopen` on `Basis` / `Top` once those structures exist.
+        match &decl.node {
+            crate::source::Decl::FfiStr(structure_name, _, _) if structure_name == "Basis" => {
+                // `FfiStr("Basis", ...)` ⇒ implicit `open Basis` for prelude names.
+                let auto_open_span = decl.span.clone();
+                let (open_declarations, opened_env, opened_disjointness) = elab_open(
                     &mut elaboration_context,
                     &elaboration_environment,
                     &disjointness_environment,
                     &["Basis".to_string()],
-                    &basis_span,
+                    &auto_open_span,
                 );
-                elaboration_environment = open_env;
-                disjointness_environment = open_denv;
-                all_decls.extend(open_ds);
+                elaboration_environment = opened_env; // Bind `unit`, `transaction`, …
+                disjointness_environment = opened_disjointness;
+                all_decls.extend(open_declarations); // Surface generated open decls if any.
             }
-        }
-        // After the `Top` structure (from `top.ur` / `top.urs`), SML `elabFile` does
-        // `dopen env' {str = top_n, ...}` so `folder`, `mapU`, `foldUR`, `txt`, … are in scope
-        // for user modules (`elabFile` around `dopen` on Top in `elaborate.sml`).
-        if let crate::source::Decl::Str(name, _, _, _, _) = &decl.node {
-            if name == "Top" {
-                let top_span = decl.span.clone();
-                let (open_ds, open_env, open_denv) = elab_open(
+            crate::source::Decl::Str(structure_name, _, _, _, _) if structure_name == "Top" => {
+                // `structure Top` (from lib) ⇒ implicit `open Top` for standard helpers.
+                let auto_open_span = decl.span.clone();
+                let (open_declarations, opened_env, opened_disjointness) = elab_open(
                     &mut elaboration_context,
                     &elaboration_environment,
                     &disjointness_environment,
                     &["Top".to_string()],
-                    &top_span,
+                    &auto_open_span,
                 );
-                elaboration_environment = open_env;
-                disjointness_environment = open_denv;
-                all_decls.extend(open_ds);
+                elaboration_environment = opened_env;
+                disjointness_environment = opened_disjointness;
+                all_decls.extend(open_declarations);
+            }
+            _ => {
+                // Other declaration forms do not trigger auto-open here.
             }
         }
     }
@@ -6055,16 +6079,30 @@ mod tests {
     use crate::settings::Settings;
     use std::path::PathBuf;
 
-    /// [`hnorm_con_elab`] must unfold `named_c` definitions so [`hnorm_con`] can finish reducing.
+    /// Surface `@@x` is [`source::Exp::Var`] with [`source::Inference::DontInfer`] (no `TDisjoint` check).
     #[test]
-    fn hnorm_con_elab_expands_named_type_alias() {
+    fn dont_infer_var_does_not_force_tdisjoint_check() {
         let span = crate::error_types::Span::dummy();
-        let k = Located::new(elab::Kind::Type, span.clone());
-        let def = Located::new(elab::Constructor::Unit, span.clone());
-        let env = Env::empty().push_c_named_as("Ali".into(), 7usize, k, Some(def));
-        let c = Located::new(elab::Constructor::Named(7), span);
-        let out = hnorm_con_elab(&env, c);
-        assert!(matches!(out.node, elab::Constructor::Unit));
+        let x_ty = Located::new(elab::Constructor::Unit, span.clone());
+        let elaboration_environment = Env::empty().push_e_rel("x".into(), x_ty);
+        let exp = Located::new(
+            source::Exp::Var(vec![], "x".into(), source::Inference::DontInfer),
+            span.clone(),
+        );
+        let mut elaboration_context = ElabCtx::new();
+        let disjointness_environment = disjoint::empty_env();
+        let (ee, et) = elab_exp(
+            &mut elaboration_context,
+            &elaboration_environment,
+            &disjointness_environment,
+            &exp,
+        );
+        assert!(
+            !elaboration_context.errors.iter().any(|(sp, _)| sp == &span),
+            "@@x-style var should not record errors at dummy span"
+        );
+        assert!(matches!(ee.node, elab::Expression::Rel(0)));
+        assert!(matches!(et.node, elab::Constructor::Unit));
     }
 
     /// After `open Basis`, datatype constructors (`True`, `False`, …) must appear in
@@ -6118,6 +6156,88 @@ mod tests {
         assert!(
             env_open.lookup_constructor("False").is_some(),
             "open Basis must register False for pattern/expression lookup"
+        );
+    }
+
+    /// Parser-desugared `if` uses `Pat::Con(["Basis"], True|False, _)`; those patterns must elaborate like `Basis.True` in expressions.
+    #[test]
+    fn basis_qualified_bool_patterns_in_case_elaborate() {
+        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let lib_dir = manifest_dir.join("lib/ur");
+        if !lib_dir.join("basis.urs").is_file() {
+            return;
+        }
+        let job = crate::compiler::Job {
+            sources: vec![],
+            basis_lib_dir: Some(lib_dir),
+            ..Default::default()
+        };
+        let settings = Settings::new();
+        let mut parse_errors = ErrorReporter::new_silent();
+        let Some(source_file) = crate::compiler::parse_sources(&job, &settings, &mut parse_errors)
+        else {
+            return;
+        };
+        let basis_decl = source_file
+            .first()
+            .filter(|located_decl| {
+                matches!(&located_decl.node, crate::source::Decl::FfiStr(name, _, _) if name == "Basis")
+            })
+            .expect("parse_sources boot job must start with Basis FfiStr");
+        let mut elaboration_context = ElabCtx::new();
+        let mut elaboration_environment = Env::empty();
+        let disjointness_environment = disjoint::empty_env();
+        let (_decls, env_after_basis, denv_after_basis) = elab_decl(
+            &mut elaboration_context,
+            &elaboration_environment,
+            &disjointness_environment,
+            basis_decl,
+        );
+        elaboration_environment = env_after_basis;
+        let (_open_decls, env_open, d_open) = elab_open(
+            &mut elaboration_context,
+            &elaboration_environment,
+            &denv_after_basis,
+            &["Basis".to_string()],
+            &basis_decl.span,
+        );
+        let span = basis_decl.span.clone();
+        let bool_ty = match env_open.lookup_c("bool") {
+            VarLookup::Named(id, _) => Located::new(elab::Constructor::Named(id), span.clone()),
+            _ => panic!("expected bool in env after open Basis"),
+        };
+        let env_b = env_open.push_e_rel("b".into(), bool_ty);
+        let cond = Located::new(
+            source::Exp::Var(vec![], "b".into(), source::Inference::Infer),
+            span.clone(),
+        );
+        let arm_true = (
+            Located::dummy(source::Pat::Con(vec!["Basis".into()], "True".into(), None)),
+            Located::new(
+                source::Exp::Var(vec![], "False".into(), source::Inference::Infer),
+                span.clone(),
+            ),
+        );
+        let arm_false = (
+            Located::dummy(source::Pat::Con(vec!["Basis".into()], "False".into(), None)),
+            Located::new(
+                source::Exp::Var(vec![], "True".into(), source::Inference::Infer),
+                span.clone(),
+            ),
+        );
+        let case_exp = Located::new(
+            source::Exp::Case(Box::new(cond), vec![arm_true, arm_false]),
+            span.clone(),
+        );
+        let mut ctx2 = ElabCtx::new();
+        let (_e, _t) = elab_exp(&mut ctx2, &env_b, &d_open, &case_exp);
+        assert!(
+            !ctx2
+                .errors
+                .iter()
+                .any(|(_, p)| { matches!(p.id, DiagnosticId::ElabUnboundConstructor) }),
+            "Basis.True/Basis.False case arms must elaborate: {:?}",
+            ctx2.errors
         );
     }
 
@@ -6223,9 +6343,11 @@ mod tests {
 
     /// Histogram of boot-only elaboration [`DiagnosticId`] counts (ratchet helper for ML parity).
     ///
-    /// **Baseline (full `lib/ur` boot, 2026-03):** 209 type errors; top ids: `ElabTypeMismatch` (127),
-    /// `ElabApplicationNonFunction` (46), `ElabConstructorAppNonTcFun` (15), then unbound /
-    /// disjointness (21 combined). Re-measure with `URWEB_TEST_BOOT_HIST=1` after parity work.
+    /// **Snapshot (full `lib/ur` boot):** counts drift with elaboration changes elsewhere in the tree;
+    /// always re-measure with `URWEB_TEST_BOOT_HIST=1`. One recent baseline showed ~207 type errors with
+    /// top ids `ElabTypeMismatch` (~160), `ElabApplicationNonFunction` / `ElabUnboundTypeConstructor` (~18 each),
+    /// then disjointness (`Basis.*` patterns from `if`/`andalso`/`orelse` desugaring elaborate via qualified `source::Pat::Con`).
+    /// `Exp::CApp` uses [`crate::elaborated::environment::hnorm_con_constructor_abstraction`].
     ///
     /// Large stack avoids overflow during elaboration. Set `URWEB_TEST_BOOT_HIST=1` to print the
     /// top buckets to stderr (never uses `Debug` on full error values — avoids stack overflow).
@@ -6286,12 +6408,30 @@ mod tests {
         }
         // Sample locations for the top failure kinds (set `URWEB_TEST_BOOT_ERRORS=1`).
         if std::env::var("URWEB_TEST_BOOT_ERRORS").ok().as_deref() == Some("1") {
-            for err in elab_errors.errors.iter().take(30) {
+            // Print first 50 errors.
+            for err in elab_errors.errors.iter().take(50) {
                 if let CompileError::TypeError { span, payload } = err {
                     eprintln!(
-                        "  {:?}  {}:{}-{}",
-                        payload.id, span.file, span.first.line, span.first.col
+                        "  {:?}  {}:{}-{}  args={:?}",
+                        payload.id, span.file, span.first.line, span.first.col, payload.args
                     );
+                }
+            }
+        }
+        // Print all ElabApplicationNonFunction errors (set `URWEB_TEST_BOOT_APP_ERRORS=1`).
+        if std::env::var("URWEB_TEST_BOOT_APP_ERRORS").ok().as_deref() == Some("1") {
+            // Collect and display every application-non-function error with full args.
+            for err in elab_errors.errors.iter() {
+                if let CompileError::TypeError { span, payload } = err {
+                    if payload.id == DiagnosticId::ElabApplicationNonFunction
+                        || payload.id == DiagnosticId::ElabUnboundTypeConstructor
+                        || payload.id == DiagnosticId::ElabUnboundVariable
+                    {
+                        eprintln!(
+                            "  {:?}  {}:{}-{}  args={:?}",
+                            payload.id, span.file, span.first.line, span.first.col, payload.args
+                        );
+                    }
                 }
             }
         }

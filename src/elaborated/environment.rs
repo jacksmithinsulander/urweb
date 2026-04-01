@@ -69,6 +69,171 @@ pub fn reset_named_counter() {
 }
 
 // ---------------------------------------------------------------------------
+// Constructor head normalization with `named_c` (expression typing only)
+// ---------------------------------------------------------------------------
+
+/// Walk the left spine of [`Constructor::App`] / [`Constructor::KApp`] and inline
+/// [`Constructor::Named`] when [`Env::lookup_c_named`] has a body — arguments are not traversed.
+///
+/// # Arguments
+///
+/// * `elaboration_environment` — Holds `named_c` definitions.
+/// * `constructor` — Type at an application / kind-application head.
+///
+/// # Returns
+///
+/// Spine with alias heads replaced by their definition bodies (chained aliases recurse).
+fn expand_named_left_spine_in_constructor(
+    elaboration_environment: &Env,
+    constructor: &LocatedConstructor,
+) -> LocatedConstructor {
+    match &constructor.node {
+        Constructor::Named(id) => {
+            if let Ok((_, _, Some(definition))) = elaboration_environment.lookup_c_named(*id) {
+                expand_named_left_spine_in_constructor(elaboration_environment, definition)
+            } else {
+                constructor.clone()
+            }
+        }
+        Constructor::KApp(function_constructor, kind_argument) => {
+            let expanded_head = expand_named_left_spine_in_constructor(
+                elaboration_environment,
+                function_constructor,
+            );
+            Located::new(
+                Constructor::KApp(Box::new(expanded_head), kind_argument.clone()),
+                constructor.span.clone(),
+            )
+        }
+        Constructor::App(function_constructor, argument_constructor) => {
+            let expanded_head = expand_named_left_spine_in_constructor(
+                elaboration_environment,
+                function_constructor,
+            );
+            Located::new(
+                Constructor::App(Box::new(expanded_head), argument_constructor.clone()),
+                constructor.span.clone(),
+            )
+        }
+        _ => constructor.clone(),
+    }
+}
+
+/// [`expand_named_left_spine_in_constructor`] then [`type_operations::hnorm_con`], iterated.
+///
+/// Call sites: expression typing for `f e` / `e[c]` heads only — not [`super::elaborate::unify_cons`].
+///
+/// # Arguments
+///
+/// * `elaboration_environment` — Elaboration environment.
+/// * `constructor` — Inferred type of function or constructor abstraction head.
+///
+/// # Returns
+///
+/// Approximates ML `normCon env` for that head so `KApp(KAbs …, k)` can beta-reduce.
+pub fn hnorm_con_expression_head(
+    elaboration_environment: &Env,
+    mut constructor: LocatedConstructor,
+) -> LocatedConstructor {
+    for _ in 0u32..32u32 {
+        constructor = type_operations::hnorm_con(expand_named_left_spine_in_constructor(
+            elaboration_environment,
+            &constructor,
+        ));
+    }
+    constructor
+}
+
+/// Expand every [`Constructor::Named`] under `App` / `KApp` (including `App` arguments).
+///
+/// For `e[c]` typing only — not for value `f e` (boot regressed when used there).
+fn expand_named_abbrev_in_constructor_full(
+    elaboration_environment: &Env,
+    constructor: &LocatedConstructor,
+) -> LocatedConstructor {
+    match &constructor.node {
+        Constructor::Named(id) => {
+            if let Ok((_, _, Some(definition))) = elaboration_environment.lookup_c_named(*id) {
+                return expand_named_abbrev_in_constructor_full(
+                    elaboration_environment,
+                    definition,
+                );
+            }
+            constructor.clone()
+        }
+        Constructor::App(function_constructor, argument_constructor) => {
+            let expanded_head = expand_named_abbrev_in_constructor_full(
+                elaboration_environment,
+                function_constructor,
+            );
+            let expanded_argument = expand_named_abbrev_in_constructor_full(
+                elaboration_environment,
+                argument_constructor,
+            );
+            if let Constructor::Named(named_id) = expanded_head.node {
+                if let Ok((_, _, Some(definition))) =
+                    elaboration_environment.lookup_c_named(named_id)
+                {
+                    return Located::new(
+                        Constructor::App(Box::new(definition.clone()), Box::new(expanded_argument)),
+                        constructor.span.clone(),
+                    );
+                }
+            }
+            Located::new(
+                Constructor::App(Box::new(expanded_head), Box::new(expanded_argument)),
+                constructor.span.clone(),
+            )
+        }
+        Constructor::KApp(function_constructor, kind_argument) => {
+            let expanded_head = expand_named_abbrev_in_constructor_full(
+                elaboration_environment,
+                function_constructor,
+            );
+            if let Constructor::Named(named_id) = expanded_head.node {
+                if let Ok((_, _, Some(definition))) =
+                    elaboration_environment.lookup_c_named(named_id)
+                {
+                    return Located::new(
+                        Constructor::KApp(Box::new(definition.clone()), kind_argument.clone()),
+                        constructor.span.clone(),
+                    );
+                }
+            }
+            Located::new(
+                Constructor::KApp(Box::new(expanded_head), kind_argument.clone()),
+                constructor.span.clone(),
+            )
+        }
+        _ => constructor.clone(),
+    }
+}
+
+/// Full `named_c` unfolding + [`type_operations::hnorm_con`] for [`super::elaborate::elab_exp_inner`]
+/// `Exp::CApp` (matches legacy `hnorm_con_elab` in `elaborate.rs`; do **not** use for `Exp::App`).
+///
+/// # Arguments
+///
+/// * `elaboration_environment` — `named_c` map.
+/// * `constructor` — Type of the head `e` in `e[c]`.
+///
+/// # Returns
+///
+/// Normalized constructor before `TCFun` matching.
+pub fn hnorm_con_constructor_abstraction(
+    elaboration_environment: &Env,
+    mut constructor: LocatedConstructor,
+) -> LocatedConstructor {
+    for _ in 0u32..32u32 {
+        constructor = type_operations::hnorm_con(expand_named_abbrev_in_constructor_full(
+            elaboration_environment,
+            &constructor,
+        ));
+    }
+    constructor
+}
+
+// ---------------------------------------------------------------------------
 // Class name key
 // ---------------------------------------------------------------------------
 
@@ -2720,6 +2885,28 @@ mod tests {
 
     fn con_named(id: usize) -> LocatedConstructor {
         Located::new(Constructor::Named(id), dummy_span())
+    }
+
+    /// Regression: left-spine named unfolding for optional `f e` use.
+    #[test]
+    fn hnorm_con_expression_head_inlines_named_alias() {
+        let sp = dummy_span();
+        let k = Located::new(Kind::Type, sp.clone());
+        let def = Located::new(Constructor::Unit, sp.clone());
+        let env = Env::empty().push_c_named_as("Ali".into(), 7usize, k, Some(def));
+        let out = hnorm_con_expression_head(&env, con_named(7));
+        assert!(matches!(out.node, Constructor::Unit));
+    }
+
+    /// Regression: full-tree named unfolding for `e[c]` (see [`hnorm_con_constructor_abstraction`]).
+    #[test]
+    fn hnorm_con_constructor_abstraction_inlines_named_alias() {
+        let sp = dummy_span();
+        let k = Located::new(Kind::Type, sp.clone());
+        let def = Located::new(Constructor::Unit, sp.clone());
+        let env = Env::empty().push_c_named_as("B".into(), 3usize, k, Some(def));
+        let out = hnorm_con_constructor_abstraction(&env, con_named(3));
+        assert!(matches!(out.node, Constructor::Unit));
     }
 
     fn sgn_error() -> LocatedSignature {

@@ -12,7 +12,7 @@
 
 use crate::error_types::{Located, Span};
 use crate::source::*;
-use crate::parse::grammar_helpers::con_record_field_pun;
+use crate::parse::grammar_helpers::{con_record_field_pun, exp_var_from_dotted_at_path};
 use crate::parse::xml_helpers::{
     XmlAttr, XmlAttrsAcc, FunParam, capitalize_attr, xml_attrs_empty, xml_attrs_push, xml_desugar_tag_open,
     xml_empty_cdata, wrap_fun_params, str_to_decl_open,
@@ -140,6 +140,8 @@ extern {
         "/"   => crate::parse::lexical_analyzer::Token::Divide,
         "%"   => crate::parse::lexical_analyzer::Token::Mod,
         "@"   => crate::parse::lexical_analyzer::Token::At,
+        "AT_TSO_PATH" => crate::parse::lexical_analyzer::Token::AtTypesOnlyPath(<String>),
+        "AT_DI_PATH" => crate::parse::lexical_analyzer::Token::AtDontInferPath(<String>),
         "|>"  => crate::parse::lexical_analyzer::Token::Fwdapp,
         "<|"  => crate::parse::lexical_analyzer::Token::Revapp,
 
@@ -998,6 +1000,9 @@ AppExp: LocExp = {
         Span::from_offsets("", l, r, &[])),
     <l:@L> <e:AppExp> <op:PostfixOp> <r:@R> =>
         crate::parse::expr_langsec::fold_postfixes(e, vec![op], "", l, r, &[]),
+    <l:@L> <e:AppExp> "!" <r:@R> => Located::new(
+        Exp::DisjointApp(Box::new(e)),
+        Span::from_offsets("", l, r, &[])),
 };
 
 // Full arithmetic + application spine — single flat recognizer, conflict-free via `#[precedence]`.
@@ -1014,6 +1019,11 @@ ArithExp: LocExp = {
     #[precedence(level="2")] #[assoc(side="left")]
     <l:@L> <e:ArithExp> <op:PostfixOp> <r:@R> =>
         crate::parse::expr_langsec::fold_postfixes(e, vec![op], "", l, r, &[]),
+    // ML `eapps BANG` on the full cmp/app spine (e.g. `@Folder.concat ! arg`).
+    #[precedence(level="2")] #[assoc(side="left")]
+    <l:@L> <e:ArithExp> "!" <r:@R> => Located::new(
+        Exp::DisjointApp(Box::new(e)),
+        Span::from_offsets("", l, r, &[])),
 
     // Multiplicative operators (level 3)
     #[precedence(level="3")] #[assoc(side="left")]
@@ -1173,7 +1183,10 @@ LambdaParams: Vec<FunParam> = {
 AtomExpNode: Exp = {
     // Unit literal: `()` → empty record
     "()" => Exp::Record(vec![], false),
-    // Explicit application: @e applies e's next implicit argument explicitly
+    // `@` / `@@` + path: [`XmlAwareLexer`] emits [`Token::AtTypesOnlyPath`] / [`Token::AtDontInferPath`].
+    <d:"AT_TSO_PATH"> => exp_var_from_dotted_at_path(d, Inference::TypesOnly),
+    <d:"AT_DI_PATH"> => exp_var_from_dotted_at_path(d, Inference::DontInfer),
+    // Bare `@` (not followed by a valid path) stays available for future surface syntax.
     "@" <e:AtomExp> => Exp::DisjointApp(Box::new(e)),
     <n:"INT">    => Exp::Prim(crate::primitives::Prim::Int(n)),
     <f:"FLOAT">  => Exp::Prim(crate::primitives::Prim::Float(f)),
@@ -1585,7 +1598,22 @@ FunBindings: Vec<(String, Option<LocCon>, LocExp)> = {
 
 FunBind: (String, Option<LocCon>, LocExp) = {
     <name:"IDENT"> <params:FnLamParams> <ret:(":" <Con>)?> "=" <e:Exp> => {
-        let body = wrap_fun_params(params, e);
-        (name, ret, body)
+        // Embed the return-type annotation (if any) INSIDE the parameter wrappers so that
+        // constructor parameters like `[K]` and `[tf :: K -> Type]` are in scope when
+        // the annotation is elaborated. If we kept `ret` separate (outside the wrapped
+        // params), `ValRec` elaboration would process it in the outer environment where
+        // those constructor parameters are not yet bound, causing `ElabUnboundTypeConstructor`.
+        let annotated_body = if let Some(ret_type) = ret {
+            // Wrap the body with an `Annot` node so elaboration checks the return type
+            // inside the constructor-parameter scope.
+            Located::dummy(Exp::Annot(Box::new(e), ret_type))
+        } else {
+            // No annotation: pass the body through unchanged.
+            e
+        };
+        // Wrap all lambda parameters (kind, constructor, term, disjointness) around the body.
+        let body = wrap_fun_params(params, annotated_body);
+        // Always use None for the opt_con field: the annotation is now inside the body.
+        (name, None, body)
     },
 };

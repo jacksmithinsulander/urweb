@@ -2433,6 +2433,92 @@ mod tests {
         );
     }
 
+    /// `@@x` lexes to [`Token::AtDontInferPath`] → [`Exp::Var`] with [`Inference::DontInfer`].
+    #[test]
+    #[cfg(generated_parser)]
+    fn parse_double_at_path_is_dont_infer_var() {
+        use crate::source::{Decl, Exp, Inference};
+        let mut errors = ErrorReporter::new_silent();
+        let file = parse_ur(
+            "t.ur",
+            "val u = @@x",
+            &mut errors,
+            crate::db::ProjectDb::default(),
+        )
+        .expect("parse");
+        let Decl::Val(_, e) = &file[0].node else {
+            panic!("expected Val");
+        };
+        assert!(matches!(
+            &e.node,
+            Exp::Var(q, n, Inference::DontInfer) if q.is_empty() && n == "x"
+        ));
+    }
+
+    /// Qualified `@Foo.bar` is one [`Token::AtTypesOnlyPath`] (ML longest `path`).
+    #[test]
+    #[cfg(generated_parser)]
+    fn parse_at_qualified_module_path_is_one_var() {
+        use crate::source::{Decl, Exp, Inference};
+        let mut errors = ErrorReporter::new_silent();
+        let file = parse_ur(
+            "t.ur",
+            "val u = @Foo.bar",
+            &mut errors,
+            crate::db::ProjectDb::default(),
+        )
+        .expect("parse");
+        let Decl::Val(_, e) = &file[0].node else {
+            panic!("expected Val");
+        };
+        assert!(matches!(
+            &e.node,
+            Exp::Var(q, n, Inference::TypesOnly)
+                if q == &vec!["Foo".to_string()] && n == "bar"
+        ));
+    }
+
+    /// Single `@` → [`Inference::TypesOnly`] ([`Token::AtTypesOnlyPath`]).
+    #[test]
+    #[cfg(generated_parser)]
+    fn parse_single_at_path_is_types_only_var() {
+        use crate::source::{Decl, Exp, Inference};
+        let mut errors = ErrorReporter::new_silent();
+        let file = parse_ur(
+            "t.ur",
+            "val u = @x",
+            &mut errors,
+            crate::db::ProjectDb::default(),
+        )
+        .expect("parse");
+        let Decl::Val(_, e) = &file[0].node else {
+            panic!("expected Val");
+        };
+        assert!(matches!(
+            &e.node,
+            Exp::Var(q, n, Inference::TypesOnly) if q.is_empty() && n == "x"
+        ));
+    }
+
+    /// Upstream `eapps BANG` → [`Exp::DisjointApp`] via postfix `!`.
+    #[test]
+    #[cfg(generated_parser)]
+    fn parse_bang_postfix_wraps_operand_in_disjoint_app() {
+        use crate::source::{Decl, Exp};
+        let mut errors = ErrorReporter::new_silent();
+        let file = parse_ur(
+            "t.ur",
+            "val u = x !",
+            &mut errors,
+            crate::db::ProjectDb::default(),
+        )
+        .expect("parse");
+        let Decl::Val(_, e) = &file[0].node else {
+            panic!("expected Val");
+        };
+        assert!(matches!(&e.node, Exp::DisjointApp(_)));
+    }
+
     #[test]
     fn debug_cookie_bars() {
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/demo/cookie.ur");

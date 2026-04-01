@@ -269,6 +269,8 @@ pub fn token_starts_primary(t: &Token) -> bool {
             | Token::Lparen
             | Token::Lbrace
             | Token::At
+            | Token::AtTypesOnlyPath(_)
+            | Token::AtDontInferPath(_)
             | Token::Under
             | Token::Underunderunder
             | Token::BeginTag(_)

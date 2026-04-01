@@ -2562,11 +2562,11 @@ mod tests {
     /// Goal: `demo/sum.ur` elaborates with real `lib/ur` boot the way the ML compiler does.
     ///
     /// `elab_file` already mirrors SML `dopen` on `Basis` and `Top`, but **full `lib/ur` boot still
-    /// records many elaboration errors** (hundreds) — so end-to-end `sum.ur` cannot pass until that
-    /// ground-up parity work finishes. Keep this test as a tracker: run with
+    /// records many type errors** — see `boot_elab_diagnostic_id_histogram` (`URWEB_TEST_BOOT_HIST=1`).
+    /// Keep this test as a tracker: run with
     /// `cargo test -p ur elaborate_demo_sum_elaborates_after_boot_parity -- --ignored --nocapture`.
     #[test]
-    #[ignore = "lib/ur boot elaboration still reports type errors (see boot_elab_diagnostic_id_histogram baseline); un-ignore when elab_file returns Some"]
+    #[ignore = "lib/ur boot elab still reports type errors (~200+); un-ignore when boot histogram hits 0"]
     fn elaborate_demo_sum_elaborates_after_boot_parity() {
         const STACK: usize = 32 * 1024 * 1024;
         std::thread::Builder::new()

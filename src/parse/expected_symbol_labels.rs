@@ -87,6 +87,8 @@ pub fn friendly_expected_terminal_label(quoted_terminal: &str) -> String {
         "^" => "caret `^`".to_string(),
         "~" => "tilde `~`".to_string(),
         "@" => "at `@`".to_string(),
+        "AT_TSO_PATH" => "`@` qualified path (types only)".to_string(),
+        "AT_DI_PATH" => "`@@` qualified path (no type inference)".to_string(),
         "!" => "bang `!`".to_string(),
         "+" => "plus `+`".to_string(),
         "-" => "minus `-`".to_string(),

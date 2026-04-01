@@ -10,7 +10,7 @@ use std::cell::RefCell;
 use crate::db::ProjectDbCtx;
 use crate::diagnostics::{DiagnosticId, DiagnosticPayload};
 use crate::error_types::{ErrorReporter, Located, Span};
-use crate::monomorphized::{utilities, Exp, LocDecl, LocExp, Typ};
+use crate::monomorphized::{utilities, Exp, LocDecl, LocExp, LocTyp, Typ};
 use crate::primitives::{Prim, StringMode};
 use crate::settings::Settings;
 
@@ -466,6 +466,7 @@ fn normal_lit(s: impl Into<String>, span: &Span) -> LocExp {
 // Helper: check if a PatCon is a Ffi constructor with a given module/con
 // ---------------------------------------------------------------------------
 
+/// Returns whether `pc` is an FFI pattern constructor for `module::con`.
 fn is_ffi_con(pc: &crate::monomorphized::PatCon, module: &str, con: &str) -> bool {
     match pc {
         crate::monomorphized::PatCon::Ffi {
@@ -475,10 +476,443 @@ fn is_ffi_con(pc: &crate::monomorphized::PatCon, module: &str, con: &str) -> boo
     }
 }
 
+/// Folds the single argument of `Basis.htmlifyString` when it is `intToString`, curried `Ffi`, or literals.
+///
+/// # Arguments
+///
+/// * `htmlify_string_call_arguments` — `[arg]` plus types as emitted for `htmlifyString`.
+///
+/// # Returns
+///
+/// The optimized [`Exp`] (folded primitive string or a shorter `FfiApp` chain).
+fn fold_basis_htmlify_string_arg(htmlify_string_call_arguments: Vec<(LocExp, LocTyp)>) -> Exp {
+    // Duplicate the outer call when we cannot inspect a single argument safely.
+    let fallback = || {
+        Exp::FfiApp(
+            "Basis".into(),
+            "htmlifyString".into(),
+            htmlify_string_call_arguments.clone(),
+        )
+    };
+    // Require exactly one argument; otherwise preserve the original call.
+    let [only_pair] = htmlify_string_call_arguments.as_slice() else {
+        return fallback();
+    };
+    let argument_expression = &only_pair.0;
+    // Dispatch on the inner expression shape (mirrors mono_opt.sml htmlifyString rewrites).
+    match &argument_expression.node {
+        // `htmlifyString(Basis.intToString e)` spine as `FfiApp`.
+        Exp::FfiApp(inner_module, inner_function, inner_args)
+            if inner_module == "Basis" && inner_function == "intToString" =>
+        {
+            // Fold integer literals to HTML text; otherwise lower to `htmlifyInt`.
+            match inner_args.as_slice() {
+                [single_int] => {
+                    if let Exp::Prim(Prim::Int(n)) = single_int.0.node {
+                        return Exp::Prim(Prim::String(StringMode::Html, htmlify_int(n)));
+                    }
+                    Exp::FfiApp("Basis".into(), "htmlifyInt".into(), inner_args.clone())
+                }
+                _ => Exp::FfiApp("Basis".into(), "htmlifyInt".into(), inner_args.clone()),
+            }
+        }
+        // `htmlifyString(Basis.floatToString e)` as `FfiApp`.
+        Exp::FfiApp(inner_module, inner_function, inner_args)
+            if inner_module == "Basis" && inner_function == "floatToString" =>
+        {
+            match inner_args.as_slice() {
+                [single_float] => {
+                    if let Exp::Prim(Prim::Float(n)) = single_float.0.node {
+                        return Exp::Prim(Prim::String(StringMode::Html, htmlify_float(n)));
+                    }
+                    Exp::FfiApp("Basis".into(), "htmlifyFloat".into(), inner_args.clone())
+                }
+                _ => Exp::FfiApp("Basis".into(), "htmlifyFloat".into(), inner_args.clone()),
+            }
+        }
+        // `htmlifyString(Basis.boolToString e)` as `FfiApp`.
+        Exp::FfiApp(inner_module, inner_function, inner_args)
+            if inner_module == "Basis" && inner_function == "boolToString" =>
+        {
+            if let [only_bool] = inner_args.as_slice() {
+                match &only_bool.0.node {
+                    Exp::Con(_, pattern_constructor, None)
+                        if is_ffi_con(pattern_constructor, "Basis", "True") =>
+                    {
+                        return Exp::Prim(Prim::String(StringMode::Html, "True".into()));
+                    }
+                    Exp::Con(_, pattern_constructor, None)
+                        if is_ffi_con(pattern_constructor, "Basis", "False") =>
+                    {
+                        return Exp::Prim(Prim::String(StringMode::Html, "False".into()));
+                    }
+                    _ => {}
+                }
+            }
+            Exp::FfiApp("Basis".into(), "htmlifyBool".into(), inner_args.clone())
+        }
+        // Curried `EApp(EFfi(Basis, f), e)` forms (often after monomorphization).
+        Exp::App(function_part, argument_part) => match &function_part.node {
+            Exp::Ffi(module_name, ffi_name) if module_name == "Basis" => match ffi_name.as_str() {
+                "intToString" => {
+                    if let Exp::Prim(Prim::Int(n)) = argument_part.node {
+                        return Exp::Prim(Prim::String(StringMode::Html, htmlify_int(n)));
+                    }
+                    let argument_type: LocTyp = Located::new(
+                        Typ::Ffi("Basis".into(), "int".into()),
+                        function_part.span.clone(),
+                    );
+                    Exp::FfiApp(
+                        "Basis".into(),
+                        "htmlifyInt".into(),
+                        vec![(*argument_part.clone(), argument_type)],
+                    )
+                }
+                "floatToString" => {
+                    if let Exp::Prim(Prim::Float(n)) = argument_part.node {
+                        return Exp::Prim(Prim::String(StringMode::Html, htmlify_float(n)));
+                    }
+                    let argument_type: LocTyp = Located::new(
+                        Typ::Ffi("Basis".into(), "float".into()),
+                        function_part.span.clone(),
+                    );
+                    Exp::FfiApp(
+                        "Basis".into(),
+                        "htmlifyFloat".into(),
+                        vec![(*argument_part.clone(), argument_type)],
+                    )
+                }
+                "timeToString" => {
+                    let argument_type: LocTyp = Located::new(
+                        Typ::Ffi("Basis".into(), "time".into()),
+                        function_part.span.clone(),
+                    );
+                    Exp::FfiApp(
+                        "Basis".into(),
+                        "htmlifyTime".into(),
+                        vec![(*argument_part.clone(), argument_type)],
+                    )
+                }
+                _ => fallback(),
+            },
+            _ => fallback(),
+        },
+        Exp::Prim(Prim::String(_, payload)) => {
+            Exp::Prim(Prim::String(StringMode::Html, htmlify_string(payload)))
+        }
+        _ => fallback(),
+    }
+}
+
+/// Rewrites `Basis.FfiApp` that sits directly under [`Exp::Write`] to writer suffix forms or constant HTML.
+///
+/// # Arguments
+///
+/// * `basis_function_name` — second component of `FfiApp` (`"htmlifyInt"`, etc.).
+/// * `ffi_call_arguments` — arguments paired with types for this call.
+/// * `optimization_span` — span for nodes synthesized in this peephole step.
+///
+/// # Returns
+///
+/// [`None`] if this function name is not part of the write-placement table (caller re-wraps `EWrite`).
+fn try_rewrite_basis_ffi_inside_write(
+    basis_function_name: &str,
+    ffi_call_arguments: &[(LocExp, LocTyp)],
+    optimization_span: &Span,
+) -> Option<Exp> {
+    match basis_function_name {
+        "htmlifySpecialChar" => Some(Exp::FfiApp(
+            "Basis".into(),
+            "htmlifySpecialChar_w".into(),
+            ffi_call_arguments.to_vec(),
+        )),
+        "intToString" => Some(Exp::FfiApp(
+            "Basis".into(),
+            "htmlifyInt_w".into(),
+            ffi_call_arguments.to_vec(),
+        )),
+        "htmlifyInt" => Some(Exp::FfiApp(
+            "Basis".into(),
+            "htmlifyInt_w".into(),
+            ffi_call_arguments.to_vec(),
+        )),
+        "htmlifyFloat" => Some(Exp::FfiApp(
+            "Basis".into(),
+            "htmlifyFloat_w".into(),
+            ffi_call_arguments.to_vec(),
+        )),
+        "htmlifyBool" => Some(Exp::FfiApp(
+            "Basis".into(),
+            "htmlifyBool_w".into(),
+            ffi_call_arguments.to_vec(),
+        )),
+        "htmlifyTime" => Some(Exp::FfiApp(
+            "Basis".into(),
+            "htmlifyTime_w".into(),
+            ffi_call_arguments.to_vec(),
+        )),
+        "htmlifyString" => {
+            if let [(single_argument, _)] = ffi_call_arguments {
+                if let Exp::Prim(Prim::String(_, payload)) = &single_argument.node {
+                    return Some(Exp::Write(Box::new(html_lit(
+                        htmlify_string(payload),
+                        optimization_span,
+                    ))));
+                }
+            }
+            Some(Exp::FfiApp(
+                "Basis".into(),
+                "htmlifyString_w".into(),
+                ffi_call_arguments.to_vec(),
+            ))
+        }
+        "htmlifySource" => Some(Exp::FfiApp(
+            "Basis".into(),
+            "htmlifySource_w".into(),
+            ffi_call_arguments.to_vec(),
+        )),
+        "attrifyInt" => match ffi_call_arguments {
+            [(single, _)] => {
+                if let Exp::Prim(Prim::Int(n)) = single.node {
+                    Some(Exp::Write(Box::new(html_lit(
+                        attrify_int(n),
+                        optimization_span,
+                    ))))
+                } else {
+                    Some(Exp::FfiApp(
+                        "Basis".into(),
+                        "attrifyInt_w".into(),
+                        ffi_call_arguments.to_vec(),
+                    ))
+                }
+            }
+            _ => Some(Exp::FfiApp(
+                "Basis".into(),
+                "attrifyInt_w".into(),
+                ffi_call_arguments.to_vec(),
+            )),
+        },
+        "attrifyFloat" => match ffi_call_arguments {
+            [(single, _)] => {
+                if let Exp::Prim(Prim::Float(n)) = single.node {
+                    Some(Exp::Write(Box::new(html_lit(
+                        attrify_float(n),
+                        optimization_span,
+                    ))))
+                } else {
+                    Some(Exp::FfiApp(
+                        "Basis".into(),
+                        "attrifyFloat_w".into(),
+                        ffi_call_arguments.to_vec(),
+                    ))
+                }
+            }
+            _ => Some(Exp::FfiApp(
+                "Basis".into(),
+                "attrifyFloat_w".into(),
+                ffi_call_arguments.to_vec(),
+            )),
+        },
+        "attrifyString" => match ffi_call_arguments {
+            [(single, _)] => {
+                if let Exp::Prim(Prim::String(_, payload)) = &single.node {
+                    Some(Exp::Write(Box::new(html_lit(
+                        attrify_string(payload),
+                        optimization_span,
+                    ))))
+                } else {
+                    Some(Exp::FfiApp(
+                        "Basis".into(),
+                        "attrifyString_w".into(),
+                        ffi_call_arguments.to_vec(),
+                    ))
+                }
+            }
+            _ => Some(Exp::FfiApp(
+                "Basis".into(),
+                "attrifyString_w".into(),
+                ffi_call_arguments.to_vec(),
+            )),
+        },
+        "attrifyChar" => match ffi_call_arguments {
+            [(single, _)] => {
+                if let Exp::Prim(Prim::Char(ch)) = single.node {
+                    Some(Exp::Write(Box::new(html_lit(
+                        attrify_char(ch),
+                        optimization_span,
+                    ))))
+                } else {
+                    Some(Exp::FfiApp(
+                        "Basis".into(),
+                        "attrifyChar_w".into(),
+                        ffi_call_arguments.to_vec(),
+                    ))
+                }
+            }
+            _ => Some(Exp::FfiApp(
+                "Basis".into(),
+                "attrifyChar_w".into(),
+                ffi_call_arguments.to_vec(),
+            )),
+        },
+        "attrifyCss_class" => match ffi_call_arguments {
+            [(single, _)] => {
+                if let Exp::Prim(Prim::String(_, payload)) = &single.node {
+                    Some(Exp::Write(Box::new(html_lit(
+                        payload.clone(),
+                        optimization_span,
+                    ))))
+                } else {
+                    Some(Exp::FfiApp(
+                        "Basis".into(),
+                        "attrifyString_w".into(),
+                        ffi_call_arguments.to_vec(),
+                    ))
+                }
+            }
+            _ => Some(Exp::FfiApp(
+                "Basis".into(),
+                "attrifyString_w".into(),
+                ffi_call_arguments.to_vec(),
+            )),
+        },
+        "urlifyInt" => match ffi_call_arguments {
+            [(single, _)] => {
+                if let Exp::Prim(Prim::Int(n)) = single.node {
+                    Some(Exp::Write(Box::new(normal_lit(
+                        urlify_int(n),
+                        optimization_span,
+                    ))))
+                } else {
+                    Some(Exp::FfiApp(
+                        "Basis".into(),
+                        "urlifyInt_w".into(),
+                        ffi_call_arguments.to_vec(),
+                    ))
+                }
+            }
+            _ => Some(Exp::FfiApp(
+                "Basis".into(),
+                "urlifyInt_w".into(),
+                ffi_call_arguments.to_vec(),
+            )),
+        },
+        "urlifyFloat" => match ffi_call_arguments {
+            [(single, _)] => {
+                if let Exp::Prim(Prim::Float(n)) = single.node {
+                    Some(Exp::Write(Box::new(normal_lit(
+                        urlify_float(n),
+                        optimization_span,
+                    ))))
+                } else {
+                    Some(Exp::FfiApp(
+                        "Basis".into(),
+                        "urlifyFloat_w".into(),
+                        ffi_call_arguments.to_vec(),
+                    ))
+                }
+            }
+            _ => Some(Exp::FfiApp(
+                "Basis".into(),
+                "urlifyFloat_w".into(),
+                ffi_call_arguments.to_vec(),
+            )),
+        },
+        "urlifyString" => match ffi_call_arguments {
+            [(single, _)] => {
+                if let Exp::Prim(Prim::String(StringMode::Normal, payload)) = &single.node {
+                    Some(Exp::Write(Box::new(normal_lit(
+                        urlify_string(payload),
+                        optimization_span,
+                    ))))
+                } else {
+                    Some(Exp::FfiApp(
+                        "Basis".into(),
+                        "urlifyString_w".into(),
+                        ffi_call_arguments.to_vec(),
+                    ))
+                }
+            }
+            _ => Some(Exp::FfiApp(
+                "Basis".into(),
+                "urlifyString_w".into(),
+                ffi_call_arguments.to_vec(),
+            )),
+        },
+        "urlifyChar" => match ffi_call_arguments {
+            [(single, _)] => {
+                if let Exp::Prim(Prim::Char(ch)) = single.node {
+                    Some(Exp::Write(Box::new(normal_lit(
+                        urlify_char(ch),
+                        optimization_span,
+                    ))))
+                } else {
+                    Some(Exp::FfiApp(
+                        "Basis".into(),
+                        "urlifyChar_w".into(),
+                        ffi_call_arguments.to_vec(),
+                    ))
+                }
+            }
+            _ => Some(Exp::FfiApp(
+                "Basis".into(),
+                "urlifyChar_w".into(),
+                ffi_call_arguments.to_vec(),
+            )),
+        },
+        "urlifyBool" => match ffi_call_arguments {
+            [(single, _)] => Some(match &single.node {
+                Exp::Con(_, pattern_constructor, None)
+                    if is_ffi_con(pattern_constructor, "Basis", "True") =>
+                {
+                    Exp::Write(Box::new(normal_lit("1", optimization_span)))
+                }
+                Exp::Con(_, pattern_constructor, None)
+                    if is_ffi_con(pattern_constructor, "Basis", "False") =>
+                {
+                    Exp::Write(Box::new(normal_lit("0", optimization_span)))
+                }
+                _ => Exp::FfiApp(
+                    "Basis".into(),
+                    "urlifyBool_w".into(),
+                    ffi_call_arguments.to_vec(),
+                ),
+            }),
+            _ => Some(Exp::FfiApp(
+                "Basis".into(),
+                "urlifyBool_w".into(),
+                ffi_call_arguments.to_vec(),
+            )),
+        },
+        "str1" => Some(Exp::FfiApp(
+            "Basis".into(),
+            "writec".into(),
+            ffi_call_arguments.to_vec(),
+        )),
+        _ => None,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Core peephole function — applied to one node after children are optimized
 // ---------------------------------------------------------------------------
 
+/// Applies local rewrites to one Mono [`Exp`] after child expressions are optimized.
+///
+/// # Arguments
+///
+/// * `e` — Mono expression node being rewritten.
+/// * `span` — surrounding span used when synthesizing [`Located`] nodes.
+/// * `settings` — project settings (e.g. SQL dialect) for folds that depend on configuration.
+/// * `errors` — reporter cell used by validation-oriented folds (`bless*`, `check*`).
+///
+/// # Returns
+///
+/// The rewritten [`Exp`] (possibly unchanged).
+///
+/// # Panics
+///
+/// Does not panic; invalid shapes fall through without rewriting.
 fn opt_exp_peephole(
     e: Exp,
     span: &Span,
@@ -635,169 +1069,20 @@ fn opt_exp_peephole(
                 )
             }
 
-            // EWrite(EFfiApp("Basis","htmlifySpecialChar",[e])) → htmlifySpecialChar_w
-            Exp::FfiApp(ref m, ref f, ref args) if m == "Basis" && f == "htmlifySpecialChar" => {
-                Exp::FfiApp("Basis".into(), "htmlifySpecialChar_w".into(), args.clone())
-            }
-
-            // EWrite(EFfiApp("Basis","intToString",[e])) → htmlifyInt_w
-            Exp::FfiApp(ref m, ref f, ref args) if m == "Basis" && f == "intToString" => {
-                Exp::FfiApp("Basis".into(), "htmlifyInt_w".into(), args.clone())
-            }
-
-            // EWrite(htmlifyInt) → htmlifyInt_w
-            Exp::FfiApp(ref m, ref f, ref args) if m == "Basis" && f == "htmlifyInt" => {
-                Exp::FfiApp("Basis".into(), "htmlifyInt_w".into(), args.clone())
-            }
-
-            // EWrite(htmlifyFloat) → htmlifyFloat_w
-            Exp::FfiApp(ref m, ref f, ref args) if m == "Basis" && f == "htmlifyFloat" => {
-                Exp::FfiApp("Basis".into(), "htmlifyFloat_w".into(), args.clone())
-            }
-
-            // EWrite(htmlifyBool) → htmlifyBool_w
-            Exp::FfiApp(ref m, ref f, ref args) if m == "Basis" && f == "htmlifyBool" => {
-                Exp::FfiApp("Basis".into(), "htmlifyBool_w".into(), args.clone())
-            }
-
-            // EWrite(htmlifyTime) → htmlifyTime_w
-            Exp::FfiApp(ref m, ref f, ref args) if m == "Basis" && f == "htmlifyTime" => {
-                Exp::FfiApp("Basis".into(), "htmlifyTime_w".into(), args.clone())
-            }
-
-            // EWrite(htmlifyString with literal) → EWrite(html_lit)
-            Exp::FfiApp(ref m, ref f, ref args)
-                if m == "Basis" && f == "htmlifyString" && args.len() == 1 =>
+            // `EWrite(Basis.FfiApp …)` rewrites: `*_w` writer forms and literal folds (see table helper).
+            Exp::FfiApp(module_name, function_name, ffi_call_arguments)
+                if module_name == "Basis" =>
             {
-                if let Exp::Prim(Prim::String(_, ref s)) = args[0].0.node {
-                    let new_inner = html_lit(htmlify_string(s), span);
-                    Exp::Write(Box::new(new_inner))
-                } else {
-                    Exp::FfiApp("Basis".into(), "htmlifyString_w".into(), args.clone())
-                }
-            }
-
-            // EWrite(htmlifyString) → htmlifyString_w
-            Exp::FfiApp(ref m, ref f, ref args) if m == "Basis" && f == "htmlifyString" => {
-                Exp::FfiApp("Basis".into(), "htmlifyString_w".into(), args.clone())
-            }
-
-            // EWrite(htmlifySource) → htmlifySource_w
-            Exp::FfiApp(ref m, ref f, ref args) if m == "Basis" && f == "htmlifySource" => {
-                Exp::FfiApp("Basis".into(), "htmlifySource_w".into(), args.clone())
-            }
-
-            // EWrite(attrifyInt(lit)) → EWrite(html_lit)
-            Exp::FfiApp(ref m, ref f, ref args)
-                if m == "Basis" && f == "attrifyInt" && args.len() == 1 =>
-            {
-                if let Exp::Prim(Prim::Int(n)) = args[0].0.node {
-                    Exp::Write(Box::new(html_lit(attrify_int(n), span)))
-                } else {
-                    Exp::FfiApp("Basis".into(), "attrifyInt_w".into(), args.clone())
-                }
-            }
-
-            // EWrite(attrifyFloat(lit)) → EWrite(html_lit)
-            Exp::FfiApp(ref m, ref f, ref args)
-                if m == "Basis" && f == "attrifyFloat" && args.len() == 1 =>
-            {
-                if let Exp::Prim(Prim::Float(n)) = args[0].0.node {
-                    Exp::Write(Box::new(html_lit(attrify_float(n), span)))
-                } else {
-                    Exp::FfiApp("Basis".into(), "attrifyFloat_w".into(), args.clone())
-                }
-            }
-
-            // EWrite(attrifyString(lit)) → EWrite(html_lit)
-            Exp::FfiApp(ref m, ref f, ref args)
-                if m == "Basis" && f == "attrifyString" && args.len() == 1 =>
-            {
-                if let Exp::Prim(Prim::String(_, ref s)) = args[0].0.node {
-                    Exp::Write(Box::new(html_lit(attrify_string(s), span)))
-                } else {
-                    Exp::FfiApp("Basis".into(), "attrifyString_w".into(), args.clone())
-                }
-            }
-
-            // EWrite(attrifyChar(lit)) → EWrite(html_lit)
-            Exp::FfiApp(ref m, ref f, ref args)
-                if m == "Basis" && f == "attrifyChar" && args.len() == 1 =>
-            {
-                if let Exp::Prim(Prim::Char(c)) = args[0].0.node {
-                    Exp::Write(Box::new(html_lit(attrify_char(c), span)))
-                } else {
-                    Exp::FfiApp("Basis".into(), "attrifyChar_w".into(), args.clone())
-                }
-            }
-
-            // EWrite(attrifyCss_class(lit)) → EWrite(html_lit)
-            Exp::FfiApp(ref m, ref f, ref args)
-                if m == "Basis" && f == "attrifyCss_class" && args.len() == 1 =>
-            {
-                if let Exp::Prim(Prim::String(_, ref s)) = args[0].0.node {
-                    Exp::Write(Box::new(html_lit(s.clone(), span)))
-                } else {
-                    Exp::FfiApp("Basis".into(), "attrifyString_w".into(), args.clone())
-                }
-            }
-
-            // EWrite(urlifyInt(lit)) → EWrite(normal_lit)
-            Exp::FfiApp(ref m, ref f, ref args)
-                if m == "Basis" && f == "urlifyInt" && args.len() == 1 =>
-            {
-                if let Exp::Prim(Prim::Int(n)) = args[0].0.node {
-                    Exp::Write(Box::new(normal_lit(urlify_int(n), span)))
-                } else {
-                    Exp::FfiApp("Basis".into(), "urlifyInt_w".into(), args.clone())
-                }
-            }
-
-            // EWrite(urlifyFloat(lit)) → EWrite(normal_lit)
-            Exp::FfiApp(ref m, ref f, ref args)
-                if m == "Basis" && f == "urlifyFloat" && args.len() == 1 =>
-            {
-                if let Exp::Prim(Prim::Float(n)) = args[0].0.node {
-                    Exp::Write(Box::new(normal_lit(urlify_float(n), span)))
-                } else {
-                    Exp::FfiApp("Basis".into(), "urlifyFloat_w".into(), args.clone())
-                }
-            }
-
-            // EWrite(urlifyString(lit)) → EWrite(normal_lit)  [Normal mode only for string]
-            Exp::FfiApp(ref m, ref f, ref args)
-                if m == "Basis" && f == "urlifyString" && args.len() == 1 =>
-            {
-                if let Exp::Prim(Prim::String(StringMode::Normal, ref s)) = args[0].0.node {
-                    Exp::Write(Box::new(normal_lit(urlify_string(s), span)))
-                } else {
-                    Exp::FfiApp("Basis".into(), "urlifyString_w".into(), args.clone())
-                }
-            }
-
-            // EWrite(urlifyChar(lit)) → EWrite(normal_lit)
-            Exp::FfiApp(ref m, ref f, ref args)
-                if m == "Basis" && f == "urlifyChar" && args.len() == 1 =>
-            {
-                if let Exp::Prim(Prim::Char(c)) = args[0].0.node {
-                    Exp::Write(Box::new(normal_lit(urlify_char(c), span)))
-                } else {
-                    Exp::FfiApp("Basis".into(), "urlifyChar_w".into(), args.clone())
-                }
-            }
-
-            // EWrite(urlifyBool(True/False)) → EWrite(normal_lit)
-            Exp::FfiApp(ref m, ref f, ref args)
-                if m == "Basis" && f == "urlifyBool" && args.len() == 1 =>
-            {
-                match &args[0].0.node {
-                    Exp::Con(_, pc, None) if is_ffi_con(pc, "Basis", "True") => {
-                        Exp::Write(Box::new(normal_lit("1", span)))
-                    }
-                    Exp::Con(_, pc, None) if is_ffi_con(pc, "Basis", "False") => {
-                        Exp::Write(Box::new(normal_lit("0", span)))
-                    }
-                    _ => Exp::FfiApp("Basis".into(), "urlifyBool_w".into(), args.clone()),
+                match try_rewrite_basis_ffi_inside_write(
+                    function_name.as_str(),
+                    ffi_call_arguments.as_slice(),
+                    span,
+                ) {
+                    Some(rewritten) => rewritten,
+                    None => Exp::Write(Box::new(lspan(
+                        Exp::FfiApp(module_name, function_name, ffi_call_arguments),
+                        span,
+                    ))),
                 }
             }
 
@@ -813,11 +1098,6 @@ fn opt_exp_peephole(
                 } else {
                     Exp::Write(inner)
                 }
-            }
-
-            // EWrite(EStr1(e)) → writec(e)
-            Exp::FfiApp(ref m, ref f, ref args) if m == "Basis" && f == "str1" => {
-                Exp::FfiApp("Basis".into(), "writec".into(), args.clone())
             }
 
             other => Exp::Write(Box::new(lspan(other, span))),
@@ -876,111 +1156,8 @@ fn opt_exp_peephole(
                     Exp::FfiApp("Basis".into(), f.clone(), args)
                 }
 
-                // intToString → htmlifyInt conversion
-                "htmlifyString" if args.len() == 1 => {
-                    // htmlifyString(intToString(n)) → htmlifyInt(n) or literal
-                    match &args[0].0.node {
-                        Exp::FfiApp(m2, f2, args2) if m2 == "Basis" && f2 == "intToString" => {
-                            if args2.len() == 1 {
-                                if let Exp::Prim(Prim::Int(n)) = args2[0].0.node {
-                                    return Exp::Prim(Prim::String(
-                                        StringMode::Html,
-                                        htmlify_int(n),
-                                    ));
-                                }
-                            }
-                            Exp::FfiApp("Basis".into(), "htmlifyInt".into(), args2.clone())
-                        }
-                        Exp::App(fexpr, earg) => {
-                            if let Exp::Ffi(m2, f2) = &fexpr.node {
-                                if m2 == "Basis" {
-                                    if f2 == "intToString" {
-                                        if let Exp::Prim(Prim::Int(n)) = earg.node {
-                                            return Exp::Prim(Prim::String(
-                                                StringMode::Html,
-                                                htmlify_int(n),
-                                            ));
-                                        }
-                                        let t = Located::new(
-                                            Typ::Ffi("Basis".into(), "int".into()),
-                                            fexpr.span.clone(),
-                                        );
-                                        return Exp::FfiApp(
-                                            "Basis".into(),
-                                            "htmlifyInt".into(),
-                                            vec![(*earg.clone(), t)],
-                                        );
-                                    } else if f2 == "floatToString" {
-                                        if let Exp::Prim(Prim::Float(n)) = earg.node {
-                                            return Exp::Prim(Prim::String(
-                                                StringMode::Html,
-                                                htmlify_float(n),
-                                            ));
-                                        }
-                                        let t = Located::new(
-                                            Typ::Ffi("Basis".into(), "float".into()),
-                                            fexpr.span.clone(),
-                                        );
-                                        return Exp::FfiApp(
-                                            "Basis".into(),
-                                            "htmlifyFloat".into(),
-                                            vec![(*earg.clone(), t)],
-                                        );
-                                    } else if f2 == "timeToString" {
-                                        let t = Located::new(
-                                            Typ::Ffi("Basis".into(), "time".into()),
-                                            fexpr.span.clone(),
-                                        );
-                                        return Exp::FfiApp(
-                                            "Basis".into(),
-                                            "htmlifyTime".into(),
-                                            vec![(*earg.clone(), t)],
-                                        );
-                                    }
-                                }
-                            }
-                            Exp::FfiApp("Basis".into(), "htmlifyString".into(), args)
-                        }
-                        // htmlifyString(floatToString(...))
-                        Exp::FfiApp(m2, f2, args2) if m2 == "Basis" && f2 == "floatToString" => {
-                            if args2.len() == 1 {
-                                if let Exp::Prim(Prim::Float(n)) = args2[0].0.node {
-                                    return Exp::Prim(Prim::String(
-                                        StringMode::Html,
-                                        htmlify_float(n),
-                                    ));
-                                }
-                            }
-                            Exp::FfiApp("Basis".into(), "htmlifyFloat".into(), args2.clone())
-                        }
-                        // htmlifyString(boolToString(...))
-                        Exp::FfiApp(m2, f2, args2) if m2 == "Basis" && f2 == "boolToString" => {
-                            if args2.len() == 1 {
-                                match &args2[0].0.node {
-                                    Exp::Con(_, pc, None) if is_ffi_con(pc, "Basis", "True") => {
-                                        return Exp::Prim(Prim::String(
-                                            StringMode::Html,
-                                            "True".into(),
-                                        ))
-                                    }
-                                    Exp::Con(_, pc, None) if is_ffi_con(pc, "Basis", "False") => {
-                                        return Exp::Prim(Prim::String(
-                                            StringMode::Html,
-                                            "False".into(),
-                                        ))
-                                    }
-                                    _ => {}
-                                }
-                            }
-                            Exp::FfiApp("Basis".into(), "htmlifyBool".into(), args2.clone())
-                        }
-                        // htmlifyString(literal)
-                        Exp::Prim(Prim::String(_, s)) => {
-                            Exp::Prim(Prim::String(StringMode::Html, htmlify_string(s)))
-                        }
-                        _ => Exp::FfiApp("Basis".into(), "htmlifyString".into(), args),
-                    }
-                }
+                // `htmlifyString` composition rewrites (shared with fold helper).
+                "htmlifyString" if args.len() == 1 => fold_basis_htmlify_string_arg(args),
 
                 "htmlifyString_w" if args.len() == 1 => {
                     if let Exp::Prim(Prim::String(_, s)) = &args[0].0.node {
@@ -1771,6 +1948,50 @@ mod tests {
         // 0x80 = 128: first branch c <= 0x7f is false, second c <= 0x7ff true
         let s = hex_it(std::char::from_u32(0x80).unwrap());
         assert!(s.len() >= 2 && s.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    /// `EWrite(Basis.htmlifyInt)` lowers to `htmlifyInt_w` (writer combinator).
+    #[test]
+    fn write_basis_htmlify_int_becomes_writer_suffix() {
+        let mut errors = no_errors();
+        let arg = dummy(Exp::Prim(Prim::Int(3)));
+        let t_int = dummy(Typ::Ffi("Basis".into(), "int".into()));
+        let inner = dummy(Exp::FfiApp(
+            "Basis".into(),
+            "htmlifyInt".into(),
+            vec![(arg, t_int)],
+        ));
+        let wrapped = dummy(Exp::Write(Box::new(inner)));
+        let result = opt_exp(wrapped, &settings(), &mut errors);
+        assert!(
+            matches!(
+                &result.node,
+                Exp::FfiApp(m, f, _) if m == "Basis" && f == "htmlifyInt_w"
+            ),
+            "expected htmlifyInt_w, got {:?}",
+            result.node
+        );
+    }
+
+    /// `htmlifyString(Basis.intToString n)` folds like the legacy nested-match path.
+    #[test]
+    fn fold_htmlify_string_via_curried_int_to_string() {
+        let mut errors = no_errors();
+        let n = dummy(Exp::Prim(Prim::Int(42)));
+        let fn_part = dummy(Exp::Ffi("Basis".into(), "intToString".into()));
+        let arg = dummy(Exp::App(Box::new(fn_part), Box::new(n)));
+        let t_str = dummy(Typ::Ffi("Basis".into(), "string".into()));
+        let e = dummy(Exp::FfiApp(
+            "Basis".into(),
+            "htmlifyString".into(),
+            vec![(arg, t_str)],
+        ));
+        let result = opt_exp(e, &settings(), &mut errors);
+        assert!(
+            matches!(&result.node, Exp::Prim(Prim::String(StringMode::Html, s)) if s == "42"),
+            "expected folded HTML string, got {:?}",
+            result.node
+        );
     }
 
     #[test]

@@ -3,6 +3,15 @@
 use crate::error_types::{Located, Span};
 use crate::source::{Con, Exp, Inference, LocCon, LocExp, LocPat, Pat};
 
+/// Build [`Exp::Var`] from a dotted path string (`Foo.bar.baz` → quals + final name) after `@` / `@@`.
+pub fn exp_var_from_dotted_at_path(dotted: String, inference: Inference) -> Exp {
+    let mut segments: Vec<String> = dotted.split('.').map(String::from).collect();
+    let final_name = segments
+        .pop()
+        .expect("dotted @-path from lexer always has at least one segment");
+    Exp::Var(segments, final_name, inference)
+}
+
 /// `Pat = PatCore PatOptAnn?` in one production so `:` after `PatCore` is never a reduce/shift
 /// split between two `Pat` rules (LangSec / LR(1)).
 pub fn fold_pat_opt_ann(l: usize, r: usize, p: Pat, ann: Option<LocCon>) -> LocPat {

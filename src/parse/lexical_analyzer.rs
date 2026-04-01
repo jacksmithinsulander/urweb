@@ -283,6 +283,13 @@ pub enum Token {
     #[token("@")]
     At,
 
+    /// ML `AT` paths: produced only by [`XmlAwareLexer`], not the Logos table.
+    #[logos(skip)]
+    AtTypesOnlyPath(String),
+    /// ML `AT AT` paths: produced only by [`XmlAwareLexer`].
+    #[logos(skip)]
+    AtDontInferPath(String),
+
     // -----------------------------------------------------------------------
     // Keywords (priority = 2 keeps them above plain identifiers)
     // -----------------------------------------------------------------------
@@ -541,6 +548,8 @@ impl std::fmt::Display for Token {
             Token::Divide => write!(formatter, "`/`"),
             Token::Mod => write!(formatter, "`%`"),
             Token::At => write!(formatter, "`@`"),
+            Token::AtTypesOnlyPath(s) => write!(formatter, "`@` path (types-only) `{s}`"),
+            Token::AtDontInferPath(s) => write!(formatter, "`@@` path (no infer) `{s}`"),
             Token::And => write!(formatter, "`and`"),
             Token::Andalso => write!(formatter, "`andalso`"),
             Token::Case => write!(formatter, "`case`"),
@@ -819,6 +828,143 @@ impl<'a> XmlAwareLexer<'a> {
         }
     }
 
+    /// Keywords / pseudo-keywords that must not fuse with `@` into [`Token::AtTypesOnlyPath`].
+    fn word_rejects_at_path_compound(word: &str) -> bool {
+        matches!(
+            word,
+            "and"
+                | "andalso"
+                | "case"
+                | "class"
+                | "con"
+                | "constraint"
+                | "constraints"
+                | "cookie"
+                | "datatype"
+                | "else"
+                | "end"
+                | "export"
+                | "false"
+                | "ffi"
+                | "fn"
+                | "fun"
+                | "functor"
+                | "if"
+                | "in"
+                | "include"
+                | "let"
+                | "map"
+                | "of"
+                | "open"
+                | "orelse"
+                | "policy"
+                | "rec"
+                | "sequence"
+                | "sig"
+                | "signature"
+                | "struct"
+                | "structure"
+                | "style"
+                | "table"
+                | "task"
+                | "then"
+                | "true"
+                | "type"
+                | "val"
+                | "view"
+                | "urweb_put"
+                | "urweb_get"
+                | "urweb_tb_transfer"
+                | "sgn_abs"
+                | "sgn_def_con"
+                | "case_bar"
+                | "arm_sep"
+                | "case_end"
+                | "dtype_of"
+                | "dt_con0"
+                | "dt_bar"
+                | "dt_done"
+                | "sgn_where"
+                | "sgn_subwhere"
+                | "Name"
+                | "Type"
+                | "Unit"
+        )
+    }
+
+    /// Consume Ur/Web identifier run (ASCII alnum, `_`, `'`).
+    fn scan_ident_run(&self, mut index: usize) -> usize {
+        while index < self.src.len() {
+            let byte = self.src[index];
+            if byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'\'' {
+                index += 1;
+            } else {
+                break;
+            }
+        }
+        index
+    }
+
+    /// ML `eterm`: `AT path|cpath` and `AT AT path|cpath` as one token (matches upstream longest path).
+    fn scan_at_inference_path(&mut self, start: usize) -> Option<LexResult> {
+        let mut index = start + 1;
+        if index >= self.src.len() {
+            return None;
+        }
+        let mut dont_infer = false;
+        if self.src[index] == b'@' {
+            dont_infer = true;
+            index += 1;
+        }
+        if index >= self.src.len() {
+            return None;
+        }
+        if !matches!(
+            self.src[index],
+            b'a'..=b'z' | b'A'..=b'Z' | b'_'
+        ) {
+            return None;
+        }
+        let first_start = index;
+        index = self.scan_ident_run(first_start);
+        let first = std::str::from_utf8(&self.src[first_start..index]).unwrap_or("");
+        if Self::word_rejects_at_path_compound(first) {
+            return None;
+        }
+        let mut dotted = String::new();
+        dotted.push_str(first);
+        loop {
+            if index >= self.src.len() || self.src[index] != b'.' {
+                break;
+            }
+            let after_dot = index + 1;
+            if after_dot >= self.src.len()
+                || !matches!(
+                    self.src[after_dot],
+                    b'a'..=b'z' | b'A'..=b'Z' | b'_'
+                )
+            {
+                break;
+            }
+            let seg_start = after_dot;
+            let seg_end = self.scan_ident_run(seg_start);
+            if seg_end == seg_start {
+                break;
+            }
+            let seg = std::str::from_utf8(&self.src[seg_start..seg_end]).unwrap_or("");
+            dotted.push('.');
+            dotted.push_str(seg);
+            index = seg_end;
+        }
+        self.pos = index;
+        let token = if dont_infer {
+            Token::AtDontInferPath(dotted)
+        } else {
+            Token::AtTypesOnlyPath(dotted)
+        };
+        Some(Ok((start, token, self.pos)))
+    }
+
     fn next_regular(&mut self) -> Option<LexResult> {
         loop {
             if self.pos >= self.src.len() {
@@ -957,6 +1103,15 @@ impl<'a> XmlAwareLexer<'a> {
                 return Some(self.scan_ident(start));
             }
 
+            // `@` / `@@` + dotted path (`urweb.grm` `AT`/`AT AT` on `path`/`cpath`); otherwise bare `@`.
+            if b == b'@' {
+                if let Some(found) = self.scan_at_inference_path(start) {
+                    return Some(found);
+                }
+                self.pos += 1;
+                return Some(Ok((start, Token::At, self.pos)));
+            }
+
             // Single-char punctuation
             self.pos += 1;
             let tok = match b {
@@ -980,7 +1135,6 @@ impl<'a> XmlAwareLexer<'a> {
                 b'-' => Token::Minus,
                 b'/' => Token::Divide,
                 b'%' => Token::Mod,
-                b'@' => Token::At,
                 b'<' => Token::Lt,
                 b'`' => {
                     // Backtick path
@@ -1073,9 +1227,12 @@ impl<'a> XmlAwareLexer<'a> {
             }
         }
         let word = std::str::from_utf8(&self.src[start..self.pos]).unwrap_or("_");
-        // Emit WildAnnot when `_` (exactly) is immediately followed by `::` (not `:::`)
+        // `_` (exactly) has special handling: WildAnnot when immediately followed by `::` (not `:::`),
+        // Under when not followed by `::`. This ensures wildcard patterns and wildcard type-constructor
+        // references both get the right token so grammar rules like `"_" => Con::Wild(...)` fire.
         if word == "_" {
             let mut peek = self.pos;
+            // Skip whitespace to look ahead for `::`.
             while peek < self.src.len() && matches!(self.src[peek], b' ' | b'\t' | b'\r' | b'\n') {
                 peek += 1;
             }
@@ -1084,9 +1241,13 @@ impl<'a> XmlAwareLexer<'a> {
                 && self.src[peek + 1] == b':'
                 && self.src.get(peek + 2).copied() != Some(b':')
             {
+                // Consume the `::` and emit a WildAnnot token for `[_ :: K]` patterns.
                 self.pos = peek + 2;
                 return Ok((start, Token::WildAnnot, self.pos));
             }
+            // No `::` follows: emit Under so grammar rules for wildcard (`Con::Wild`, `Pat::Var("_")`)
+            // fire rather than treating `_` as an unbound identifier.
+            return Ok((start, Token::Under, self.pos));
         }
         let tok = match word {
             "and" => Token::And,
@@ -1154,6 +1315,7 @@ impl<'a> XmlAwareLexer<'a> {
         Ok((start, tok, self.pos))
     }
 
+    /// Pull the next token while lexing an XML literal region (not tag attributes).
     fn next_xml(&mut self) -> Option<LexResult> {
         loop {
             if self.pos >= self.src.len() {
@@ -1178,92 +1340,81 @@ impl<'a> XmlAwareLexer<'a> {
                 continue;
             }
 
-            let b = self.src[self.pos];
+            let current_byte = self.src[self.pos];
 
-            // Newline → NOTAGS("\n")
-            if b == b'\n' {
-                self.pos += 1;
-                return Some(Ok((start, Token::Notags("\n".to_string()), self.pos)));
-            }
-
-            // `</xmlid>` → EndTag
-            if b == b'<' && self.at(1) == Some(b'/') {
-                let id_start = self.pos + 2;
-                let id_end = self.scan_xml_id(id_start);
-                if id_end > id_start && self.at(id_end - self.pos) == Some(b'>') {
-                    let name = std::str::from_utf8(&self.src[id_start..id_end])
-                        .unwrap_or("")
-                        .to_string();
-                    self.pos = id_end + 1;
-                    // If closing </xml> at depth 0, return to Regular mode
-                    if name == "xml" {
-                        if self.xml_nesting > 0 {
-                            self.xml_nesting -= 1;
-                        } else {
-                            self.mode = LexMode::Regular;
+            match current_byte {
+                b'\n' => {
+                    self.pos += 1;
+                    return Some(Ok((start, Token::Notags("\n".to_string()), self.pos)));
+                }
+                b'<' => {
+                    // `</id>` end tag vs `<id` begin tag vs bare `<`
+                    if self.at(1) == Some(b'/') {
+                        let id_start = self.pos + 2;
+                        let id_end = self.scan_xml_id(id_start);
+                        if id_end > id_start && self.at(id_end - self.pos) == Some(b'>') {
+                            let name = std::str::from_utf8(&self.src[id_start..id_end])
+                                .unwrap_or("")
+                                .to_string();
+                            self.pos = id_end + 1;
+                            if name == "xml" {
+                                if self.xml_nesting > 0 {
+                                    self.xml_nesting -= 1;
+                                } else {
+                                    self.mode = LexMode::Regular;
+                                }
+                            }
+                            return Some(Ok((start, Token::EndTag(name), self.pos)));
                         }
                     }
-                    return Some(Ok((start, Token::EndTag(name), self.pos)));
-                }
-            }
-
-            // `<xmlid` → BeginTag, switch to XmlTag
-            if b == b'<' {
-                let id_start = self.pos + 1;
-                let id_end = self.scan_xml_id(id_start);
-                if id_end > id_start {
-                    let name = std::str::from_utf8(&self.src[id_start..id_end])
-                        .unwrap_or("")
-                        .to_string();
-                    self.pos = id_end;
-                    self.mode = LexMode::XmlTag;
-                    // Track nested <xml> tags so we know when </xml> exits to Regular
-                    if name == "xml" {
-                        self.pending_xml_open = true;
+                    let id_start = self.pos + 1;
+                    let id_end = self.scan_xml_id(id_start);
+                    if id_end > id_start {
+                        let name = std::str::from_utf8(&self.src[id_start..id_end])
+                            .unwrap_or("")
+                            .to_string();
+                        self.pos = id_end;
+                        self.mode = LexMode::XmlTag;
+                        if name == "xml" {
+                            self.pending_xml_open = true;
+                        }
+                        return Some(Ok((start, Token::BeginTag(name), self.pos)));
                     }
-                    return Some(Ok((start, Token::BeginTag(name), self.pos)));
+                    self.pos += 1;
+                    return Some(Ok((start, Token::Notags("<".to_string()), self.pos)));
                 }
-                // bare `<` — treat as NOTAGS
-                self.pos += 1;
-                return Some(Ok((start, Token::Notags("<".to_string()), self.pos)));
-            }
-
-            // `{` → Lbrace, push XML return, switch to Regular
-            if b == b'{' {
-                self.pos += 1;
-                self.brace_stack.push((LexMode::Xml, 1));
-                self.mode = LexMode::Regular;
-                return Some(Ok((start, Token::Lbrace, self.pos)));
-            }
-
-            // `(` — check if start of comment or just literal text
-            if b == b'(' {
-                self.pos += 1;
-                return Some(Ok((start, Token::Notags("(".to_string()), self.pos)));
-            }
-
-            // Text content (everything except `<`, `{`, `\n`, `(`)
-            let text_start = self.pos;
-            while self.pos < self.src.len() {
-                let c = self.src[self.pos];
-                if c == b'<' || c == b'{' || c == b'\n' || c == b'(' {
-                    break;
+                b'{' => {
+                    self.pos += 1;
+                    self.brace_stack.push((LexMode::Xml, 1));
+                    self.mode = LexMode::Regular;
+                    return Some(Ok((start, Token::Lbrace, self.pos)));
                 }
-                self.pos += 1;
+                b'(' => {
+                    self.pos += 1;
+                    return Some(Ok((start, Token::Notags("(".to_string()), self.pos)));
+                }
+                _ => {
+                    let text_start = self.pos;
+                    while self.pos < self.src.len() {
+                        let c = self.src[self.pos];
+                        if c == b'<' || c == b'{' || c == b'\n' || c == b'(' {
+                            break;
+                        }
+                        self.pos += 1;
+                    }
+                    if self.pos > text_start {
+                        let text = std::str::from_utf8(&self.src[text_start..self.pos])
+                            .unwrap_or("")
+                            .to_string();
+                        return Some(Ok((text_start, Token::Notags(text), self.pos)));
+                    }
+                    self.pos += 1;
+                    return Some(Err(LexError::new(format!(
+                        "Illegal XML character '{}' at offset {}",
+                        current_byte as char, start
+                    ))));
+                }
             }
-            if self.pos > text_start {
-                let text = std::str::from_utf8(&self.src[text_start..self.pos])
-                    .unwrap_or("")
-                    .to_string();
-                return Some(Ok((text_start, Token::Notags(text), self.pos)));
-            }
-
-            // Unexpected character
-            self.pos += 1;
-            return Some(Err(LexError::new(format!(
-                "Illegal XML character '{}' at offset {}",
-                b as char, start
-            ))));
         }
     }
 
@@ -1442,6 +1593,28 @@ mod tests {
         );
         let id = format!("{}", Token::Ident("counter".into()));
         assert!(id.contains("counter"), "{id}");
+    }
+
+    #[test]
+    fn xml_aware_lexer_fuses_at_inference_paths() {
+        let toks = tokenize_xml_aware("@@x @y @Foo.bar").expect("lex");
+        assert_eq!(toks.len(), 3);
+        assert_eq!(toks[0].1, Token::AtDontInferPath("x".into()));
+        assert_eq!(toks[1].1, Token::AtTypesOnlyPath("y".into()));
+        assert_eq!(toks[2].1, Token::AtTypesOnlyPath("Foo.bar".into()));
+    }
+
+    #[test]
+    fn xml_aware_lexer_at_before_keyword_does_not_fuse() {
+        let toks = tokenize_xml_aware("@fn @ x").expect("lex");
+        assert!(
+            matches!(&toks[0].1, Token::At),
+            "expected bare `@` before keyword `fn`, got {:?}",
+            toks[0].1
+        );
+        assert_eq!(toks[1].1, Token::Fn);
+        assert_eq!(toks[2].1, Token::At);
+        assert_eq!(toks[3].1, Token::Ident("x".into()));
     }
 
     #[test]
