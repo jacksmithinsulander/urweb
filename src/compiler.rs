@@ -2574,7 +2574,7 @@ mod tests {
     #[test]
     #[ignore = "lib/ur boot elab still reports type errors (~200+); un-ignore when boot histogram hits 0"]
     fn elaborate_demo_sum_elaborates_after_boot_parity() {
-        const STACK: usize = 32 * 1024 * 1024;
+        const STACK: usize = crate::COMPILE_THREAD_STACK_BYTES; // boot + demo elaboration depth
         std::thread::Builder::new()
             .name("elaborate_demo_sum_large_stack".into())
             .stack_size(STACK)

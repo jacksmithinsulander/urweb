@@ -467,16 +467,15 @@ fn rename_str(st: &St, ls: expl::LocatedStructure) -> expl::LocatedStructure {
 // ---------------------------------------------------------------------------
 
 fn from_arity(n: usize, loc: &Span) -> expl::LocatedKind {
-    if n == 0 {
-        Located::new(expl::Kind::Type, loc.clone())
-    } else {
-        Located::new(
+    match n == 0 {
+        true => Located::new(expl::Kind::Type, loc.clone()),
+        false => Located::new(
             expl::Kind::Arrow(
                 Box::new(Located::new(expl::Kind::Type, loc.clone())),
                 Box::new(from_arity(n - 1, loc)),
             ),
             loc.clone(),
-        )
+        ),
     }
 }
 
@@ -927,10 +926,9 @@ pub fn rename(
                     matches!(&d.node,
                     expl::Declaration::Structure(x, _, _, _) if x == &formal_name_munged)
                 });
-                if clashes {
-                    formal_name_munged = format!("?{}", formal_name_munged);
-                } else {
-                    break;
+                match clashes {
+                    true => formal_name_munged = format!("?{}", formal_name_munged),
+                    false => break,
                 }
             }
 

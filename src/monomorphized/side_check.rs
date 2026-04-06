@@ -12,6 +12,9 @@ use crate::monomorphized::{Decl, Exp, File, LocExp, Sidedness};
 use crate::primitives::Prim;
 use crate::settings::Settings;
 
+/// Maximum recursive depth for [`check_exp`] (stack / pathological IR guard; Power-of-Ten style cap).
+const MAX_CHECK_EXP_DEPTH: usize = 500_000;
+
 /// Maps an FFI path component to the string inserted into `SideServerCallsClientOnlyFfi` templates.
 ///
 /// # Returns
@@ -80,13 +83,20 @@ fn warn_getenv_name_not_compile_time_string(
 // ---------------------------------------------------------------------------
 
 /// Recursively visits `e`, reporting client-only FFI misuse and collecting static `getenv` names.
+///
+/// `recursion_depth` increases on each recursive descent and is capped at [`MAX_CHECK_EXP_DEPTH`].
 fn check_exp(
     e: &LocExp,
+    recursion_depth: usize,
     settings: &Settings,
     errors: &mut ErrorReporter,
     env_vars: &mut HashSet<String>,
     warned_dynamic: &mut bool,
 ) {
+    if recursion_depth > MAX_CHECK_EXP_DEPTH {
+        panic!("side_check::check_exp exceeded recursion depth cap {MAX_CHECK_EXP_DEPTH}");
+    }
+    let next_depth = recursion_depth + 1;
     match &e.node {
         // Client-side code boundary: do not recurse inside
         Exp::JavaScript(_, _) => {}
@@ -130,7 +140,7 @@ fn check_exp(
                 }
             }
             for (a, _) in args {
-                check_exp(a, settings, errors, env_vars, warned_dynamic);
+                check_exp(a, next_depth, settings, errors, env_vars, warned_dynamic);
             }
         }
 
@@ -139,12 +149,21 @@ fn check_exp(
 
         // Recursive cases
         Exp::App(f, arg) => {
-            check_exp(f, settings, errors, env_vars, warned_dynamic);
-            check_exp(arg, settings, errors, env_vars, warned_dynamic);
+            check_exp(f, next_depth, settings, errors, env_vars, warned_dynamic);
+            check_exp(arg, next_depth, settings, errors, env_vars, warned_dynamic);
         }
-        Exp::Abs(_, _, _, body) => check_exp(body, settings, errors, env_vars, warned_dynamic),
+        Exp::Abs(_, _, _, body) => {
+            check_exp(body, next_depth, settings, errors, env_vars, warned_dynamic)
+        }
         Exp::Con(_, _, Some(inner)) | Exp::Some(_, inner) => {
-            check_exp(inner, settings, errors, env_vars, warned_dynamic);
+            check_exp(
+                inner,
+                next_depth,
+                settings,
+                errors,
+                env_vars,
+                warned_dynamic,
+            );
         }
         Exp::Unop(_, inner)
         | Exp::Write(inner)
@@ -154,7 +173,14 @@ fn check_exp(
         | Exp::Sleep(inner)
         | Exp::Spawn(inner)
         | Exp::Nextval(inner) => {
-            check_exp(inner, settings, errors, env_vars, warned_dynamic);
+            check_exp(
+                inner,
+                next_depth,
+                settings,
+                errors,
+                env_vars,
+                warned_dynamic,
+            );
         }
         Exp::Binop(_, _, e1, e2)
         | Exp::Seq(e1, e2)
@@ -162,18 +188,18 @@ fn check_exp(
         | Exp::Let(_, _, e1, e2)
         | Exp::SignalBind(e1, e2)
         | Exp::Setval(e1, e2) => {
-            check_exp(e1, settings, errors, env_vars, warned_dynamic);
-            check_exp(e2, settings, errors, env_vars, warned_dynamic);
+            check_exp(e1, next_depth, settings, errors, env_vars, warned_dynamic);
+            check_exp(e2, next_depth, settings, errors, env_vars, warned_dynamic);
         }
         Exp::Record(xets) => {
             for (_, a, _) in xets {
-                check_exp(a, settings, errors, env_vars, warned_dynamic);
+                check_exp(a, next_depth, settings, errors, env_vars, warned_dynamic);
             }
         }
         Exp::Case(disc, arms, _) => {
-            check_exp(disc, settings, errors, env_vars, warned_dynamic);
+            check_exp(disc, next_depth, settings, errors, env_vars, warned_dynamic);
             for (_, ae) in arms {
-                check_exp(ae, settings, errors, env_vars, warned_dynamic);
+                check_exp(ae, next_depth, settings, errors, env_vars, warned_dynamic);
             }
         }
         Exp::Error(inner, _)
@@ -182,24 +208,59 @@ fn check_exp(
         | Exp::Recv(inner, _)
         | Exp::ServerCall(inner, _, _, _)
         | Exp::Dml(inner, _) => {
-            check_exp(inner, settings, errors, env_vars, warned_dynamic);
+            check_exp(
+                inner,
+                next_depth,
+                settings,
+                errors,
+                env_vars,
+                warned_dynamic,
+            );
         }
         Exp::ReturnBlob {
             blob, mime_type, ..
         } => {
             if let Some(b) = blob {
-                check_exp(b, settings, errors, env_vars, warned_dynamic);
+                check_exp(b, next_depth, settings, errors, env_vars, warned_dynamic);
             }
-            check_exp(mime_type, settings, errors, env_vars, warned_dynamic);
+            check_exp(
+                mime_type,
+                next_depth,
+                settings,
+                errors,
+                env_vars,
+                warned_dynamic,
+            );
         }
         Exp::Query(qm) => {
-            check_exp(&qm.query, settings, errors, env_vars, warned_dynamic);
-            check_exp(&qm.body, settings, errors, env_vars, warned_dynamic);
-            check_exp(&qm.initial, settings, errors, env_vars, warned_dynamic);
+            check_exp(
+                &qm.query,
+                next_depth,
+                settings,
+                errors,
+                env_vars,
+                warned_dynamic,
+            );
+            check_exp(
+                &qm.body,
+                next_depth,
+                settings,
+                errors,
+                env_vars,
+                warned_dynamic,
+            );
+            check_exp(
+                &qm.initial,
+                next_depth,
+                settings,
+                errors,
+                env_vars,
+                warned_dynamic,
+            );
         }
         Exp::Closure(_, envs) => {
             for a in envs {
-                check_exp(a, settings, errors, env_vars, warned_dynamic);
+                check_exp(a, next_depth, settings, errors, env_vars, warned_dynamic);
             }
         }
     }
@@ -231,7 +292,7 @@ pub fn check(file: File, settings: &Settings, errors: &mut ErrorReporter) -> (Fi
         match &d.node {
             Decl::Val(_, n, _, e, _) => {
                 if !client_ids.contains(n) {
-                    check_exp(e, settings, errors, &mut env_vars, &mut warned_dynamic);
+                    check_exp(e, 0, settings, errors, &mut env_vars, &mut warned_dynamic);
                 }
             }
             Decl::ValRec(vis) => {
@@ -241,7 +302,7 @@ pub fn check(file: File, settings: &Settings, errors: &mut ErrorReporter) -> (Fi
                     true => {}
                     false => {
                         for (_, _, _, e, _) in vis {
-                            check_exp(e, settings, errors, &mut env_vars, &mut warned_dynamic);
+                            check_exp(e, 0, settings, errors, &mut env_vars, &mut warned_dynamic);
                         }
                     }
                 }

@@ -4,6 +4,9 @@
 //! functions, distributes `EWrite` into `EStrcat`/`ECase`/`ELet`, etc.
 //!
 //! Mirrors `mono_opt.sml`.
+//!
+//! SQL string scanners (`un_as`, `uwify_inner`, `uwify_viewify`) use bounded `for` loops over index
+//! space (`0..chars.len()`) with a moving cursor `i`, so work stays linear in the UTF-32 scalar count.
 
 use std::cell::RefCell;
 
@@ -229,63 +232,84 @@ fn check_css_url(s: &str) -> bool {
 fn check_property(s: &str) -> bool {
     let nmstart = |c: char| c.is_alphabetic() || c == '_';
     let nmchar = |c: char| c.is_alphabetic() || c.is_ascii_digit() || c == '_' || c == '-';
-    if s.is_empty() {
-        return false;
+    match s.chars().next() {
+        None => false,
+        Some(first) => {
+            let rest_ok = s.chars().all(nmchar);
+            rest_ok && (nmstart(first) || (first == '-' && s.chars().nth(1).is_some_and(nmstart)))
+        }
     }
-    let Some(first) = s.chars().next() else {
-        return false;
-    };
-    let rest_ok = s.chars().all(nmchar);
-    rest_ok && (nmstart(first) || (first == '-' && s.chars().nth(1).is_some_and(nmstart)))
 }
 
 // ---------------------------------------------------------------------------
 // SQL string helpers
 // ---------------------------------------------------------------------------
 
+/// Copy characters inside a SQL single-quoted literal: `i` is just after the opening `'`;
+/// on return `i` sits after the closing `'` or at `chars.len()` if EOF before close.
+fn copy_sql_single_quoted_literal(chars: &[char], i: &mut usize, out: &mut Vec<char>) {
+    for _ in 0..chars.len() {
+        if *i >= chars.len() {
+            break;
+        }
+        let double_backslash = chars[*i] == '\\' && *i + 1 < chars.len() && chars[*i + 1] == '\\';
+        let escaped_quote = chars[*i] == '\\' && *i + 1 < chars.len() && chars[*i + 1] == '\'';
+        let close_quote = chars[*i] == '\'';
+        match (double_backslash, escaped_quote, close_quote) {
+            (true, _, _) => {
+                out.push('\\');
+                out.push('\\');
+                *i += 2;
+            }
+            (false, true, _) => {
+                out.push('\\');
+                out.push('\'');
+                *i += 2;
+            }
+            (false, false, true) => {
+                out.push('\'');
+                *i += 1;
+                break;
+            }
+            (false, false, false) => {
+                out.push(chars[*i]);
+                *i += 1;
+            }
+        }
+    }
+}
+
 /// Strip `T_T.` table-alias prefixes from SQL strings, handling quoted strings.
 fn un_as(s: &str) -> String {
     let chars: Vec<char> = s.chars().collect();
     let mut out = Vec::new();
-    let mut i = 0;
-    while i < chars.len() {
-        if i + 3 < chars.len()
+    let mut i = 0usize;
+    let scan_budget = chars.len();
+    for _ in 0..scan_budget {
+        if i >= chars.len() {
+            break;
+        }
+        let t_t_dot = i + 3 < chars.len()
             && chars[i] == 'T'
             && chars[i + 1] == '_'
             && chars[i + 2] == 'T'
-            && chars[i + 3] == '.'
-        {
-            i += 4;
-        } else if chars[i] == '\'' {
-            out.push('\'');
-            i += 1;
-            // string literal — copy until closing quote (handle escapes)
-            loop {
-                if i >= chars.len() {
-                    break;
-                }
-                if chars[i] == '\\' && i + 1 < chars.len() && chars[i + 1] == '\\' {
-                    out.push('\\');
-                    out.push('\\');
-                    i += 2;
-                } else if chars[i] == '\\' && i + 1 < chars.len() && chars[i + 1] == '\'' {
-                    out.push('\\');
-                    out.push('\'');
-                    i += 2;
-                } else if chars[i] == '\'' {
-                    out.push('\'');
-                    i += 1;
-                    break;
-                } else {
-                    out.push(chars[i]);
-                    i += 1;
-                }
+            && chars[i + 3] == '.';
+        match (t_t_dot, chars[i] == '\'') {
+            (true, _) => {
+                i += 4;
             }
-        } else {
-            out.push(chars[i]);
-            i += 1;
+            (false, true) => {
+                out.push('\'');
+                i += 1;
+                copy_sql_single_quoted_literal(&chars, &mut i, &mut out);
+            }
+            (false, false) => {
+                out.push(chars[i]);
+                i += 1;
+            }
         }
     }
+    debug_assert!(i == chars.len(), "un_as: must consume entire slice");
     out.into_iter().collect()
 }
 
@@ -293,57 +317,43 @@ fn un_as(s: &str) -> String {
 /// (for `checkString`).
 fn uwify_check_string(s: &str) -> String {
     let chars: Vec<char> = s.chars().collect();
-    let prefix = match chars.first() == Some(&'_') {
-        true => "uw_",
-        false => "",
-    };
-    let start = match chars.first() == Some(&'_') {
-        true => 1,
-        false => 0,
+    let (prefix, start) = match chars.first() {
+        Some(&'_') => ("uw_", 1usize),
+        _ => ("", 0usize),
     };
     let body = uwify_inner(&chars[start..]);
     format!("{}{}", prefix, body)
 }
 
+/// Apply `_` → `uw_` rewrites inside parentheses / after spaces; skips single-quoted literals.
 fn uwify_inner(chars: &[char]) -> String {
     let mut out = Vec::new();
-    let mut i = 0;
-    while i < chars.len() {
-        // `( _` → `(uw_`, ` _` → ` uw_`
-        if i + 1 < chars.len() && (chars[i] == '(' || chars[i] == ' ') && chars[i + 1] == '_' {
-            out.push(chars[i]);
-            out.extend("uw_".chars());
-            i += 2;
-        } else if chars[i] == '\'' {
-            out.push('\'');
-            i += 1;
-            // skip string literal
-            loop {
-                if i >= chars.len() {
-                    break;
-                }
-                if chars[i] == '\\' && i + 1 < chars.len() && chars[i + 1] == '\\' {
-                    out.push('\\');
-                    out.push('\\');
-                    i += 2;
-                } else if chars[i] == '\\' && i + 1 < chars.len() && chars[i + 1] == '\'' {
-                    out.push('\\');
-                    out.push('\'');
-                    i += 2;
-                } else if chars[i] == '\'' {
-                    out.push('\'');
-                    i += 1;
-                    break;
-                } else {
-                    out.push(chars[i]);
-                    i += 1;
-                }
+    let mut i = 0usize;
+    let scan_budget = chars.len();
+    for _ in 0..scan_budget {
+        if i >= chars.len() {
+            break;
+        }
+        let paren_or_space_underscore =
+            i + 1 < chars.len() && (chars[i] == '(' || chars[i] == ' ') && chars[i + 1] == '_';
+        match (paren_or_space_underscore, chars[i] == '\'') {
+            (true, _) => {
+                out.push(chars[i]);
+                out.extend("uw_".chars());
+                i += 2;
             }
-        } else {
-            out.push(chars[i]);
-            i += 1;
+            (false, true) => {
+                out.push('\'');
+                i += 1;
+                copy_sql_single_quoted_literal(chars, &mut i, &mut out);
+            }
+            (false, false) => {
+                out.push(chars[i]);
+                i += 1;
+            }
         }
     }
+    debug_assert!(i == chars.len(), "uwify_inner: must consume entire slice");
     out.into_iter().collect()
 }
 
@@ -351,46 +361,34 @@ fn uwify_inner(chars: &[char]) -> String {
 fn uwify_viewify(s: &str) -> String {
     let chars: Vec<char> = s.chars().collect();
     let mut out = Vec::new();
-    let mut i = 0;
-    while i < chars.len() {
-        // `A S   _` pattern
-        if i + 4 < chars.len()
+    let mut i = 0usize;
+    let scan_budget = chars.len();
+    for _ in 0..scan_budget {
+        if i >= chars.len() {
+            break;
+        }
+        let as_space_underscore = i + 4 < chars.len()
             && chars[i] == 'A'
             && chars[i + 1] == 'S'
             && chars[i + 2] == ' '
-            && chars[i + 3] == '_'
-        {
-            out.extend("AS uw_".chars());
-            i += 4;
-        } else if chars[i] == '\'' {
-            out.push('\'');
-            i += 1;
-            loop {
-                if i >= chars.len() {
-                    break;
-                }
-                if chars[i] == '\\' && i + 1 < chars.len() && chars[i + 1] == '\\' {
-                    out.push('\\');
-                    out.push('\\');
-                    i += 2;
-                } else if chars[i] == '\\' && i + 1 < chars.len() && chars[i + 1] == '\'' {
-                    out.push('\\');
-                    out.push('\'');
-                    i += 2;
-                } else if chars[i] == '\'' {
-                    out.push('\'');
-                    i += 1;
-                    break;
-                } else {
-                    out.push(chars[i]);
-                    i += 1;
-                }
+            && chars[i + 3] == '_';
+        match (as_space_underscore, chars[i] == '\'') {
+            (true, _) => {
+                out.extend("AS uw_".chars());
+                i += 4;
             }
-        } else {
-            out.push(chars[i]);
-            i += 1;
+            (false, true) => {
+                out.push('\'');
+                i += 1;
+                copy_sql_single_quoted_literal(&chars, &mut i, &mut out);
+            }
+            (false, false) => {
+                out.push(chars[i]);
+                i += 1;
+            }
         }
     }
+    debug_assert!(i == chars.len(), "uwify_viewify: must consume entire slice");
     out.into_iter().collect()
 }
 

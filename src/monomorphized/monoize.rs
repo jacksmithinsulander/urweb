@@ -1160,14 +1160,15 @@ const MAX_PEEL_CAPP_DEPTH: usize = 65_536;
 fn peel_capp(e: &LocatedExpression) -> (&LocatedExpression, Vec<&LocatedConstructor>) {
     let mut inner = e;
     let mut args = Vec::new();
-    let mut depth = 0usize;
-    while let CE::CApp(inner_e, c) = &inner.node {
-        if depth >= MAX_PEEL_CAPP_DEPTH {
-            panic!("peel_capp exceeded {MAX_PEEL_CAPP_DEPTH} (internal limit)");
-        }
-        depth += 1;
+    for _peel_step in 0..MAX_PEEL_CAPP_DEPTH {
+        let CE::CApp(inner_e, c) = &inner.node else {
+            break;
+        };
         args.push(c as &LocatedConstructor);
         inner = inner_e;
+    }
+    if matches!(&inner.node, CE::CApp(..)) {
+        panic!("peel_capp exceeded {MAX_PEEL_CAPP_DEPTH} (internal limit)");
     }
     // args is [outermost_type_arg, ..., innermost_type_arg] — reverse so [0] = first applied
     args.reverse();

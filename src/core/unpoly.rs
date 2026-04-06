@@ -477,13 +477,10 @@ fn trim_iter(
             let e_new = sub_con_in_exp(depth, carg, *e_body);
             trim_iter(t_new, e_new, remaining)
         }
-        _ => {
-            if cargs.is_empty() {
-                Some((t, e))
-            } else {
-                None
-            }
-        }
+        _ => match cargs.is_empty() {
+            true => Some((t, e)),
+            false => None,
+        },
     }
 }
 
@@ -1038,14 +1035,15 @@ const MAX_COLLECT_CABS_KINDS_DEPTH: usize = 65_536;
 fn collect_cabs_kinds(e: &LocatedExpression) -> Vec<LocatedKind> {
     let mut kinds = Vec::new();
     let mut cur = e;
-    let mut steps = 0usize;
-    while let Expression::CAbs(_, k, body) = &cur.node {
-        if steps >= MAX_COLLECT_CABS_KINDS_DEPTH {
-            panic!("collect_cabs_kinds exceeded {MAX_COLLECT_CABS_KINDS_DEPTH} (internal limit)");
-        }
-        steps += 1;
+    for _binder_step in 0..MAX_COLLECT_CABS_KINDS_DEPTH {
+        let Expression::CAbs(_, k, body) = &cur.node else {
+            break;
+        };
         kinds.push(*k.clone());
         cur = body;
+    }
+    if matches!(&cur.node, Expression::CAbs(..)) {
+        panic!("collect_cabs_kinds exceeded {MAX_COLLECT_CABS_KINDS_DEPTH} (internal limit)");
     }
     kinds
 }

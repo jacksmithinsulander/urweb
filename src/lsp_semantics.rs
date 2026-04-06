@@ -42,11 +42,17 @@ pub fn word_at_cursor(text: &str, line0: u32, col0: u32) -> Option<String> {
         return None;
     }
     let mut start = col;
-    while start > 0 && is_ident_char(chars[start - 1]) {
+    for _ in 0..col {
+        if start == 0 || !is_ident_char(chars[start - 1]) {
+            break;
+        }
         start -= 1;
     }
     let mut end = col;
-    while end < chars.len() {
+    for _ in 0..chars.len() {
+        if end >= chars.len() {
+            break;
+        }
         if is_ident_char(chars[end]) {
             end += 1;
             continue;
@@ -456,7 +462,11 @@ pub fn document_highlights(text: &str, line: u32, character: u32) -> Vec<Range> 
     let mut ranges = Vec::new();
     for (i, l) in text.lines().enumerate() {
         let mut start = 0usize;
-        while let Some(pos) = find_word(l, &simple, start) {
+        let line_scan_budget = l.len().saturating_add(1);
+        for _ in 0..line_scan_budget {
+            let Some(pos) = find_word(l, &simple, start) else {
+                break;
+            };
             ranges.push(Range {
                 start: Position::new(i as u32, pos as u32),
                 end: Position::new(i as u32, (pos + simple.len()) as u32),
@@ -471,14 +481,8 @@ fn find_word(hay: &str, needle: &str, mut start_byte: usize) -> Option<usize> {
     if needle.is_empty() {
         return None;
     }
-    let mut rounds = 0usize;
     let round_limit = hay.len().saturating_add(1);
-    loop {
-        if rounds > round_limit {
-            debug_assert!(false, "find_word iteration bound exceeded");
-            return None;
-        }
-        rounds += 1;
+    for _ in 0..round_limit {
         let h = hay.get(start_byte..)?;
         let idx = h.find(needle)?;
         let abs = start_byte + idx;
@@ -499,6 +503,8 @@ fn find_word(hay: &str, needle: &str, mut start_byte: usize) -> Option<usize> {
         }
         return Some(abs);
     }
+    debug_assert!(false, "find_word iteration bound exceeded");
+    None
 }
 
 /// Document outline: value bindings in `file_key` when elaboration is present.
@@ -668,11 +674,17 @@ pub fn prepare_rename(text: &str, line: u32, character: u32) -> Option<Range> {
     let chars: Vec<char> = l.chars().collect();
     let col = character as usize;
     let mut start = col;
-    while start > 0 && is_ident_char(chars[start - 1]) {
+    for _ in 0..col {
+        if start == 0 || !is_ident_char(chars[start - 1]) {
+            break;
+        }
         start -= 1;
     }
     let mut end = col;
-    while end < chars.len() && is_ident_char(chars[end]) {
+    for _ in 0..chars.len() {
+        if end >= chars.len() || !is_ident_char(chars[end]) {
+            break;
+        }
         end += 1;
     }
     if chars.get(start..end).map(|s| s.iter().collect::<String>()) != Some(simple.clone()) {
@@ -717,11 +729,17 @@ pub fn signature_help(
     let prefix = l.get(..col - 1)?;
     let chars: Vec<char> = prefix.chars().collect();
     let mut pos = chars.len();
-    while pos > 0 && chars[pos - 1].is_ascii_whitespace() {
+    for _ in 0..chars.len() {
+        if pos == 0 || !chars[pos - 1].is_ascii_whitespace() {
+            break;
+        }
         pos -= 1;
     }
     let mut start = pos;
-    while start > 0 && is_ident_char(chars[start - 1]) {
+    for _ in 0..pos {
+        if start == 0 || !is_ident_char(chars[start - 1]) {
+            break;
+        }
         start -= 1;
     }
     let fname: String = chars[start..pos].iter().collect();
@@ -940,13 +958,20 @@ pub fn folding_ranges_with_analysis(
 pub fn folding_ranges(text: &str) -> Vec<FoldingRange> {
     let mut out = Vec::new();
     let lines: Vec<&str> = text.lines().collect();
+    let line_count = lines.len();
     let mut i = 0usize;
-    while i < lines.len() {
+    for _ in 0..line_count {
+        if i >= lines.len() {
+            break;
+        }
         let t = lines[i].trim_start();
         if t.starts_with("fun ") || t.starts_with("val ") {
             let start_line = i as u32;
             let mut j = i + 1;
-            while j < lines.len() {
+            for _ in 0..line_count {
+                if j >= lines.len() {
+                    break;
+                }
                 let t2 = lines[j].trim_start();
                 if t2.starts_with("fun ") || t2.starts_with("val ") {
                     break;

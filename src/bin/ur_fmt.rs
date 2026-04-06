@@ -10,6 +10,18 @@ use ur::cli_common::{self, cli_diagnostic_text, diagnostic_locale_for_cli, write
 use ur::diagnostics::DiagnosticId;
 use ur::error_types::{format_compile_error_for_terminal, CompileError};
 
+/// Pop the next argv token when a flag needs an adjacent value (`-t 8`, …).
+fn take_fmt_cli_argument(arguments: &[String], index: &mut usize) -> Option<String> {
+    match *index < arguments.len() {
+        true => {
+            let token = arguments[*index].clone();
+            *index += 1;
+            Some(token)
+        }
+        false => None,
+    }
+}
+
 /// Print each [`CompileError`] to standard error using the project locale when known.
 fn print_errors(errors: &[CompileError], locale: ur::diagnostics::DiagnosticLocale) {
     for compile_error in errors {
@@ -26,9 +38,11 @@ fn fmt_command(args: &[String]) -> i32 {
     let mut check_mode = false;
     let mut tab_width: usize = 4;
     let mut files: Vec<String> = vec![];
-    let mut args_iter = args.iter();
     let default_locale = diagnostic_locale_for_cli(None);
-    while let Some(arg) = args_iter.next() {
+    let mut argument_index = 0usize;
+    while argument_index < args.len() {
+        let arg = &args[argument_index];
+        argument_index += 1;
         let (flag, opt_val) = if let Some(eq) = arg.find('=') {
             let (head, tail) = arg.split_at(eq);
             (head, Some(tail[1..].to_string()))
@@ -48,7 +62,7 @@ fn fmt_command(args: &[String]) -> i32 {
             }
             "-t" | "--tab" => {
                 if let Some(width) = opt_val
-                    .or_else(|| args_iter.next().cloned())
+                    .or_else(|| take_fmt_cli_argument(args, &mut argument_index))
                     .and_then(|token| token.parse::<usize>().ok())
                 {
                     tab_width = width;
@@ -56,7 +70,7 @@ fn fmt_command(args: &[String]) -> i32 {
             }
             "-w" | "--width" => {
                 let _ = opt_val
-                    .or_else(|| args_iter.next().cloned())
+                    .or_else(|| take_fmt_cli_argument(args, &mut argument_index))
                     .and_then(|token| token.parse::<u32>().ok());
             }
             candidate if cli_common::is_file_arg(candidate) => {

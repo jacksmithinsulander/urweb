@@ -6,6 +6,7 @@
 //!
 //! The public entry point is `js_compile`.
 
+use std::cell::Cell;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::datatype_kind::DatatypeKind;
@@ -24,6 +25,36 @@ use crate::settings::{FailureMode, Settings};
 
 #[derive(Debug, Clone, Copy)]
 struct CantEmbed;
+
+/// Caps nested [`js_e`] calls so a pathological Mono expression cannot exhaust the stack.
+const MAX_JS_E_RECURSION_DEPTH: usize = 500_000;
+
+thread_local! {
+    static JS_E_RECURSION_DEPTH: Cell<usize> = const { Cell::new(0) };
+}
+
+/// Increment [`JS_E_RECURSION_DEPTH`] on entry; decrement on drop (even on `return`/`?`).
+struct JsERecursionGuard;
+
+impl JsERecursionGuard {
+    /// Enters one nested [`js_e`] frame; panics when [`MAX_JS_E_RECURSION_DEPTH`] is exceeded.
+    fn enter() -> Self {
+        JS_E_RECURSION_DEPTH.with(|depth_cell| {
+            let depth = depth_cell.get();
+            if depth >= MAX_JS_E_RECURSION_DEPTH {
+                panic!("js_e exceeded recursion depth {MAX_JS_E_RECURSION_DEPTH}");
+            }
+            depth_cell.set(depth + 1);
+        });
+        Self
+    }
+}
+
+impl Drop for JsERecursionGuard {
+    fn drop(&mut self) {
+        JS_E_RECURSION_DEPTH.with(|depth_cell| depth_cell.set(depth_cell.get().saturating_sub(1)));
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Mutable state threaded through the pass
@@ -1045,6 +1076,7 @@ fn js_e(
     some_ts: &HashMap<usize, LocTyp>,
     found_javascript: &mut bool,
 ) -> Result<LocExp, CantEmbed> {
+    let _js_e_recursion_guard = JsERecursionGuard::enter();
     let span = &e.span.clone();
     let s = span;
 

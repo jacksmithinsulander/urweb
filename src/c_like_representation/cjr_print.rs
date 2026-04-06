@@ -1552,8 +1552,11 @@ fn collect_arg_types(t: &LocTyp, n: usize) -> Vec<LocTyp> {
     let n = n.min(MAX_ARGS);
     let mut result = Vec::new();
     let mut cur = t.clone();
-    while result.len() < n {
+    for _ in 0..n {
         cjr_test_tick();
+        if result.len() >= n {
+            break;
+        }
         match cur.node.clone() {
             Typ::Fun(dom, ran) => {
                 result.push(*dom);
