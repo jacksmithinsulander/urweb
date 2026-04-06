@@ -101,7 +101,8 @@ fn lift_kind_in_con_bound(bound: usize, constructor: LocatedConstructor) -> Loca
             exp,
             x,
             Box::new(lift_kind_in_kind_bound(1, bound, *k)),
-            Box::new(lift_kind_in_con_bound(bound + 1, *body)),
+            // TCFun is a constructor binder (not kind), so `bound` for kind variables is unchanged.
+            Box::new(lift_kind_in_con_bound(bound, *body)),
         ),
         Constructor::TRecord(row) => {
             Constructor::TRecord(Box::new(lift_kind_in_con_bound(bound, *row)))
@@ -250,7 +251,8 @@ fn sub_kind_in_con_inner(
             exp,
             x,
             Box::new(sub_kind_in_kind_bound(by, xn, rep, *k)),
-            Box::new(sub_kind_in_con_inner(by + 1, xn + 1, rep, *body)),
+            // TCFun is a constructor binder (not kind), so kind-variable indices are unchanged.
+            Box::new(sub_kind_in_con_inner(by, xn, rep, *body)),
         ),
         Constructor::TRecord(row) => {
             Constructor::TRecord(Box::new(sub_kind_in_con_inner(by, xn, rep, *row)))
@@ -343,7 +345,8 @@ fn lift_con_in_con_bound(
             Box::new(lift_con_in_con_bound(by, bound, *codomain)),
         ),
         Constructor::TCFun(exp, x, k, body) => {
-            Constructor::TCFun(exp, x, k, Box::new(lift_con_in_con_bound(by, bound, *body)))
+            // TCFun introduces a constructor binder, so increment `bound` so local Rel(0) is not lifted.
+            Constructor::TCFun(exp, x, k, Box::new(lift_con_in_con_bound(by, bound + 1, *body)))
         }
         Constructor::TRecord(row) => {
             Constructor::TRecord(Box::new(lift_con_in_con_bound(by, bound, *row)))
@@ -416,6 +419,141 @@ pub fn lift_con_in_con(constructor: LocatedConstructor) -> LocatedConstructor {
 }
 
 // ---------------------------------------------------------------------------
+// Squish: inverse of mlift_con_in_con (mirrors SML `squish`)
+// ---------------------------------------------------------------------------
+
+/// Shift all free [`Constructor::Rel`] indices down by `by`, raising on in-scope locals or Unif.
+///
+/// Mirrors `squish by` in `elaborate.sml`.  Used when storing a constructor solution into a
+/// [`Constructor::Unif`] cell that has been lifted `by` times since creation — the inverse of
+/// [`mlift_con_in_con`].  Any [`Constructor::Rel`] in `[0, by)` (local variables that would be
+/// lost after squishing) and any [`Constructor::Unif`] node raise [`CantSquish`].
+///
+/// # Arguments
+///
+/// * `by` — Number of binder levels to squish out (the Unif's nesting level `nl`).
+/// * `constructor` — Constructor computed at depth `by`; indices ≥ `by` are shifted down.
+///
+/// # Errors
+///
+/// [`CantSquish`] when a free [`Constructor::Rel`] in `[0, by)` or a [`Constructor::Unif`] is encountered.
+///
+/// # Returns
+///
+/// `Ok(constructor_at_depth_0)` on success.
+pub fn squish_con(by: usize, constructor: LocatedConstructor) -> Result<LocatedConstructor, CantSquish> {
+    if by == 0 {
+        // Identity: no binders to squish.
+        return Ok(constructor);
+    }
+    squish_con_bound(by, 0, constructor)
+}
+
+/// Raised when [`squish_con`] encounters a constructor that cannot be squished.
+///
+/// Mirrors `exception CantSquish` in `elaborate.sml`.
+#[derive(Debug)]
+pub struct CantSquish;
+
+/// Recursive body of [`squish_con`]: `bound` tracks locally-bound constructor variables.
+///
+/// # Arguments
+///
+/// * `by` — Fixed: number of binders being squished.
+/// * `bound` — Current depth of locally-bound constructor variables; increments inside binders.
+/// * `constructor` — Sub-constructor to squish.
+fn squish_con_bound(
+    by: usize,
+    bound: usize,
+    constructor: LocatedConstructor,
+) -> Result<LocatedConstructor, CantSquish> {
+    let span = constructor.span.clone();
+    let node = match constructor.node {
+        Constructor::Rel(n) => {
+            if n < bound {
+                // Local variable (bound within this constructor's own binders): keep as-is.
+                Constructor::Rel(n)
+            } else if n < bound + by {
+                // Free variable referencing one of the `by` binders being squished away: cannot squish.
+                return Err(CantSquish);
+            } else {
+                // Outer variable beyond the squished range: shift index down by `by`.
+                Constructor::Rel(n - by)
+            }
+        }
+        Constructor::Unif(_, _, _, _, _) => {
+            // Any unification variable blocks squishing (it might solve to a local reference).
+            return Err(CantSquish);
+        }
+        Constructor::TFun(domain, codomain) => Constructor::TFun(
+            Box::new(squish_con_bound(by, bound, *domain)?),
+            Box::new(squish_con_bound(by, bound, *codomain)?),
+        ),
+        Constructor::TCFun(exp, x, k, body) => {
+            // TCFun introduces a constructor binder: increment `bound` for the body.
+            Constructor::TCFun(exp, x, k, Box::new(squish_con_bound(by, bound + 1, *body)?))
+        }
+        Constructor::TRecord(row) => {
+            Constructor::TRecord(Box::new(squish_con_bound(by, bound, *row)?))
+        }
+        Constructor::TDisjoint(left_row, right_row, body_con) => Constructor::TDisjoint(
+            Box::new(squish_con_bound(by, bound, *left_row)?),
+            Box::new(squish_con_bound(by, bound, *right_row)?),
+            Box::new(squish_con_bound(by, bound, *body_con)?),
+        ),
+        Constructor::App(functor, argument) => Constructor::App(
+            Box::new(squish_con_bound(by, bound, *functor)?),
+            Box::new(squish_con_bound(by, bound, *argument)?),
+        ),
+        Constructor::Abs(x, k, body) => {
+            // Abs introduces a constructor binder: increment `bound` for the body.
+            Constructor::Abs(x, k, Box::new(squish_con_bound(by, bound + 1, *body)?))
+        }
+        Constructor::KAbs(x, body) => {
+            // KAbs is a kind binder, not a constructor binder: `bound` is unchanged.
+            Constructor::KAbs(x, Box::new(squish_con_bound(by, bound, *body)?))
+        }
+        Constructor::KApp(functor, kind_argument) => Constructor::KApp(
+            Box::new(squish_con_bound(by, bound, *functor)?),
+            kind_argument,
+        ),
+        Constructor::TKFun(x, body) => {
+            // TKFun is a kind binder, not a constructor binder: `bound` is unchanged.
+            Constructor::TKFun(x, Box::new(squish_con_bound(by, bound, *body)?))
+        }
+        Constructor::Record(row_kind, field_pairs) => {
+            let mut squished_pairs = Vec::with_capacity(field_pairs.len());
+            for (field_name, field_type) in field_pairs {
+                // Squish both the field name constructor and the field type constructor.
+                squished_pairs.push((
+                    squish_con_bound(by, bound, field_name)?,
+                    squish_con_bound(by, bound, field_type)?,
+                ));
+            }
+            Constructor::Record(row_kind, squished_pairs)
+        }
+        Constructor::Concat(left_row, right_row) => Constructor::Concat(
+            Box::new(squish_con_bound(by, bound, *left_row)?),
+            Box::new(squish_con_bound(by, bound, *right_row)?),
+        ),
+        Constructor::Tuple(elements) => {
+            let mut squished = Vec::with_capacity(elements.len());
+            for element in elements {
+                squished.push(squish_con_bound(by, bound, element)?);
+            }
+            Constructor::Tuple(squished)
+        }
+        Constructor::Proj(base, index) => {
+            Constructor::Proj(Box::new(squish_con_bound(by, bound, *base)?), index)
+        }
+        // All other constructor forms (Named, ModProj, Unit, Map, Name, Error, etc.) have no
+        // free constructor Rel indices and cannot contain CantSquish-triggering sub-terms.
+        other => other,
+    };
+    Ok(Located { node, span })
+}
+
+// ---------------------------------------------------------------------------
 // Con-in-Con substitution
 // ---------------------------------------------------------------------------
 
@@ -465,22 +603,18 @@ fn sub_con_in_con_inner(
                 Constructor::Rel(n)
             }
         }
-        // SML: CUnif(~1, …) => raise SubUnif
-        // We represent the ~1 sentinel as nl == 0 at depth 0 with the real
-        // depth tracked via `by`.  The SML code uses nl = -1 to mean
-        // "can't substitute here"; we mirror that by treating nl == 0 at
-        // the actual substitution depth (by == 0) as the sentinel.
+        // SML `subConInCon'`: `CUnif(~1, ...) → raise SubUnif; CUnif(n, ...) → CUnif(n-1, ...)`.
+        // We represent SML's `-1` sentinel as `usize::MAX` (wrapping underflow from 0).
+        // `wrapping_sub(1)` matches the SML decrement exactly: nl=0 → usize::MAX (= -1 sentinel),
+        // and usize::MAX (already -1) is caught first and raises SubUnif.
         Constructor::Unif(nl, s, k, name, r) => {
-            // Check if this is the SubUnif sentinel: nl wraps around in SML as
-            // ~1 which we represent as `usize::MAX` after a saturating subtraction.
             if nl == usize::MAX {
+                // This Unif already holds the ~1 sentinel: block substitution.
                 return Err(SubUnif);
             }
-            if nl == 0 {
-                Constructor::Unif(0, s, k, name, r)
-            } else {
-                Constructor::Unif(nl - 1, s, k, name, r)
-            }
+            // Decrement nesting level by 1; nl=0 wraps to usize::MAX (the ~1 sentinel),
+            // matching SML's CUnif(0) → CUnif(0-1) = CUnif(~1) behavior.
+            Constructor::Unif(nl.wrapping_sub(1), s, k, name, r)
         }
         Constructor::TFun(domain, codomain) => Constructor::TFun(
             Box::new(sub_con_in_con_inner(by, xn, rep, *domain)?),
@@ -562,7 +696,8 @@ fn occurs_at(debruijn_index: usize, bound: usize, constructor: &LocatedConstruct
         Constructor::TFun(domain, codomain) => {
             occurs_at(debruijn_index, bound, domain) || occurs_at(debruijn_index, bound, codomain)
         }
-        Constructor::TCFun(_, _, _, body) => occurs_at(debruijn_index, bound, body),
+        // TCFun introduces a constructor binder: increment `bound` so the bound variable is not treated as free.
+        Constructor::TCFun(_, _, _, body) => occurs_at(debruijn_index, bound + 1, body),
         Constructor::TRecord(row) => occurs_at(debruijn_index, bound, row),
         Constructor::TDisjoint(disjoint_left_row, disjoint_right_row, body_constructor) => {
             occurs_at(debruijn_index, bound, disjoint_left_row)
@@ -825,18 +960,10 @@ fn hnorm_con_inner(constructor: LocatedConstructor) -> LocatedConstructor {
                         }
                     }
                 }
-                // Type quantification at constructor level: `(:::) t :: K => body)  c` ~ `body[c/0]`.
-                Constructor::TCFun(_, _, _, cb) => {
-                    let c2_norm = hnorm_con(*c2);
-                    if let Ok(sub) = sub_con_in_con(0, &c2_norm, *cb) {
-                        hnorm_con(sub)
-                    } else {
-                        Located {
-                            node: Constructor::App(Box::new(c1_norm), Box::new(c2_norm)),
-                            span,
-                        }
-                    }
-                }
+                // NOTE: SML `hnormCon` only beta-reduces `App(CAbs, c2)`; `App(TCFun, c2)` falls
+                // through to the default `c1' => (CApp((c1', loc), hnormCon env c2), loc)` arm.
+                // TCFun is a universal constructor quantifier (∀ x :: K. body), NOT a lambda;
+                // beta-reducing it here was incorrect and caused spurious constructor substitutions.
                 Constructor::App(c1p, f) => {
                     // Map fusion / distributivity / identity
                     let c2_norm = hnorm_con(*c2);
@@ -1653,7 +1780,11 @@ mod tests {
     }
 
     #[test]
-    fn hnorm_beta_reduces_app_of_tcfun_like_abs() {
+    fn hnorm_does_not_beta_reduce_app_of_tcfun() {
+        // SML hnormCon only beta-reduces App(CAbs, c), NOT App(TCFun, c).
+        // TCFun is a forall/pi type (∀ x :: K. body); CApp(TCFun, c) is NOT
+        // reducible in hnorm — the ECApp elaboration handles TCFun via substitution.
+        // Constructor::Abs (CAbs in SML) is the constructor lambda; TCFun is the forall.
         let k = dummy(Kind::Type);
         let body = dummy(Constructor::Rel(0));
         let head = dummy(Constructor::TCFun(
@@ -1663,9 +1794,13 @@ mod tests {
             Box::new(body),
         ));
         let arg = dummy(Constructor::Unit);
-        let app = dummy(Constructor::App(Box::new(head), Box::new(arg)));
+        let app = dummy(Constructor::App(Box::new(head.clone()), Box::new(arg.clone())));
         let out = hnorm_con(app);
-        assert!(matches!(out.node, Constructor::Unit));
+        // App(TCFun(...), Unit) should remain as App(...) — TCFun does not beta-reduce.
+        assert!(
+            matches!(&out.node, Constructor::App(h, _) if matches!(&h.node, Constructor::TCFun(..))),
+            "App(TCFun, c) should not beta-reduce in hnorm_con (only App(Abs, c) does)"
+        );
     }
 
     #[test]

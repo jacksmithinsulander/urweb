@@ -22,7 +22,8 @@ use crate::elaborated::environment::{
     hnorm_con_constructor_abstraction, hnorm_sgn, new_named_id, ConstructorInfo, Env, VarLookup,
 };
 use crate::elaborated::type_operations::{
-    cons_eq_simple, hnorm_con, mlift_con_in_con, occurs_cunif, reduce_con, sub_con_in_con,
+    CantSquish, cons_eq_simple, hnorm_con, occurs_cunif, reduce_con, squish_con,
+    sub_con_in_con,
     sub_kind_in_con, sub_kind_in_kind,
 };
 use crate::error_types::{ErrorReporter, Located, Span};
@@ -74,14 +75,17 @@ fn fresh_kunif(span: Span, name: &str) -> elab::LocatedKind {
 }
 
 fn fresh_cunif(
-    elaboration_environment: &Env,
+    _elaboration_environment: &Env,
     span: Span,
     kind: elab::LocatedKind,
     name: &str,
 ) -> elab::LocatedConstructor {
     let _id = fresh_cunif_id();
-    // nesting_level = number of relative constructor binders in elaboration_environment
-    let nl = elaboration_environment.rel_c_len();
+    // SML always initializes CUnif with nl=0; nl grows only when the Unif is lifted
+    // through constructor binders by lift_con_in_con (via push_c_rel).  Using
+    // rel_c_len() here would pre-set nl to the current depth, causing double-lifting
+    // when the Unif is later read back via hnorm_con (which applies mlift(nl, inner)).
+    let nl: usize = 0;
     let r = Arc::new(Mutex::new(elab::CUnif::Unknown));
     Located::new(
         elab::Constructor::Unif(nl, span.clone(), Box::new(kind), name.to_string(), r),
@@ -1615,6 +1619,9 @@ pub enum FailedToUnifyConstructors {
     UnificationRecursionLimitExceeded,
     /// Constructor occurs-check blocked assigning a unification variable.
     OccursCheckWouldCycle,
+    /// Constructor references a local variable that is out of scope for the unification variable
+    /// (SML `CantSquish` → `TooDeep` / `CScope` errors).
+    ConstructorTooDeepForUnif,
 }
 
 /// Format [`FailedToUnifyKinds`] as one line for catalog substitution (e.g. [`DiagnosticId::ElabKindMismatch`]).
@@ -1667,6 +1674,12 @@ pub fn format_failed_to_unify_constructors_message(failure: &FailedToUnifyConstr
         FailedToUnifyConstructors::OccursCheckWouldCycle => {
             "constructor occurs-check would form a cycle".to_string()
         }
+        FailedToUnifyConstructors::ConstructorTooDeepForUnif => {
+            // SML TooDeep / CScope: the constructor references a variable that is not in scope
+            // for the unification variable being instantiated.
+            "constructor references a variable out of scope for the unification variable (TooDeep)"
+                .to_string()
+        }
     }
 }
 
@@ -1686,24 +1699,37 @@ struct RecordSummary {
 fn record_summary(elaboration_environment: &Env, c: elab::LocatedConstructor) -> RecordSummary {
     let cn = hnorm_con(c.clone());
     match cn.node {
-        elab::Constructor::Record(_, xcs) => {
-            let mut fields = Vec::new(); // concrete (Name, type) pairs
+        elab::Constructor::Record(_, ref xcs) => {
+            let mut concrete_fields = Vec::new(); // (String, constructor) pairs for concrete Name keys
+            let mut has_abstract_key = false; // set when any field uses a non-Name key (e.g. Rel)
             for (nc, vc) in xcs {
                 // Head-normalise the field name to see if it is a literal string.
-                let ncn = hnorm_con(nc);
+                let ncn = hnorm_con(nc.clone());
                 if let elab::Constructor::Name(s) = ncn.node {
-                    // Concrete field name → add to the known-fields list.
-                    fields.push((s, vc));
+                    // Concrete Name field: add to known-fields.
+                    concrete_fields.push((s, vc.clone()));
+                } else {
+                    // Non-concrete key (Rel, Unif, App, …): signal that the entire record
+                    // must be treated as an opaque chunk in row unification. Mirrors SML's
+                    // `rowSummary` which puts non-CName fields' whole CRecord into `others`.
+                    has_abstract_key = true;
                 }
-                // Non-literal names (Rel variables, opaque applications) are skipped here.
-                // The full treatment requires `may_delay` deferral and is implemented in
-                // the `RowUnification` constraint path; for now we conservatively omit them
-                // to avoid false-positive failures when more unification state is needed.
             }
-            RecordSummary {
-                fields,
-                unifs: vec![],
-                others: vec![],
+            if has_abstract_key {
+                // Treat entire record as one opaque `others` chunk so unify_rows can match
+                // or defer it against a counterpart chunk on the other side.
+                RecordSummary {
+                    fields: vec![],
+                    unifs: vec![],
+                    others: vec![cn], // cn is the hnorm_con result = the Record node
+                }
+            } else {
+                // All field names are concrete Name strings.
+                RecordSummary {
+                    fields: concrete_fields,
+                    unifs: vec![],
+                    others: vec![],
+                }
             }
         }
         elab::Constructor::Concat(c1, c2) => {
@@ -1819,18 +1845,26 @@ fn unify_cons_inner(
         }
         // Unification variable solving — must come before Named arms so that
         // (Unif, Named) is handled here rather than falling into the Named expansion arm.
+        //
+        // SML semantics: for nl=0 store the constructor directly; for nl>0 apply
+        // `squish nl c` (the inverse of mliftConInCon nl) so that when hnorm_con later
+        // applies `mlift(nl, inner)` the round-trip gives back the original constructor.
+        // CantSquish (constructor references one of the nl extra binders) maps to TooDeep.
         (
             elab::Constructor::Unif(nl1, _, _k1, _, r1),
             elab::Constructor::Unif(_nl2, _, _k2, _, r2),
         ) => {
             if Arc::ptr_eq(r1, r2) {
+                // Same cell: already unified, nothing to do.
                 return Ok(());
             }
-            // Solve r1 := right_normalized (adjusted for nesting); occurs check to prevent circular types
+            // Occurs check: prevent circular types before storing.
             if occurs_cunif(r1, &right_normalized) {
                 return Err(Box::new(FailedToUnifyConstructors::OccursCheckWouldCycle));
             }
-            let adjusted = mlift_con_in_con(*nl1, right_normalized.clone());
+            // Apply squish to adjust depth from current context to the Unif's creation context.
+            let adjusted = squish_con(*nl1, right_normalized.clone())
+                .map_err(|CantSquish| Box::new(FailedToUnifyConstructors::ConstructorTooDeepForUnif))?;
             *crate::compiler_diagnostics::lock_for_compile(
                 r1.as_ref(),
                 "elaboration unification cell",
@@ -1838,10 +1872,13 @@ fn unify_cons_inner(
             Ok(())
         }
         (elab::Constructor::Unif(nl, _, _k, _, r), _) => {
+            // Occurs check: prevent circular types before storing.
             if occurs_cunif(r, &right_normalized) {
                 return Err(Box::new(FailedToUnifyConstructors::OccursCheckWouldCycle));
             }
-            let adjusted = mlift_con_in_con(*nl, right_normalized.clone());
+            // Apply squish to adjust depth from current context to the Unif's creation context.
+            let adjusted = squish_con(*nl, right_normalized.clone())
+                .map_err(|CantSquish| Box::new(FailedToUnifyConstructors::ConstructorTooDeepForUnif))?;
             *crate::compiler_diagnostics::lock_for_compile(
                 r.as_ref(),
                 "elaboration unification cell",
@@ -1849,10 +1886,13 @@ fn unify_cons_inner(
             Ok(())
         }
         (_, elab::Constructor::Unif(nl, _, _k, _, r)) => {
+            // Occurs check: prevent circular types before storing.
             if occurs_cunif(r, &left_normalized) {
                 return Err(Box::new(FailedToUnifyConstructors::OccursCheckWouldCycle));
             }
-            let adjusted = mlift_con_in_con(*nl, left_normalized.clone());
+            // Apply squish to adjust depth from current context to the Unif's creation context.
+            let adjusted = squish_con(*nl, left_normalized.clone())
+                .map_err(|CantSquish| Box::new(FailedToUnifyConstructors::ConstructorTooDeepForUnif))?;
             *crate::compiler_diagnostics::lock_for_compile(
                 r.as_ref(),
                 "elaboration unification cell",
@@ -2169,9 +2209,9 @@ fn unify_cons_inner(
                 recursion_depth + 1,
             )
         }
-        // Row constructors: try record summary unification
+        // Row constructors: try record summary unification, then map-unfolding fallback.
         _ => {
-            // Try reduction before giving up
+            // Try beta/eta reduction before giving up on structural matching.
             let rc1 = reduce_con(left_normalized.clone());
             let rc2 = reduce_con(right_normalized.clone());
             if !cons_eq_simple(&rc1, &left_normalized) || !cons_eq_simple(&rc2, &right_normalized) {
@@ -2184,15 +2224,48 @@ fn unify_cons_inner(
                     recursion_depth + 1,
                 );
             }
-            // Row unification via summaries
-            unify_rows(
+            // If either side is `map f r`, use guess_map eagerly before trying row summaries.
+            // Row summary unification does not understand map applications (it puts them in
+            // `others`), so trying guess_map first avoids spurious deferred constraints that
+            // would never resolve.
+            if peel_map_app(&left_normalized).is_some() || peel_map_app(&right_normalized).is_some() {
+                return guess_map(
+                    elaboration_context,
+                    elaboration_environment,
+                    diagnostic_span,
+                    &left_normalized,
+                    &right_normalized,
+                    recursion_depth,
+                );
+            }
+            // Row unification via summaries (handles Concat/Unif tails, defers when mayDelay).
+            let row_result = unify_rows(
                 elaboration_context,
                 elaboration_environment,
                 diagnostic_span,
                 &left_normalized,
                 &right_normalized,
                 recursion_depth,
-            )
+            );
+            if row_result.is_ok() {
+                return Ok(());
+            }
+            // Final fallback: try guess_map in case row-summary unification could not solve it.
+            // This handles cases where reduce_con did not expose the map form until after
+            // row_result failure (rare, but mirrors SML exception-catching order).
+            let map_result = guess_map(
+                elaboration_context,
+                elaboration_environment,
+                diagnostic_span,
+                &left_normalized,
+                &right_normalized,
+                recursion_depth,
+            );
+            if map_result.is_ok() {
+                return Ok(());
+            }
+            // Return the original row-unification error for a better diagnostic.
+            row_result
         }
     }
 }
@@ -2268,7 +2341,10 @@ fn unify_rows(
             });
         }
         let solution = fields_to_row(&remaining, diagnostic_span, &right_constructor.span);
-        let adjusted = mlift_con_in_con(*nesting_lift, solution);
+        // Squish adjusts the solution from the current depth to the Unif's creation depth
+        // (mirrors SML unifyCons'' nl>0 squish logic for row tails).
+        let adjusted = squish_con(*nesting_lift, solution)
+            .map_err(|CantSquish| Box::new(FailedToUnifyConstructors::ConstructorTooDeepForUnif))?;
         *crate::compiler_diagnostics::lock_for_compile(
             row_tail_cell.as_ref(),
             "elaboration unification cell",
@@ -2288,7 +2364,10 @@ fn unify_rows(
             });
         }
         let solution = fields_to_row(&remaining, diagnostic_span, &left_constructor.span);
-        let adjusted = mlift_con_in_con(*nesting_lift, solution);
+        // Squish adjusts the solution from the current depth to the Unif's creation depth
+        // (mirrors SML unifyCons'' nl>0 squish logic for row tails).
+        let adjusted = squish_con(*nesting_lift, solution)
+            .map_err(|CantSquish| Box::new(FailedToUnifyConstructors::ConstructorTooDeepForUnif))?;
         *crate::compiler_diagnostics::lock_for_compile(
             row_tail_cell.as_ref(),
             "elaboration unification cell",
@@ -2296,8 +2375,76 @@ fn unify_rows(
         return Ok(());
     }
 
+    // Both sides have the same number of abstract `others` pieces and no Unif tails.
+    // Try matching fields order-independently and unifying the `others` pieces pairwise.
+    // This handles the common `field ++ abstract_tail  vs  abstract_tail ++ field` pattern
+    // that arises in map0/foldR/etc. (commutativity of disjoint row concatenation).
+    if left_summary.unifs.is_empty()
+        && right_summary.unifs.is_empty()
+        && !left_summary.others.is_empty()
+        && left_summary.others.len() == right_summary.others.len()
+        && left_summary.fields.len() == right_summary.fields.len()
+    {
+        // Check all known fields match pairwise (order-independent).
+        // Fields in RecordSummary.fields are always concrete (Name(s)) strings.
+        let mut right_fields_remaining = right_summary.fields.clone();
+        let mut all_fields_matched = true;
+        for (field_name_left, field_type_left) in &left_summary.fields {
+            if let Some(position) = right_fields_remaining.iter().position(|(field_name_right, _)| {
+                field_name_left.to_lowercase() == field_name_right.to_lowercase()
+            }) {
+                let (_, field_type_right) = right_fields_remaining.remove(position);
+                if unify_cons_inner(
+                    elaboration_context,
+                    elaboration_environment,
+                    diagnostic_span,
+                    field_type_left,
+                    &field_type_right,
+                    recursion_depth + 1,
+                ).is_err() {
+                    all_fields_matched = false;
+                    break;
+                }
+            } else {
+                // Field name not found in right side → rows differ.
+                all_fields_matched = false;
+                break;
+            }
+        }
+        if all_fields_matched && right_fields_remaining.is_empty() {
+            // Try to unify abstract pieces pairwise.
+            let mut others_ok = true;
+            for (left_other, right_other) in left_summary.others.iter().zip(right_summary.others.iter()) {
+                // Try unifying other piece; if it fails, fall through to error/delay.
+                if unify_cons_inner(
+                    elaboration_context,
+                    elaboration_environment,
+                    diagnostic_span,
+                    left_other,
+                    right_other,
+                    recursion_depth + 1,
+                ).is_err() {
+                    others_ok = false;
+                    break;
+                }
+            }
+            if others_ok {
+                return Ok(());
+            }
+        }
+    }
+
     // Otherwise, delay if mayDelay is set, else fail immediately.
     if elaboration_context.may_delay {
+        // Temporary debug: print RowUnification creation site for the '15 vs '3 investigation.
+        if std::env::var("URWEB_DEBUG_ROW_UNIF").is_ok() {
+            eprintln!(
+                "[RowUnif deferred] span={:?} left={} right={}",
+                diagnostic_span,
+                crate::elaborated::type_display::format_constructor(left_constructor),
+                crate::elaborated::type_display::format_constructor(right_constructor),
+            );
+        }
         // Leave for later constraint solving; push a RowUnification constraint so
         // solve_constraints can retry once more unification variables are filled in.
         elaboration_context
@@ -2310,6 +2457,395 @@ fn unify_rows(
             });
         return Ok(()); // optimistically succeed; solve_constraints will catch real failures
     }
+    Err(Box::new(
+        FailedToUnifyConstructors::IncompatibleConstructors(
+            left_constructor.clone(),
+            right_constructor.clone(),
+        ),
+    ))
+}
+
+// ---------------------------------------------------------------------------
+// guess_map: unify `map f r` with a concrete row (mirror of SML `guessMap`)
+// ---------------------------------------------------------------------------
+
+/// Extract `(domain_kind, range_kind, map_function, pre_image_row)` from
+/// `App(App(Map(domain_kind, range_kind), map_function), pre_image_row)`.
+///
+/// Returns `None` if the constructor is not in the expected map-application form after
+/// head-normalisation. This is used by [`guess_map`] to detect which side (if any) of a
+/// failing unification attempt is a `map`-applied row.
+fn peel_map_app(
+    constructor: &elab::LocatedConstructor,
+) -> Option<(
+    elab::LocatedKind,
+    elab::LocatedKind,
+    elab::LocatedConstructor,
+    elab::LocatedConstructor,
+)> {
+    // Head-normalise so that solved unification variables and beta-redexes are resolved.
+    let outer_normalized = hnorm_con(constructor.clone());
+    // Outer layer must be App(middle, pre_image_row).
+    if let elab::Constructor::App(middle_app, pre_image_row) = outer_normalized.node {
+        let middle_normalized = hnorm_con(*middle_app);
+        // Middle layer must be App(map_con, map_function).
+        if let elab::Constructor::App(map_constructor, map_function) = middle_normalized.node {
+            let map_normalized = hnorm_con(*map_constructor);
+            // Inner layer must be Map(domain_kind, range_kind).
+            if let elab::Constructor::Map(domain_kind, range_kind) = map_normalized.node {
+                return Some((*domain_kind, *range_kind, *map_function, *pre_image_row));
+            }
+        }
+    }
+    None
+}
+
+/// Recursive unfold helper for [`guess_map`].
+///
+/// Given that we know `map(domain_kind, range_kind) map_function pre_image_row` must equal
+/// `post_image_constructor`, determines what `pre_image_row` must be by recursively examining
+/// the structure of `post_image_constructor` and mutating unification variables.
+///
+/// Mirrors the inner `unfold` closure inside SML `guessMap`.
+///
+/// # Arguments
+///
+/// * `domain_kind` — Element kind of the pre-image record (source of the map).
+/// * `range_kind` — Element kind of the post-image record (target of the map).
+/// * `map_function` — The type-level constructor `f :: domain_kind -> range_kind`.
+/// * `pre_image_row` — The row we are solving for (what `r` in `map f r` must equal).
+/// * `post_image_constructor` — What `map f r` must equal (the concrete/partially-known post row).
+fn guess_map_unfold(
+    elaboration_context: &mut ElabCtx,
+    elaboration_environment: &Env,
+    diagnostic_span: &Span,
+    domain_kind: &elab::LocatedKind,
+    range_kind: &elab::LocatedKind,
+    map_function: &elab::LocatedConstructor,
+    pre_image_row: &elab::LocatedConstructor,
+    post_image_constructor: &elab::LocatedConstructor,
+    recursion_depth: usize,
+) -> Result<(), Box<FailedToUnifyConstructors>> {
+    if recursion_depth > 100 {
+        // Depth cap prevents unbounded recursion on pathological inputs.
+        return Err(Box::new(
+            FailedToUnifyConstructors::UnificationRecursionLimitExceeded,
+        ));
+    }
+    let span = diagnostic_span;
+    // Head-normalise to resolve known unification variables and beta-redexes before switching.
+    let post_normalized = hnorm_con(post_image_constructor.clone());
+
+    match post_normalized.node.clone() {
+        // Empty record {} → pre-image must also be the empty record of domain_kind.
+        elab::Constructor::Record(_, ref fields) if fields.is_empty() => {
+            let empty_pre_image = Located::new(
+                elab::Constructor::Record(
+                    Box::new(Located::new(
+                        elab::Kind::Record(Box::new(domain_kind.clone())),
+                        span.clone(),
+                    )),
+                    vec![],
+                ),
+                span.clone(),
+            );
+            // Unify pre_image_row = {}
+            unify_cons_inner(
+                elaboration_context,
+                elaboration_environment,
+                span,
+                pre_image_row,
+                &empty_pre_image,
+                recursion_depth + 1,
+            )
+        }
+
+        // Non-empty record — split into first field (singleton) + rest and handle each.
+        elab::Constructor::Record(post_row_kind, ref fields) if !fields.is_empty() => {
+            let (first_name_constructor, first_value_constructor) = fields[0].clone();
+            let rest_fields: Vec<(elab::LocatedConstructor, elab::LocatedConstructor)> =
+                fields[1..].to_vec(); // remaining fields after the first
+
+            if rest_fields.is_empty() {
+                // Singleton case: {nm = v} → v = map_function(v'), pre_image_row = {nm = v'}
+                // Create the pre-image value: Unit if domain_kind = Unit, else a fresh unif variable.
+                let pre_image_value = match hnorm_kind(domain_kind.clone()).node {
+                    elab::Kind::Unit => Located::new(elab::Constructor::Unit, span.clone()),
+                    _ => fresh_cunif(
+                        elaboration_environment,
+                        span.clone(),
+                        domain_kind.clone(),
+                        "_mv",
+                    ),
+                };
+                // Unify first_value_constructor = map_function(pre_image_value)
+                let function_applied = Located::new(
+                    elab::Constructor::App(
+                        Box::new(map_function.clone()),
+                        Box::new(pre_image_value.clone()),
+                    ),
+                    span.clone(),
+                );
+                unify_cons_inner(
+                    elaboration_context,
+                    elaboration_environment,
+                    span,
+                    &first_value_constructor,
+                    &function_applied,
+                    recursion_depth + 1,
+                )?;
+                // Unify pre_image_row = {nm = pre_image_value}
+                let singleton_pre_image = Located::new(
+                    elab::Constructor::Record(
+                        Box::new(Located::new(
+                            elab::Kind::Record(Box::new(domain_kind.clone())),
+                            span.clone(),
+                        )),
+                        vec![(first_name_constructor, pre_image_value)],
+                    ),
+                    span.clone(),
+                );
+                unify_cons_inner(
+                    elaboration_context,
+                    elaboration_environment,
+                    span,
+                    pre_image_row,
+                    &singleton_pre_image,
+                    recursion_depth + 1,
+                )
+            } else {
+                // Multi-field case: split into singleton + rest, create two pre-image row unifs.
+                let singleton_post = Located::new(
+                    elab::Constructor::Record(
+                        post_row_kind.clone(),
+                        vec![(first_name_constructor, first_value_constructor)],
+                    ),
+                    span.clone(),
+                );
+                let rest_post = Located::new(
+                    elab::Constructor::Record(post_row_kind, rest_fields),
+                    span.clone(),
+                );
+                // Fresh row unification variables for the two pre-image sub-rows.
+                let krecord_dom = Located::new(
+                    elab::Kind::Record(Box::new(domain_kind.clone())),
+                    span.clone(),
+                );
+                let pre_row_left =
+                    fresh_cunif(elaboration_environment, span.clone(), krecord_dom.clone(), "_mr1");
+                let pre_row_right =
+                    fresh_cunif(elaboration_environment, span.clone(), krecord_dom, "_mr2");
+                // Recursively unfold each sub-row.
+                guess_map_unfold(
+                    elaboration_context,
+                    elaboration_environment,
+                    span,
+                    domain_kind,
+                    range_kind,
+                    map_function,
+                    &pre_row_left,
+                    &singleton_post,
+                    recursion_depth + 1,
+                )?;
+                guess_map_unfold(
+                    elaboration_context,
+                    elaboration_environment,
+                    span,
+                    domain_kind,
+                    range_kind,
+                    map_function,
+                    &pre_row_right,
+                    &rest_post,
+                    recursion_depth + 1,
+                )?;
+                // Unify pre_image_row = pre_row_left ++ pre_row_right
+                let concat_pre = Located::new(
+                    elab::Constructor::Concat(Box::new(pre_row_left), Box::new(pre_row_right)),
+                    span.clone(),
+                );
+                unify_cons_inner(
+                    elaboration_context,
+                    elaboration_environment,
+                    span,
+                    pre_image_row,
+                    &concat_pre,
+                    recursion_depth + 1,
+                )
+            }
+        }
+
+        // Concatenated rows c1' ++ c2': split and determine pre-images for each half.
+        elab::Constructor::Concat(post_left, post_right) => {
+            let krecord_dom = Located::new(
+                elab::Kind::Record(Box::new(domain_kind.clone())),
+                span.clone(),
+            );
+            let pre_row_left =
+                fresh_cunif(elaboration_environment, span.clone(), krecord_dom.clone(), "_mr1");
+            let pre_row_right =
+                fresh_cunif(elaboration_environment, span.clone(), krecord_dom, "_mr2");
+            guess_map_unfold(
+                elaboration_context,
+                elaboration_environment,
+                span,
+                domain_kind,
+                range_kind,
+                map_function,
+                &pre_row_left,
+                &post_left,
+                recursion_depth + 1,
+            )?;
+            guess_map_unfold(
+                elaboration_context,
+                elaboration_environment,
+                span,
+                domain_kind,
+                range_kind,
+                map_function,
+                &pre_row_right,
+                &post_right,
+                recursion_depth + 1,
+            )?;
+            let concat_pre = Located::new(
+                elab::Constructor::Concat(Box::new(pre_row_left), Box::new(pre_row_right)),
+                span.clone(),
+            );
+            unify_cons_inner(
+                elaboration_context,
+                elaboration_environment,
+                span,
+                pre_image_row,
+                &concat_pre,
+                recursion_depth + 1,
+            )
+        }
+
+        // Unknown unification variable: set it to `map map_function pre_image_row`.
+        elab::Constructor::Unif(nesting_level, _, _unif_kind, _, ref unif_cell) => {
+            // Read the current cell value without holding the lock across the occurs check.
+            let current_value = {
+                let guard = crate::compiler_diagnostics::lock_for_compile(
+                    unif_cell.as_ref(),
+                    "guess_map_unfold check unif cell",
+                );
+                guard.clone() // clone so we can drop the lock before further work
+            };
+            match current_value {
+                elab::CUnif::Known(known_constructor) => {
+                    // Already resolved — chase through the known value and retry.
+                    let resolved = hnorm_con(*known_constructor);
+                    guess_map_unfold(
+                        elaboration_context,
+                        elaboration_environment,
+                        span,
+                        domain_kind,
+                        range_kind,
+                        map_function,
+                        pre_image_row,
+                        &resolved,
+                        recursion_depth + 1,
+                    )
+                }
+                elab::CUnif::Unknown => {
+                    // Build `map(domain_kind, range_kind) map_function pre_image_row` and assign.
+                    let map_applied_to_function = Located::new(
+                        elab::Constructor::App(
+                            Box::new(Located::new(
+                                elab::Constructor::Map(
+                                    Box::new(domain_kind.clone()),
+                                    Box::new(range_kind.clone()),
+                                ),
+                                span.clone(),
+                            )),
+                            Box::new(map_function.clone()),
+                        ),
+                        span.clone(),
+                    );
+                    let map_f_pre_image = Located::new(
+                        elab::Constructor::App(
+                            Box::new(map_applied_to_function),
+                            Box::new(pre_image_row.clone()),
+                        ),
+                        span.clone(),
+                    );
+                    // Occurs check: prevent circular constructors.
+                    if occurs_cunif(unif_cell, &map_f_pre_image) {
+                        return Err(Box::new(FailedToUnifyConstructors::OccursCheckWouldCycle));
+                    }
+                    // Squish adjusts from current depth to Unif's creation depth (mirrors SML unifyCons'').
+                    let adjusted = squish_con(nesting_level, map_f_pre_image)
+                        .map_err(|CantSquish| Box::new(FailedToUnifyConstructors::ConstructorTooDeepForUnif))?;
+                    *crate::compiler_diagnostics::lock_for_compile(
+                        unif_cell.as_ref(),
+                        "guess_map_unfold assign unif cell",
+                    ) = elab::CUnif::Known(Box::new(adjusted));
+                    Ok(())
+                }
+            }
+        }
+
+        // Any other constructor form: cannot determine the pre-image; fail.
+        _ => Err(Box::new(
+            FailedToUnifyConstructors::IncompatibleConstructors(
+                post_image_constructor.clone(),
+                pre_image_row.clone(),
+            ),
+        )),
+    }
+}
+
+/// Mirror of SML `guessMap`: attempt to unify `map f r` with a concrete or partially-known row.
+///
+/// Called from [`unify_cons_inner`]'s wildcard fallback when standard structural unification
+/// and row summary unification both fail and one side is of the form `map f r`.
+///
+/// Determines what the pre-image row `r` must be by examining the structure of the other side
+/// and mutating unification variables in place.
+///
+/// # Returns
+///
+/// `Ok(())` when the map unification was successfully resolved; `Err(...)` otherwise.
+fn guess_map(
+    elaboration_context: &mut ElabCtx,
+    elaboration_environment: &Env,
+    diagnostic_span: &Span,
+    left_constructor: &elab::LocatedConstructor,
+    right_constructor: &elab::LocatedConstructor,
+    recursion_depth: usize,
+) -> Result<(), Box<FailedToUnifyConstructors>> {
+    // Check if the left side is map f r; if so, unfold the right to determine r.
+    if let Some((domain_kind, range_kind, map_function, pre_image_row)) =
+        peel_map_app(left_constructor)
+    {
+        return guess_map_unfold(
+            elaboration_context,
+            elaboration_environment,
+            diagnostic_span,
+            &domain_kind,
+            &range_kind,
+            &map_function,
+            &pre_image_row,
+            right_constructor,
+            recursion_depth,
+        );
+    }
+    // Check if the right side is map f r; if so, unfold the left to determine r.
+    if let Some((domain_kind, range_kind, map_function, pre_image_row)) =
+        peel_map_app(right_constructor)
+    {
+        return guess_map_unfold(
+            elaboration_context,
+            elaboration_environment,
+            diagnostic_span,
+            &domain_kind,
+            &range_kind,
+            &map_function,
+            &pre_image_row,
+            left_constructor,
+            recursion_depth,
+        );
+    }
+    // Neither side is a map application; cannot help.
     Err(Box::new(
         FailedToUnifyConstructors::IncompatibleConstructors(
             left_constructor.clone(),
@@ -2858,7 +3394,7 @@ fn elab_exp_inner(
                     };
                     (out_e, out_t)
                 }
-                elab::Constructor::Unif(_, _, _k, _, r) => {
+                elab::Constructor::Unif(unif_nesting_level, _, _k, _, r) => {
                     let dom = fresh_cunif(
                         elaboration_environment,
                         span.clone(),
@@ -2875,10 +3411,22 @@ fn elab_exp_inner(
                         elab::Constructor::TFun(Box::new(dom.clone()), Box::new(ran.clone())),
                         span.clone(),
                     );
+                    // Fresh Unifs start at nl=0, so squish(0, tfun) = tfun.  For lifted Unifs,
+                    // squish adjusts the solution to the Unif's creation depth.
+                    let tfun_squished = squish_con(unif_nesting_level, tfun).unwrap_or_else(
+                        |CantSquish| {
+                            // If squish fails (Unif was lifted through binders that tfun references),
+                            // store tfun directly as best-effort; a type error will surface later.
+                            Located::new(
+                                elab::Constructor::TFun(Box::new(dom.clone()), Box::new(ran.clone())),
+                                span.clone(),
+                            )
+                        },
+                    );
                     *crate::compiler_diagnostics::lock_for_compile(
                         r.as_ref(),
                         "elaboration unification cell",
-                    ) = elab::CUnif::Known(Box::new(tfun));
+                    ) = elab::CUnif::Known(Box::new(tfun_squished));
                     let (ae, at) = elab_exp(
                         elaboration_context,
                         elaboration_environment,
@@ -6000,7 +6548,22 @@ fn solve_constraints(elaboration_context: &mut ElabCtx, _elaboration_environment
                     &right_constructor,
                     0, // start fresh depth counter
                 );
-                if retry_result.is_err() {
+                if retry_result.is_ok() {
+                    // Row summary unification resolved it; cells mutated in-place.
+                    continue;
+                }
+                // Row summary failed — try guess_map in case one side is `map f r` and
+                // the other is a concrete record or unif variable (mirrors SML's guessMap
+                // being tried after unifyCons'' raises).
+                let map_result = guess_map(
+                    elaboration_context,
+                    &c_env,
+                    &span,
+                    &left_constructor,
+                    &right_constructor,
+                    0,
+                );
+                if map_result.is_err() {
                     // Still unresolvable — keep in remaining so we can report it below.
                     remaining.push(Constraint::RowUnification {
                         span,
@@ -6009,7 +6572,7 @@ fn solve_constraints(elaboration_context: &mut ElabCtx, _elaboration_environment
                         right_constructor,
                     });
                 }
-                // On success, row cells were mutated in-place; nothing else to do.
+                // On success (either path), cells were mutated in-place; nothing else to do.
             }
         }
     }

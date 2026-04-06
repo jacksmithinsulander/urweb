@@ -192,13 +192,16 @@ fn apply_postfix(base: LocExp, op: ExpPostfixOp) -> LocExp {
                                 Exp::App(f2, Box::new(Located::new(xnode, xspan))),
                                 fspan.clone(),
                             );
-                            Exp::Field(Box::new(f_loc), Located::dummy(Con::Name(name)))
+                            // Lowercase ident field access uses CVar (SML: `ident → CVar`),
+                            // so bound Name-kinded variables work as dynamic field selectors.
+                            Exp::Field(Box::new(f_loc), Located::dummy(Con::Var(vec![], name)))
                         }
                     }
                 }
                 fnode => Exp::Field(
                     Box::new(Located::new(fnode, fspan.clone())),
-                    Located::dummy(Con::Name(name)),
+                    // Lowercase ident field access uses CVar per SML ident grammar rule.
+                    Located::dummy(Con::Var(vec![], name)),
                 ),
             };
             Located::new(exp, fspan)

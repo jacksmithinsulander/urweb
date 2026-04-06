@@ -1439,13 +1439,21 @@ AttrV: LocExp = {
 };
 
 ExpField: (LocCon, LocExp) = {
-    <name:FieldName> "=" <e:Exp> => (Located::dummy(Con::Name(name)), e),
+    // Lowercase field name with explicit value: treat as a constructor variable reference.
+    // In Ur/Web (SML grammar `rpath`), lowercase idents use `CVar`, not `CName`, so that
+    // bound `Name`-kinded variables (e.g. `nm :: Name`) work as dynamic field names.
+    // Literal labels must be uppercase in Ur/Web conventions.
+    <name:"IDENT"> "=" <e:Exp> => (Located::dummy(Con::Var(vec![], name)), e),
+    // Uppercase field name with explicit value: always a literal Name label (SML: `CName`).
+    <name:"UIDENT"> "=" <e:Exp> => (Located::dummy(Con::Name(name)), e),
+    // Keyword "Name" used as a literal uppercase label: {Name = e}.
+    "Name" "=" <e:Exp> => (Located::dummy(Con::Name("Name".to_string())), e),
     <name:"IDENT"> => {
-        // Punning: {x} means {x = x}
+        // Lowercase punning: {x} means {x = x}; field name is a variable reference.
         let e = Located::dummy(Exp::Var(vec![], name.clone(), Inference::DontInfer));
-        (Located::dummy(Con::Name(name)), e)
+        (Located::dummy(Con::Var(vec![], name)), e)
     },
-    // Uppercase pun: {X} means {X = X}
+    // Uppercase pun: {X} means {X = X}; field name is a literal label.
     <name:"UIDENT"> => {
         let e = Located::dummy(Exp::Var(vec![], name.clone(), Inference::DontInfer));
         (Located::dummy(Con::Name(name)), e)
