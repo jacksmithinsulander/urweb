@@ -11,6 +11,20 @@
 //!
 //! Core threading uses descriptive names (`elaboration_context`, `elaboration_environment`, `disjointness_environment`)
 //! instead of abbreviations; sentinel AST builders are `elaborated_*_error_at_span`.
+//!
+//! ## Input-shaped depth and iteration bounds (Power of Ten / LangSec)
+//!
+//! Elaboration follows solver and normalization graphs that must not diverge on hostile or buggy inputs.
+//! Inventory of **explicit caps** in this crate and [`crate::elaborated::type_operations`]:
+//! - [`unify_cons_inner`] — hard depth cap (see numeric guard in that function) returning
+//!   [`FailedToUnifyConstructors::UnificationRecursionLimitExceeded`].
+//! - `elab_con` / `elab_exp` — thread-local depth limits (see their doc comments; constructor 500, expression 200).
+//! - [`CHASE_KIND_UNIFICATION_HEAD_MAX_STEPS`] — [`chase_kind_unification_head`] (`Kind::Unif` alias chains).
+//! - [`ELAB_CON_HEAD_MAX_STEPS`] — [`elab_con_head`] implicit [`elab::Constructor::KApp`] insertion.
+//! - [`RECORD_SUMMARY_MAX_DEPTH`] — [`record_summary`] recursion for row shapes (`Concat`, named unfold).
+//! - [`crate::elaborated::environment::hnorm_sgn`] — `Signature::Var` cycles detected via a visited set.
+//! - [`crate::elaborated::type_operations::hnorm_con`] — thread-local depth 200; solved-[`elab::Constructor::Unif`]
+//!   peel chains additionally capped in `type_operations` (`PEEL_SOLVED_CONSTRUCTOR_UNIF_CHAIN_MAX_STEPS`).
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -22,9 +36,8 @@ use crate::elaborated::environment::{
     hnorm_con_constructor_abstraction, hnorm_sgn, new_named_id, ConstructorInfo, Env, VarLookup,
 };
 use crate::elaborated::type_operations::{
-    CantSquish, cons_eq_simple, hnorm_con, occurs_cunif, reduce_con, squish_con,
-    sub_con_in_con,
-    sub_kind_in_con, sub_kind_in_kind,
+    cons_eq_simple, hnorm_con, occurs_cunif, reduce_con, squish_con, sub_con_in_con,
+    sub_kind_in_con, sub_kind_in_kind, CantSquish,
 };
 use crate::error_types::{ErrorReporter, Located, Span};
 use crate::primitives::Prim;
@@ -387,15 +400,27 @@ fn check_kind(
 // Kind head-normalization
 // ---------------------------------------------------------------------------
 
+/// Upper bound on [`elab::Kind::Unif`] / [`elab::Kind::TupleUnif`] chase steps in [`chase_kind_unification_head`].
+///
+/// Breaks cycles and unbounded chains without relying on stack depth (Power-of-Ten style loop bound).
+const CHASE_KIND_UNIFICATION_HEAD_MAX_STEPS: usize = 8192;
+
 /// Follow solved [`elab::Kind::Unif`] / [`elab::Kind::TupleUnif`] cells to the representative head.
 ///
 /// Implemented as a loop so long union-find chains (no path compression) cannot overflow the stack.
+/// Step cap yields [`elab::Kind::Error`] so elaboration degrades like other stuck normalization.
 fn chase_kind_unification_head(mut kind: elab::LocatedKind) -> elab::LocatedKind {
+    let mut chase_steps = 0usize; // One increment per follow of a `Known` kind unification cell.
     loop {
         let reference = match &kind.node {
             elab::Kind::Unif(_, _, reference) | elab::Kind::TupleUnif(_, _, reference) => reference,
-            _ => return kind,
+            _ => return kind, // Concrete kind head: chase finished.
         };
+        if chase_steps >= CHASE_KIND_UNIFICATION_HEAD_MAX_STEPS {
+            let span = kind.span.clone();
+            return Located::new(elab::Kind::Error, span); // Cycle or runaway alias chain.
+        }
+        chase_steps += 1; // Count this dereference toward the cap before reading the cell.
         let guard = crate::compiler_diagnostics::lock_for_compile(
             reference.as_ref(),
             "elaboration unification cell",
@@ -403,10 +428,10 @@ fn chase_kind_unification_head(mut kind: elab::LocatedKind) -> elab::LocatedKind
         if let elab::KUnif::Known(inner) = &*guard {
             let next = *inner.clone();
             drop(guard);
-            kind = next;
+            kind = next; // Continue chasing through solved alias.
         } else {
             drop(guard);
-            return kind;
+            return kind; // Unknown cell: this unifier is the representative head.
         }
     }
 }
@@ -683,6 +708,9 @@ pub fn elab_kind(
 // Constructor head elaboration (for implicit kind args)
 // ---------------------------------------------------------------------------
 
+/// Maximum implicit [`elab::Constructor::KApp`] wrappers [`elab_con_head`] may insert (pathological kind fun stack).
+const ELAB_CON_HEAD_MAX_STEPS: usize = 65536;
+
 /// Insert implicit [`elab::Constructor::KApp`] nodes while `kind` is [`elab::Kind::Fun`] (iterative loop).
 ///
 /// Mirrors `elabConHead`: supplies inferred kind arguments for polymorphic type constructors.
@@ -700,10 +728,16 @@ fn elab_con_head(
     mut kind: elab::LocatedKind,
 ) -> (elab::LocatedConstructor, elab::LocatedKind) {
     let span = constructor.span.clone();
+    let mut head_steps = 0usize; // Each step inserts one `KApp` for an outer `Kind::Fun` binder.
     loop {
         let normalized_kind = hnorm_kind(kind);
         match &normalized_kind.node {
             elab::Kind::Fun(binder_name, body_kind) => {
+                if head_steps >= ELAB_CON_HEAD_MAX_STEPS {
+                    // Return partial application + remaining kind; downstream should fail like arity errors.
+                    return (constructor, normalized_kind);
+                }
+                head_steps += 1;
                 let fresh_kind_meta = fresh_kunif(span.clone(), binder_name);
                 constructor = Located::new(
                     elab::Constructor::KApp(
@@ -1694,9 +1728,27 @@ struct RecordSummary {
     others: Vec<elab::LocatedConstructor>,
 }
 
+/// Maximum recursion depth for [`record_summary`] (`Concat`, named alias unfold) before returning an error stub.
+const RECORD_SUMMARY_MAX_DEPTH: usize = 8192;
+
 /// Head-normalise a constructor and decompose a row constructor into a RecordSummary.
 /// Named type aliases are unfolded via `elaboration_environment` so their fields are visible to the row unifier.
 fn record_summary(elaboration_environment: &Env, c: elab::LocatedConstructor) -> RecordSummary {
+    record_summary_inner(elaboration_environment, c, 0)
+}
+
+fn record_summary_inner(
+    elaboration_environment: &Env,
+    c: elab::LocatedConstructor,
+    depth: usize,
+) -> RecordSummary {
+    if depth >= RECORD_SUMMARY_MAX_DEPTH {
+        return RecordSummary {
+            fields: vec![],
+            unifs: vec![],
+            others: vec![elaborated_constructor_error_at_span(c.span.clone())],
+        };
+    }
     let cn = hnorm_con(c.clone());
     match cn.node {
         elab::Constructor::Record(_, ref xcs) => {
@@ -1733,8 +1785,8 @@ fn record_summary(elaboration_environment: &Env, c: elab::LocatedConstructor) ->
             }
         }
         elab::Constructor::Concat(c1, c2) => {
-            let mut s1 = record_summary(elaboration_environment, *c1);
-            let s2 = record_summary(elaboration_environment, *c2);
+            let mut s1 = record_summary_inner(elaboration_environment, *c1, depth + 1);
+            let s2 = record_summary_inner(elaboration_environment, *c2, depth + 1);
             s1.fields.extend(s2.fields);
             s1.unifs.extend(s2.unifs);
             s1.others.extend(s2.others);
@@ -1753,7 +1805,7 @@ fn record_summary(elaboration_environment: &Env, c: elab::LocatedConstructor) ->
         // Unfold Named type aliases (e.g. `body'`) so their fields become visible.
         elab::Constructor::Named(id) => {
             if let Ok((_, _, Some(def))) = elaboration_environment.lookup_c_named(id) {
-                record_summary(elaboration_environment, def.clone())
+                record_summary_inner(elaboration_environment, def.clone(), depth + 1)
             } else {
                 RecordSummary {
                     fields: vec![],
@@ -1863,8 +1915,9 @@ fn unify_cons_inner(
                 return Err(Box::new(FailedToUnifyConstructors::OccursCheckWouldCycle));
             }
             // Apply squish to adjust depth from current context to the Unif's creation context.
-            let adjusted = squish_con(*nl1, right_normalized.clone())
-                .map_err(|CantSquish| Box::new(FailedToUnifyConstructors::ConstructorTooDeepForUnif))?;
+            let adjusted = squish_con(*nl1, right_normalized.clone()).map_err(|CantSquish| {
+                Box::new(FailedToUnifyConstructors::ConstructorTooDeepForUnif)
+            })?;
             *crate::compiler_diagnostics::lock_for_compile(
                 r1.as_ref(),
                 "elaboration unification cell",
@@ -1877,8 +1930,9 @@ fn unify_cons_inner(
                 return Err(Box::new(FailedToUnifyConstructors::OccursCheckWouldCycle));
             }
             // Apply squish to adjust depth from current context to the Unif's creation context.
-            let adjusted = squish_con(*nl, right_normalized.clone())
-                .map_err(|CantSquish| Box::new(FailedToUnifyConstructors::ConstructorTooDeepForUnif))?;
+            let adjusted = squish_con(*nl, right_normalized.clone()).map_err(|CantSquish| {
+                Box::new(FailedToUnifyConstructors::ConstructorTooDeepForUnif)
+            })?;
             *crate::compiler_diagnostics::lock_for_compile(
                 r.as_ref(),
                 "elaboration unification cell",
@@ -1891,8 +1945,9 @@ fn unify_cons_inner(
                 return Err(Box::new(FailedToUnifyConstructors::OccursCheckWouldCycle));
             }
             // Apply squish to adjust depth from current context to the Unif's creation context.
-            let adjusted = squish_con(*nl, left_normalized.clone())
-                .map_err(|CantSquish| Box::new(FailedToUnifyConstructors::ConstructorTooDeepForUnif))?;
+            let adjusted = squish_con(*nl, left_normalized.clone()).map_err(|CantSquish| {
+                Box::new(FailedToUnifyConstructors::ConstructorTooDeepForUnif)
+            })?;
             *crate::compiler_diagnostics::lock_for_compile(
                 r.as_ref(),
                 "elaboration unification cell",
@@ -2228,7 +2283,8 @@ fn unify_cons_inner(
             // Row summary unification does not understand map applications (it puts them in
             // `others`), so trying guess_map first avoids spurious deferred constraints that
             // would never resolve.
-            if peel_map_app(&left_normalized).is_some() || peel_map_app(&right_normalized).is_some() {
+            if peel_map_app(&left_normalized).is_some() || peel_map_app(&right_normalized).is_some()
+            {
                 return guess_map(
                     elaboration_context,
                     elaboration_environment,
@@ -2390,9 +2446,13 @@ fn unify_rows(
         let mut right_fields_remaining = right_summary.fields.clone();
         let mut all_fields_matched = true;
         for (field_name_left, field_type_left) in &left_summary.fields {
-            if let Some(position) = right_fields_remaining.iter().position(|(field_name_right, _)| {
-                field_name_left.to_lowercase() == field_name_right.to_lowercase()
-            }) {
+            if let Some(position) =
+                right_fields_remaining
+                    .iter()
+                    .position(|(field_name_right, _)| {
+                        field_name_left.to_lowercase() == field_name_right.to_lowercase()
+                    })
+            {
                 let (_, field_type_right) = right_fields_remaining.remove(position);
                 if unify_cons_inner(
                     elaboration_context,
@@ -2401,7 +2461,9 @@ fn unify_rows(
                     field_type_left,
                     &field_type_right,
                     recursion_depth + 1,
-                ).is_err() {
+                )
+                .is_err()
+                {
                     all_fields_matched = false;
                     break;
                 }
@@ -2414,7 +2476,9 @@ fn unify_rows(
         if all_fields_matched && right_fields_remaining.is_empty() {
             // Try to unify abstract pieces pairwise.
             let mut others_ok = true;
-            for (left_other, right_other) in left_summary.others.iter().zip(right_summary.others.iter()) {
+            for (left_other, right_other) in
+                left_summary.others.iter().zip(right_summary.others.iter())
+            {
                 // Try unifying other piece; if it fails, fall through to error/delay.
                 if unify_cons_inner(
                     elaboration_context,
@@ -2423,7 +2487,9 @@ fn unify_rows(
                     left_other,
                     right_other,
                     recursion_depth + 1,
-                ).is_err() {
+                )
+                .is_err()
+                {
                     others_ok = false;
                     break;
                 }
@@ -2631,8 +2697,12 @@ fn guess_map_unfold(
                     elab::Kind::Record(Box::new(domain_kind.clone())),
                     span.clone(),
                 );
-                let pre_row_left =
-                    fresh_cunif(elaboration_environment, span.clone(), krecord_dom.clone(), "_mr1");
+                let pre_row_left = fresh_cunif(
+                    elaboration_environment,
+                    span.clone(),
+                    krecord_dom.clone(),
+                    "_mr1",
+                );
                 let pre_row_right =
                     fresh_cunif(elaboration_environment, span.clone(), krecord_dom, "_mr2");
                 // Recursively unfold each sub-row.
@@ -2680,8 +2750,12 @@ fn guess_map_unfold(
                 elab::Kind::Record(Box::new(domain_kind.clone())),
                 span.clone(),
             );
-            let pre_row_left =
-                fresh_cunif(elaboration_environment, span.clone(), krecord_dom.clone(), "_mr1");
+            let pre_row_left = fresh_cunif(
+                elaboration_environment,
+                span.clone(),
+                krecord_dom.clone(),
+                "_mr1",
+            );
             let pre_row_right =
                 fresh_cunif(elaboration_environment, span.clone(), krecord_dom, "_mr2");
             guess_map_unfold(
@@ -2773,8 +2847,10 @@ fn guess_map_unfold(
                         return Err(Box::new(FailedToUnifyConstructors::OccursCheckWouldCycle));
                     }
                     // Squish adjusts from current depth to Unif's creation depth (mirrors SML unifyCons'').
-                    let adjusted = squish_con(nesting_level, map_f_pre_image)
-                        .map_err(|CantSquish| Box::new(FailedToUnifyConstructors::ConstructorTooDeepForUnif))?;
+                    let adjusted =
+                        squish_con(nesting_level, map_f_pre_image).map_err(|CantSquish| {
+                            Box::new(FailedToUnifyConstructors::ConstructorTooDeepForUnif)
+                        })?;
                     *crate::compiler_diagnostics::lock_for_compile(
                         unif_cell.as_ref(),
                         "guess_map_unfold assign unif cell",
@@ -3413,16 +3489,18 @@ fn elab_exp_inner(
                     );
                     // Fresh Unifs start at nl=0, so squish(0, tfun) = tfun.  For lifted Unifs,
                     // squish adjusts the solution to the Unif's creation depth.
-                    let tfun_squished = squish_con(unif_nesting_level, tfun).unwrap_or_else(
-                        |CantSquish| {
+                    let tfun_squished =
+                        squish_con(unif_nesting_level, tfun).unwrap_or_else(|CantSquish| {
                             // If squish fails (Unif was lifted through binders that tfun references),
                             // store tfun directly as best-effort; a type error will surface later.
                             Located::new(
-                                elab::Constructor::TFun(Box::new(dom.clone()), Box::new(ran.clone())),
+                                elab::Constructor::TFun(
+                                    Box::new(dom.clone()),
+                                    Box::new(ran.clone()),
+                                ),
                                 span.clone(),
                             )
-                        },
-                    );
+                        });
                     *crate::compiler_diagnostics::lock_for_compile(
                         r.as_ref(),
                         "elaboration unification cell",

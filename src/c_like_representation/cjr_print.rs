@@ -2529,14 +2529,14 @@ fn sig_name(fields: &[(String, LocTyp)]) -> String {
     if !in_fields("Sig") {
         return "Sig".to_string();
     }
-    let mut n = 0usize;
-    loop {
+    const MAX_SIG_NAME_TRIES: usize = 1_000_000;
+    for n in 0..MAX_SIG_NAME_TRIES {
         let candidate = format!("Sig{n}");
         if !in_fields(&candidate) {
             return candidate;
         }
-        n += 1;
     }
+    panic!("sig_name: could not find unused synthetic Sig field in {MAX_SIG_NAME_TRIES} tries");
 }
 
 /// `flatFields` from cjr_print.sml: returns layers of sibling field names (outer to inner).

@@ -63,6 +63,7 @@ pub fn word_at_cursor(text: &str, line0: u32, col0: u32) -> Option<String> {
     if start == end {
         return None;
     }
+    debug_assert!(start <= end && end <= chars.len());
     Some(chars[start..end].iter().collect())
 }
 
@@ -467,7 +468,17 @@ pub fn document_highlights(text: &str, line: u32, character: u32) -> Vec<Range> 
 }
 
 fn find_word(hay: &str, needle: &str, mut start_byte: usize) -> Option<usize> {
+    if needle.is_empty() {
+        return None;
+    }
+    let mut rounds = 0usize;
+    let round_limit = hay.len().saturating_add(1);
     loop {
+        if rounds > round_limit {
+            debug_assert!(false, "find_word iteration bound exceeded");
+            return None;
+        }
+        rounds += 1;
         let h = hay.get(start_byte..)?;
         let idx = h.find(needle)?;
         let abs = start_byte + idx;

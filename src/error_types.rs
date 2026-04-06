@@ -1178,6 +1178,24 @@ impl ErrorReporter {
         ));
     }
 
+    /// Surfaces a catalog warning (non-fatal) via [`CompileError::warning_at`].
+    pub fn report_warning_at(&mut self, span: Span, payload: DiagnosticPayload) {
+        self.report(CompileError::warning_at(span, payload));
+    }
+
+    /// Surfaces a catalog warning with structured hint, mirroring [`Self::report_at_with_hint`].
+    pub fn report_warning_at_with_hint(
+        &mut self,
+        span: Span,
+        payload: DiagnosticPayload,
+        hint_id: DiagnosticId,
+        hint_args: Vec<String>,
+    ) {
+        self.report(CompileError::warning_at_with_hint(
+            span, payload, hint_id, hint_args,
+        ));
+    }
+
     /// [`CompileError::type_at`] (`-- TYPE`) then [`Self::report`].
     pub fn report_type_at(&mut self, span: Span, payload: DiagnosticPayload) {
         self.report(CompileError::type_at(span, payload));

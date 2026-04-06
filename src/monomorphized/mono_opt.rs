@@ -19,18 +19,16 @@ use crate::settings::Settings;
 // ---------------------------------------------------------------------------
 
 fn attrify_int(n: i64) -> String {
-    if n < 0 {
-        format!("-{}", -n)
-    } else {
-        n.to_string()
+    match n < 0 {
+        true => format!("-{}", -n),
+        false => n.to_string(),
     }
 }
 
 fn attrify_float(n: f64) -> String {
-    if n < 0.0 {
-        format!("-{}", -n)
-    } else {
-        n.to_string()
+    match n < 0.0 {
+        true => format!("-{}", -n),
+        false => n.to_string(),
     }
 }
 
@@ -71,45 +69,40 @@ fn hex_pad(c: u32) -> String {
 
 fn hex_it(ch: char) -> String {
     let c = ch as u32;
-    if c <= 0x7f {
-        hex_pad(c)
-    } else if c <= 0x7ff {
-        format!("{}{}", hex_pad((c >> 6) | 0xc0), hex_pad((c & 0x3f) | 0x80))
-    } else if c <= 0xffff {
-        format!(
+    match c {
+        0..=0x7f => hex_pad(c),
+        0x80..=0x7ff => {
+            format!("{}{}", hex_pad((c >> 6) | 0xc0), hex_pad((c & 0x3f) | 0x80))
+        }
+        0x800..=0xffff => format!(
             "{}{}{}",
             hex_pad((c >> 12) | 0xe0),
             hex_pad(((c >> 6) & 0x3f) | 0x80),
-            hex_pad((c & 0x3f) | 0x80)
-        )
-    } else {
-        format!(
+            hex_pad((c & 0x3f) | 0x80),
+        ),
+        _ => format!(
             "{}{}{}{}",
             hex_pad((c >> 18) | 0xf0),
             hex_pad(((c >> 12) & 0x3f) | 0x80),
             hex_pad(((c >> 6) & 0x3f) | 0x80),
-            hex_pad((c & 0x3f) | 0x80)
-        )
+            hex_pad((c & 0x3f) | 0x80),
+        ),
     }
 }
 
 fn urlify_char_aux(ch: char) -> String {
-    if ch == ' ' {
-        "+".into()
-    } else if ch as u32 == 0 {
-        "_".into()
-    } else if ch.is_alphanumeric() {
-        ch.to_string()
-    } else {
-        format!(".{}", hex_it(ch))
+    match ch {
+        ' ' => "+".into(),
+        c if c as u32 == 0 => "_".into(),
+        c if c.is_alphanumeric() => c.to_string(),
+        c => format!(".{}", hex_it(c)),
     }
 }
 
 fn urlify_char(ch: char) -> String {
-    if ch == '_' {
-        format!("_{}", urlify_char_aux(ch))
-    } else {
-        urlify_char_aux(ch)
+    match ch == '_' {
+        true => format!("_{}", urlify_char_aux(ch)),
+        false => urlify_char_aux(ch),
     }
 }
 
@@ -117,7 +110,10 @@ fn urlify_string(s: &str) -> String {
     if s.is_empty() {
         return "_".into();
     }
-    let prefix = if s.starts_with('_') { "_" } else { "" };
+    let prefix = match s.starts_with('_') {
+        true => "_",
+        false => "",
+    };
     format!(
         "{}{}",
         prefix,
@@ -131,39 +127,37 @@ fn urlify_string(s: &str) -> String {
 
 fn sqlify_int(n: i64, settings: &Settings) -> String {
     let s = attrify_int(n);
-    if ProjectDbCtx::new(&settings.db_backend).is_mysql() {
-        s
-    } else {
-        // PostgreSQL: cast syntax
-        format!("{}::int8", s)
+    match ProjectDbCtx::new(&settings.db_backend).is_mysql() {
+        true => s,
+        false => format!("{}::int8", s),
     }
 }
 
 fn sqlify_float(n: f64, settings: &Settings) -> String {
     let s = attrify_float(n);
-    if ProjectDbCtx::new(&settings.db_backend).is_mysql() {
-        s
-    } else {
-        format!("{}::float8", s)
+    match ProjectDbCtx::new(&settings.db_backend).is_mysql() {
+        true => s,
+        false => format!("{}::float8", s),
     }
 }
 
 fn sqlify_string(s: &str, settings: &Settings) -> String {
-    if ProjectDbCtx::new(&settings.db_backend).is_mysql() {
-        // MySQL: escape backslash and single-quote
-        let escaped: String = s
-            .chars()
-            .flat_map(|c| match c {
-                '\'' => vec!['\\', '\''],
-                '\\' => vec!['\\', '\\'],
-                c => vec![c],
-            })
-            .collect();
-        format!("'{}'", escaped)
-    } else {
-        // PostgreSQL: double single-quotes
-        let escaped = s.replace('\'', "''");
-        format!("'{}'", escaped)
+    match ProjectDbCtx::new(&settings.db_backend).is_mysql() {
+        true => {
+            let escaped: String = s
+                .chars()
+                .flat_map(|c| match c {
+                    '\'' => vec!['\\', '\''],
+                    '\\' => vec!['\\', '\\'],
+                    c => vec![c],
+                })
+                .collect();
+            format!("'{}'", escaped)
+        }
+        false => {
+            let escaped = s.replace('\'', "''");
+            format!("'{}'", escaped)
+        }
     }
 }
 
@@ -174,18 +168,16 @@ fn sqlify_char(ch: char, settings: &Settings) -> String {
 }
 
 fn sqlify_bool_true(settings: &Settings) -> &'static str {
-    if ProjectDbCtx::new(&settings.db_backend).is_mysql() {
-        "1"
-    } else {
-        "TRUE"
+    match ProjectDbCtx::new(&settings.db_backend).is_mysql() {
+        true => "1",
+        false => "TRUE",
     }
 }
 
 fn sqlify_bool_false(settings: &Settings) -> &'static str {
-    if ProjectDbCtx::new(&settings.db_backend).is_mysql() {
-        "0"
-    } else {
-        "FALSE"
+    match ProjectDbCtx::new(&settings.db_backend).is_mysql() {
+        true => "0",
+        false => "FALSE",
     }
 }
 
@@ -301,12 +293,14 @@ fn un_as(s: &str) -> String {
 /// (for `checkString`).
 fn uwify_check_string(s: &str) -> String {
     let chars: Vec<char> = s.chars().collect();
-    let prefix = if chars.first() == Some(&'_') {
-        "uw_"
-    } else {
-        ""
+    let prefix = match chars.first() == Some(&'_') {
+        true => "uw_",
+        false => "",
     };
-    let start = if chars.first() == Some(&'_') { 1 } else { 0 };
+    let start = match chars.first() == Some(&'_') {
+        true => 1,
+        false => 0,
+    };
     let body = uwify_inner(&chars[start..]);
     format!("{}{}", prefix, body)
 }

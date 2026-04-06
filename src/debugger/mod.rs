@@ -12,7 +12,7 @@
 //!
 //! **Style:** new/edited Rust here follows [README.md](../../README.md) Rust code style (exceptions documented there).
 
-mod dap_framing;
+pub mod dap_framing;
 mod dap_session;
 mod dap_shared;
 mod diagnostic_locale;

@@ -32,6 +32,9 @@
 //! [`fold_postfixes`] even when the generator needs further grammar or engine work
 //! to eliminate table conflicts.
 //!
+//! **`loop` / `while` in this module:** each comparison/add/mul/app loop consumes at least one token
+//! per iteration (`bump` or `break`), so iterations are bounded by the lexer token count (hence input size).
+//!
 //! ## Precedence (tight → loose), aligned with `grammar.lalrpop` `ArithExp`
 //! Juxtaposition (application) → `*`, `/`, `%` → `+`, `-`, `^` (desugared to
 //! `Basis.strcat` apps, left-associative) → `::` (right-associative cons) →

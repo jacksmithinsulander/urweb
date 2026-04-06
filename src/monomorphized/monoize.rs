@@ -1153,11 +1153,19 @@ fn desugar_tag(
     make_strcat(open, make_strcat(xml_e, close))
 }
 
+/// Maximum `ECApp` / `CApp` layers peeled by [`peel_capp`] (matches other IR chain caps).
+const MAX_PEEL_CAPP_DEPTH: usize = 65_536;
+
 /// Peel `CApp` layers: returns `(innermost_expr, type_args_innermost_first)`.
 fn peel_capp(e: &LocatedExpression) -> (&LocatedExpression, Vec<&LocatedConstructor>) {
     let mut inner = e;
     let mut args = Vec::new();
+    let mut depth = 0usize;
     while let CE::CApp(inner_e, c) = &inner.node {
+        if depth >= MAX_PEEL_CAPP_DEPTH {
+            panic!("peel_capp exceeded {MAX_PEEL_CAPP_DEPTH} (internal limit)");
+        }
+        depth += 1;
         args.push(c as &LocatedConstructor);
         inner = inner_e;
     }

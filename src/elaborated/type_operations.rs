@@ -4,6 +4,9 @@
 //!
 //! Public helpers document `# Arguments`, `# Returns`, and `# Errors` (including [`SubUnif`])
 //! where de Bruijn level conventions are not obvious from types alone.
+//!
+//! **Bounded work:** [`hnorm_con`] uses a thread-local depth counter; solved-[`Constructor::Unif`] peeling
+//! uses [`PEEL_SOLVED_CONSTRUCTOR_UNIF_CHAIN_MAX_STEPS`] so alias chains cannot cycle without bound.
 
 use std::sync::Arc;
 
@@ -346,7 +349,12 @@ fn lift_con_in_con_bound(
         ),
         Constructor::TCFun(exp, x, k, body) => {
             // TCFun introduces a constructor binder, so increment `bound` so local Rel(0) is not lifted.
-            Constructor::TCFun(exp, x, k, Box::new(lift_con_in_con_bound(by, bound + 1, *body)))
+            Constructor::TCFun(
+                exp,
+                x,
+                k,
+                Box::new(lift_con_in_con_bound(by, bound + 1, *body)),
+            )
         }
         Constructor::TRecord(row) => {
             Constructor::TRecord(Box::new(lift_con_in_con_bound(by, bound, *row)))
@@ -441,7 +449,10 @@ pub fn lift_con_in_con(constructor: LocatedConstructor) -> LocatedConstructor {
 /// # Returns
 ///
 /// `Ok(constructor_at_depth_0)` on success.
-pub fn squish_con(by: usize, constructor: LocatedConstructor) -> Result<LocatedConstructor, CantSquish> {
+pub fn squish_con(
+    by: usize,
+    constructor: LocatedConstructor,
+) -> Result<LocatedConstructor, CantSquish> {
     if by == 0 {
         // Identity: no binders to squish.
         return Ok(constructor);
@@ -844,10 +855,16 @@ pub fn mlift_con_in_con(
     lift_con_in_con_bound(binder_count, 0, constructor)
 }
 
+/// Upper bound on solved [`Constructor::Unif`] indirections peeled in one call.
+///
+/// Cycles or pathological chains must not spin without stack growth (LangSec / bounded work per request).
+const PEEL_SOLVED_CONSTRUCTOR_UNIF_CHAIN_MAX_STEPS: usize = 8192;
+
 /// Peel a chain of solved [`Constructor::Unif`] heads in one go (no one-frame-per-link recursion).
 ///
 /// Long `Known` pointer chains from constructor unification can otherwise exhaust the stack before
-/// [`hnorm_con`]'s depth counter runs out.
+/// [`hnorm_con`]'s depth counter runs out. Step cap returns [`Constructor::Error`] like excessive
+/// [`hnorm_con`] depth (bad or cyclic instantiation graph).
 ///
 /// # Arguments
 ///
@@ -857,16 +874,20 @@ pub fn mlift_con_in_con(
 ///
 /// First non-`Unif`, or the first `Unif` whose cell is still [`CUnif::Unknown`].
 fn peel_solved_constructor_unif_chain(mut constructor: LocatedConstructor) -> LocatedConstructor {
+    let mut peel_steps = 0usize; // Count each solved-cell follow to bound cycles and mega-chains.
     loop {
         match &constructor.node {
-            Constructor::Unif(binder_count, _, _, _, reference) => {
-                if let Some(inner) = read_cunif(reference) {
-                    // Follow one solved cell and lift indices back through `binder_count` binders.
-                    constructor = mlift_con_in_con(*binder_count, inner);
-                } else {
-                    return constructor;
+            Constructor::Unif(binder_count, _, _, _, reference) => match read_cunif(reference) {
+                Some(inner) => {
+                    if peel_steps >= PEEL_SOLVED_CONSTRUCTOR_UNIF_CHAIN_MAX_STEPS {
+                        let span = constructor.span.clone();
+                        return Located::new(Constructor::Error, span);
+                    }
+                    peel_steps += 1; // About to follow one more link in the unifier cell graph.
+                    constructor = mlift_con_in_con(*binder_count, inner); // Lift through `binder_count` binders.
                 }
-            }
+                None => return constructor,
+            },
             _ => return constructor,
         }
     }
@@ -1794,7 +1815,10 @@ mod tests {
             Box::new(body),
         ));
         let arg = dummy(Constructor::Unit);
-        let app = dummy(Constructor::App(Box::new(head.clone()), Box::new(arg.clone())));
+        let app = dummy(Constructor::App(
+            Box::new(head.clone()),
+            Box::new(arg.clone()),
+        ));
         let out = hnorm_con(app);
         // App(TCFun(...), Unit) should remain as App(...) — TCFun does not beta-reduce.
         assert!(

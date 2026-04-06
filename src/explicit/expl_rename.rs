@@ -916,7 +916,13 @@ pub fn rename(
             // Compute a unique name for the formal that doesn't clash with
             // any DStr in the output.
             let mut formal_name_munged = formal_name.to_string();
+            const MAX_FORMAL_NAME_MUNGE_ROUNDS: usize = 65_536;
+            let mut munge_round = 0usize;
             loop {
+                if munge_round >= MAX_FORMAL_NAME_MUNGE_ROUNDS {
+                    panic!("rename: formal name munge exceeded {MAX_FORMAL_NAME_MUNGE_ROUNDS}");
+                }
+                munge_round += 1;
                 let clashes = new_ds.iter().any(|d| {
                     matches!(&d.node,
                     expl::Declaration::Structure(x, _, _, _) if x == &formal_name_munged)

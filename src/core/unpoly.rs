@@ -1031,11 +1031,19 @@ fn walk_decl(d: LocatedDeclaration, state: &mut State) -> LocatedDeclaration {
     }
 }
 
+/// Maximum outer [`Expression::CAbs`] binders walked by [`collect_cabs_kinds`].
+const MAX_COLLECT_CABS_KINDS_DEPTH: usize = 65_536;
+
 /// Collect the sequence of outer `CAbs` binder kinds from an expression.
 fn collect_cabs_kinds(e: &LocatedExpression) -> Vec<LocatedKind> {
     let mut kinds = Vec::new();
     let mut cur = e;
+    let mut steps = 0usize;
     while let Expression::CAbs(_, k, body) = &cur.node {
+        if steps >= MAX_COLLECT_CABS_KINDS_DEPTH {
+            panic!("collect_cabs_kinds exceeded {MAX_COLLECT_CABS_KINDS_DEPTH} (internal limit)");
+        }
+        steps += 1;
         kinds.push(*k.clone());
         cur = body;
     }

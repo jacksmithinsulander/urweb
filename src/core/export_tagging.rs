@@ -29,8 +29,16 @@ impl UnionFind {
         }
     }
 
+    /// Follow `parent` links to a root. Bounded by `|parent| + 1` so a cyclic or corrupted map
+    /// cannot loop forever (Power-of-Ten / defensive guard on compiler state).
     pub(crate) fn representative(&self, mut node: usize) -> usize {
+        let hop_limit = self.parent.len().saturating_add(1);
+        let mut hops = 0usize;
         while let Some(&parent) = self.parent.get(&node) {
+            if hops >= hop_limit {
+                panic!("UnionFind::representative exceeded hop limit (cycle or inconsistent map)");
+            }
+            hops += 1;
             node = parent;
         }
         node
@@ -64,21 +72,30 @@ struct State {
 // ---------------------------------------------------------------------------
 
 /// Unravels nested `EApp` applications, collecting the head name and arguments.
+///
+/// Iterative so pathological `App` towers do not blow the Rust stack; depth capped at [`MAX_UNRAVEL_APP_DEPTH`].
+const MAX_UNRAVEL_APP_DEPTH: usize = 65_536;
+
 pub(crate) fn unravel_app(
     expression: &LocatedExpression,
 ) -> Option<(usize, Vec<LocatedExpression>)> {
-    fn inner(expression: &LocatedExpression, args: &mut Vec<LocatedExpression>) -> Option<usize> {
-        match &expression.node {
-            Expression::Named(name_id) => Some(*name_id),
+    let mut args = Vec::new();
+    let mut cur = expression;
+    let mut depth = 0usize;
+    loop {
+        match &cur.node {
+            Expression::Named(name_id) => return Some((*name_id, args)),
             Expression::App(function, argument) => {
+                if depth >= MAX_UNRAVEL_APP_DEPTH {
+                    return None;
+                }
+                depth += 1;
                 args.insert(0, *argument.clone());
-                inner(function, args)
+                cur = function;
             }
-            _ => None,
+            _ => return None,
         }
     }
-    let mut args = Vec::new();
-    inner(expression, &mut args).map(|name_id| (name_id, args))
 }
 
 /// Emits an error for a duplicate URL prefix.

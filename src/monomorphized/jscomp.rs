@@ -428,10 +428,9 @@ fn quote_exp(
             let inner_e = quote_exp(s, &inner, rel(s, 0), st, _settings, errors)?;
 
             let nullable = is_nullable(&inner);
-            let some_body = if nullable {
-                strcat_exp(errors, s, vec![str_lit(s, "{v:"), inner_e, str_lit(s, "}")])
-            } else {
-                inner_e
+            let some_body = match nullable {
+                true => strcat_exp(errors, s, vec![str_lit(s, "{v:"), inner_e, str_lit(s, "}")]),
+                false => inner_e,
             };
 
             let t_opt = t.clone();
@@ -542,17 +541,14 @@ fn quote_exp(
                         let inner_q = quote_exp(s, &ct_inner, rel(s, 0), st, _settings, errors)?;
 
                         let body = match dk {
-                            DatatypeKind::Option => {
-                                if is_nullable(&ct_inner) {
-                                    strcat_exp(
-                                        errors,
-                                        s,
-                                        vec![str_lit(s, "{v:"), inner_q, str_lit(s, "}")],
-                                    )
-                                } else {
-                                    inner_q
-                                }
-                            }
+                            DatatypeKind::Option => match is_nullable(&ct_inner) {
+                                true => strcat_exp(
+                                    errors,
+                                    s,
+                                    vec![str_lit(s, "{v:"), inner_q, str_lit(s, "}")],
+                                ),
+                                false => inner_q,
+                            },
                             _ => strcat_exp(
                                 errors,
                                 s,
@@ -645,10 +641,9 @@ fn unurlify_exp(
         Typ::Option(inner) => {
             let inner = (**inner).clone();
             let e = unurlify_exp(span, &inner, st, _settings, errors);
-            let e2 = if is_nullable(&inner) {
-                format!("{{v:{e}}}")
-            } else {
-                e
+            let e2 = match is_nullable(&inner) {
+                true => format!("{{v:{e}}}"),
+                false => e,
             };
             format!("(t[i++]==\"Some\"?{e2}:null)")
         }
@@ -691,13 +686,10 @@ fn unurlify_exp(
                     Some(ct_inner) => {
                         let e = unurlify_exp(span, ct_inner, st, _settings, errors);
                         let val = match dk {
-                            DatatypeKind::Option => {
-                                if is_nullable(ct_inner) {
-                                    format!("{{v:{e}}}")
-                                } else {
-                                    e
-                                }
-                            }
+                            DatatypeKind::Option => match is_nullable(ct_inner) {
+                                true => format!("{{v:{e}}}"),
+                                false => e,
+                            },
                             _ => format!("{{n:{cn},v:{e}}}"),
                         };
                         format!("x==\"{x}\"?{val}:{expr}")
@@ -729,15 +721,16 @@ fn unurlify_exp(
 // ---------------------------------------------------------------------------
 
 fn pad_with(ch: char, s: &str, len: usize) -> String {
-    if s.len() < len {
-        let mut out = String::new();
-        for _ in 0..(len - s.len()) {
-            out.push(ch);
+    match s.len() < len {
+        true => {
+            let mut out = String::new();
+            for _ in 0..(len - s.len()) {
+                out.push(ch);
+            }
+            out.push_str(s);
+            out
         }
-        out.push_str(s);
-        out
-    } else {
-        s.to_string()
+        false => s.to_string(),
     }
 }
 
@@ -747,13 +740,10 @@ fn pad_with(ch: char, s: &str, len: usize) -> String {
 
 fn js_char(ch: char, mode: &JsMode) -> String {
     match ch {
-        '\'' => {
-            if *mode == JsMode::Attribute {
-                "\\047".to_string()
-            } else {
-                "'".to_string()
-            }
-        }
+        '\'' => match *mode == JsMode::Attribute {
+            true => "\\047".to_string(),
+            false => "'".to_string(),
+        },
         '"' => "\\\"".to_string(),
         '<' => "\\074".to_string(),
         '\\' => "\\\\".to_string(),
@@ -761,11 +751,14 @@ fn js_char(ch: char, mode: &JsMode) -> String {
         '\r' => "\\r".to_string(),
         '\t' => "\\t".to_string(),
         ch => {
-            if ch.is_ascii() && (ch.is_ascii_graphic() || ch == ' ') || (ch as u32) >= 128 {
-                ch.to_string()
-            } else {
-                let oct = format!("{:o}", ch as u32);
-                format!("\\{}", pad_with('0', &oct, 3))
+            let is_printable_ascii_or_unicode =
+                ch.is_ascii() && (ch.is_ascii_graphic() || ch == ' ') || (ch as u32) >= 128;
+            match is_printable_ascii_or_unicode {
+                true => ch.to_string(),
+                false => {
+                    let oct = format!("{:o}", ch as u32);
+                    format!("\\{}", pad_with('0', &oct, 3))
+                }
             }
         }
     }
@@ -904,7 +897,10 @@ fn js_pat(
             match some_ts.get(n) {
                 None => str_lit(span, "{c:\"c\",v:null}"), // fallback
                 Some(t) => {
-                    let nullable_str = if is_nullable(t) { "true" } else { "false" };
+                    let nullable_str = match is_nullable(t) {
+                        true => "true",
+                        false => "false",
+                    };
                     let inner_js = js_pat(inner_p, some_ts, span, errors);
                     strcat_exp(
                         errors,
@@ -968,7 +964,10 @@ fn js_pat(
         }
         Pat::None(_) => str_lit(span, "{c:\"c\",v:null}"),
         Pat::Some(t, inner_p) => {
-            let nullable_str = if is_nullable(t) { "true" } else { "false" };
+            let nullable_str = match is_nullable(t) {
+                true => "true",
+                false => "false",
+            };
             let inner_js = js_pat(inner_p, some_ts, span, errors);
             strcat_exp(
                 errors,
@@ -1100,14 +1099,15 @@ fn js_e(
 
         Exp::Rel(n) => {
             let n = *n;
-            if n < inner {
-                Ok(str!(&format!("{{c:\"v\",n:{n}}}")))
-            } else {
-                let idx = n - inner;
-                let t = outer.get(idx).ok_or(CantEmbed)?.clone();
-                let rel_e = rel(s, idx);
-                let quoted = quote_exp(s, &t, rel_e, st, settings, errors)?;
-                Ok(cat![str!("{c:\"c\",v:"), quoted, str!("}")])
+            match n < inner {
+                true => Ok(str!(&format!("{{c:\"v\",n:{n}}}"))),
+                false => {
+                    let idx = n - inner;
+                    let t = outer.get(idx).ok_or(CantEmbed)?.clone();
+                    let rel_e = rel(s, idx);
+                    let quoted = quote_exp(s, &t, rel_e, st, settings, errors)?;
+                    Ok(cat![str!("{c:\"c\",v:"), quoted, str!("}")])
+                }
             }
         }
 
@@ -1164,13 +1164,10 @@ fn js_e(
                     // Not in someTs — treat as Some
                     Ok(compiled)
                 }
-                Some(t) => {
-                    if is_nullable(t) {
-                        Ok(cat![str!("{c:\"s\",v:"), compiled, str!("}")])
-                    } else {
-                        Ok(compiled)
-                    }
-                }
+                Some(t) => match is_nullable(t) {
+                    true => Ok(cat![str!("{c:\"s\",v:"), compiled, str!("}")]),
+                    false => Ok(compiled),
+                },
             }
         }
         Exp::Con(_, pc, None) => {
@@ -1192,10 +1189,9 @@ fn js_e(
         Exp::None(_) => Ok(str!("{c:\"c\",v:null}")),
         Exp::Some(t, inner_e) => {
             let compiled = recurse!(inner_e);
-            if is_nullable(t) {
-                Ok(cat![str!("{c:\"s\",v:"), compiled, str!("}")])
-            } else {
-                Ok(compiled)
+            match is_nullable(t) {
+                true => Ok(cat![str!("{c:\"s\",v:"), compiled, str!("}")]),
+                false => Ok(compiled),
             }
         }
 
@@ -1624,7 +1620,10 @@ fn js_e(
         Exp::ServerCall(inner_e, t, eff, fm) => {
             let compiled = recurse!(inner_e);
             let unurl = unurlify_exp(s, t, st, settings, errors);
-            let is_nullable_t = if is_nullable(t) { "true" } else { "false" };
+            let is_nullable_t = match is_nullable(t) {
+                true => "true",
+                false => "false",
+            };
             let last_arg = match fm {
                 FailureMode::None => "null".to_string(),
                 FailureMode::Error => {
@@ -1704,76 +1703,80 @@ fn seek_field(
     match &base.node {
         Exp::Rel(n) => {
             let n = *n;
-            if n < inner {
-                // It is a JS-runtime variable — emit generic field access
-                let _base_c = js_e(
-                    mode,
-                    outer,
-                    inner,
-                    base,
-                    st,
-                    settings,
-                    errors,
-                    nameds,
-                    some_ts,
-                    found_javascript,
-                )?;
-                let last_x = xs.last().ok_or(CantEmbed)?;
-                let inner_c = {
-                    // Build the base.fields_except_last expression
-                    let mut e = base.clone();
-                    for x in &xs[..xs.len() - 1] {
-                        e = field(s, e, x);
-                    }
-                    js_e(
+            match n < inner {
+                true => {
+                    // It is a JS-runtime variable — emit generic field access
+                    let _base_c = js_e(
                         mode,
                         outer,
                         inner,
-                        &e,
+                        base,
                         st,
                         settings,
                         errors,
                         nameds,
                         some_ts,
                         found_javascript,
-                    )?
-                };
-                Ok(strcat_exp(
-                    errors,
-                    s,
-                    vec![
-                        str_lit(s, "{c:\".\",r:"),
-                        inner_c,
-                        str_lit(s, &format!(",f:\"{last_x}\"}}")),
-                    ],
-                ))
-            } else {
-                // Captured from server — resolve type through field chain
-                let idx = n - inner;
-                let mut t = outer.get(idx).ok_or(CantEmbed)?.clone();
-                // Walk field chain to get the leaf type
-                for x in xs {
-                    if let Typ::Record(fields) = &t.node.clone() {
-                        t = fields
-                            .iter()
-                            .find(|(name, _)| name == x)
-                            .map(|(_, ft)| ft.clone())
-                            .ok_or(CantEmbed)?;
-                    } else {
-                        return Err(CantEmbed);
+                    )?;
+                    let last_x = xs.last().ok_or(CantEmbed)?;
+                    let inner_c = {
+                        // Build the base.fields_except_last expression
+                        let mut e = base.clone();
+                        for x in &xs[..xs.len() - 1] {
+                            e = field(s, e, x);
+                        }
+                        js_e(
+                            mode,
+                            outer,
+                            inner,
+                            &e,
+                            st,
+                            settings,
+                            errors,
+                            nameds,
+                            some_ts,
+                            found_javascript,
+                        )?
+                    };
+                    Ok(strcat_exp(
+                        errors,
+                        s,
+                        vec![
+                            str_lit(s, "{c:\".\",r:"),
+                            inner_c,
+                            str_lit(s, &format!(",f:\"{last_x}\"}}")),
+                        ],
+                    ))
+                }
+                false => {
+                    // Captured from server — resolve type through field chain
+                    let idx = n - inner;
+                    let mut t = outer.get(idx).ok_or(CantEmbed)?.clone();
+                    // Walk field chain to get the leaf type
+                    for x in xs {
+                        match &t.node.clone() {
+                            Typ::Record(fields) => {
+                                t = fields
+                                    .iter()
+                                    .find(|(name, _)| name == x)
+                                    .map(|(_, ft)| ft.clone())
+                                    .ok_or(CantEmbed)?;
+                            }
+                            _ => return Err(CantEmbed),
+                        }
                     }
+                    // Build the field-access expression to pass to quoteExp
+                    let mut acc = rel(s, idx);
+                    for x in xs {
+                        acc = field(s, acc, x);
+                    }
+                    let quoted = quote_exp(s, &t, acc, st, settings, errors)?;
+                    Ok(strcat_exp(
+                        errors,
+                        s,
+                        vec![str_lit(s, "{c:\"c\",v:"), quoted, str_lit(s, "}")],
+                    ))
                 }
-                // Build the field-access expression to pass to quoteExp
-                let mut acc = rel(s, idx);
-                for x in xs {
-                    acc = field(s, acc, x);
-                }
-                let quoted = quote_exp(s, &t, acc, st, settings, errors)?;
-                Ok(strcat_exp(
-                    errors,
-                    s,
-                    vec![str_lit(s, "{c:\"c\",v:"), quoted, str_lit(s, "}")],
-                ))
             }
         }
         Exp::Field(inner_base, x) => {
@@ -1799,8 +1802,8 @@ fn seek_field(
             // Default: generic field access
             let last_x = xs.last().ok_or(CantEmbed)?;
             // Build the base expression (everything except the outermost field)
-            let inner_c = if xs.len() == 1 {
-                js_e(
+            let inner_c = match xs.len() == 1 {
+                true => js_e(
                     mode,
                     outer,
                     inner,
@@ -1811,24 +1814,25 @@ fn seek_field(
                     nameds,
                     some_ts,
                     found_javascript,
-                )?
-            } else {
-                let mut e = base.clone();
-                for x in &xs[..xs.len() - 1] {
-                    e = field(s, e, x);
+                )?,
+                false => {
+                    let mut e = base.clone();
+                    for x in &xs[..xs.len() - 1] {
+                        e = field(s, e, x);
+                    }
+                    js_e(
+                        mode,
+                        outer,
+                        inner,
+                        &e,
+                        st,
+                        settings,
+                        errors,
+                        nameds,
+                        some_ts,
+                        found_javascript,
+                    )?
                 }
-                js_e(
-                    mode,
-                    outer,
-                    inner,
-                    &e,
-                    st,
-                    settings,
-                    errors,
-                    nameds,
-                    some_ts,
-                    found_javascript,
-                )?
             };
             Ok(strcat_exp(
                 errors,
@@ -2372,58 +2376,56 @@ fn process(
     }
 
     // Build JavaScript output
-    let script = if found_javascript {
-        // Try to read the urweb.js library file
-        let lib_js = {
-            let lib_path = if settings.config_lib.is_empty() {
-                std::path::PathBuf::from("lib").join("js").join("urweb.js")
-            } else {
-                std::path::PathBuf::from(&settings.config_lib)
-                    .join("js")
-                    .join("urweb.js")
+    let script = match found_javascript {
+        true => {
+            // Try to read the urweb.js library file
+            let lib_js = {
+                let lib_path = match settings.config_lib.is_empty() {
+                    true => std::path::PathBuf::from("lib").join("js").join("urweb.js"),
+                    false => std::path::PathBuf::from(&settings.config_lib)
+                        .join("js")
+                        .join("urweb.js"),
+                };
+                std::fs::read_to_string(&lib_path).unwrap_or_else(|_| {
+                    // Fallback: empty string (no runtime library available at compile time)
+                    String::new()
+                })
             };
-            std::fs::read_to_string(&lib_path).unwrap_or_else(|_| {
-                // Fallback: empty string (no runtime library available at compile time)
-                String::new()
-            })
-        };
 
-        // Build URL rules JS
-        let url_rules = settings
-            .url_rules
-            .iter()
-            .rev()
-            .fold("null".to_string(), |acc, r| {
-                let allow = if r.action == crate::settings::Action::Allow {
-                    "true"
-                } else {
-                    "false"
-                };
-                let prefix = if r.kind == crate::settings::PatternKind::Prefix {
-                    "true"
-                } else {
-                    "false"
-                };
-                let pattern = &r.pattern;
-                format!("cons({{allow:{allow},prefix:{prefix},pattern:\"{pattern}\"}},{acc})")
-            });
-        let url_rules_js = format!("urlRules = {url_rules};\n\n");
+            // Build URL rules JS
+            let url_rules = settings
+                .url_rules
+                .iter()
+                .rev()
+                .fold("null".to_string(), |acc, r| {
+                    let allow = match r.action == crate::settings::Action::Allow {
+                        true => "true",
+                        false => "false",
+                    };
+                    let prefix = match r.kind == crate::settings::PatternKind::Prefix {
+                        true => "true",
+                        false => "false",
+                    };
+                    let pattern = &r.pattern;
+                    format!("cons({{allow:{allow},prefix:{prefix},pattern:\"{pattern}\"}},{acc})")
+                });
+            let url_rules_js = format!("urlRules = {url_rules};\n\n");
 
-        // Join accumulated script fragments (they were pushed in order, so reverse)
-        let accumulated: String = st.script.iter().rev().cloned().collect::<Vec<_>>().join("");
+            // Join accumulated script fragments (they were pushed in order, so reverse)
+            let accumulated: String = st.script.iter().rev().cloned().collect::<Vec<_>>().join("");
 
-        let time_format = &settings.time_format;
-        // Escape for JS string: replace \ with \\ and " with \"
-        let tf_escaped = time_format.replace('\\', "\\\\").replace('"', "\\\"");
+            let time_format = &settings.time_format;
+            // Escape for JS string: replace \ with \\ and " with \"
+            let tf_escaped = time_format.replace('\\', "\\\\").replace('"', "\\\"");
 
-        let main_script =
-            format!("{lib_js}{url_rules_js}{accumulated}\ntime_format = \"{tf_escaped}\";\n");
+            let main_script =
+                format!("{lib_js}{url_rules_js}{accumulated}\ntime_format = \"{tf_escaped}\";\n");
 
-        // Include any extra JS files referenced in settings
-        // (mirrors `Settings.listJsFiles()` in SML — we don't have that in Rust yet)
-        Some(main_script)
-    } else {
-        None
+            // Include any extra JS files referenced in settings
+            // (mirrors `Settings.listJsFiles()` in SML — we don't have that in Rust yet)
+            Some(main_script)
+        }
+        false => None,
     };
 
     // Collect any pre-existing Decl::JavaScript strings from the input file

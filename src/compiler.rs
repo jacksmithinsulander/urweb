@@ -228,11 +228,17 @@ pub fn parse_urp(path: &Path) -> Result<Job> {
 // ---------------------------------------------------------------------------
 
 fn boot_root_from(start: PathBuf) -> Option<PathBuf> {
+    const MAX_BOOT_PARENT_HOPS: usize = 512;
     let mut cur = start;
+    let mut hops = 0usize;
     loop {
         if cur.join("lib/ur/basis.urs").is_file() {
             return Some(cur);
         }
+        if hops >= MAX_BOOT_PARENT_HOPS {
+            return None;
+        }
+        hops += 1;
         cur = cur.parent()?.to_path_buf();
     }
 }

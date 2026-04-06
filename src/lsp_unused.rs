@@ -8,7 +8,7 @@ use crate::elaborated::{
     Declaration, ElaboratedDeclaration, Expression, File as ElabFile, LocatedExpression,
     LocatedSignature, Signature, SignatureItem, Structure,
 };
-use crate::error_types::{CompileError, ErrorReporter};
+use crate::error_types::ErrorReporter;
 use crate::lsp_semantics::{paths_match_given_open_normalized, slash_normalized_cow};
 
 fn collect_named_ids_expr(e: &LocatedExpression, s: &mut HashSet<usize>) {
@@ -199,7 +199,7 @@ pub fn report_unused_top_level_values(
         match &d.node {
             Declaration::Val(name, id, _, _) => {
                 if paths_match_given_open_normalized(oref, &d.span.file) && !used.contains(id) {
-                    errors.report(CompileError::warning_at_with_hint(
+                    errors.report_warning_at_with_hint(
                         d.span.clone(),
                         DiagnosticPayload::new(
                             DiagnosticId::LspUnusedValueNeverUsedFromEntry,
@@ -207,13 +207,13 @@ pub fn report_unused_top_level_values(
                         ),
                         DiagnosticId::HintLspUnusedValueNeverUsedFromEntry,
                         vec![],
-                    ));
+                    );
                 }
             }
             Declaration::ValRec(recs) => {
                 for (name, id, _, _) in recs {
                     if paths_match_given_open_normalized(oref, &d.span.file) && !used.contains(id) {
-                        errors.report(CompileError::warning_at_with_hint(
+                        errors.report_warning_at_with_hint(
                             d.span.clone(),
                             DiagnosticPayload::new(
                                 DiagnosticId::LspUnusedValRecNotReachable,
@@ -221,7 +221,7 @@ pub fn report_unused_top_level_values(
                             ),
                             DiagnosticId::HintLspUnusedValRecNotReachable,
                             vec![],
-                        ));
+                        );
                     }
                 }
             }

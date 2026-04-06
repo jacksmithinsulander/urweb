@@ -15,6 +15,9 @@
 //!
 //! There is no extra full-buffer rescan beyond this pipeline.
 //!
+//! **Framing:** message boundaries and body size are enforced by `lsp_server` and the editor; for the
+//! local **Debug Adapter Protocol** stack, see [`crate::debugger::dap_framing`] (`Content-Length` caps).
+//!
 //! **Style:** new/edited Rust here follows [README.md](../README.md) Rust code style (exceptions documented there).
 
 use anyhow::Result;
