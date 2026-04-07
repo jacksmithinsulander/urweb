@@ -555,6 +555,7 @@ pub(crate) fn emit_urweb_native_ffi_bundle(settings: &Settings) -> String {
     );
     match db {
         ProjectDb::Tigerbeetle => {
+            // Emitted C (not Rust): TigerBeetle sync uses the normal `while (!done) pthread_cond_wait` pattern.
             s.push_str(
                 "uw_conn *c = uw_get_db(ctx);\n\
                  if (!c) uw_error(ctx, FATAL, \"urweb_tb_transfer: no DB connection\");\n\

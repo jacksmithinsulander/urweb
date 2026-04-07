@@ -6,8 +6,9 @@ use std::io::stdin;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use anyhow::{anyhow, Result};
 use serde_json::{json, Map, Value};
+
+use crate::error_types::CompileError;
 
 use super::dap_framing::{bump_seq, read_dap_message, write_dap_message};
 use super::dap_shared::{DapState, LoadedSourceNotifier};
@@ -19,9 +20,18 @@ use super::mi_parse::{
 };
 use crate::diagnostics::DiagnosticId;
 
+/// DAP and GDB session operations share [`CompileError`] with the compiler (catalog-backed).
+type Result<T> = std::result::Result<T, CompileError>;
+
 const FRAME_FACTOR: i64 = 100_000;
 /// DAP `variablesReference` for expandable locals / MI var-objects (distinct from stack frame ids).
 const VAR_REF_BASE: i64 = 50_000_000;
+/// Maximum inbound DAP JSON-RPC messages handled on one stdio connection (defense in depth).
+const DAP_STDIO_MAX_MESSAGES: u64 = 1_000_000_000;
+/// Maximum UTF-8 characters scanned when balancing `{`…`}` in one GDB/MI variable blob.
+const BRACE_SCAN_MAX_CHARS: usize = 1024 * 1024;
+/// Maximum variable entries parsed from one MI `variables=[...]` slice (outer loop steps).
+const MI_STACK_VARS_PARSE_MAX_OUTER_STEPS: usize = 1_000_000;
 
 #[derive(Clone)]
 struct LaunchConfig {
@@ -300,13 +310,7 @@ impl Server {
 
     fn resolve_pending_var_obj(&mut self, gdb: &mut GdbSession, ref_id: i64) -> Result<VarRefKind> {
         let kind = self.var_refs.get(&ref_id).cloned().ok_or_else(|| {
-            anyhow!(
-                "{}",
-                debugger_diagnostic_text(
-                    DiagnosticId::CliDebuggerDapStaleVariablesReference,
-                    vec![]
-                )
-            )
+            CompileError::catalog(DiagnosticId::CliDebuggerDapStaleVariablesReference, vec![])
         })?;
         match kind {
             VarRefKind::PendingLocal {
@@ -317,13 +321,7 @@ impl Server {
                 let pl = gdb.var_create(thread, frame, &expr)?;
                 let vname = mi_get_str(&pl, "name")
                     .ok_or_else(|| {
-                        anyhow!(
-                            "{}",
-                            debugger_diagnostic_text(
-                                DiagnosticId::CliDebuggerDapVarCreateFailed,
-                                vec![],
-                            )
-                        )
+                        CompileError::catalog(DiagnosticId::CliDebuggerDapVarCreateFailed, vec![])
                     })?
                     .to_string();
                 let resolved = VarRefKind::VarObj {
@@ -394,9 +392,9 @@ impl Server {
     ) -> Result<()> {
         let resolved = self.resolve_pending_var_obj(gdb, ref_id)?;
         let VarRefKind::VarObj { thread, varobj, .. } = resolved else {
-            return Err(anyhow!(
-                "{}",
-                debugger_diagnostic_text(DiagnosticId::CliDebuggerDapNotVariableContainer, vec![])
+            return Err(CompileError::catalog(
+                DiagnosticId::CliDebuggerDapNotVariableContainer,
+                vec![],
             ));
         };
         gdb.thread_select(thread).ok();
@@ -410,12 +408,9 @@ impl Server {
                 return Ok(());
             }
         }
-        Err(anyhow!(
-            "{}",
-            debugger_diagnostic_text(
-                DiagnosticId::CliDebuggerDapFieldNotFound,
-                vec![field.to_string()],
-            )
+        Err(CompileError::catalog(
+            DiagnosticId::CliDebuggerDapFieldNotFound,
+            vec![field.to_string()],
         ))
     }
 
@@ -514,12 +509,9 @@ impl Server {
     fn finish_launch(&mut self) -> Result<()> {
         self.known_loaded_sources.lock().unwrap().clear();
         let cfg = self.launch.clone().ok_or_else(|| {
-            anyhow!(
-                "{}",
-                debugger_diagnostic_text(
-                    DiagnosticId::CliDebuggerDapNoLaunchBeforeConfigurationDone,
-                    vec![],
-                )
+            CompileError::catalog(
+                DiagnosticId::CliDebuggerDapNoLaunchBeforeConfigurationDone,
+                vec![],
             )
         })?;
         let mut exe = cfg.gdb_path.clone();
@@ -536,12 +528,9 @@ impl Server {
             known_paths: self.known_loaded_sources.clone(),
         });
         let mut gdb = GdbSession::spawn(&exe, &mm, Some(notifier)).map_err(|spawn_error| {
-            anyhow!(
-                "{}",
-                debugger_diagnostic_text(
-                    DiagnosticId::CliDebuggerSpawnMiBackendFailed,
-                    vec![exe.clone(), mm.clone(), format!("{spawn_error:#}")],
-                )
+            CompileError::catalog(
+                DiagnosticId::CliDebuggerSpawnMiBackendFailed,
+                vec![exe.clone(), mm.clone(), format!("{spawn_error:#}")],
             )
         })?;
         let _ = gdb.mi_simple("-gdb-set confirm off");
@@ -549,12 +538,9 @@ impl Server {
         let _ = gdb.set_mi_async(!lldb_async);
         if let Some(pid) = cfg.attach_pid {
             gdb.target_attach(pid).map_err(|attach_error| {
-                anyhow!(
-                    "{}",
-                    debugger_diagnostic_text(
-                        DiagnosticId::CliDebuggerDapAttachFailed,
-                        vec![format!("{attach_error:#}")],
-                    )
+                CompileError::catalog(
+                    DiagnosticId::CliDebuggerDapAttachFailed,
+                    vec![format!("{attach_error:#}")],
                 )
             })?;
         } else {
@@ -566,12 +552,9 @@ impl Server {
                     .as_ref(),
             )
             .map_err(|load_error| {
-                anyhow!(
-                    "{}",
-                    debugger_diagnostic_text(
-                        DiagnosticId::CliDebuggerDapLoadSymbolsFailed,
-                        vec![format!("{load_error:#}")],
-                    )
+                CompileError::catalog(
+                    DiagnosticId::CliDebuggerDapLoadSymbolsFailed,
+                    vec![format!("{load_error:#}")],
                 )
             })?;
             if let Some(ref cwd) = cfg.cwd {
@@ -633,12 +616,9 @@ impl Server {
             let stop = {
                 let g = self.gdb.as_mut().unwrap();
                 g.exec_run(&cfg.args).map_err(|run_error| {
-                    anyhow!(
-                        "{}",
-                        debugger_diagnostic_text(
-                            DiagnosticId::CliDebuggerDapRunInferiorFailed,
-                            vec![format!("{run_error:#}")],
-                        )
+                    CompileError::catalog(
+                        DiagnosticId::CliDebuggerDapRunInferiorFailed,
+                        vec![format!("{run_error:#}")],
                     )
                 })?
             };
@@ -928,12 +908,9 @@ impl Server {
                     self.pending_exception_filters = filters;
                 } else {
                     let mut gdb = self.gdb.take().ok_or_else(|| {
-                        anyhow!(
-                            "{}",
-                            debugger_diagnostic_text(
-                                DiagnosticId::CliDebuggerDapGdbSessionMissing,
-                                vec!["setExceptionBreakpoints".to_string()],
-                            )
+                        CompileError::catalog(
+                            DiagnosticId::CliDebuggerDapGdbSessionMissing,
+                            vec!["setExceptionBreakpoints".to_string()],
                         )
                     })?;
                     let apply = self.apply_exception_filters(&mut gdb, &filters);
@@ -1074,12 +1051,9 @@ impl Server {
                     return Ok(true);
                 }
                 let mut gdb = self.gdb.take().ok_or_else(|| {
-                    anyhow!(
-                        "{}",
-                        debugger_diagnostic_text(
-                            DiagnosticId::CliDebuggerDapGdbSessionMissing,
-                            vec!["setInstructionBreakpoints".to_string()],
-                        )
+                    CompileError::catalog(
+                        DiagnosticId::CliDebuggerDapGdbSessionMissing,
+                        vec!["setInstructionBreakpoints".to_string()],
                     )
                 })?;
                 let apply = self.apply_instruction_breakpoints(&mut gdb, &addrs);
@@ -1108,12 +1082,9 @@ impl Server {
             "pause" => {
                 let stop = {
                     let gdb = self.gdb.as_mut().ok_or_else(|| {
-                        anyhow!(
-                            "{}",
-                            debugger_diagnostic_text(
-                                DiagnosticId::CliDebuggerDapRequestBeforeLaunch,
-                                vec!["pause".to_string()],
-                            )
+                        CompileError::catalog(
+                            DiagnosticId::CliDebuggerDapRequestBeforeLaunch,
+                            vec!["pause".to_string()],
                         )
                     })?;
                     if let Some(t) = args.get("threadId").and_then(|x| x.as_u64()) {
@@ -1128,12 +1099,9 @@ impl Server {
             }
             "evaluate" => {
                 let gdb = self.gdb.as_mut().ok_or_else(|| {
-                    anyhow!(
-                        "{}",
-                        debugger_diagnostic_text(
-                            DiagnosticId::CliDebuggerDapRequestBeforeLaunch,
-                            vec!["evaluate".to_string()],
-                        )
+                    CompileError::catalog(
+                        DiagnosticId::CliDebuggerDapRequestBeforeLaunch,
+                        vec!["evaluate".to_string()],
                     )
                 })?;
                 let expr = args
@@ -1168,12 +1136,9 @@ impl Server {
             "continue" => {
                 let stop = {
                     let gdb = self.gdb.as_mut().ok_or_else(|| {
-                        anyhow!(
-                            "{}",
-                            debugger_diagnostic_text(
-                                DiagnosticId::CliDebuggerDapRequestBeforeLaunch,
-                                vec!["continue".to_string()],
-                            )
+                        CompileError::catalog(
+                            DiagnosticId::CliDebuggerDapRequestBeforeLaunch,
+                            vec!["continue".to_string()],
                         )
                     })?;
                     if let Some(t) = args.get("threadId").and_then(|x| x.as_u64()) {
@@ -1195,12 +1160,9 @@ impl Server {
             "next" => {
                 let stop = {
                     let gdb = self.gdb.as_mut().ok_or_else(|| {
-                        anyhow!(
-                            "{}",
-                            debugger_diagnostic_text(
-                                DiagnosticId::CliDebuggerDapRequestBeforeLaunch,
-                                vec!["next".to_string()],
-                            )
+                        CompileError::catalog(
+                            DiagnosticId::CliDebuggerDapRequestBeforeLaunch,
+                            vec!["next".to_string()],
                         )
                     })?;
                     thread_id_select(gdb, args);
@@ -1214,12 +1176,9 @@ impl Server {
             "stepIn" => {
                 let stop = {
                     let gdb = self.gdb.as_mut().ok_or_else(|| {
-                        anyhow!(
-                            "{}",
-                            debugger_diagnostic_text(
-                                DiagnosticId::CliDebuggerDapRequestBeforeLaunch,
-                                vec!["stepIn".to_string()],
-                            )
+                        CompileError::catalog(
+                            DiagnosticId::CliDebuggerDapRequestBeforeLaunch,
+                            vec!["stepIn".to_string()],
                         )
                     })?;
                     thread_id_select(gdb, args);
@@ -1233,12 +1192,9 @@ impl Server {
             "stepOut" => {
                 let stop = {
                     let gdb = self.gdb.as_mut().ok_or_else(|| {
-                        anyhow!(
-                            "{}",
-                            debugger_diagnostic_text(
-                                DiagnosticId::CliDebuggerDapRequestBeforeLaunch,
-                                vec!["stepOut".to_string()],
-                            )
+                        CompileError::catalog(
+                            DiagnosticId::CliDebuggerDapRequestBeforeLaunch,
+                            vec!["stepOut".to_string()],
                         )
                     })?;
                     thread_id_select(gdb, args);
@@ -1251,12 +1207,9 @@ impl Server {
             }
             "threads" => {
                 let gdb = self.gdb.as_mut().ok_or_else(|| {
-                    anyhow!(
-                        "{}",
-                        debugger_diagnostic_text(
-                            DiagnosticId::CliDebuggerDapRequestBeforeLaunch,
-                            vec!["threads".to_string()],
-                        )
+                    CompileError::catalog(
+                        DiagnosticId::CliDebuggerDapRequestBeforeLaunch,
+                        vec!["threads".to_string()],
                     )
                 })?;
                 let pl = gdb.mi_simple("-thread-info").unwrap_or_default();
@@ -1290,12 +1243,9 @@ impl Server {
             }
             "stackTrace" => {
                 let gdb = self.gdb.as_mut().ok_or_else(|| {
-                    anyhow!(
-                        "{}",
-                        debugger_diagnostic_text(
-                            DiagnosticId::CliDebuggerDapRequestBeforeLaunch,
-                            vec!["stackTrace".to_string()],
-                        )
+                    CompileError::catalog(
+                        DiagnosticId::CliDebuggerDapRequestBeforeLaunch,
+                        vec!["stackTrace".to_string()],
                     )
                 })?;
                 let thread = args.get("threadId").and_then(|x| x.as_u64()).unwrap_or(1);
@@ -1363,12 +1313,9 @@ impl Server {
             }
             "variables" => {
                 let mut gdb = self.gdb.take().ok_or_else(|| {
-                    anyhow!(
-                        "{}",
-                        debugger_diagnostic_text(
-                            DiagnosticId::CliDebuggerDapRequestBeforeLaunch,
-                            vec!["variables".to_string()],
-                        )
+                    CompileError::catalog(
+                        DiagnosticId::CliDebuggerDapRequestBeforeLaunch,
+                        vec!["variables".to_string()],
                     )
                 })?;
                 let ref_id = args.get("variablesReference").map(ref_as_i64).unwrap_or(0);
@@ -1393,12 +1340,9 @@ impl Server {
             }
             "setVariable" => {
                 let mut gdb = self.gdb.take().ok_or_else(|| {
-                    anyhow!(
-                        "{}",
-                        debugger_diagnostic_text(
-                            DiagnosticId::CliDebuggerDapRequestBeforeLaunch,
-                            vec!["setVariable".to_string()],
-                        )
+                    CompileError::catalog(
+                        DiagnosticId::CliDebuggerDapRequestBeforeLaunch,
+                        vec!["setVariable".to_string()],
                     )
                 })?;
                 let ref_id = args.get("variablesReference").map(ref_as_i64).unwrap_or(0);
@@ -1417,12 +1361,9 @@ impl Server {
             }
             "loadedSources" => {
                 let gdb = self.gdb.as_mut().ok_or_else(|| {
-                    anyhow!(
-                        "{}",
-                        debugger_diagnostic_text(
-                            DiagnosticId::CliDebuggerDapRequestBeforeLaunch,
-                            vec!["loadedSources".to_string()],
-                        )
+                    CompileError::catalog(
+                        DiagnosticId::CliDebuggerDapRequestBeforeLaunch,
+                        vec!["loadedSources".to_string()],
                     )
                 })?;
                 let pl = gdb.file_list_exec_source_files().unwrap_or_default();
@@ -1442,12 +1383,9 @@ impl Server {
             }
             "modules" => {
                 let gdb = self.gdb.as_mut().ok_or_else(|| {
-                    anyhow!(
-                        "{}",
-                        debugger_diagnostic_text(
-                            DiagnosticId::CliDebuggerDapRequestBeforeLaunch,
-                            vec!["modules".to_string()],
-                        )
+                    CompileError::catalog(
+                        DiagnosticId::CliDebuggerDapRequestBeforeLaunch,
+                        vec!["modules".to_string()],
                     )
                 })?;
                 let pl = gdb.file_list_shared_libraries().unwrap_or_default();
@@ -1555,12 +1493,9 @@ impl Server {
             }
             "disassemble" => {
                 let gdb = self.gdb.as_mut().ok_or_else(|| {
-                    anyhow!(
-                        "{}",
-                        debugger_diagnostic_text(
-                            DiagnosticId::CliDebuggerDapRequestBeforeLaunch,
-                            vec!["disassemble".to_string()],
-                        )
+                    CompileError::catalog(
+                        DiagnosticId::CliDebuggerDapRequestBeforeLaunch,
+                        vec!["disassemble".to_string()],
                     )
                 })?;
                 let mem = args
@@ -1568,12 +1503,9 @@ impl Server {
                     .and_then(|x| x.as_str())
                     .unwrap_or("");
                 let start = dap_memory_ref_to_addr(mem).ok_or_else(|| {
-                    anyhow!(
-                        "{}",
-                        debugger_diagnostic_text(
-                            DiagnosticId::CliDebuggerDapDisassembleNeedsMemoryReference,
-                            vec![],
-                        )
+                    CompileError::catalog(
+                        DiagnosticId::CliDebuggerDapDisassembleNeedsMemoryReference,
+                        vec![],
                     )
                 })?;
                 let offset = args
@@ -1660,7 +1592,12 @@ fn build_stack_scope_variables(pl: &str, thread: u64, frame: u32, srv: &mut Serv
     let end = rest.find(']').unwrap_or(rest.len());
     let slice = &rest[..end.min(rest.len())];
     let mut idx = 0usize;
+    let mut outer_steps = 0usize;
     while let Some(pos) = slice[idx..].find("{name=\"") {
+        outer_steps = outer_steps.saturating_add(1);
+        if outer_steps > MI_STACK_VARS_PARSE_MAX_OUTER_STEPS {
+            break;
+        }
         let brace_start = idx + pos;
         let inner = &slice[brace_start..];
         let Some(close_rel) = brace_close_from_open(inner) else {
@@ -1728,7 +1665,12 @@ fn brace_close_from_open(s: &str) -> Option<usize> {
     }
     let mut depth = 0i32;
     let mut in_quote = false;
+    let mut chars_seen = 0usize;
     for (i, c) in s.char_indices() {
+        chars_seen = chars_seen.saturating_add(1);
+        if chars_seen > BRACE_SCAN_MAX_CHARS {
+            return None;
+        }
         match c {
             '"' => in_quote = !in_quote,
             '{' if !in_quote => depth += 1,
@@ -1757,9 +1699,13 @@ pub fn run_dap_stdio() -> Result<()> {
 }
 
 fn run_dap_loop(srv: &mut Server, stdin: &mut impl std::io::BufRead) -> Result<()> {
-    loop {
+    let mut finished_normally = false;
+    for _message_index in 0..DAP_STDIO_MAX_MESSAGES {
         let msg = match read_dap_message(stdin)? {
-            None => break,
+            None => {
+                finished_normally = true;
+                break;
+            }
             Some(m) => m,
         };
         let msg_type = msg.get("type").and_then(|t| t.as_str());
@@ -1771,11 +1717,18 @@ fn run_dap_loop(srv: &mut Server, stdin: &mut impl std::io::BufRead) -> Result<(
         let args = msg.get("arguments").cloned().unwrap_or(Value::Null);
         let continue_loop = srv.handle(command, &args, &req_id)?;
         if !continue_loop {
+            finished_normally = true;
             break;
         }
     }
     if let Some(mut gdb) = srv.gdb.take() {
         gdb.kill().ok();
+    }
+    if !finished_normally {
+        return Err(CompileError::catalog(
+            DiagnosticId::CliDebuggerDapStdioLoopExhausted,
+            vec![DAP_STDIO_MAX_MESSAGES.to_string()],
+        ));
     }
     Ok(())
 }
@@ -1813,5 +1766,13 @@ mod tests {
         assert_eq!(super::dap_memory_ref_to_addr("0x10ff"), Some(0x10ff));
         assert_eq!(super::dap_memory_ref_to_addr("10ff"), Some(0x10ff));
         assert_eq!(super::dap_memory_ref_to_addr(""), None);
+    }
+
+    /// Over-long brace blobs must not scan unbounded UTF-8 (Power-of-Ten style cap).
+    #[test]
+    fn brace_close_from_open_respects_scan_cap() {
+        let mut s = String::from('{');
+        s.push_str(&"x".repeat(super::BRACE_SCAN_MAX_CHARS + 64));
+        assert_eq!(super::brace_close_from_open(&s), None);
     }
 }

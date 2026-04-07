@@ -916,20 +916,22 @@ pub fn rename(
             // any DStr in the output.
             let mut formal_name_munged = formal_name.to_string();
             const MAX_FORMAL_NAME_MUNGE_ROUNDS: usize = 65_536;
-            let mut munge_round = 0usize;
-            loop {
-                if munge_round >= MAX_FORMAL_NAME_MUNGE_ROUNDS {
-                    panic!("rename: formal name munge exceeded {MAX_FORMAL_NAME_MUNGE_ROUNDS}");
-                }
-                munge_round += 1;
+            for _ in 0..MAX_FORMAL_NAME_MUNGE_ROUNDS {
                 let clashes = new_ds.iter().any(|d| {
                     matches!(&d.node,
                     expl::Declaration::Structure(x, _, _, _) if x == &formal_name_munged)
                 });
-                match clashes {
-                    true => formal_name_munged = format!("?{}", formal_name_munged),
-                    false => break,
+                if !clashes {
+                    break;
                 }
+                formal_name_munged = format!("?{}", formal_name_munged);
+            }
+            let still_clashes = new_ds.iter().any(|d| {
+                matches!(&d.node,
+                expl::Declaration::Structure(x, _, _, _) if x == &formal_name_munged)
+            });
+            if still_clashes {
+                panic!("rename: formal name munge exceeded {MAX_FORMAL_NAME_MUNGE_ROUNDS}");
             }
 
             // Prepend: DStr(formal_name_munged, fresh_formal_id, SgnConst([]), StrVar(formal_id))

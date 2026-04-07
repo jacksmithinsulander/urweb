@@ -95,6 +95,18 @@ fn expand_named_left_spine_in_constructor(
                 constructor.clone()
             }
         }
+        Constructor::ModProj(module_id, path, name) => {
+            if let Some(definition) = resolve_modproj_constructor_definition(
+                elaboration_environment,
+                *module_id,
+                path,
+                name,
+            ) {
+                expand_named_left_spine_in_constructor(elaboration_environment, &definition)
+            } else {
+                constructor.clone()
+            }
+        }
         Constructor::KApp(function_constructor, kind_argument) => {
             let expanded_head = expand_named_left_spine_in_constructor(
                 elaboration_environment,
@@ -157,6 +169,20 @@ fn expand_named_abbrev_in_constructor_full(
                 return expand_named_abbrev_in_constructor_full(
                     elaboration_environment,
                     definition,
+                );
+            }
+            constructor.clone()
+        }
+        Constructor::ModProj(module_id, path, name) => {
+            if let Some(definition) = resolve_modproj_constructor_definition(
+                elaboration_environment,
+                *module_id,
+                path,
+                name,
+            ) {
+                return expand_named_abbrev_in_constructor_full(
+                    elaboration_environment,
+                    &definition,
                 );
             }
             constructor.clone()
@@ -2131,6 +2157,9 @@ fn rule_in(
 // Signature head-normalisation (hnormSgn)
 // ---------------------------------------------------------------------------
 
+/// Cap on [`Signature::Var`] alias steps in [`hnorm_sgn`] (Power-of-Ten: no unbounded chase).
+const HNORM_SGN_VAR_CHAIN_MAX_STEPS: usize = 8192;
+
 /// Head-normalize a signature: chase [`Signature::Var`], [`Signature::Proj`], and [`Signature::Where`].
 ///
 /// Mirrors `hnormSgn` in `elab_env.sml`. Lookup failures leave the original spine (stuck projection).
@@ -2152,7 +2181,7 @@ pub fn hnorm_sgn(elaboration_environment: &Env, signature: &LocatedSignature) ->
         Signature::Var(start_signature_id) => {
             let mut current_signature_id = *start_signature_id;
             let mut visited_signature_ids: HashSet<usize> = HashSet::new();
-            loop {
+            for _ in 0..HNORM_SGN_VAR_CHAIN_MAX_STEPS {
                 if !visited_signature_ids.insert(current_signature_id) {
                     // Cycle in signature aliases: treat as stuck, matching a failed lookup.
                     return signature.clone();
@@ -2167,6 +2196,7 @@ pub fn hnorm_sgn(elaboration_environment: &Env, signature: &LocatedSignature) ->
                     Err(_) => return signature.clone(),
                 }
             }
+            signature.clone()
         }
 
         // SgnProj(m, ms, x) — walk structure `m` through path `ms`, then project out `x`.
@@ -2238,6 +2268,43 @@ fn project_sgn_field(
             None
         }
         Signature::Error => Some(Located::new(Signature::Error, signature.span.clone())),
+        _ => None,
+    }
+}
+
+/// Resolve a constructor definition behind `ModProj(module_id, path, name)` when the structure
+/// signature exposes it as a concrete `SgiCon`/`SignatureItem::Constructor`.
+fn resolve_modproj_constructor_definition(
+    elaboration_environment: &Env,
+    module_id: usize,
+    path: &[String],
+    name: &str,
+) -> Option<LocatedConstructor> {
+    // Start from the root structure signature for the projected module id.
+    let (_, root_signature) = elaboration_environment.lookup_str_named(module_id).ok()?;
+    // Normalize the root signature before walking nested structure projections.
+    let mut current_signature = hnorm_sgn(elaboration_environment, root_signature);
+    for field in path {
+        // Descend into the next nested structure component.
+        current_signature = hnorm_sgn(
+            elaboration_environment,
+            &project_str_field(elaboration_environment, &current_signature, field)?,
+        );
+    }
+    match &hnorm_sgn(elaboration_environment, &current_signature).node {
+        // Search the final signature for a concrete constructor item with this field name.
+        Signature::Const(items) => items.iter().find_map(|item| match &item.node {
+            SignatureItem::Constructor(field_name, _, _, definition) if field_name == name => {
+                Some(definition.clone())
+            }
+            SignatureItem::Class(field_name, _, _, definition) if field_name == name => {
+                Some(definition.clone())
+            }
+            _ => None,
+        }),
+        // Error signatures stay stuck.
+        Signature::Error => None,
+        // Non-constant signatures cannot expose a concrete constructor definition here.
         _ => None,
     }
 }

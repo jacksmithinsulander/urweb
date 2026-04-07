@@ -8,7 +8,7 @@ use ur::elaborated::type_operations::cons_eq_simple;
 use ur::elaborated::utilities::{classify_datatype, con, file, kind};
 use ur::elaborated::{Constructor, Declaration, Kind};
 use ur::elaborated::{LocatedConstructor, LocatedKind};
-use ur::error_types::Located;
+use ur::error_types::{Located, Span};
 
 #[test]
 fn elaborated_classify_datatype_enum() {
@@ -770,4 +770,44 @@ fn elaborated_disjointness_assert_returns_env() {
     let c2 = Located::dummy(Constructor::Named(2));
     let out = disjointness_analysis::assert(c1, c2, env);
     assert!(out.is_empty() || !out.is_empty());
+}
+
+#[test]
+fn elaborated_disjointness_assert_then_prove_named_rows() {
+    // Start from an empty hypothesis environment so the new fact is the only proof source.
+    let env = disjointness_analysis::empty_env();
+    // Build two symbolic row constructors so the proof must consult the asserted environment.
+    let left_row = Located::dummy(Constructor::Named(11));
+    let right_row = Located::dummy(Constructor::Named(22));
+    // Record the rows as disjoint in the same way elaboration does for `c1 ~ c2 => body`.
+    let asserted_env = disjointness_analysis::assert(left_row.clone(), right_row.clone(), env);
+    // Re-prove the same obligation to check the Rust port keeps the SML round-trip behavior.
+    let unresolved_goals =
+        disjointness_analysis::prove(Span::dummy(), &asserted_env, left_row, right_row);
+    // Asserted symbolic rows should discharge without leaving deferred disjointness work behind.
+    assert!(unresolved_goals.is_empty());
+}
+
+#[test]
+fn elaborated_disjointness_prove_unknown_against_known_row_returns_goal() {
+    // Use an empty environment so only the mixed known/unknown shortcut can explain the result.
+    let env = disjointness_analysis::empty_env();
+    // `Unit` is not a row constructor, so decomposition should mark it as unknown.
+    let unknown_row = Located::dummy(Constructor::Unit);
+    // A named constructor decomposes to a concrete row piece.
+    let known_row = Located::dummy(Constructor::Named(7));
+    // Ask the solver to prove disjointness for the mixed pair.
+    let unresolved_goals =
+        disjointness_analysis::prove(Span::dummy(), &env, unknown_row.clone(), known_row.clone());
+    // Mixed unknown/known decompositions should defer exactly one original goal.
+    assert_eq!(unresolved_goals.len(), 1);
+    // The deferred goal should preserve the original constructors for later elaboration retries.
+    assert!(matches!(
+        unresolved_goals[0].left_constructor.node,
+        Constructor::Unit
+    ));
+    assert!(matches!(
+        unresolved_goals[0].right_constructor.node,
+        Constructor::Named(7)
+    ));
 }

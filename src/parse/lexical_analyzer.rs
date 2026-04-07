@@ -14,6 +14,10 @@
 //! Comment).  The logos-based lexer here handles the Regular mode; XML-mode
 //! tokens (`Notags`, `BeginTag`, `EndTag`) are produced by a separate
 //! hand-written XML sub-lexer invoked by the parser (future work).
+//!
+//! **Power of Ten / LangSec:** comment skips, string scans, and per-token dispatch loops use
+//! explicit iteration caps derived from the current source length so hostile or buggy input cannot
+//! drive unbounded work in one lexer step.
 
 use logos::Logos;
 
@@ -21,7 +25,13 @@ use logos::Logos;
 fn process_string_escapes(s: &str) -> Option<String> {
     let mut out = String::with_capacity(s.len());
     let mut chars = s.chars().peekable();
-    while let Some(c) = chars.next() {
+    // Escapes can consume few input bytes but emit one char; keep slack for `\u`, gaps, and UTF-8.
+    let escape_work_limit = s.len().saturating_mul(8).saturating_add(64);
+    for _ in 0..escape_work_limit {
+        let c = match chars.next() {
+            Some(ch) => ch,
+            None => return Some(out),
+        };
         if c != '\\' {
             out.push(c);
             continue;
@@ -70,8 +80,12 @@ fn process_string_escapes(s: &str) -> Option<String> {
                 out.push(char::from_u32(n)?);
             }
             ' ' | '\n' | '\t' => {
-                // SML whitespace gap: skip to matching backslash
-                while let Some(&c2) = chars.peek() {
+                let gap_budget = s.len().saturating_add(1);
+                for _ in 0..gap_budget {
+                    let c2 = match chars.peek() {
+                        Some(&x) => x,
+                        None => break,
+                    };
                     if c2 == '\\' {
                         chars.next();
                         break;
@@ -86,7 +100,7 @@ fn process_string_escapes(s: &str) -> Option<String> {
             }
         }
     }
-    Some(out)
+    None
 }
 
 // ---------------------------------------------------------------------------
@@ -647,8 +661,10 @@ impl<'input> Iterator for Lexer<'input> {
     type Item = LexResult;
 
     fn next(&mut self) -> Option<Self::Item> {
-        loop {
-            match self.inner.next()? {
+        let skip_cap = self.inner.source().len().saturating_add(1);
+        for _ in 0..skip_cap {
+            let step = self.inner.next()?;
+            match step {
                 Ok(Token::Whitespace) | Ok(Token::Comment) => continue,
                 Ok(tok) => {
                     let span = self.inner.span();
@@ -663,6 +679,9 @@ impl<'input> Iterator for Lexer<'input> {
                 }
             }
         }
+        Some(Err(LexError::new(
+            "lexer exceeded whitespace/comment skip budget (internal)",
+        )))
     }
 }
 
@@ -730,7 +749,11 @@ impl<'a> XmlAwareLexer<'a> {
     fn skip_ml_comment(&mut self) {
         // Already consumed `(*`; consume until matching `*)`, supporting nesting.
         let mut depth = 1usize;
-        while self.pos < self.src.len() {
+        let scan_cap = self.src.len().saturating_mul(2).saturating_add(1);
+        for _ in 0..scan_cap {
+            if self.pos >= self.src.len() {
+                return;
+            }
             if self.pos + 1 < self.src.len()
                 && self.src[self.pos] == b'('
                 && self.src[self.pos + 1] == b'*'
@@ -750,16 +773,23 @@ impl<'a> XmlAwareLexer<'a> {
                 self.pos += 1;
             }
         }
+        self.pos = self.src.len();
     }
 
     fn skip_xml_comment(&mut self) {
         // Already consumed `<!--`; consume until `-->`.
-        while self.pos + 2 < self.src.len() {
-            if &self.src[self.pos..self.pos + 3] == b"-->" {
-                self.pos += 3;
+        let scan_cap = self.src.len().saturating_add(1);
+        for _ in 0..scan_cap {
+            if self.pos + 2 < self.src.len() {
+                if &self.src[self.pos..self.pos + 3] == b"-->" {
+                    self.pos += 3;
+                    return;
+                }
+                self.pos += 1;
+            } else {
+                self.pos = self.src.len();
                 return;
             }
-            self.pos += 1;
         }
         self.pos = self.src.len();
     }
@@ -769,7 +799,11 @@ impl<'a> XmlAwareLexer<'a> {
         let mut p = start;
         if p < self.src.len() && self.src[p].is_ascii_alphabetic() {
             p += 1;
-            while p < self.src.len() {
+            let tail_budget = self.src.len().saturating_sub(p).saturating_add(1);
+            for _ in 0..tail_budget {
+                if p >= self.src.len() {
+                    break;
+                }
                 let b = self.src[p];
                 if b.is_ascii_alphanumeric() || b == b'_' || b == b'-' {
                     p += 1;
@@ -784,7 +818,8 @@ impl<'a> XmlAwareLexer<'a> {
     fn scan_regular_string(&mut self, quote: u8, start: usize) -> LexResult {
         // Consume string body up to matching unescaped `quote`.
         let mut s = String::new();
-        loop {
+        let body_cap = self.src.len().saturating_sub(start).saturating_add(1);
+        for _ in 0..body_cap {
             if self.pos >= self.src.len() {
                 return Err(LexError::new("Unterminated string literal"));
             }
@@ -826,6 +861,7 @@ impl<'a> XmlAwareLexer<'a> {
                 self.pos += 1;
             }
         }
+        Err(LexError::new("Unterminated string literal (scan budget)"))
     }
 
     /// Keywords / pseudo-keywords that must not fuse with `@` into [`Token::AtTypesOnlyPath`].
@@ -894,7 +930,11 @@ impl<'a> XmlAwareLexer<'a> {
 
     /// Consume Ur/Web identifier run (ASCII alnum, `_`, `'`).
     fn scan_ident_run(&self, mut index: usize) -> usize {
-        while index < self.src.len() {
+        let run_cap = self.src.len().saturating_sub(index).saturating_add(1);
+        for _ in 0..run_cap {
+            if index >= self.src.len() {
+                break;
+            }
             let byte = self.src[index];
             if byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'\'' {
                 index += 1;
@@ -933,7 +973,8 @@ impl<'a> XmlAwareLexer<'a> {
         }
         let mut dotted = String::new();
         dotted.push_str(first);
-        loop {
+        let dot_path_budget = self.src.len().saturating_sub(index).saturating_add(1);
+        for _ in 0..dot_path_budget {
             if index >= self.src.len() || self.src[index] != b'.' {
                 break;
             }
@@ -966,7 +1007,8 @@ impl<'a> XmlAwareLexer<'a> {
     }
 
     fn next_regular(&mut self) -> Option<LexResult> {
-        loop {
+        let stride_limit = self.src.len().saturating_add(1);
+        'lex: for _ in 0..stride_limit {
             if self.pos >= self.src.len() {
                 return None;
             }
@@ -976,14 +1018,14 @@ impl<'a> XmlAwareLexer<'a> {
             // Skip whitespace
             if b == b' ' || b == b'\t' || b == b'\r' || b == b'\n' {
                 self.pos += 1;
-                continue;
+                continue 'lex;
             }
 
             // ML comment `(*...*)` with nesting
             if b == b'(' && self.at(1) == Some(b'*') {
                 self.pos += 2;
                 self.skip_ml_comment();
-                continue;
+                continue 'lex;
             }
 
             // String: "..." or '...' (the latter is also valid in Ur/Web)
@@ -1139,7 +1181,14 @@ impl<'a> XmlAwareLexer<'a> {
                 b'`' => {
                     // Backtick path
                     let path_start = self.pos;
-                    while self.pos < self.src.len() && self.src[self.pos] != b'`' {
+                    let tick_cap = self.src.len().saturating_sub(self.pos).saturating_add(1);
+                    for _ in 0..tick_cap {
+                        if self.pos >= self.src.len() {
+                            break;
+                        }
+                        if self.src[self.pos] == b'`' {
+                            break;
+                        }
                         self.pos += 1;
                     }
                     let path = std::str::from_utf8(&self.src[path_start..self.pos])
@@ -1159,6 +1208,9 @@ impl<'a> XmlAwareLexer<'a> {
             };
             return Some(Ok((start, tok, self.pos)));
         }
+        Some(Err(LexError::new(
+            "XmlAwareLexer: exceeded per-token scan budget in Regular mode",
+        )))
     }
 
     fn try_multi_char_op(&mut self) -> Option<Token> {
@@ -1196,7 +1248,11 @@ impl<'a> XmlAwareLexer<'a> {
         if neg {
             self.pos += 1;
         }
-        while self.pos < self.src.len() && self.src[self.pos].is_ascii_digit() {
+        let int_cap = self.src.len().saturating_sub(self.pos).saturating_add(1);
+        for _ in 0..int_cap {
+            if self.pos >= self.src.len() || !self.src[self.pos].is_ascii_digit() {
+                break;
+            }
             self.pos += 1;
         }
         // Float?
@@ -1204,7 +1260,11 @@ impl<'a> XmlAwareLexer<'a> {
             let after_dot = self.pos + 1;
             if after_dot < self.src.len() && self.src[after_dot].is_ascii_digit() {
                 self.pos += 1;
-                while self.pos < self.src.len() && self.src[self.pos].is_ascii_digit() {
+                let frac_cap = self.src.len().saturating_sub(self.pos).saturating_add(1);
+                for _ in 0..frac_cap {
+                    if self.pos >= self.src.len() || !self.src[self.pos].is_ascii_digit() {
+                        break;
+                    }
                     self.pos += 1;
                 }
                 let s = std::str::from_utf8(&self.src[start..self.pos]).unwrap_or("0");
@@ -1218,7 +1278,11 @@ impl<'a> XmlAwareLexer<'a> {
     }
 
     fn scan_ident(&mut self, start: usize) -> LexResult {
-        while self.pos < self.src.len() {
+        let ident_cap = self.src.len().saturating_sub(self.pos).saturating_add(1);
+        for _ in 0..ident_cap {
+            if self.pos >= self.src.len() {
+                break;
+            }
             let b = self.src[self.pos];
             if b.is_ascii_alphanumeric() || b == b'_' || b == b'\'' {
                 self.pos += 1;
@@ -1232,8 +1296,14 @@ impl<'a> XmlAwareLexer<'a> {
         // references both get the right token so grammar rules like `"_" => Con::Wild(...)` fire.
         if word == "_" {
             let mut peek = self.pos;
-            // Skip whitespace to look ahead for `::`.
-            while peek < self.src.len() && matches!(self.src[peek], b' ' | b'\t' | b'\r' | b'\n') {
+            let ws_cap = self.src.len().saturating_sub(peek).saturating_add(1);
+            for _ in 0..ws_cap {
+                if peek >= self.src.len() {
+                    break;
+                }
+                if !matches!(self.src[peek], b' ' | b'\t' | b'\r' | b'\n') {
+                    break;
+                }
                 peek += 1;
             }
             if peek + 1 < self.src.len()
@@ -1317,7 +1387,8 @@ impl<'a> XmlAwareLexer<'a> {
 
     /// Pull the next token while lexing an XML literal region (not tag attributes).
     fn next_xml(&mut self) -> Option<LexResult> {
-        loop {
+        let stride_limit = self.src.len().saturating_add(1);
+        'xml: for _ in 0..stride_limit {
             if self.pos >= self.src.len() {
                 return None;
             }
@@ -1330,14 +1401,14 @@ impl<'a> XmlAwareLexer<'a> {
             {
                 self.pos += 2;
                 self.skip_ml_comment();
-                continue;
+                continue 'xml;
             }
 
             // XML comment `<!--...-->` — skip
             if self.pos + 3 < self.src.len() && &self.src[self.pos..self.pos + 4] == b"<!--" {
                 self.pos += 4;
                 self.skip_xml_comment();
-                continue;
+                continue 'xml;
             }
 
             let current_byte = self.src[self.pos];
@@ -1395,7 +1466,11 @@ impl<'a> XmlAwareLexer<'a> {
                 }
                 _ => {
                     let text_start = self.pos;
-                    while self.pos < self.src.len() {
+                    let text_cap = self.src.len().saturating_sub(self.pos).saturating_add(1);
+                    for _ in 0..text_cap {
+                        if self.pos >= self.src.len() {
+                            break;
+                        }
                         let c = self.src[self.pos];
                         if c == b'<' || c == b'{' || c == b'\n' || c == b'(' {
                             break;
@@ -1416,10 +1491,14 @@ impl<'a> XmlAwareLexer<'a> {
                 }
             }
         }
+        Some(Err(LexError::new(
+            "XmlAwareLexer: exceeded per-token scan budget in Xml mode",
+        )))
     }
 
     fn next_xmltag(&mut self) -> Option<LexResult> {
-        loop {
+        let stride_limit = self.src.len().saturating_add(1);
+        'xmltag: for _ in 0..stride_limit {
             if self.pos >= self.src.len() {
                 return None;
             }
@@ -1429,14 +1508,14 @@ impl<'a> XmlAwareLexer<'a> {
             // Skip whitespace
             if b == b' ' || b == b'\t' || b == b'\r' || b == b'\n' {
                 self.pos += 1;
-                continue;
+                continue 'xmltag;
             }
 
             // ML comment
             if b == b'(' && self.at(1) == Some(b'*') {
                 self.pos += 2;
                 self.skip_ml_comment();
-                continue;
+                continue 'xmltag;
             }
 
             // `>` → Gt, switch back to Xml mode
@@ -1508,13 +1587,17 @@ impl<'a> XmlAwareLexer<'a> {
                     .unwrap_or("")
                     .to_string();
                 let mut p = self.pos;
-                while p < self.src.len() {
+                let attr_ws_cap = self.src.len().saturating_sub(p).saturating_add(1);
+                for _ in 0..attr_ws_cap {
+                    if p >= self.src.len() {
+                        break;
+                    }
                     let bb = self.src[p];
                     if bb == b' ' || bb == b'\t' || bb == b'\r' || bb == b'\n' {
                         p += 1;
-                        continue;
+                    } else {
+                        break;
                     }
-                    break;
                 }
                 let tok = if p < self.src.len() && self.src[p] == b'=' {
                     Token::XmlAttrNameEq(name)
@@ -1531,6 +1614,9 @@ impl<'a> XmlAwareLexer<'a> {
                 b as char, start
             ))));
         }
+        Some(Err(LexError::new(
+            "XmlAwareLexer: exceeded per-token scan budget in XmlTag mode",
+        )))
     }
 }
 

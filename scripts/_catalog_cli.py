@@ -1336,6 +1336,22 @@ _CLI: list[tuple[str, tuple[str, str, str]]] = [
             "Busca diagnósticos anteriores o repórtalo con un ejemplo mínimo.",
         ),
     ),
+    (
+        "CliDebuggerGdbMiDriverLoopExhausted",
+        _t(
+            "Internal error: the GDB/MI driver loop finished without the usual completion token (please report this bug).",
+            "Internt fel: GDB/MI-drivslingan avslutades utan förväntad sluttoken (rapportera gärna buggen).",
+            "Error interno: el bucle del controlador GDB/MI terminó sin el token de finalización esperado (por favor repórtelo).",
+        ),
+    ),
+    (
+        "CliDebuggerDapStdioLoopExhausted",
+        _t(
+            "The Debug Adapter Protocol message loop reached its safety limit ({0} messages) without a clean end-of-file or shutdown. If this was a real session, please report a bug; otherwise the editor or client may be misbehaving.",
+            "Debug Adapter Protocol-meddelandeslingan nådde säkerhetsgränsen ({0} meddelanden) utan ren filslut eller avstängning. Om det var en riktig session, rapportera buggen; annars kan klienten bete sig fel.",
+            "El bucle de mensajes del Debug Adapter Protocol alcanzó el límite de seguridad ({0} mensajes) sin un fin de archivo limpio ni apagado. Si la sesión era legítima, repórtelo; si no, el editor o cliente puede estar mal.",
+        ),
+    ),
 ]
 
 for _name, _tpl in _CLI:

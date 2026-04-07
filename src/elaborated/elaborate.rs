@@ -26,6 +26,7 @@
 //! - [`crate::elaborated::type_operations::hnorm_con`] — thread-local depth 200; solved-[`elab::Constructor::Unif`]
 //!   peel chains additionally capped in `type_operations` (`PEEL_SOLVED_CONSTRUCTOR_UNIF_CHAIN_MAX_STEPS`).
 
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -33,7 +34,8 @@ use crate::diagnostics::{DiagnosticId, DiagnosticPayload};
 use crate::elaborated as elab;
 use crate::elaborated::disjointness_analysis as disjoint;
 use crate::elaborated::environment::{
-    hnorm_con_constructor_abstraction, hnorm_sgn, new_named_id, ConstructorInfo, Env, VarLookup,
+    hnorm_con_constructor_abstraction, hnorm_con_expression_head, hnorm_sgn, new_named_id,
+    ConstructorInfo, Env, VarLookup,
 };
 use crate::elaborated::type_operations::{
     cons_eq_simple, hnorm_con, occurs_cunif, reduce_con, squish_con, sub_con_in_con,
@@ -410,17 +412,11 @@ const CHASE_KIND_UNIFICATION_HEAD_MAX_STEPS: usize = 8192;
 /// Implemented as a loop so long union-find chains (no path compression) cannot overflow the stack.
 /// Step cap yields [`elab::Kind::Error`] so elaboration degrades like other stuck normalization.
 fn chase_kind_unification_head(mut kind: elab::LocatedKind) -> elab::LocatedKind {
-    let mut chase_steps = 0usize; // One increment per follow of a `Known` kind unification cell.
-    loop {
+    for _ in 0..CHASE_KIND_UNIFICATION_HEAD_MAX_STEPS {
         let reference = match &kind.node {
             elab::Kind::Unif(_, _, reference) | elab::Kind::TupleUnif(_, _, reference) => reference,
             _ => return kind, // Concrete kind head: chase finished.
         };
-        if chase_steps >= CHASE_KIND_UNIFICATION_HEAD_MAX_STEPS {
-            let span = kind.span.clone();
-            return Located::new(elab::Kind::Error, span); // Cycle or runaway alias chain.
-        }
-        chase_steps += 1; // Count this dereference toward the cap before reading the cell.
         let guard = crate::compiler_diagnostics::lock_for_compile(
             reference.as_ref(),
             "elaboration unification cell",
@@ -434,6 +430,8 @@ fn chase_kind_unification_head(mut kind: elab::LocatedKind) -> elab::LocatedKind
             return kind; // Unknown cell: this unifier is the representative head.
         }
     }
+    let span = kind.span.clone();
+    Located::new(elab::Kind::Error, span) // Cycle or runaway alias chain.
 }
 
 /// Resolve kind head through solved [`elab::Kind::Unif`] / [`elab::Kind::TupleUnif`] cells.
@@ -481,6 +479,45 @@ fn kind_for_class_constructor_head(
             elab::Kind::Arrow(Box::new(kn), Box::new(kind_type)),
             span.clone(),
         )
+    }
+}
+
+fn constructor_head_after_apps(
+    constructor: &elab::LocatedConstructor,
+) -> &elab::LocatedConstructor {
+    match &constructor.node {
+        elab::Constructor::App(function_constructor, _)
+        | elab::Constructor::KApp(function_constructor, _) => {
+            constructor_head_after_apps(function_constructor)
+        }
+        _ => constructor,
+    }
+}
+
+fn constructor_is_folder_head(
+    elaboration_environment: &Env,
+    constructor: &elab::LocatedConstructor,
+) -> bool {
+    let normalized_constructor =
+        hnorm_con_expression_head(elaboration_environment, constructor.clone());
+    let normalized_head = constructor_head_after_apps(&normalized_constructor);
+    match &normalized_head.node {
+        elab::Constructor::Named(id) => elaboration_environment
+            .lookup_c_named(*id)
+            .map(|(name, _, _)| name == "folder")
+            .unwrap_or(false),
+        elab::Constructor::ModProj(_, _, name) => name == "folder",
+        _ => false,
+    }
+}
+
+fn is_class_or_folder(
+    elaboration_environment: &Env,
+    constructor: &elab::LocatedConstructor,
+) -> bool {
+    match elaboration_environment.is_class(constructor) {
+        true => true,
+        false => constructor_is_folder_head(elaboration_environment, constructor),
     }
 }
 
@@ -728,16 +765,11 @@ fn elab_con_head(
     mut kind: elab::LocatedKind,
 ) -> (elab::LocatedConstructor, elab::LocatedKind) {
     let span = constructor.span.clone();
-    let mut head_steps = 0usize; // Each step inserts one `KApp` for an outer `Kind::Fun` binder.
-    loop {
+    // Up to [`ELAB_CON_HEAD_MAX_STEPS`] implicit [`Constructor::KApp`] wrappers; then return remaining kind.
+    for _ in 0..ELAB_CON_HEAD_MAX_STEPS {
         let normalized_kind = hnorm_kind(kind);
         match &normalized_kind.node {
             elab::Kind::Fun(binder_name, body_kind) => {
-                if head_steps >= ELAB_CON_HEAD_MAX_STEPS {
-                    // Return partial application + remaining kind; downstream should fail like arity errors.
-                    return (constructor, normalized_kind);
-                }
-                head_steps += 1;
                 let fresh_kind_meta = fresh_kunif(span.clone(), binder_name);
                 constructor = Located::new(
                     elab::Constructor::KApp(
@@ -751,6 +783,8 @@ fn elab_con_head(
             _ => return (constructor, normalized_kind),
         }
     }
+    let normalized_kind = hnorm_kind(kind);
+    (constructor, normalized_kind)
 }
 
 // ---------------------------------------------------------------------------
@@ -1720,11 +1754,15 @@ pub fn format_failed_to_unify_constructors_message(failure: &FailedToUnifyConstr
 /// Record summary for row unification.
 #[derive(Debug, Clone)]
 struct RecordSummary {
-    /// Known field/value pairs.
-    fields: Vec<(String, elab::LocatedConstructor)>,
-    /// Unification variable tails.
-    unifs: Vec<(elab::CUnifRef, usize)>,
-    /// Other unknown row pieces.
+    /// Field name/value constructor pairs.  Mirrors SML `record_summary.fields`:
+    /// names are `hnorm_con`'d but may be any constructor (Name literal, Rel, Unif, etc.).
+    /// [`unifySummaries`] (SML) matches them via `consEq`/`consNeq`, not by string equality.
+    fields: Vec<(elab::LocatedConstructor, elab::LocatedConstructor)>,
+    /// Unification variable tails stored as their original `Constructor::Unif(...)` located nodes.
+    /// Storing the full located constructor (rather than just `(CUnifRef, usize)`) lets
+    /// `unsummarize_summary` include them verbatim in a solution row via `Constructor::Concat`.
+    unifs: Vec<elab::LocatedConstructor>,
+    /// Other unknown row pieces (non-Record, non-Concat, non-Unif constructors such as `map f r`).
     others: Vec<elab::LocatedConstructor>,
 }
 
@@ -1752,36 +1790,19 @@ fn record_summary_inner(
     let cn = hnorm_con(c.clone());
     match cn.node {
         elab::Constructor::Record(_, ref xcs) => {
-            let mut concrete_fields = Vec::new(); // (String, constructor) pairs for concrete Name keys
-            let mut has_abstract_key = false; // set when any field uses a non-Name key (e.g. Rel)
-            for (nc, vc) in xcs {
-                // Head-normalise the field name to see if it is a literal string.
-                let ncn = hnorm_con(nc.clone());
-                if let elab::Constructor::Name(s) = ncn.node {
-                    // Concrete Name field: add to known-fields.
-                    concrete_fields.push((s, vc.clone()));
-                } else {
-                    // Non-concrete key (Rel, Unif, App, …): signal that the entire record
-                    // must be treated as an opaque chunk in row unification. Mirrors SML's
-                    // `rowSummary` which puts non-CName fields' whole CRecord into `others`.
-                    has_abstract_key = true;
-                }
-            }
-            if has_abstract_key {
-                // Treat entire record as one opaque `others` chunk so unify_rows can match
-                // or defer it against a counterpart chunk on the other side.
-                RecordSummary {
-                    fields: vec![],
-                    unifs: vec![],
-                    others: vec![cn], // cn is the hnorm_con result = the Record node
-                }
-            } else {
-                // All field names are concrete Name strings.
-                RecordSummary {
-                    fields: concrete_fields,
-                    unifs: vec![],
-                    others: vec![],
-                }
+            // Mirrors SML `recordSummary` for CRecord: ALL fields go into `fields` as
+            // `(hnorm_con name, hnorm_con value)` pairs regardless of whether the name
+            // is a concrete Name literal, a Rel de Bruijn variable, or a Unif.
+            // `unifySummaries` (SML) matches field names via `consEq`/`consNeq`, not by
+            // string equality, so abstract names can be solved during field unification.
+            let fields: Vec<(elab::LocatedConstructor, elab::LocatedConstructor)> = xcs
+                .iter()
+                .map(|(nc, vc)| (hnorm_con(nc.clone()), hnorm_con(vc.clone())))
+                .collect();
+            RecordSummary {
+                fields,
+                unifs: vec![],
+                others: vec![],
             }
         }
         elab::Constructor::Concat(c1, c2) => {
@@ -1792,11 +1813,27 @@ fn record_summary_inner(
             s1.others.extend(s2.others);
             s1
         }
-        elab::Constructor::Unif(nl, _, _, _, r) => RecordSummary {
-            fields: vec![],
-            unifs: vec![(r, nl)],
-            others: vec![],
-        },
+        elab::Constructor::Unif(nl, _, _, _, _) => {
+            // Mirrors SML `recordSummary`: only `nl = 0` (outermost-scope) unification
+            // variables go into `unifs`; deeper unifs go into `others`.
+            // This is critical because the one-unif solve patterns (SML pattern 1/2) only
+            // fire for `nl = 0` Unifs, where squish is the identity.  `nl > 0` Unifs that
+            // land in `others` are handled by the final-dispatch patterns which squish before
+            // assigning.
+            if nl == 0 {
+                RecordSummary {
+                    fields: vec![],
+                    unifs: vec![cn],
+                    others: vec![],
+                }
+            } else {
+                RecordSummary {
+                    fields: vec![],
+                    unifs: vec![],
+                    others: vec![cn],
+                }
+            }
+        }
         elab::Constructor::Unit => RecordSummary {
             fields: vec![],
             unifs: vec![],
@@ -1873,8 +1910,10 @@ fn unify_cons_inner(
     }
 
     // Chase known unif vars first (expand named abbreviations like ML normCon)
-    let left_normalized = hnorm_con(left_constructor.clone());
-    let right_normalized = hnorm_con(right_constructor.clone());
+    let left_normalized =
+        hnorm_con_expression_head(elaboration_environment, left_constructor.clone());
+    let right_normalized =
+        hnorm_con_expression_head(elaboration_environment, right_constructor.clone());
 
     // Quick structural equality check
     if cons_eq_simple(&left_normalized, &right_normalized) {
@@ -2335,8 +2374,78 @@ fn unify_rows(
     right_constructor: &elab::LocatedConstructor,
     recursion_depth: usize,
 ) -> Result<(), Box<FailedToUnifyConstructors>> {
+    // Compute the row element kind once so any synthesized shared row tails use the same shape.
+    let row_element_kind = match hnorm_kind(kindof(
+        elaboration_context,
+        elaboration_environment,
+        left_constructor,
+    ))
+    .node
+    {
+        // Preserve the row element kind when the caller really passed a row constructor.
+        elab::Kind::Record(inner_kind) => *inner_kind,
+        // Fall back to `Type` on malformed inputs so the helper code stays total.
+        _ => Located::new(elab::Kind::Type, diagnostic_span.clone()),
+    };
+    // Reuse the enclosing row kind when we need a fresh shared row-tail unification variable.
+    let row_kind = Located::new(
+        elab::Kind::Record(Box::new(row_element_kind.clone())),
+        diagnostic_span.clone(),
+    );
     let left_summary = record_summary(elaboration_environment, left_constructor.clone());
     let right_summary = record_summary(elaboration_environment, right_constructor.clone());
+    // Match SML `consNeq`: only return `true` when two field names are provably distinct.
+    let names_are_definitely_distinct =
+        |left_name: &elab::LocatedConstructor, right_name: &elab::LocatedConstructor| match (
+            &hnorm_con(left_name.clone()).node,
+            &hnorm_con(right_name.clone()).node,
+        ) {
+            // Distinct literal names are definitely different.
+            (elab::Constructor::Name(left_symbol), elab::Constructor::Name(right_symbol)) => {
+                left_symbol != right_symbol
+            }
+            // Distinct de Bruijn names are definitely different.
+            (elab::Constructor::Rel(left_index), elab::Constructor::Rel(right_index)) => {
+                left_index != right_index
+            }
+            // Distinct named constructors are definitely different.
+            (elab::Constructor::Named(left_index), elab::Constructor::Named(right_index)) => {
+                left_index != right_index
+            }
+            // Distinct module projections with the same surface path shape are definitely different.
+            (
+                elab::Constructor::ModProj(left_root, left_modules, left_field),
+                elab::Constructor::ModProj(right_root, right_modules, right_field),
+            ) => {
+                left_root != right_root
+                    || left_modules != right_modules
+                    || left_field != right_field
+            }
+            // Name literals are distinct from all rel/named/module-projected names.
+            (elab::Constructor::Name(_), elab::Constructor::Rel(_))
+            | (elab::Constructor::Rel(_), elab::Constructor::Name(_))
+            | (elab::Constructor::Name(_), elab::Constructor::Named(_))
+            | (elab::Constructor::Named(_), elab::Constructor::Name(_))
+            | (elab::Constructor::Name(_), elab::Constructor::ModProj(_, _, _))
+            | (elab::Constructor::ModProj(_, _, _), elab::Constructor::Name(_))
+            | (elab::Constructor::Rel(_), elab::Constructor::Named(_))
+            | (elab::Constructor::Named(_), elab::Constructor::Rel(_))
+            | (elab::Constructor::Rel(_), elab::Constructor::ModProj(_, _, _))
+            | (elab::Constructor::ModProj(_, _, _), elab::Constructor::Rel(_)) => true,
+            // Any other pair may still unify, so do not treat it as definitely distinct.
+            _ => false,
+        };
+    // Match SML `List.all ... consNeq`: every left field name must be definitely distinct
+    // from every right field name before we synthesize a shared row tail.
+    let fields_are_pairwise_distinct =
+        |left_fields: &Vec<(elab::LocatedConstructor, elab::LocatedConstructor)>,
+         right_fields: &Vec<(elab::LocatedConstructor, elab::LocatedConstructor)>| {
+            left_fields.iter().all(|(left_name, _)| {
+                right_fields
+                    .iter()
+                    .all(|(right_name, _)| names_are_definitely_distinct(left_name, right_name))
+            })
+        };
 
     // If both are fully known (no unifs), check field by field
     if left_summary.unifs.is_empty()
@@ -2354,12 +2463,11 @@ fn unify_rows(
         }
         let mut right_fields_remaining = right_summary.fields.clone();
         for (field_name_left, field_type_left) in &left_summary.fields {
-            if let Some(position) =
-                right_fields_remaining
-                    .iter()
-                    .position(|(field_name_right, _)| {
-                        field_name_left.to_lowercase() == field_name_right.to_lowercase()
-                    })
+            // Use cons_eq_simple to compare field names (may be Name, Rel, Unif, etc.),
+            // mirroring SML `eatMatching`/`consEq` which handles abstract names too.
+            if let Some(position) = right_fields_remaining
+                .iter()
+                .position(|(field_name_right, _)| cons_eq_simple(field_name_left, field_name_right))
             {
                 let (_, field_type_right) = right_fields_remaining.remove(position);
                 unify_cons_inner(
@@ -2382,53 +2490,269 @@ fn unify_rows(
         return Ok(());
     }
 
-    // If either side has exactly one unif and no others, solve it
-    if left_summary.unifs.len() == 1
-        && left_summary.others.is_empty()
-        && right_summary.unifs.is_empty()
-        && right_summary.others.is_empty()
-    {
-        let (row_tail_cell, nesting_lift) = &left_summary.unifs[0];
-        // Build the solution: right minus left fields
-        let mut remaining = right_summary.fields.clone();
-        for (field_name, _) in &left_summary.fields {
-            remaining.retain(|(field_name_right, _)| {
-                field_name.to_lowercase() != field_name_right.to_lowercase()
-            });
+    // Mirrors SML `unifySummaries` pattern 1: `([(_, r)], [], [], _, _, _)`.
+    // Left has exactly 1 unif (nl=0), 0 unmatched fields, 0 others; right may have anything.
+    // Since RecordSummary.unifs only holds nl=0 Unifs, no squish is needed: nl=0 means
+    // the unif was created at the outermost scope, so the solution needs no index adjustment.
+    // Solution: r := unsummarize(right remaining fields ++ right unifs ++ right others).
+    if left_summary.unifs.len() == 1 && left_summary.others.is_empty() {
+        // Extract the Unif cell from the stored nl=0 located constructor.
+        let row_tail_cell = match &left_summary.unifs[0].node {
+            elab::Constructor::Unif(_, _, _, _, r) => r.clone(),
+            // RecordSummary.unifs only ever contains Unif nodes; any other variant is a bug.
+            _ => unreachable!("RecordSummary.unifs must contain Constructor::Unif nodes"),
+        };
+        // Match all left fields against right fields (order-independent), unifying types.
+        // SML eatMatching calls consEq(c1, c2) which invokes unifyCons — so we also unify
+        // field types here, not just names.  Only consume a pair when both name and type unify.
+        // SML requires fields1=[] after eatMatching, meaning every left field was consumed.
+        let mut right_fields_remaining = right_summary.fields.clone();
+        let mut all_left_fields_matched = true;
+        for (field_name_left, field_type_left) in &left_summary.fields {
+            // Locate the first right field with a matching name.
+            if let Some(pos) = right_fields_remaining
+                .iter()
+                .position(|(fn_r, _)| cons_eq_simple(field_name_left, fn_r))
+            {
+                // Unify the field types (mirrors SML consEq in eatMatching).
+                let field_type_right = right_fields_remaining[pos].1.clone();
+                let type_ok = unify_cons_inner(
+                    elaboration_context,
+                    elaboration_environment,
+                    diagnostic_span,
+                    field_type_left,
+                    &field_type_right,
+                    recursion_depth + 1,
+                )
+                .is_ok();
+                if type_ok {
+                    // Both name and type match: consume this pair from both sides.
+                    right_fields_remaining.remove(pos);
+                } else {
+                    // Name matches but types do not unify: field is not consumed.
+                    all_left_fields_matched = false;
+                    break;
+                }
+            } else {
+                // Left field not present in right: SML pattern does not apply; skip.
+                all_left_fields_matched = false;
+                break;
+            }
         }
-        let solution = fields_to_row(&remaining, diagnostic_span, &right_constructor.span);
-        // Squish adjusts the solution from the current depth to the Unif's creation depth
-        // (mirrors SML unifyCons'' nl>0 squish logic for row tails).
-        let adjusted = squish_con(*nesting_lift, solution)
-            .map_err(|CantSquish| Box::new(FailedToUnifyConstructors::ConstructorTooDeepForUnif))?;
-        *crate::compiler_diagnostics::lock_for_compile(
-            row_tail_cell.as_ref(),
-            "elaboration unification cell",
-        ) = elab::CUnif::Known(Box::new(adjusted));
-        return Ok(());
+        if all_left_fields_matched {
+            // Build solution from ALL remaining right pieces (fields + unifs + others).
+            // This mirrors SML `unsummarize {fields=fs2, unifs=unifs2, others=others2}`.
+            let solution = unsummarize_summary(
+                &right_fields_remaining,
+                &right_summary.unifs,
+                &right_summary.others,
+                diagnostic_span,
+            );
+            // Occurs check: refuse cyclic solutions (mirrors SML `occursCon r c`).
+            // No squish needed: unifs in RecordSummary always have nl=0.
+            if !occurs_cunif(&row_tail_cell, &solution) {
+                *crate::compiler_diagnostics::lock_for_compile(
+                    row_tail_cell.as_ref(),
+                    "elaboration unification cell",
+                ) = elab::CUnif::Known(Box::new(solution));
+                return Ok(());
+            }
+        }
     }
-    if right_summary.unifs.len() == 1
+    // Symmetric: SML pattern 2 `(_, _, _, [(_, r)], [], [])`.
+    // Right has exactly 1 unif (nl=0), 0 unmatched fields, 0 others; left may have anything.
+    if right_summary.unifs.len() == 1 && right_summary.others.is_empty() {
+        // Extract the Unif cell from the stored nl=0 located constructor.
+        let row_tail_cell = match &right_summary.unifs[0].node {
+            elab::Constructor::Unif(_, _, _, _, r) => r.clone(),
+            _ => unreachable!("RecordSummary.unifs must contain Constructor::Unif nodes"),
+        };
+        // Match all right fields against left fields (order-independent), unifying types.
+        // SML eatMatching calls consEq(c1, c2) which invokes unifyCons.
+        // SML requires fields2=[] after eatMatching, meaning every right field was consumed.
+        let mut left_fields_remaining = left_summary.fields.clone();
+        let mut all_right_fields_matched = true;
+        for (field_name_right, field_type_right) in &right_summary.fields {
+            // Locate the first left field with a matching name.
+            if let Some(pos) = left_fields_remaining
+                .iter()
+                .position(|(fn_l, _)| cons_eq_simple(field_name_right, fn_l))
+            {
+                // Unify the field types (mirrors SML consEq in eatMatching).
+                let field_type_left = left_fields_remaining[pos].1.clone();
+                let type_ok = unify_cons_inner(
+                    elaboration_context,
+                    elaboration_environment,
+                    diagnostic_span,
+                    &field_type_left,
+                    field_type_right,
+                    recursion_depth + 1,
+                )
+                .is_ok();
+                if type_ok {
+                    // Both name and type match: consume this pair from both sides.
+                    left_fields_remaining.remove(pos);
+                } else {
+                    // Name matches but types do not unify: field is not consumed.
+                    all_right_fields_matched = false;
+                    break;
+                }
+            } else {
+                // Right field not present in left: SML pattern does not apply; skip.
+                all_right_fields_matched = false;
+                break;
+            }
+        }
+        if all_right_fields_matched {
+            // Build solution from ALL remaining left pieces (fields + unifs + others).
+            let solution = unsummarize_summary(
+                &left_fields_remaining,
+                &left_summary.unifs,
+                &left_summary.others,
+                diagnostic_span,
+            );
+            // Occurs check: refuse cyclic solutions.
+            // No squish needed: unifs in RecordSummary always have nl=0.
+            if !occurs_cunif(&row_tail_cell, &solution) {
+                *crate::compiler_diagnostics::lock_for_compile(
+                    row_tail_cell.as_ref(),
+                    "elaboration unification cell",
+                ) = elab::CUnif::Known(Box::new(solution));
+                return Ok(());
+            }
+        }
+    }
+
+    // Mirror the SML shared-tail case:
+    // one row-tail unif on each side, no abstract `others`, and pairwise-disjoint fields.
+    // In that situation both tails can be solved as "the other side's fields ++ shared_tail".
+    if left_summary.unifs.len() == 1
+        && right_summary.unifs.len() == 1
+        && left_summary.others.is_empty()
         && right_summary.others.is_empty()
+        && fields_are_pairwise_distinct(&left_summary.fields, &right_summary.fields)
+    {
+        // Extract the left unknown row-tail cell.
+        let left_row_tail_cell = match &left_summary.unifs[0].node {
+            elab::Constructor::Unif(_, _, _, _, row_tail_cell) => row_tail_cell.clone(),
+            _ => unreachable!("RecordSummary.unifs must contain Constructor::Unif nodes"),
+        };
+        // Extract the right unknown row-tail cell.
+        let right_row_tail_cell = match &right_summary.unifs[0].node {
+            elab::Constructor::Unif(_, _, _, _, row_tail_cell) => row_tail_cell.clone(),
+            _ => unreachable!("RecordSummary.unifs must contain Constructor::Unif nodes"),
+        };
+        // Share one fresh tail so both solved rows keep the same residual unknown.
+        let shared_row_tail = fresh_cunif(
+            elaboration_environment,
+            diagnostic_span.clone(),
+            row_kind,
+            "_shared_row_tail",
+        );
+        // Rebuild the right side's concrete fields as a row constructor.
+        let right_fields_row = unsummarize_summary(
+            &right_summary.fields,
+            &Vec::new(),
+            &Vec::new(),
+            diagnostic_span,
+        );
+        // Rebuild the left side's concrete fields as a row constructor.
+        let left_fields_row = unsummarize_summary(
+            &left_summary.fields,
+            &Vec::new(),
+            &Vec::new(),
+            diagnostic_span,
+        );
+        // Solve the left tail as "right fields ++ shared tail".
+        let left_solution = Located::new(
+            elab::Constructor::Concat(
+                Box::new(right_fields_row),
+                Box::new(shared_row_tail.clone()),
+            ),
+            diagnostic_span.clone(),
+        );
+        // Solve the right tail as "left fields ++ shared tail".
+        let right_solution = Located::new(
+            elab::Constructor::Concat(Box::new(left_fields_row), Box::new(shared_row_tail)),
+            diagnostic_span.clone(),
+        );
+        // Only assign the synthesized solution when it does not create a cycle on the left.
+        let left_assignable = !occurs_cunif(&left_row_tail_cell, &left_solution);
+        // Only assign the synthesized solution when it does not create a cycle on the right.
+        let right_assignable = !occurs_cunif(&right_row_tail_cell, &right_solution);
+        match (left_assignable, right_assignable) {
+            // The shared-tail reduction succeeded for both sides.
+            (true, true) => {
+                *crate::compiler_diagnostics::lock_for_compile(
+                    left_row_tail_cell.as_ref(),
+                    "elaboration unification cell shared-tail left",
+                ) = elab::CUnif::Known(Box::new(left_solution));
+                *crate::compiler_diagnostics::lock_for_compile(
+                    right_row_tail_cell.as_ref(),
+                    "elaboration unification cell shared-tail right",
+                ) = elab::CUnif::Known(Box::new(right_solution));
+                return Ok(());
+            }
+            // Fall through to the rest of the row-unification logic when either side cycles.
+            _ => {}
+        }
+    }
+
+    // Mirror the SML `isGuessable` shortcut:
+    // if one side is a single abstract `other` and the other side is a pure record/unif summary,
+    // try `guess_map` immediately before deferring.
+    if left_summary.fields.is_empty()
         && left_summary.unifs.is_empty()
+        && left_summary.others.len() == 1
+        && right_summary.others.is_empty()
+    {
+        // Rebuild the right side into the concrete row that SML passes to `guessMap`.
+        let right_summary_row = unsummarize_summary(
+            &right_summary.fields,
+            &right_summary.unifs,
+            &right_summary.others,
+            diagnostic_span,
+        );
+        // Try the SML-style map guess; ignore failure and continue with normal fallback paths.
+        if guess_map(
+            elaboration_context,
+            elaboration_environment,
+            diagnostic_span,
+            &left_summary.others[0],
+            &right_summary_row,
+            recursion_depth + 1,
+        )
+        .is_ok()
+        {
+            return Ok(());
+        }
+    }
+    // Symmetric SML `isGuessable` shortcut for a single right-side abstract `other`.
+    if right_summary.fields.is_empty()
+        && right_summary.unifs.is_empty()
+        && right_summary.others.len() == 1
         && left_summary.others.is_empty()
     {
-        let (row_tail_cell, nesting_lift) = &right_summary.unifs[0];
-        let mut remaining = left_summary.fields.clone();
-        for (field_name, _) in &right_summary.fields {
-            remaining.retain(|(field_name_left, _)| {
-                field_name.to_lowercase() != field_name_left.to_lowercase()
-            });
+        // Rebuild the left side into the concrete row that SML passes to `guessMap`.
+        let left_summary_row = unsummarize_summary(
+            &left_summary.fields,
+            &left_summary.unifs,
+            &left_summary.others,
+            diagnostic_span,
+        );
+        // Try the SML-style map guess; ignore failure and continue with normal fallback paths.
+        if guess_map(
+            elaboration_context,
+            elaboration_environment,
+            diagnostic_span,
+            &left_summary_row,
+            &right_summary.others[0],
+            recursion_depth + 1,
+        )
+        .is_ok()
+        {
+            return Ok(());
         }
-        let solution = fields_to_row(&remaining, diagnostic_span, &left_constructor.span);
-        // Squish adjusts the solution from the current depth to the Unif's creation depth
-        // (mirrors SML unifyCons'' nl>0 squish logic for row tails).
-        let adjusted = squish_con(*nesting_lift, solution)
-            .map_err(|CantSquish| Box::new(FailedToUnifyConstructors::ConstructorTooDeepForUnif))?;
-        *crate::compiler_diagnostics::lock_for_compile(
-            row_tail_cell.as_ref(),
-            "elaboration unification cell",
-        ) = elab::CUnif::Known(Box::new(adjusted));
-        return Ok(());
     }
 
     // Both sides have the same number of abstract `others` pieces and no Unif tails.
@@ -2440,18 +2764,17 @@ fn unify_rows(
         && !left_summary.others.is_empty()
         && left_summary.others.len() == right_summary.others.len()
         && left_summary.fields.len() == right_summary.fields.len()
+        && (!left_summary.fields.is_empty() || !right_summary.fields.is_empty())
     {
         // Check all known fields match pairwise (order-independent).
-        // Fields in RecordSummary.fields are always concrete (Name(s)) strings.
+        // Fields in RecordSummary.fields use concrete Name keys (as Located constructors).
         let mut right_fields_remaining = right_summary.fields.clone();
         let mut all_fields_matched = true;
         for (field_name_left, field_type_left) in &left_summary.fields {
-            if let Some(position) =
-                right_fields_remaining
-                    .iter()
-                    .position(|(field_name_right, _)| {
-                        field_name_left.to_lowercase() == field_name_right.to_lowercase()
-                    })
+            // Use cons_eq_simple for abstract-name-aware field matching (Rel, Unif, Name).
+            if let Some(position) = right_fields_remaining
+                .iter()
+                .position(|(field_name_right, _)| cons_eq_simple(field_name_left, field_name_right))
             {
                 let (_, field_type_right) = right_fields_remaining.remove(position);
                 if unify_cons_inner(
@@ -2496,6 +2819,80 @@ fn unify_rows(
             }
             if others_ok {
                 return Ok(());
+            }
+        }
+    }
+
+    // SML final-dispatch: solve a deeper (nl>0) CUnif that landed in `others`.
+    // These mirror the last patterns before `default()` in SML's `unifySummaries`:
+    //   `(_, _, _, [], [], [CUnif(nl)])` — right has exactly 1 CUnif in others, nothing else
+    //   `([], [], [CUnif(nl)], _, _, _)` — left has exactly 1 CUnif in others, nothing else
+    // The solution is squished by `nl` to match the unif's creation depth; on CantSquish, fall through.
+    if right_summary.unifs.is_empty()
+        && right_summary.fields.is_empty()
+        && right_summary.others.len() == 1
+    {
+        // Check whether the single right-side other IS a CUnif (nl>0).
+        let right_other = &right_summary.others[0];
+        if let elab::Constructor::Unif(nl, _, _, _, ref r_cell) = right_other.node {
+            let current = {
+                let guard = crate::compiler_diagnostics::lock_for_compile(
+                    r_cell.as_ref(),
+                    "unify_rows final-dispatch read",
+                );
+                guard.clone()
+            };
+            if matches!(current, elab::CUnif::Unknown) && !occurs_cunif(r_cell, left_constructor) {
+                // Build the full left summary into a row constructor.
+                let solution = unsummarize_summary(
+                    &left_summary.fields,
+                    &left_summary.unifs,
+                    &left_summary.others,
+                    diagnostic_span,
+                );
+                // Squish by nl to adjust for the creation-depth of this CUnif.
+                // If squish fails (solution references locals inside nl binders), fall through to defer.
+                if let Ok(adjusted) = squish_con(nl, solution) {
+                    *crate::compiler_diagnostics::lock_for_compile(
+                        r_cell.as_ref(),
+                        "elaboration unification cell final-dispatch right",
+                    ) = elab::CUnif::Known(Box::new(adjusted));
+                    return Ok(());
+                }
+                // CantSquish: fall through to the defer/fail block below.
+            }
+        }
+    }
+    // Symmetric: left has exactly 1 CUnif (nl>0) in others, no unifs, no fields.
+    if left_summary.unifs.is_empty()
+        && left_summary.fields.is_empty()
+        && left_summary.others.len() == 1
+    {
+        let left_other = &left_summary.others[0];
+        if let elab::Constructor::Unif(nl, _, _, _, ref l_cell) = left_other.node {
+            let current = {
+                let guard = crate::compiler_diagnostics::lock_for_compile(
+                    l_cell.as_ref(),
+                    "unify_rows final-dispatch read left",
+                );
+                guard.clone()
+            };
+            if matches!(current, elab::CUnif::Unknown) && !occurs_cunif(l_cell, right_constructor) {
+                // Build the full right summary into a row constructor.
+                let solution = unsummarize_summary(
+                    &right_summary.fields,
+                    &right_summary.unifs,
+                    &right_summary.others,
+                    diagnostic_span,
+                );
+                if let Ok(adjusted) = squish_con(nl, solution) {
+                    *crate::compiler_diagnostics::lock_for_compile(
+                        l_cell.as_ref(),
+                        "elaboration unification cell final-dispatch left",
+                    ) = elab::CUnif::Known(Box::new(adjusted));
+                    return Ok(());
+                }
+                // CantSquish: fall through.
             }
         }
     }
@@ -2930,33 +3327,39 @@ fn guess_map(
     ))
 }
 
-fn fields_to_row(
-    fields: &[(String, elab::LocatedConstructor)],
+/// Mirrors SML `unsummarize {fields, unifs, others}`: build a row constructor from summary pieces.
+///
+/// Produces `CRecord(k, fields) ++ unif_0 ++ unif_1 ++ ... ++ other_0 ++ ...`.
+/// Each `++` is [`elab::Constructor::Concat`].  Used when solving a unification variable tail
+/// to include all remaining right-side pieces (not just the field subset).
+fn unsummarize_summary(
+    fields: &[(elab::LocatedConstructor, elab::LocatedConstructor)],
+    unifs: &[elab::LocatedConstructor],
+    others: &[elab::LocatedConstructor],
     span: &Span,
-    _orig_span: &Span,
 ) -> elab::LocatedConstructor {
-    if fields.is_empty() {
-        return Located::new(
-            elab::Constructor::Record(
-                Box::new(Located::new(elab::Kind::Type, span.clone())),
-                vec![],
-            ),
+    // Start with the fields assembled into a Record constructor.
+    let ktype = Located::new(elab::Kind::Type, span.clone());
+    let krow = Located::new(elab::Kind::Record(Box::new(ktype)), span.clone());
+    let mut result = Located::new(
+        elab::Constructor::Record(Box::new(krow), fields.to_vec()),
+        span.clone(),
+    );
+    // Concat each unification-variable tail piece onto the result row.
+    for unif_piece in unifs {
+        result = Located::new(
+            elab::Constructor::Concat(Box::new(result), Box::new(unif_piece.clone())),
             span.clone(),
         );
     }
-    let ktype = Located::new(elab::Kind::Type, span.clone());
-    let krow = Located::new(elab::Kind::Record(Box::new(ktype)), span.clone());
-    let field_pairs: Vec<_> = fields
-        .iter()
-        .map(|(f, v)| {
-            let name = Located::new(elab::Constructor::Name(f.clone()), span.clone());
-            (name, v.clone())
-        })
-        .collect();
-    Located::new(
-        elab::Constructor::Record(Box::new(krow), field_pairs),
-        span.clone(),
-    )
+    // Concat each abstract "other" piece (e.g. `map f r`) onto the result row.
+    for other_piece in others {
+        result = Located::new(
+            elab::Constructor::Concat(Box::new(result), Box::new(other_piece.clone())),
+            span.clone(),
+        );
+    }
+    result
 }
 
 // ---------------------------------------------------------------------------
@@ -3433,9 +3836,22 @@ fn elab_exp_inner(
                 disjointness_environment,
                 f,
             );
-            // Full `named_c` unfolding on the function type so `folder r`-style abbreviations
-            // reduce for `f e` (same helper as `e[c]` heads; boot stayed neutral with left-spine only).
-            let ftn = hnorm_con_constructor_abstraction(elaboration_environment, ft);
+            // Value application needs the expression-head normalizer, not the constructor-app one:
+            // this mirrors SML `hnormCon env` at `EApp` sites and keeps `folder r` aliases callable
+            // without eagerly rewriting unrelated constructor arguments.
+            let ftn = hnorm_con_expression_head(elaboration_environment, ft);
+            if std::env::var("URWEB_TEST_SHOW_OPTION_APP_DEBUG")
+                .ok()
+                .as_deref()
+                == Some("1")
+                && span.file.ends_with("/lib/ur/top.ur")
+                && (76..=80).contains(&span.first.line)
+            {
+                eprintln!(
+                    "show_option app debug span={}:{} f={:?} ft_norm={:?}",
+                    span.file, span.first.line, fe, ftn
+                );
+            }
             match ftn.node.clone() {
                 elab::Constructor::TFun(dom, ran) => {
                     let (ae, at) = elab_exp(
@@ -3444,6 +3860,18 @@ fn elab_exp_inner(
                         disjointness_environment,
                         arg,
                     );
+                    if std::env::var("URWEB_TEST_SHOW_OPTION_APP_DEBUG")
+                        .ok()
+                        .as_deref()
+                        == Some("1")
+                        && span.file.ends_with("/lib/ur/top.ur")
+                        && (76..=80).contains(&span.first.line)
+                    {
+                        eprintln!(
+                            "show_option app debug arg span={}:{} ae={:?} at={:?} dom={:?} ran={:?}",
+                            span.file, span.first.line, ae, at, dom, ran
+                        );
+                    }
                     check_con(
                         elaboration_context,
                         elaboration_environment,
@@ -4406,7 +4834,7 @@ fn elab_exp_var(
         match elaboration_environment.lookup_e(x) {
             VarLookup::Rel(idx, t) => {
                 let e = Located::new(elab::Expression::Rel(idx), span.clone());
-                return elab_head(
+                let result = elab_head(
                     elaboration_context,
                     elaboration_environment,
                     disjointness_environment,
@@ -4415,10 +4843,11 @@ fn elab_exp_var(
                     span,
                     inference,
                 );
+                return result;
             }
             VarLookup::Named(id, t) => {
                 let e = Located::new(elab::Expression::Named(id), span.clone());
-                return elab_head(
+                let result = elab_head(
                     elaboration_context,
                     elaboration_environment,
                     disjointness_environment,
@@ -4427,12 +4856,13 @@ fn elab_exp_var(
                     span,
                     inference,
                 );
+                return result;
             }
             VarLookup::NotBound => {
                 // Check if it's a constructor
                 if let Some(info) = elaboration_environment.lookup_constructor(x) {
                     let (e, t) = make_con_exp(info, elaboration_environment, span);
-                    return elab_head(
+                    let result = elab_head(
                         elaboration_context,
                         elaboration_environment,
                         disjointness_environment,
@@ -4441,6 +4871,7 @@ fn elab_exp_var(
                         span,
                         inference,
                     );
+                    return result;
                 }
                 elaboration_context.error(
                     span.clone(),
@@ -4706,7 +5137,10 @@ fn elab_head_inner(
             elaborated_constructor_error_at_span(span.clone()),
         );
     }
-    let tn = hnorm_con(t.clone());
+    // Match SML `unravel`/`unravelKind`: normalize with the elaboration environment
+    // so named constructor aliases on the head reduce before we decide whether
+    // more implicit kind/type arguments are available.
+    let tn = hnorm_con_expression_head(elaboration_environment, t.clone());
     match (&tn.node, inference) {
         (elab::Constructor::TKFun(x, body), _) => {
             let ku = fresh_kunif(span.clone(), x);
@@ -4782,12 +5216,12 @@ fn elab_head_inner(
             )
         }
         (elab::Constructor::TFun(dom, _), source::Inference::TypesOnly)
-            if elaboration_environment.is_class(dom) =>
+            if is_class_or_folder(elaboration_environment, dom) =>
         {
             (e, t)
         }
         (elab::Constructor::TFun(dom, ran), _)
-            if elaboration_environment.is_class(dom)
+            if is_class_or_folder(elaboration_environment, dom)
                 && !matches!(inference, source::Inference::TypesOnly) =>
         {
             let result_ref: Arc<Mutex<Option<elab::LocatedExpression>>> =
@@ -6737,6 +7171,9 @@ fn resolve_class(
     class: &elab::LocatedConstructor,
     span: &Span,
 ) -> Option<(elab::LocatedExpression, elab::LocatedConstructor)> {
+    if let Some(folder_witness) = resolve_folder_witness(elaboration_environment, class, span) {
+        return Some(folder_witness);
+    }
     // Try all classes in the environment
     for rules in elaboration_environment.classes().values() {
         let class_n = hnorm_con(class.clone());
@@ -6771,23 +7208,493 @@ fn resolve_class(
     None
 }
 
+const CLASS_MATCH_SNAPSHOT_MAX_NODES: usize = 4096;
+
+fn snapshot_constructor_unifiers(
+    constructor: &elab::LocatedConstructor,
+    constructor_snapshots: &mut Vec<(elab::CUnifRef, elab::CUnif)>,
+    seen_constructor_unifs: &mut HashSet<usize>,
+    kind_snapshots: &mut Vec<(elab::KUnifRef, elab::KUnif)>,
+    seen_kind_unifs: &mut HashSet<usize>,
+    remaining_budget: &mut usize,
+) {
+    if *remaining_budget == 0 {
+        return;
+    }
+    *remaining_budget -= 1;
+
+    match &constructor.node {
+        elab::Constructor::TFun(domain, range) => {
+            snapshot_constructor_unifiers(
+                domain,
+                constructor_snapshots,
+                seen_constructor_unifs,
+                kind_snapshots,
+                seen_kind_unifs,
+                remaining_budget,
+            );
+            snapshot_constructor_unifiers(
+                range,
+                constructor_snapshots,
+                seen_constructor_unifs,
+                kind_snapshots,
+                seen_kind_unifs,
+                remaining_budget,
+            );
+        }
+        elab::Constructor::TCFun(_, _, kind, body) => {
+            snapshot_kind_unifiers(
+                kind,
+                constructor_snapshots,
+                seen_constructor_unifs,
+                kind_snapshots,
+                seen_kind_unifs,
+                remaining_budget,
+            );
+            snapshot_constructor_unifiers(
+                body,
+                constructor_snapshots,
+                seen_constructor_unifs,
+                kind_snapshots,
+                seen_kind_unifs,
+                remaining_budget,
+            );
+        }
+        elab::Constructor::TRecord(row) => {
+            snapshot_constructor_unifiers(
+                row,
+                constructor_snapshots,
+                seen_constructor_unifs,
+                kind_snapshots,
+                seen_kind_unifs,
+                remaining_budget,
+            );
+        }
+        elab::Constructor::TDisjoint(left, right, body) => {
+            snapshot_constructor_unifiers(
+                left,
+                constructor_snapshots,
+                seen_constructor_unifs,
+                kind_snapshots,
+                seen_kind_unifs,
+                remaining_budget,
+            );
+            snapshot_constructor_unifiers(
+                right,
+                constructor_snapshots,
+                seen_constructor_unifs,
+                kind_snapshots,
+                seen_kind_unifs,
+                remaining_budget,
+            );
+            snapshot_constructor_unifiers(
+                body,
+                constructor_snapshots,
+                seen_constructor_unifs,
+                kind_snapshots,
+                seen_kind_unifs,
+                remaining_budget,
+            );
+        }
+        elab::Constructor::App(function_constructor, argument_constructor)
+        | elab::Constructor::Concat(function_constructor, argument_constructor) => {
+            snapshot_constructor_unifiers(
+                function_constructor,
+                constructor_snapshots,
+                seen_constructor_unifs,
+                kind_snapshots,
+                seen_kind_unifs,
+                remaining_budget,
+            );
+            snapshot_constructor_unifiers(
+                argument_constructor,
+                constructor_snapshots,
+                seen_constructor_unifs,
+                kind_snapshots,
+                seen_kind_unifs,
+                remaining_budget,
+            );
+        }
+        elab::Constructor::Abs(_, kind, body) => {
+            snapshot_kind_unifiers(
+                kind,
+                constructor_snapshots,
+                seen_constructor_unifs,
+                kind_snapshots,
+                seen_kind_unifs,
+                remaining_budget,
+            );
+            snapshot_constructor_unifiers(
+                body,
+                constructor_snapshots,
+                seen_constructor_unifs,
+                kind_snapshots,
+                seen_kind_unifs,
+                remaining_budget,
+            );
+        }
+        elab::Constructor::KAbs(_, body) | elab::Constructor::TKFun(_, body) => {
+            snapshot_constructor_unifiers(
+                body,
+                constructor_snapshots,
+                seen_constructor_unifs,
+                kind_snapshots,
+                seen_kind_unifs,
+                remaining_budget,
+            );
+        }
+        elab::Constructor::KApp(function_constructor, kind) => {
+            snapshot_constructor_unifiers(
+                function_constructor,
+                constructor_snapshots,
+                seen_constructor_unifs,
+                kind_snapshots,
+                seen_kind_unifs,
+                remaining_budget,
+            );
+            snapshot_kind_unifiers(
+                kind,
+                constructor_snapshots,
+                seen_constructor_unifs,
+                kind_snapshots,
+                seen_kind_unifs,
+                remaining_budget,
+            );
+        }
+        elab::Constructor::Record(kind, fields) => {
+            snapshot_kind_unifiers(
+                kind,
+                constructor_snapshots,
+                seen_constructor_unifs,
+                kind_snapshots,
+                seen_kind_unifs,
+                remaining_budget,
+            );
+            for (field_name, field_type) in fields {
+                snapshot_constructor_unifiers(
+                    field_name,
+                    constructor_snapshots,
+                    seen_constructor_unifs,
+                    kind_snapshots,
+                    seen_kind_unifs,
+                    remaining_budget,
+                );
+                snapshot_constructor_unifiers(
+                    field_type,
+                    constructor_snapshots,
+                    seen_constructor_unifs,
+                    kind_snapshots,
+                    seen_kind_unifs,
+                    remaining_budget,
+                );
+            }
+        }
+        elab::Constructor::Map(left_kind, right_kind) => {
+            snapshot_kind_unifiers(
+                left_kind,
+                constructor_snapshots,
+                seen_constructor_unifs,
+                kind_snapshots,
+                seen_kind_unifs,
+                remaining_budget,
+            );
+            snapshot_kind_unifiers(
+                right_kind,
+                constructor_snapshots,
+                seen_constructor_unifs,
+                kind_snapshots,
+                seen_kind_unifs,
+                remaining_budget,
+            );
+        }
+        elab::Constructor::Tuple(items) => {
+            for item in items {
+                snapshot_constructor_unifiers(
+                    item,
+                    constructor_snapshots,
+                    seen_constructor_unifs,
+                    kind_snapshots,
+                    seen_kind_unifs,
+                    remaining_budget,
+                );
+            }
+        }
+        elab::Constructor::Proj(inner, _) => {
+            snapshot_constructor_unifiers(
+                inner,
+                constructor_snapshots,
+                seen_constructor_unifs,
+                kind_snapshots,
+                seen_kind_unifs,
+                remaining_budget,
+            );
+        }
+        elab::Constructor::Unif(_, _, kind, _, cell) => {
+            let key = Arc::as_ptr(cell) as usize;
+            if seen_constructor_unifs.insert(key) {
+                let snapshot = crate::compiler_diagnostics::lock_for_compile(
+                    cell.as_ref(),
+                    "class-match constructor snapshot",
+                )
+                .clone();
+                constructor_snapshots.push((cell.clone(), snapshot));
+            }
+            snapshot_kind_unifiers(
+                kind,
+                constructor_snapshots,
+                seen_constructor_unifs,
+                kind_snapshots,
+                seen_kind_unifs,
+                remaining_budget,
+            );
+        }
+        elab::Constructor::Rel(_)
+        | elab::Constructor::Named(_)
+        | elab::Constructor::ModProj(_, _, _)
+        | elab::Constructor::Name(_)
+        | elab::Constructor::Unit
+        | elab::Constructor::Error => {}
+    }
+}
+
+fn snapshot_kind_unifiers(
+    kind: &elab::LocatedKind,
+    constructor_snapshots: &mut Vec<(elab::CUnifRef, elab::CUnif)>,
+    seen_constructor_unifs: &mut HashSet<usize>,
+    kind_snapshots: &mut Vec<(elab::KUnifRef, elab::KUnif)>,
+    seen_kind_unifs: &mut HashSet<usize>,
+    remaining_budget: &mut usize,
+) {
+    if *remaining_budget == 0 {
+        return;
+    }
+    *remaining_budget -= 1;
+
+    match &kind.node {
+        elab::Kind::Arrow(left, right) => {
+            snapshot_kind_unifiers(
+                left,
+                constructor_snapshots,
+                seen_constructor_unifs,
+                kind_snapshots,
+                seen_kind_unifs,
+                remaining_budget,
+            );
+            snapshot_kind_unifiers(
+                right,
+                constructor_snapshots,
+                seen_constructor_unifs,
+                kind_snapshots,
+                seen_kind_unifs,
+                remaining_budget,
+            );
+        }
+        elab::Kind::Record(inner) | elab::Kind::Fun(_, inner) => {
+            snapshot_kind_unifiers(
+                inner,
+                constructor_snapshots,
+                seen_constructor_unifs,
+                kind_snapshots,
+                seen_kind_unifs,
+                remaining_budget,
+            );
+        }
+        elab::Kind::Tuple(items) => {
+            for item in items {
+                snapshot_kind_unifiers(
+                    item,
+                    constructor_snapshots,
+                    seen_constructor_unifs,
+                    kind_snapshots,
+                    seen_kind_unifs,
+                    remaining_budget,
+                );
+            }
+        }
+        elab::Kind::Unif(_, _, cell) | elab::Kind::TupleUnif(_, _, cell) => {
+            let key = Arc::as_ptr(cell) as usize;
+            if seen_kind_unifs.insert(key) {
+                let snapshot = crate::compiler_diagnostics::lock_for_compile(
+                    cell.as_ref(),
+                    "class-match kind snapshot",
+                )
+                .clone();
+                kind_snapshots.push((cell.clone(), snapshot));
+            }
+        }
+        elab::Kind::Type
+        | elab::Kind::Name
+        | elab::Kind::Unit
+        | elab::Kind::Error
+        | elab::Kind::Rel(_) => {}
+    }
+}
+
+fn restore_class_match_snapshots(
+    constructor_snapshots: Vec<(elab::CUnifRef, elab::CUnif)>,
+    kind_snapshots: Vec<(elab::KUnifRef, elab::KUnif)>,
+) {
+    for (cell, snapshot) in constructor_snapshots {
+        *crate::compiler_diagnostics::lock_for_compile(
+            cell.as_ref(),
+            "class-match constructor restore",
+        ) = snapshot;
+    }
+    for (cell, snapshot) in kind_snapshots {
+        *crate::compiler_diagnostics::lock_for_compile(cell.as_ref(), "class-match kind restore") =
+            snapshot;
+    }
+}
+
+fn resolve_folder_witness(
+    elaboration_environment: &Env,
+    class: &elab::LocatedConstructor,
+    span: &Span,
+) -> Option<(elab::LocatedExpression, elab::LocatedConstructor)> {
+    let normalized_class = hnorm_con_expression_head(elaboration_environment, class.clone());
+    match &normalized_class.node {
+        elab::Constructor::App(folder_head, row_constructor)
+            if constructor_is_folder_head(elaboration_environment, folder_head) =>
+        {
+            let normalized_row = hnorm_con(row_constructor.as_ref().clone());
+            match &normalized_row.node {
+                elab::Constructor::Record(kind, fields) => {
+                    let witness =
+                        build_folder_witness(elaboration_environment, kind.as_ref(), fields, span)?;
+                    Some((witness, normalized_class))
+                }
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+fn build_folder_witness(
+    elaboration_environment: &Env,
+    kind: &elab::LocatedKind,
+    fields: &[(elab::LocatedConstructor, elab::LocatedConstructor)],
+    span: &Span,
+) -> Option<elab::LocatedExpression> {
+    let folder_module = resolve_folder_module(elaboration_environment)?;
+    let mut witness = Located::new(
+        elab::Expression::ModProj(
+            folder_module.structure_id,
+            folder_module.path.clone(),
+            "nil".to_string(),
+        ),
+        span.clone(),
+    );
+    witness = Located::new(
+        elab::Expression::KApp(Box::new(witness), Box::new(kind.clone())),
+        span.clone(),
+    );
+
+    let mut accumulated_fields: Vec<(elab::LocatedConstructor, elab::LocatedConstructor)> =
+        Vec::new();
+    for (field_name, field_type) in fields.iter().rev() {
+        let rest_row = Located::new(
+            elab::Constructor::Record(Box::new(kind.clone()), accumulated_fields.clone()),
+            span.clone(),
+        );
+        let mut cons_expression = Located::new(
+            elab::Expression::ModProj(
+                folder_module.structure_id,
+                folder_module.path.clone(),
+                "cons".to_string(),
+            ),
+            span.clone(),
+        );
+        cons_expression = Located::new(
+            elab::Expression::KApp(Box::new(cons_expression), Box::new(kind.clone())),
+            span.clone(),
+        );
+        cons_expression = Located::new(
+            elab::Expression::CApp(Box::new(cons_expression), rest_row),
+            span.clone(),
+        );
+        cons_expression = Located::new(
+            elab::Expression::CApp(Box::new(cons_expression), field_name.clone()),
+            span.clone(),
+        );
+        cons_expression = Located::new(
+            elab::Expression::CApp(Box::new(cons_expression), field_type.clone()),
+            span.clone(),
+        );
+        witness = Located::new(
+            elab::Expression::App(Box::new(cons_expression), Box::new(witness)),
+            span.clone(),
+        );
+        accumulated_fields.insert(0, (field_name.clone(), field_type.clone()));
+    }
+
+    Some(witness)
+}
+
+struct FolderModuleRef {
+    structure_id: usize,
+    path: Vec<String>,
+}
+
+fn resolve_folder_module(elaboration_environment: &Env) -> Option<FolderModuleRef> {
+    match elaboration_environment.lookup_str("Folder") {
+        Some((structure_id, _)) => Some(FolderModuleRef {
+            structure_id: *structure_id,
+            path: Vec::new(),
+        }),
+        None => match elaboration_environment.lookup_str("Top") {
+            Some((top_id, _)) => Some(FolderModuleRef {
+                structure_id: *top_id,
+                path: vec!["Folder".to_string()],
+            }),
+            None => None,
+        },
+    }
+}
+
 fn try_match_class(
-    _elaboration_environment: &Env,
+    elaboration_environment: &Env,
     class: &elab::LocatedConstructor,
     head: &elab::LocatedConstructor,
     _num_quantifiers: usize,
 ) -> bool {
-    // Simplified: just check if they have the same head constructor
-    let cn = hnorm_con(class.clone());
-    let hn = hnorm_con(head.clone());
-    fn get_head(c: &elab::LocatedConstructor) -> Option<usize> {
-        match &c.node {
-            elab::Constructor::Named(id) => Some(*id),
-            elab::Constructor::App(f, _) => get_head(f),
-            _ => None,
-        }
-    }
-    get_head(&cn) == get_head(&hn)
+    let normalized_class = hnorm_con_expression_head(elaboration_environment, class.clone());
+    let normalized_head = hnorm_con_expression_head(elaboration_environment, head.clone());
+
+    let mut constructor_snapshots: Vec<(elab::CUnifRef, elab::CUnif)> = Vec::new();
+    let mut seen_constructor_unifs: HashSet<usize> = HashSet::new();
+    let mut kind_snapshots: Vec<(elab::KUnifRef, elab::KUnif)> = Vec::new();
+    let mut seen_kind_unifs: HashSet<usize> = HashSet::new();
+    let mut remaining_budget = CLASS_MATCH_SNAPSHOT_MAX_NODES;
+
+    snapshot_constructor_unifiers(
+        &normalized_class,
+        &mut constructor_snapshots,
+        &mut seen_constructor_unifs,
+        &mut kind_snapshots,
+        &mut seen_kind_unifs,
+        &mut remaining_budget,
+    );
+    snapshot_constructor_unifiers(
+        &normalized_head,
+        &mut constructor_snapshots,
+        &mut seen_constructor_unifs,
+        &mut kind_snapshots,
+        &mut seen_kind_unifs,
+        &mut remaining_budget,
+    );
+
+    let match_result = unify_cons_inner(
+        &mut ElabCtx::new(),
+        elaboration_environment,
+        &class.span,
+        &normalized_class,
+        &normalized_head,
+        0,
+    )
+    .is_ok();
+    restore_class_match_snapshots(constructor_snapshots, kind_snapshots);
+    match_result
 }
 
 // ---------------------------------------------------------------------------
@@ -7204,6 +8111,69 @@ mod tests {
         else {
             return;
         };
+        if std::env::var("URWEB_TEST_BOOT_INCREMENTAL").ok().as_deref() == Some("1") {
+            if let Some(crate::error_types::Located {
+                node: crate::source::Decl::Str(_, _, _, top_body, _),
+                ..
+            }) = source_file
+                .iter()
+                .find(|decl| matches!(&decl.node, crate::source::Decl::Str(name, _, _, _, _) if name == "Top"))
+            {
+                let mut ctx = ElabCtx::new();
+                let mut env = Env::empty();
+                let mut denv = disjoint::empty_env();
+                if let Some(basis_decl) = source_file.iter().find(|decl| {
+                    matches!(&decl.node, crate::source::Decl::FfiStr(name, _, _) if name == "Basis")
+                }) {
+                    let (_basis_decls, basis_env, basis_denv) =
+                        elab_decl(&mut ctx, &env, &denv, basis_decl);
+                    env = basis_env;
+                    denv = basis_denv;
+                    let (_open_decls, open_env, open_denv) =
+                        elab_open(&mut ctx, &env, &denv, &["Basis".to_string()], &basis_decl.span);
+                    env = open_env;
+                    denv = open_denv;
+                }
+                if let crate::source::Str::Const(top_decls) = &top_body.node {
+                    let mut previous_error_count = ctx.errors.len();
+                    for (decl_index, decl) in top_decls.iter().enumerate() {
+                        if std::env::var("URWEB_TEST_BOOT_INCREMENTAL_DEBUG").ok().as_deref()
+                            == Some("1")
+                            && decl_index == 16
+                        {
+                            eprintln!(
+                                "boot debug decl_index=16 show_c={:?} show_e={:?} mkShow={:?} read_e={:?} none_ctor={} some_ctor={}",
+                                env.lookup_c("show"),
+                                env.lookup_e("show"),
+                                env.lookup_e("mkShow"),
+                                env.lookup_e("read"),
+                                env.lookup_constructor("None").is_some(),
+                                env.lookup_constructor("Some").is_some(),
+                            );
+                        }
+                        let (_decls, new_env, new_denv) = elab_decl(&mut ctx, &env, &denv, decl);
+                        env = new_env;
+                        denv = new_denv;
+                        let next_error_count = ctx.errors.len();
+                        if next_error_count > previous_error_count {
+                            eprintln!(
+                                "boot incremental: decl_index={decl_index} line={} col={} new_errors={}",
+                                decl.span.first.line,
+                                decl.span.first.col,
+                                next_error_count - previous_error_count
+                            );
+                            for (span, payload) in ctx.errors[previous_error_count..next_error_count].iter() {
+                                eprintln!(
+                                    "  {:?} {}:{}-{} args={:?}",
+                                    payload.id, span.file, span.first.line, span.first.col, payload.args
+                                );
+                            }
+                            previous_error_count = next_error_count;
+                        }
+                    }
+                }
+            }
+        }
         let mut elab_errors = ErrorReporter::new_silent();
         let _elaborated_file = elab_file(source_file, &settings, &mut elab_errors);
         let mut histogram: HashMap<DiagnosticId, usize> = HashMap::new();
@@ -7271,5 +8241,349 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn boot_top_prefix_through_show_option_decl_elaborates_without_errors() {
+        const STACK: usize = 32 * 1024 * 1024;
+        std::thread::Builder::new()
+            .name("boot_top_prefix_show_option".into())
+            .stack_size(STACK)
+            .spawn(|| {
+                let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+                let lib_dir = manifest_dir.join("lib/ur");
+                if !lib_dir.join("basis.urs").is_file() {
+                    return;
+                }
+                let job = crate::compiler::Job {
+                    sources: vec![],
+                    basis_lib_dir: Some(lib_dir),
+                    ..Default::default()
+                };
+                let settings = Settings::new();
+                let mut parse_errors = ErrorReporter::new_silent();
+                let Some(source_file) =
+                    crate::compiler::parse_sources(&job, &settings, &mut parse_errors)
+                else {
+                    return;
+                };
+                let Some(crate::error_types::Located {
+                    node: crate::source::Decl::Str(_, _, _, top_body, _),
+                    ..
+                }) = source_file.iter().find(|decl| {
+                    matches!(&decl.node, crate::source::Decl::Str(name, _, _, _, _) if name == "Top")
+                }) else {
+                    return;
+                };
+
+                let mut elaboration_context = ElabCtx::new();
+                let mut elaboration_environment = Env::empty();
+                let mut disjointness_environment = disjoint::empty_env();
+                if let Some(basis_decl) = source_file.iter().find(|decl| {
+                    matches!(&decl.node, crate::source::Decl::FfiStr(name, _, _) if name == "Basis")
+                }) {
+                    let (_basis_decls, basis_env, basis_denv) = elab_decl(
+                        &mut elaboration_context,
+                        &elaboration_environment,
+                        &disjointness_environment,
+                        basis_decl,
+                    );
+                    elaboration_environment = basis_env;
+                    disjointness_environment = basis_denv;
+                    let (_open_decls, open_env, open_denv) = elab_open(
+                        &mut elaboration_context,
+                        &elaboration_environment,
+                        &disjointness_environment,
+                        &["Basis".to_string()],
+                        &basis_decl.span,
+                    );
+                    elaboration_environment = open_env;
+                    disjointness_environment = open_denv;
+                }
+
+                let crate::source::Str::Const(top_decls) = &top_body.node else {
+                    return;
+                };
+                for decl in top_decls.iter().take(17) {
+                    let (_decls, new_env, new_denv) = elab_decl(
+                        &mut elaboration_context,
+                        &elaboration_environment,
+                        &disjointness_environment,
+                        decl,
+                    );
+                    elaboration_environment = new_env;
+                    disjointness_environment = new_denv;
+                }
+
+                assert!(
+                    elaboration_context.errors.is_empty(),
+                    "boot Top prefix through show_option recorded errors: {:?}",
+                    elaboration_context.errors
+                );
+            })
+            .expect("spawn boot_top_prefix_through_show_option_decl_elaborates_without_errors")
+            .join()
+            .expect("boot_top_prefix_through_show_option_decl_elaborates_without_errors join");
+    }
+
+    #[test]
+    fn boot_top_prefix_through_read_option_decl_elaborates_without_errors() {
+        const STACK: usize = 32 * 1024 * 1024;
+        std::thread::Builder::new()
+            .name("boot_top_prefix_read_option".into())
+            .stack_size(STACK)
+            .spawn(|| {
+                let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+                let lib_dir = manifest_dir.join("lib/ur");
+                if !lib_dir.join("basis.urs").is_file() {
+                    return;
+                }
+                let job = crate::compiler::Job {
+                    sources: vec![],
+                    basis_lib_dir: Some(lib_dir),
+                    ..Default::default()
+                };
+                let settings = Settings::new();
+                let mut parse_errors = ErrorReporter::new_silent();
+                let Some(source_file) =
+                    crate::compiler::parse_sources(&job, &settings, &mut parse_errors)
+                else {
+                    return;
+                };
+                let Some(crate::error_types::Located {
+                    node: crate::source::Decl::Str(_, _, _, top_body, _),
+                    ..
+                }) = source_file.iter().find(|decl| {
+                    matches!(&decl.node, crate::source::Decl::Str(name, _, _, _, _) if name == "Top")
+                }) else {
+                    return;
+                };
+
+                let mut elaboration_context = ElabCtx::new();
+                let mut elaboration_environment = Env::empty();
+                let mut disjointness_environment = disjoint::empty_env();
+                if let Some(basis_decl) = source_file.iter().find(|decl| {
+                    matches!(&decl.node, crate::source::Decl::FfiStr(name, _, _) if name == "Basis")
+                }) {
+                    let (_basis_decls, basis_env, basis_denv) = elab_decl(
+                        &mut elaboration_context,
+                        &elaboration_environment,
+                        &disjointness_environment,
+                        basis_decl,
+                    );
+                    elaboration_environment = basis_env;
+                    disjointness_environment = basis_denv;
+                    let (_open_decls, open_env, open_denv) = elab_open(
+                        &mut elaboration_context,
+                        &elaboration_environment,
+                        &disjointness_environment,
+                        &["Basis".to_string()],
+                        &basis_decl.span,
+                    );
+                    elaboration_environment = open_env;
+                    disjointness_environment = open_denv;
+                }
+
+                let crate::source::Str::Const(top_decls) = &top_body.node else {
+                    return;
+                };
+                for decl in top_decls.iter().take(18) {
+                    let (_decls, new_env, new_denv) = elab_decl(
+                        &mut elaboration_context,
+                        &elaboration_environment,
+                        &disjointness_environment,
+                        decl,
+                    );
+                    elaboration_environment = new_env;
+                    disjointness_environment = new_denv;
+                }
+
+                assert!(
+                    elaboration_context.errors.is_empty(),
+                    "boot Top prefix through read_option recorded errors: {:?}",
+                    elaboration_context.errors
+                );
+            })
+            .expect("spawn boot_top_prefix_through_read_option_decl_elaborates_without_errors")
+            .join()
+            .expect("boot_top_prefix_through_read_option_decl_elaborates_without_errors join");
+    }
+
+    #[test]
+    fn parse_fun_argument_annotation_keeps_constructor_application() {
+        let mut errors = ErrorReporter::new_silent();
+        let Some(file) = crate::parse::parse_ur(
+            "parse_fun_argument_annotation_keeps_constructor_application.ur",
+            "fun demo [t ::: Type] = fn opt : option t => opt\n",
+            &mut errors,
+            crate::dbms::ProjectDb::default(),
+        ) else {
+            panic!("parse_ur failed: {:?}", errors.errors);
+        };
+        let Some(crate::error_types::Located {
+            node: crate::source::Decl::ValRec(bindings),
+            ..
+        }) = file.first()
+        else {
+            panic!("expected top-level fun desugared to valrec, got {:?}", file);
+        };
+        let (_, _, body) = bindings
+            .first()
+            .unwrap_or_else(|| panic!("expected one valrec binding, got {:?}", bindings));
+        let crate::source::Exp::CAbs(_, _, _, inner_exp) = &body.node else {
+            panic!("expected outer constructor abstraction, got {:?}", body);
+        };
+        let crate::source::Exp::Abs(_, None, case_body) = &inner_exp.node else {
+            panic!(
+                "expected parser-desugared lambda under fun body, got {:?}",
+                inner_exp
+            );
+        };
+        let crate::source::Exp::Case(_, branches) = &case_body.node else {
+            panic!(
+                "expected parser-desugared case under lambda body, got {:?}",
+                case_body
+            );
+        };
+        let Some((pattern, branch_expression)) = branches.first() else {
+            panic!(
+                "expected one parser-desugared case branch, got {:?}",
+                branches
+            );
+        };
+        let crate::source::Pat::Annot(_, annotation) = &pattern.node else {
+            panic!(
+                "expected annotated pattern under parser-desugared case, got {:?}",
+                pattern
+            );
+        };
+        assert!(
+            matches!(&annotation.node, crate::source::Con::App(_, _)),
+            "expected lambda annotation `option t` to parse as constructor application, got {:?}",
+            annotation
+        );
+        assert!(
+            !matches!(&branch_expression.node, crate::source::Exp::Abs(_, None, _)),
+            "expected parser repair to remove bogus nested lambda, got {:?}",
+            branch_expression
+        );
+    }
+
+    #[test]
+    fn parse_nested_case_branch_belongs_to_inner_case() {
+        let mut errors = ErrorReporter::new_silent();
+        let Some(file) = crate::parse::parse_ur(
+            "parse_nested_case_branch_belongs_to_inner_case.ur",
+            concat!(
+                "fun demo [t ::: Type] (_ : read t) = fn s =>\n",
+                "    case s of\n",
+                "        \"\" => Some None\n",
+                "      | _ => case read s of\n",
+                "                 None => None\n",
+                "               | v => Some v\n",
+            ),
+            &mut errors,
+            crate::dbms::ProjectDb::default(),
+        ) else {
+            panic!("parse_ur failed: {:?}", errors.errors);
+        };
+        let Some(crate::error_types::Located {
+            node: crate::source::Decl::ValRec(bindings),
+            ..
+        }) = file.first()
+        else {
+            panic!("expected top-level fun desugared to valrec, got {:?}", file);
+        };
+        let (_, _, body) = bindings
+            .first()
+            .unwrap_or_else(|| panic!("expected one valrec binding, got {:?}", bindings));
+        let crate::source::Exp::CAbs(_, _, _, outer_exp) = &body.node else {
+            panic!("expected outer constructor abstraction, got {:?}", body);
+        };
+        let crate::source::Exp::Abs(_, _, argument_case) = &outer_exp.node else {
+            panic!(
+                "expected outer value lambda under fun body, got {:?}",
+                outer_exp
+            );
+        };
+        let crate::source::Exp::Case(_, argument_branches) = &argument_case.node else {
+            panic!(
+                "expected parser-desugared annotated argument case under fun body, got {:?}",
+                argument_case
+            );
+        };
+        let Some((_, inner_exp)) = argument_branches.first() else {
+            panic!(
+                "expected one parser-desugared annotated argument branch, got {:?}",
+                argument_branches
+            );
+        };
+        let crate::source::Exp::Abs(_, _, case_exp) = &inner_exp.node else {
+            panic!("expected value lambda under fun body, got {:?}", inner_exp);
+        };
+        let crate::source::Exp::Case(_, outer_branches) = &case_exp.node else {
+            panic!("expected outer case under fun body, got {:?}", case_exp);
+        };
+        assert_eq!(
+            outer_branches.len(),
+            2,
+            "expected outer case to keep two branches, got {:?}",
+            outer_branches
+        );
+        let Some((_, inner_case_expression)) = outer_branches.get(1) else {
+            panic!("expected second outer branch, got {:?}", outer_branches);
+        };
+        let crate::source::Exp::Case(_, inner_branches) = &inner_case_expression.node else {
+            panic!(
+                "expected second outer branch expression to remain an inner case, got {:?}",
+                inner_case_expression
+            );
+        };
+        assert_eq!(
+            inner_branches.len(),
+            2,
+            "expected trailing branch to stay with inner case, got {:?}",
+            inner_branches
+        );
+    }
+
+    #[test]
+    fn parse_field_postfix_binds_tighter_than_application() {
+        let mut errors = ErrorReporter::new_silent();
+        let Some(file) = crate::parse::parse_ur(
+            "parse_field_postfix_binds_tighter_than_application.ur",
+            "val _ = f r.nm\n",
+            &mut errors,
+            crate::db::ProjectDb::default(),
+        ) else {
+            panic!("parse_ur failed: {:?}", errors.errors);
+        };
+        let Some(crate::error_types::Located {
+            node: crate::source::Decl::Val(_, expression),
+            ..
+        }) = file.first()
+        else {
+            panic!("expected val declaration, got {:?}", file);
+        };
+        let crate::source::Exp::App(function_expression, argument_expression) = &expression.node
+        else {
+            panic!("expected application expression, got {:?}", expression);
+        };
+        assert!(
+            matches!(&function_expression.node, crate::source::Exp::Var(_, _, _)),
+            "expected function head to stay as variable, got {:?}",
+            function_expression
+        );
+        let crate::source::Exp::Field(field_base, _) = &argument_expression.node else {
+            panic!(
+                "expected field postfix to attach to application argument, got {:?}",
+                argument_expression
+            );
+        };
+        assert!(
+            matches!(&field_base.node, crate::source::Exp::Var(_, _, _)),
+            "expected field base to stay as variable, got {:?}",
+            field_base
+        );
     }
 }

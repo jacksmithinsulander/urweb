@@ -893,4 +893,8 @@ pub enum DiagnosticId {
     CliDevPreprocessWindowFailed = 444,
     /// Catalog entry 445.
     CliPhaseIncompleteNoOutput = 445,
+    /// Catalog entry 446.
+    CliDebuggerGdbMiDriverLoopExhausted = 446,
+    /// Catalog entry 447.
+    CliDebuggerDapStdioLoopExhausted = 447,
 }

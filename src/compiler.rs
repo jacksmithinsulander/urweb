@@ -230,17 +230,16 @@ pub fn parse_urp(path: &Path) -> Result<Job> {
 fn boot_root_from(start: PathBuf) -> Option<PathBuf> {
     const MAX_BOOT_PARENT_HOPS: usize = 512;
     let mut cur = start;
-    let mut hops = 0usize;
-    loop {
+    for hops in 0..=MAX_BOOT_PARENT_HOPS {
         if cur.join("lib/ur/basis.urs").is_file() {
             return Some(cur);
         }
-        if hops >= MAX_BOOT_PARENT_HOPS {
+        if hops == MAX_BOOT_PARENT_HOPS {
             return None;
         }
-        hops += 1;
         cur = cur.parent()?.to_path_buf();
     }
+    None
 }
 
 /// Environment variable naming an explicit Ur/Web checkout root (directory that contains `lib/ur/basis.urs`).
@@ -1403,33 +1402,38 @@ fn command_status_deadline(
         )
     })?;
     let start = Instant::now();
-    loop {
-        if let Some(st) = child.try_wait().map_err(|poll_error| {
-            anyhow::anyhow!(
-                "{}",
-                cli_diagnostic_text(
-                    DiagnosticId::CliSubprocessPollFailed,
-                    vec![what.to_string(), poll_error.to_string()],
-                    locale,
-                )
-            )
-        })? {
-            return Ok(st);
-        }
-        if start.elapsed() > CC_LINK_TEST_DEADLINE {
-            let _ = child.kill();
-            let _ = child.wait();
-            bail!(
-                "{}",
-                cli_diagnostic_text(
-                    DiagnosticId::CliCompilerCcLinkTestDeadlineExceeded,
-                    vec![what.to_string(), format!("{CC_LINK_TEST_DEADLINE:?}")],
-                    locale,
-                )
-            );
+    let wait_cap = CC_LINK_TEST_DEADLINE.as_millis() as usize;
+    for _ in 0..wait_cap {
+        match child.try_wait() {
+            Ok(Some(st)) => return Ok(st),
+            Ok(None) => {
+                if start.elapsed() > CC_LINK_TEST_DEADLINE {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(anyhow::anyhow!(
+                        "{}",
+                        cli_diagnostic_text(
+                            DiagnosticId::CliCompilerCcLinkTestDeadlineExceeded,
+                            vec![what.to_string(), format!("{CC_LINK_TEST_DEADLINE:?}")],
+                            locale,
+                        )
+                    ));
+                }
+            }
+            Err(e) => return Err(e.into()), // Convert io::Error to anyhow::Error for the Result<ExitStatus> return.
         }
         std::thread::sleep(Duration::from_millis(25));
     }
+    let _ = child.kill();
+    let _ = child.wait();
+    bail!(
+        "{}",
+        cli_diagnostic_text(
+            DiagnosticId::CliCompilerCcLinkTestDeadlineExceeded,
+            vec![what.to_string(), format!("{CC_LINK_TEST_DEADLINE:?}")],
+            locale,
+        )
+    );
 }
 
 #[cfg(not(test))]

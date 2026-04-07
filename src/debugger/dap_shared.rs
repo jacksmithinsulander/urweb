@@ -4,11 +4,15 @@ use std::collections::HashSet;
 use std::io;
 use std::sync::{Arc, Mutex};
 
-use anyhow::Result;
 use serde_json::{json, Value};
+
+use crate::error_types::CompileError;
 
 use super::dap_framing::{bump_seq, write_dap_message};
 use super::mi_parse::{classify_mi_line, mi_get_str, MiRecord};
+
+/// DAP notifier helpers return [`CompileError`] alongside GDB/MI (same catalog surface as the compiler).
+type Result<T> = std::result::Result<T, CompileError>;
 
 pub struct DapState {
     pub seq: i64,

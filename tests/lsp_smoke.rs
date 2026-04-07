@@ -20,6 +20,16 @@ const LSP_RPC_DEADLINE: Duration = Duration::from_secs(5);
 
 const SMOKE_DOC_URI: &str = "file:///tmp/ur-lsp-smoke.ur";
 
+/// Upper bound for byte-at-a-time LSP header reads in this test helper; `\r\n\r\n` ends the header first.
+const SMOKE_IO_LOOP_MAX_ROUNDS: u64 = u64::MAX;
+
+/// Upper bound on poll iterations for wall-clock `recv_timeout` loops (linear in `deadline` / `LSP_RECV_POLL`).
+fn lsp_smoke_recv_round_limit(wait_deadline: Duration) -> u64 {
+    let poll_millis = LSP_RECV_POLL.as_millis().max(1) as u64;
+    let deadline_millis = wait_deadline.as_millis() as u64;
+    deadline_millis / poll_millis + 16
+}
+
 use common::ur_package_binary as cargo_bin;
 
 fn write_msg(stdin: &mut impl Write, body: &Value) {
@@ -33,15 +43,20 @@ fn write_msg(stdin: &mut impl Write, body: &Value) {
 fn read_one_message<R: Read>(reader: &mut R) -> Option<Vec<u8>> {
     let mut header_buf: Vec<u8> = Vec::new();
     let mut byte = [0u8; 1];
-    loop {
+    let mut saw_end_of_header = false;
+    for _ in 0..SMOKE_IO_LOOP_MAX_ROUNDS {
         reader.read_exact(&mut byte).ok()?;
         header_buf.push(byte[0]);
         if header_buf.len() >= 4 && &header_buf[header_buf.len() - 4..] == b"\r\n\r\n" {
+            saw_end_of_header = true;
             break;
         }
         if header_buf.len() > 262_144 {
             return None;
         }
+    }
+    if !saw_end_of_header {
+        return None;
     }
     let header = std::str::from_utf8(&header_buf).ok()?;
     let mut content_len: Option<usize> = None;
@@ -62,7 +77,10 @@ fn spawn_stdout_reader<R: Read + Send + 'static>(
     let (tx, rx) = mpsc::channel::<Vec<u8>>();
     let handle = thread::spawn(move || {
         let mut stdout = stdout;
-        while let Some(body) = read_one_message(&mut stdout) {
+        for _ in 0..SMOKE_IO_LOOP_MAX_ROUNDS {
+            let Some(body) = read_one_message(&mut stdout) else {
+                break;
+            };
             if tx.send(body).is_err() {
                 break;
             }
@@ -79,7 +97,11 @@ fn recv_jsonrpc_matching(
     label: &str,
 ) -> Vec<u8> {
     let end = Instant::now() + deadline;
-    while Instant::now() < end {
+    let recv_round_limit = lsp_smoke_recv_round_limit(deadline);
+    for _recv_round in 0..recv_round_limit {
+        if Instant::now() >= end {
+            break;
+        }
         let wait = end
             .saturating_duration_since(Instant::now())
             .min(LSP_RECV_POLL);
@@ -196,7 +218,11 @@ fn ur_lsp_initialize_reports_text_document_sync() {
 
     let deadline = Instant::now() + LSP_PUBLISH_DIAG_DEADLINE;
     let mut saw_diagnostic = false;
-    while Instant::now() < deadline && !saw_diagnostic {
+    let diag_wait_limit = lsp_smoke_recv_round_limit(LSP_PUBLISH_DIAG_DEADLINE);
+    for _diag_round in 0..diag_wait_limit {
+        if Instant::now() >= deadline || saw_diagnostic {
+            break;
+        }
         let wait = deadline.saturating_duration_since(Instant::now());
         if wait.is_zero() {
             break;
@@ -297,7 +323,11 @@ fn ur_lsp_did_change_replaces_text_and_clears_diagnostics() {
 
     let deadline = Instant::now() + LSP_PUBLISH_DIAG_DEADLINE;
     let mut saw_bad = false;
-    while Instant::now() < deadline && !saw_bad {
+    let bad_diag_limit = lsp_smoke_recv_round_limit(LSP_PUBLISH_DIAG_DEADLINE);
+    for _bad_diag_round in 0..bad_diag_limit {
+        if Instant::now() >= deadline || saw_bad {
+            break;
+        }
         let wait = deadline.saturating_duration_since(Instant::now());
         if wait.is_zero() {
             break;
@@ -333,7 +363,11 @@ fn ur_lsp_did_change_replaces_text_and_clears_diagnostics() {
 
     let deadline2 = Instant::now() + LSP_PUBLISH_DIAG_DEADLINE;
     let mut saw_clear = false;
-    while Instant::now() < deadline2 && !saw_clear {
+    let clear_diag_limit = lsp_smoke_recv_round_limit(LSP_PUBLISH_DIAG_DEADLINE);
+    for _clear_diag_round in 0..clear_diag_limit {
+        if Instant::now() >= deadline2 || saw_clear {
+            break;
+        }
         let wait = deadline2.saturating_duration_since(Instant::now());
         if wait.is_zero() {
             break;

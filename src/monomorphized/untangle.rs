@@ -198,6 +198,14 @@ fn tarjan_sccs_topological(
     let mut counter: usize = 0;
     let mut result: Vec<BTreeSet<usize>> = Vec::new();
     let empty = BTreeSet::new();
+    // Outer-step budget for one DFS spine: classic Tarjan is O(V+E); scale with |V|+|E| so we never exit early on large ValRec groups.
+    let vertex_count = nodes.len();
+    let edge_count: usize = successors.values().map(|s| s.len()).sum();
+    let outer_step_budget = vertex_count
+        .saturating_add(edge_count)
+        .max(1)
+        .saturating_mul(64)
+        .saturating_add(1024);
 
     for &start in nodes {
         if disc.contains_key(&start) {
@@ -217,15 +225,19 @@ fn tarjan_sccs_topological(
             .collect();
         let mut dfs: Vec<(usize, Vec<usize>)> = vec![(start, start_succs)];
 
-        const MAX_TARJAN_ITERATIONS: usize = 100_000;
-        let mut tarjan_iter = 0usize;
-        'outer: while let Some((cur, ref mut rem)) = dfs.last_mut() {
-            tarjan_iter += 1;
-            if tarjan_iter > MAX_TARJAN_ITERATIONS {
+        let neighbor_pop_cap = vertex_count
+            .saturating_add(edge_count)
+            .max(1)
+            .saturating_add(1);
+        'tarjan_frame: for _tarjan_outer_step in 0..outer_step_budget {
+            let Some((cur, ref mut rem)) = dfs.last_mut() else {
                 break;
-            }
+            };
             let cur = *cur;
-            while let Some(w) = rem.pop() {
+            for _neighbor_pop in 0..neighbor_pop_cap {
+                let Some(w) = rem.pop() else {
+                    break;
+                };
                 if let std::collections::btree_map::Entry::Vacant(e) = disc.entry(w) {
                     let w_succs: Vec<usize> = successors
                         .get(&w)
@@ -239,7 +251,7 @@ fn tarjan_sccs_topological(
                     on_stack.insert(w);
                     stack.push(w);
                     dfs.push((w, w_succs));
-                    continue 'outer;
+                    continue 'tarjan_frame;
                 } else if on_stack.contains(&w) {
                     let wi = disc[&w];
                     let ll = lowlink[&cur];
@@ -249,7 +261,11 @@ fn tarjan_sccs_topological(
             if lowlink[&cur] == disc[&cur] {
                 let mut scc = BTreeSet::new();
                 let mut hit_root = false;
-                while let Some(v) = stack.pop() {
+                let stack_pop_cap = vertex_count.saturating_add(1);
+                for _ in 0..stack_pop_cap {
+                    let Some(v) = stack.pop() else {
+                        break;
+                    };
                     on_stack.remove(&v);
                     scc.insert(v);
                     if v == cur {
@@ -269,6 +285,11 @@ fn tarjan_sccs_topological(
                 let cll = lowlink[&cur];
                 lowlink.insert(par, pll.min(cll));
             }
+        }
+        if !dfs.is_empty() {
+            panic!(
+                "internal compiler error: mono untangle Tarjan exceeded work budget (vertices={vertex_count} edges={edge_count} budget={outer_step_budget}); please report"
+            );
         }
     }
 

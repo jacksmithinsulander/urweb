@@ -2006,15 +2006,14 @@ const MAX_REDUCE_ITERATIONS: usize = 1000;
 
 pub fn reduce(mut file: File, settings: &Settings) -> File {
     let full_mode = FULL_MODE.load(AtomicOrdering::Relaxed);
-    let mut iterations = 0;
-    loop {
+    for _ in 0..MAX_REDUCE_ITERATIONS {
         let (new_file, did_yank) = reduce_once(file, settings, full_mode);
         file = new_file;
-        iterations += 1;
-        if !did_yank || iterations >= MAX_REDUCE_ITERATIONS {
+        if !did_yank {
             return file;
         }
     }
+    file
 }
 
 // ---------------------------------------------------------------------------

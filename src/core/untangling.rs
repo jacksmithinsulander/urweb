@@ -189,6 +189,13 @@ fn tarjan_sccs_topological(
     let mut index_counter: usize = 0;
     // SCCs as completed (reverse topological order from Tarjan).
     let mut sccs_reverse_topo: Vec<BTreeSet<usize>> = Vec::new();
+    let vertex_count = nodes.len();
+    let edge_count: usize = successors.values().map(|s| s.len()).sum();
+    let outer_step_budget = vertex_count
+        .saturating_add(edge_count)
+        .max(1)
+        .saturating_mul(64)
+        .saturating_add(1024);
 
     // We use an explicit worklist to avoid recursion-depth limits.
     // The worklist holds (node, iterator_position) pairs where
@@ -219,41 +226,51 @@ fn tarjan_sccs_topological(
         on_stack.insert(start_node);
         tarjan_stack.push(start_node);
 
-        const MAX_TARJAN_ITERATIONS: usize = 100_000;
-        let mut iter_count = 0;
-        'outer: while let Some((current_node, ref mut remaining_succs)) = dfs_stack.last_mut() {
-            iter_count += 1;
-            if iter_count > MAX_TARJAN_ITERATIONS {
-                break;
-            }
-            let current_node = *current_node;
+        let successor_pop_cap = vertex_count.saturating_add(1);
+        for _outer_step in 0..outer_step_budget {
+            // Defer `dfs_stack.push` until after any `last_mut` borrow ends (tree edge).
+            let mut next_dfs_frame: Option<(usize, Vec<usize>)> = None;
+            let current_node = {
+                let Some((current_node, ref mut remaining_succs)) = dfs_stack.last_mut() else {
+                    break;
+                };
+                let current_node = *current_node;
 
-            // Process the next unvisited or on-stack successor.
-            while let Some(successor) = remaining_succs.pop() {
-                if let std::collections::btree_map::Entry::Vacant(e) =
-                    discovery_index.entry(successor)
-                {
-                    // Tree edge: recurse into successor.
-                    let successor_succs: Vec<usize> = successors
-                        .get(&successor)
-                        .unwrap_or(&empty_set)
-                        .iter()
-                        .copied()
-                        .collect();
-                    e.insert(index_counter);
-                    lowlink.insert(successor, index_counter);
-                    index_counter += 1;
-                    on_stack.insert(successor);
-                    tarjan_stack.push(successor);
-                    dfs_stack.push((successor, successor_succs));
-                    continue 'outer;
-                } else if on_stack.contains(&successor) {
-                    // Back edge: update lowlink.
-                    let successor_index = discovery_index[&successor];
-                    let current_ll = lowlink[&current_node];
-                    lowlink.insert(current_node, current_ll.min(successor_index));
+                // Process the next unvisited or on-stack successor (bounded pops per frame).
+                for _succ_step in 0..successor_pop_cap {
+                    let Some(successor) = remaining_succs.pop() else {
+                        break;
+                    };
+                    if let std::collections::btree_map::Entry::Vacant(e) =
+                        discovery_index.entry(successor)
+                    {
+                        // Tree edge: recurse into successor (push after this block).
+                        let successor_succs: Vec<usize> = successors
+                            .get(&successor)
+                            .unwrap_or(&empty_set)
+                            .iter()
+                            .copied()
+                            .collect();
+                        e.insert(index_counter);
+                        lowlink.insert(successor, index_counter);
+                        index_counter += 1;
+                        on_stack.insert(successor);
+                        tarjan_stack.push(successor);
+                        next_dfs_frame = Some((successor, successor_succs));
+                        break;
+                    } else if on_stack.contains(&successor) {
+                        // Back edge: update lowlink.
+                        let successor_index = discovery_index[&successor];
+                        let current_ll = lowlink[&current_node];
+                        lowlink.insert(current_node, current_ll.min(successor_index));
+                    }
+                    // Cross/forward edges: ignore (already finished, not on stack).
                 }
-                // Cross/forward edges: ignore (already finished, not on stack).
+                current_node
+            };
+            if let Some(frame) = next_dfs_frame {
+                dfs_stack.push(frame);
+                continue;
             }
 
             // All successors processed: check if current_node is an SCC root.
@@ -262,7 +279,11 @@ fn tarjan_sccs_topological(
                 // Pop an SCC off the tarjan_stack.
                 let mut scc = BTreeSet::new();
                 let mut hit_root = false;
-                while let Some(popped) = tarjan_stack.pop() {
+                let stack_pop_cap = vertex_count.saturating_add(1);
+                for _stack_pop in 0..stack_pop_cap {
+                    let Some(popped) = tarjan_stack.pop() else {
+                        break;
+                    };
                     on_stack.remove(&popped);
                     scc.insert(popped);
                     if popped == current_node {

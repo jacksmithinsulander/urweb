@@ -1,5 +1,8 @@
 //! Traversal utilities for the Core AST.
 //!
+//! Visitor and folder callbacks use [`impl Fn`] in argument position (static dispatch) rather than
+//! [`Fn`] trait object references, for predictable monomorphized call sites.
+//!
 //! Provides generic map, fold, and exists operations over kinds, constructors,
 //! expressions, declarations, and files. Used by Core passes for transformation
 //! and analysis. The `Binder` enum tracks binding context when descending into
@@ -98,7 +101,7 @@ pub mod kind {
     /// # Returns
     ///
     /// The kind tree with all nodes transformed by the visitor (children first, then the node).
-    pub fn map(kind: LocatedKind, visitor: &dyn Fn(LocatedKind) -> LocatedKind) -> LocatedKind {
+    pub fn map(kind: LocatedKind, visitor: &impl Fn(LocatedKind) -> LocatedKind) -> LocatedKind {
         let span = kind.span.clone();
         // Recursively map children first (bottom-up), then apply visitor to the result.
         let mapped = match kind.node {
@@ -148,7 +151,7 @@ pub mod kind {
     pub fn fold<State>(
         kind: &LocatedKind,
         initial_state: State,
-        folder: &dyn Fn(&LocatedKind, State) -> State,
+        folder: &impl Fn(&LocatedKind, State) -> State,
     ) -> State {
         let state = folder(kind, initial_state);
         match &kind.node {
@@ -175,7 +178,7 @@ pub mod kind {
     /// # Returns
     ///
     /// True when predicate returns true for at least one node (short-circuits).
-    pub fn exists(kind: &LocatedKind, predicate: &dyn Fn(&LocatedKind) -> bool) -> bool {
+    pub fn exists(kind: &LocatedKind, predicate: &impl Fn(&LocatedKind) -> bool) -> bool {
         if predicate(kind) {
             return true;
         }
@@ -275,8 +278,8 @@ pub mod constructor {
     /// The constructor tree with all nodes transformed (no binder context passed to callbacks).
     pub fn map(
         constructor: LocatedConstructor,
-        kind_mapper: &dyn Fn(LocatedKind) -> LocatedKind,
-        constructor_mapper: &dyn Fn(LocatedConstructor) -> LocatedConstructor,
+        kind_mapper: &impl Fn(LocatedKind) -> LocatedKind,
+        constructor_mapper: &impl Fn(LocatedConstructor) -> LocatedConstructor,
     ) -> LocatedConstructor {
         map_b(
             constructor,
@@ -303,9 +306,9 @@ pub mod constructor {
     pub fn map_b(
         constructor: LocatedConstructor,
         context: &mut Vec<Binder>,
-        kind_mapper: &dyn Fn(LocatedKind) -> LocatedKind,
-        _fold_kind_binder: &dyn Fn(&[Binder], LocatedKind) -> LocatedKind,
-        fold_con_binder: &dyn Fn(&[Binder], LocatedConstructor) -> LocatedConstructor,
+        kind_mapper: &impl Fn(LocatedKind) -> LocatedKind,
+        _fold_kind_binder: &impl Fn(&[Binder], LocatedKind) -> LocatedKind,
+        fold_con_binder: &impl Fn(&[Binder], LocatedConstructor) -> LocatedConstructor,
     ) -> LocatedConstructor {
         let span = constructor.span.clone();
         let mapped = match constructor.node {
@@ -547,8 +550,8 @@ pub mod constructor {
     pub fn fold<State>(
         constructor: &LocatedConstructor,
         initial_state: State,
-        fold_kind: &dyn Fn(&LocatedKind, State) -> State,
-        fold_constructor: &dyn Fn(&LocatedConstructor, State) -> State,
+        fold_kind: &impl Fn(&LocatedKind, State) -> State,
+        fold_constructor: &impl Fn(&LocatedConstructor, State) -> State,
     ) -> State {
         fold_b(
             constructor,
@@ -576,8 +579,8 @@ pub mod constructor {
         constructor: &LocatedConstructor,
         context: &[Binder],
         initial_state: State,
-        fold_kind_binder: &dyn Fn(&[Binder], &LocatedKind, State) -> State,
-        fold_con_binder: &dyn Fn(&[Binder], &LocatedConstructor, State) -> State,
+        fold_kind_binder: &impl Fn(&[Binder], &LocatedKind, State) -> State,
+        fold_con_binder: &impl Fn(&[Binder], &LocatedConstructor, State) -> State,
     ) -> State {
         let state = fold_con_binder(context, constructor, initial_state);
         match &constructor.node {
@@ -720,8 +723,8 @@ pub mod constructor {
     /// True when either predicate returns true for at least one node (short-circuits).
     pub fn exists(
         constructor: &LocatedConstructor,
-        predicate_kind: &dyn Fn(&LocatedKind) -> bool,
-        predicate_constructor: &dyn Fn(&LocatedConstructor) -> bool,
+        predicate_kind: &impl Fn(&LocatedKind) -> bool,
+        predicate_constructor: &impl Fn(&LocatedConstructor) -> bool,
     ) -> bool {
         if predicate_constructor(constructor) {
             return true;
@@ -935,8 +938,8 @@ pub mod expression {
     fn do_map_constructor(
         constructor: LocatedConstructor,
         expression_context: &[Binder],
-        fold_kind_binder: &dyn Fn(&[Binder], LocatedKind) -> LocatedKind,
-        fold_con_binder: &dyn Fn(&[Binder], LocatedConstructor) -> LocatedConstructor,
+        fold_kind_binder: &impl Fn(&[Binder], LocatedKind) -> LocatedKind,
+        fold_con_binder: &impl Fn(&[Binder], LocatedConstructor) -> LocatedConstructor,
     ) -> LocatedConstructor {
         constructor_utilities::map_b(
             constructor,
@@ -961,9 +964,9 @@ pub mod expression {
     /// The expression tree with all nodes transformed (no binder context passed to callbacks).
     pub fn map(
         expression: LocatedExpression,
-        kind_mapper: &dyn Fn(LocatedKind) -> LocatedKind,
-        constructor_mapper: &dyn Fn(LocatedConstructor) -> LocatedConstructor,
-        expression_mapper: &dyn Fn(LocatedExpression) -> LocatedExpression,
+        kind_mapper: &impl Fn(LocatedKind) -> LocatedKind,
+        constructor_mapper: &impl Fn(LocatedConstructor) -> LocatedConstructor,
+        expression_mapper: &impl Fn(LocatedExpression) -> LocatedExpression,
     ) -> LocatedExpression {
         map_b(
             expression,
@@ -990,9 +993,9 @@ pub mod expression {
     pub fn map_b(
         expression: LocatedExpression,
         context: &mut Vec<Binder>,
-        fold_kind_binder: &dyn Fn(&[Binder], LocatedKind) -> LocatedKind,
-        fold_con_binder: &dyn Fn(&[Binder], LocatedConstructor) -> LocatedConstructor,
-        fold_exp_binder: &dyn Fn(&[Binder], LocatedExpression) -> LocatedExpression,
+        fold_kind_binder: &impl Fn(&[Binder], LocatedKind) -> LocatedKind,
+        fold_con_binder: &impl Fn(&[Binder], LocatedConstructor) -> LocatedConstructor,
+        fold_exp_binder: &impl Fn(&[Binder], LocatedExpression) -> LocatedExpression,
     ) -> LocatedExpression {
         let span = expression.span.clone();
         let mapped = match expression.node {
@@ -1495,9 +1498,9 @@ pub mod expression {
     fn map_pattern(
         pattern: LocatedPattern,
         context: &mut Vec<Binder>,
-        fold_kind_binder: &dyn Fn(&[Binder], LocatedKind) -> LocatedKind,
-        fold_con_binder: &dyn Fn(&[Binder], LocatedConstructor) -> LocatedConstructor,
-        _fold_exp_binder: &dyn Fn(&[Binder], LocatedExpression) -> LocatedExpression,
+        fold_kind_binder: &impl Fn(&[Binder], LocatedKind) -> LocatedKind,
+        fold_con_binder: &impl Fn(&[Binder], LocatedConstructor) -> LocatedConstructor,
+        _fold_exp_binder: &impl Fn(&[Binder], LocatedExpression) -> LocatedExpression,
     ) -> LocatedPattern {
         let span = pattern.span.clone();
         let node = match pattern.node {
@@ -1602,9 +1605,9 @@ pub mod expression {
     pub fn fold<State>(
         expression: &LocatedExpression,
         initial_state: State,
-        fold_kind: &dyn Fn(&LocatedKind, State) -> State,
-        fold_constructor: &dyn Fn(&LocatedConstructor, State) -> State,
-        fold_expression: &dyn Fn(&LocatedExpression, State) -> State,
+        fold_kind: &impl Fn(&LocatedKind, State) -> State,
+        fold_constructor: &impl Fn(&LocatedConstructor, State) -> State,
+        fold_expression: &impl Fn(&LocatedExpression, State) -> State,
     ) -> State {
         fold_b(
             expression,
@@ -1634,9 +1637,9 @@ pub mod expression {
         expression: &LocatedExpression,
         context: &[Binder],
         initial_state: State,
-        fold_kind_binder: &dyn Fn(&[Binder], &LocatedKind, State) -> State,
-        fold_con_binder: &dyn Fn(&[Binder], &LocatedConstructor, State) -> State,
-        fold_exp_binder: &dyn Fn(&[Binder], &LocatedExpression, State) -> State,
+        fold_kind_binder: &impl Fn(&[Binder], &LocatedKind, State) -> State,
+        fold_con_binder: &impl Fn(&[Binder], &LocatedConstructor, State) -> State,
+        fold_exp_binder: &impl Fn(&[Binder], &LocatedExpression, State) -> State,
     ) -> State {
         let state = fold_exp_binder(context, expression, initial_state);
         match &expression.node {
@@ -2062,8 +2065,8 @@ pub mod expression {
         pattern: &LocatedPattern,
         context: &[Binder],
         initial_state: State,
-        fold_kind_binder: &dyn Fn(&[Binder], &LocatedKind, State) -> State,
-        fold_con_binder: &dyn Fn(&[Binder], &LocatedConstructor, State) -> State,
+        fold_kind_binder: &impl Fn(&[Binder], &LocatedKind, State) -> State,
+        fold_con_binder: &impl Fn(&[Binder], &LocatedConstructor, State) -> State,
     ) -> State {
         match &pattern.node {
             Pattern::Var(_, type_annotation) => constructor_utilities::fold_b(
@@ -2152,9 +2155,9 @@ pub mod expression {
     /// True when any predicate returns true for at least one node (short-circuits).
     pub fn exists(
         expression: &LocatedExpression,
-        predicate_kind: &dyn Fn(&LocatedKind) -> bool,
-        predicate_constructor: &dyn Fn(&LocatedConstructor) -> bool,
-        predicate_expression: &dyn Fn(&LocatedExpression) -> bool,
+        predicate_kind: &impl Fn(&LocatedKind) -> bool,
+        predicate_constructor: &impl Fn(&LocatedConstructor) -> bool,
+        predicate_expression: &impl Fn(&LocatedExpression) -> bool,
     ) -> bool {
         if predicate_expression(expression) {
             return true;
@@ -2457,10 +2460,10 @@ pub mod declaration {
     /// The declaration with all sub-nodes transformed; the result is passed through `declaration_mapper`.
     pub fn map(
         declaration: LocatedDeclaration,
-        kind_mapper: &dyn Fn(LocatedKind) -> LocatedKind,
-        constructor_mapper: &dyn Fn(LocatedConstructor) -> LocatedConstructor,
-        expression_mapper: &dyn Fn(LocatedExpression) -> LocatedExpression,
-        declaration_mapper: &dyn Fn(LocatedDeclaration) -> LocatedDeclaration,
+        kind_mapper: &impl Fn(LocatedKind) -> LocatedKind,
+        constructor_mapper: &impl Fn(LocatedConstructor) -> LocatedConstructor,
+        expression_mapper: &impl Fn(LocatedExpression) -> LocatedExpression,
+        declaration_mapper: &impl Fn(LocatedDeclaration) -> LocatedDeclaration,
     ) -> LocatedDeclaration {
         let span = declaration.span.clone();
         let map_constructor = |constructor: LocatedConstructor| {
@@ -2650,10 +2653,10 @@ pub mod declaration {
     pub fn fold<State>(
         declaration: &LocatedDeclaration,
         initial_state: State,
-        fold_kind: &dyn Fn(&LocatedKind, State) -> State,
-        fold_constructor: &dyn Fn(&LocatedConstructor, State) -> State,
-        fold_expression: &dyn Fn(&LocatedExpression, State) -> State,
-        fold_declaration: &dyn Fn(&LocatedDeclaration, State) -> State,
+        fold_kind: &impl Fn(&LocatedKind, State) -> State,
+        fold_constructor: &impl Fn(&LocatedConstructor, State) -> State,
+        fold_expression: &impl Fn(&LocatedExpression, State) -> State,
+        fold_declaration: &impl Fn(&LocatedDeclaration, State) -> State,
     ) -> State {
         let state = fold_declaration(declaration, initial_state);
         let fold_constructor_inner = |constructor: &LocatedConstructor, state: State| {
@@ -2757,10 +2760,10 @@ pub mod declaration {
     /// True when any predicate returns true for at least one node (short-circuits).
     pub fn exists(
         declaration: &LocatedDeclaration,
-        predicate_kind: &dyn Fn(&LocatedKind) -> bool,
-        predicate_constructor: &dyn Fn(&LocatedConstructor) -> bool,
-        predicate_expression: &dyn Fn(&LocatedExpression) -> bool,
-        predicate_declaration: &dyn Fn(&LocatedDeclaration) -> bool,
+        predicate_kind: &impl Fn(&LocatedKind) -> bool,
+        predicate_constructor: &impl Fn(&LocatedConstructor) -> bool,
+        predicate_expression: &impl Fn(&LocatedExpression) -> bool,
+        predicate_declaration: &impl Fn(&LocatedDeclaration) -> bool,
     ) -> bool {
         if predicate_declaration(declaration) {
             return true;

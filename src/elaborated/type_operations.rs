@@ -874,16 +874,10 @@ const PEEL_SOLVED_CONSTRUCTOR_UNIF_CHAIN_MAX_STEPS: usize = 8192;
 ///
 /// First non-`Unif`, or the first `Unif` whose cell is still [`CUnif::Unknown`].
 fn peel_solved_constructor_unif_chain(mut constructor: LocatedConstructor) -> LocatedConstructor {
-    let mut peel_steps = 0usize; // Count each solved-cell follow to bound cycles and mega-chains.
-    loop {
+    for _ in 0..PEEL_SOLVED_CONSTRUCTOR_UNIF_CHAIN_MAX_STEPS {
         match &constructor.node {
             Constructor::Unif(binder_count, _, _, _, reference) => match read_cunif(reference) {
                 Some(inner) => {
-                    if peel_steps >= PEEL_SOLVED_CONSTRUCTOR_UNIF_CHAIN_MAX_STEPS {
-                        let span = constructor.span.clone();
-                        return Located::new(Constructor::Error, span);
-                    }
-                    peel_steps += 1; // About to follow one more link in the unifier cell graph.
                     constructor = mlift_con_in_con(*binder_count, inner); // Lift through `binder_count` binders.
                 }
                 None => return constructor,
@@ -891,6 +885,8 @@ fn peel_solved_constructor_unif_chain(mut constructor: LocatedConstructor) -> Lo
             _ => return constructor,
         }
     }
+    let span = constructor.span.clone();
+    Located::new(Constructor::Error, span)
 }
 
 /// Head-normalize a constructor: peel solved [`Constructor::Unif`], beta/eta, `KApp`/`Map`/`Concat`/`Proj` rules.

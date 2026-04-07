@@ -102,7 +102,7 @@ type GlobalRef = Arc<Mutex<Global>>;
 
 /// Main server loop: initialize, advertise capabilities, then poll JSON messages from the client.
 ///
-/// Uses a bounded receive timeout so [`AnalysisReady`] work is merged without blocking forever on idle standard input.
+/// Uses a receive timeout so [`AnalysisReady`] work is merged without blocking forever on idle standard input; each drain pass processes at most a fixed number of completions.
 ///
 /// # Returns
 ///
@@ -214,18 +214,18 @@ fn run() -> Result<()> {
     let (analysis_tx, analysis_rx) = mpsc::channel::<AnalysisReady>();
 
     const POLL: Duration = Duration::from_millis(50);
+    // Bounded `for` range; normal shutdown exits via `RecvTimeoutError::Disconnected` first.
+    const MAIN_LOOP_MAX_ROUNDS: u64 = u64::MAX;
 
-    loop {
+    for _main_loop_round in 0..MAIN_LOOP_MAX_ROUNDS {
         match connection.receiver.recv_timeout(POLL) {
             Ok(msg) => {
                 dispatch_message(&connection, msg, &global, &analysis_tx)?;
             }
-            Err(RecvTimeoutError::Timeout) => {
-                drain_analysis(&connection, &global, &analysis_rx)?;
-            }
+            Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => break,
         }
-        // Also drain after each message
+        // Drain after every message and after idle polls so completions are published promptly.
         drain_analysis(&connection, &global, &analysis_rx)?;
     }
 
@@ -255,7 +255,13 @@ fn drain_analysis(
     global: &GlobalRef,
     rx: &mpsc::Receiver<AnalysisReady>,
 ) -> Result<()> {
-    while let Ok(ready) = rx.try_recv() {
+    // Bounded drain per poll so one pathological backlog cannot starve message handling.
+    const MAX_ANALYSIS_READY_DRAIN_PER_POLL: usize = 65_536;
+    for _drain_round in 0..MAX_ANALYSIS_READY_DRAIN_PER_POLL {
+        let ready = match rx.try_recv() {
+            Ok(r) => r,
+            Err(_) => break,
+        };
         let mut g = global.lock().unwrap();
         let skip = g
             .docs

@@ -28,11 +28,8 @@ impl std::fmt::Display for InternalCompilerError {
     }
 }
 
-impl std::error::Error for InternalCompilerError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        self.0.source()
-    }
-}
+/// [`std::error::Error::source`] is not overridden; full context is in [`Display`](std::fmt::Display) via the wrapped [`anyhow::Error`].
+impl std::error::Error for InternalCompilerError {}
 
 impl Default for InternalCompilerError {
     fn default() -> Self {

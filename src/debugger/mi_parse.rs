@@ -223,13 +223,12 @@ pub fn mi_extract_exec_source_file_paths(payload: &str) -> Vec<String> {
 pub fn mi_extract_shared_libraries(payload: &str) -> Vec<(String, String)> {
     let mut v = Vec::new();
     let mut rest = payload;
-    let mut seq = 0u32;
     let scan_budget = payload.len().saturating_add(1);
-    for _ in 0..scan_budget {
+    for (k, _) in (0..scan_budget).enumerate() {
+        let seq = (k + 1) as u32;
         let Some(pos) = rest.find("target-name=\"") else {
             break;
         };
-        seq += 1;
         let path_start = pos + "target-name=\"".len();
         let Some(path_end_rel) = rest[path_start..].find('"') else {
             break;

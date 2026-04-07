@@ -40,7 +40,13 @@ fn fmt_command(args: &[String]) -> i32 {
     let mut files: Vec<String> = vec![];
     let default_locale = diagnostic_locale_for_cli(None);
     let mut argument_index = 0usize;
-    while argument_index < args.len() {
+    let arg_parse_round_cap = args.len().saturating_add(1);
+    // `argument_index` is an argv cursor (can advance by 2 for `-t 8`), not the loop index.
+    #[allow(clippy::explicit_counter_loop)]
+    for _ in 0..arg_parse_round_cap {
+        if argument_index >= args.len() {
+            break;
+        }
         let arg = &args[argument_index];
         argument_index += 1;
         let (flag, opt_val) = if let Some(eq) = arg.find('=') {

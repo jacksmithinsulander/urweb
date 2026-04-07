@@ -59,9 +59,11 @@ use crate::diagnostics::{render_diagnostic_body, DiagnosticId, DiagnosticPayload
 use crate::error_types::{CompileError, ErrorReporter, Span};
 use crate::source::{File, LocSgnItem};
 
-#[cfg(test)]
-static PREPROCESS_URS_FUEL_TEST_OVERRIDE: std::sync::Mutex<Option<usize>> =
-    std::sync::Mutex::new(None);
+#[macro_use]
+mod urs_preprocess_macros;
+mod preprocess_urs;
+
+pub use preprocess_urs::preprocess_urs;
 
 /// Test-only: override initial fuel for the next [`preprocess_urs`] call(s). Pass `None` to disable.
 ///
@@ -74,71 +76,7 @@ static PREPROCESS_URS_FUEL_TEST_OVERRIDE: std::sync::Mutex<Option<usize>> =
 /// Nothing.
 #[cfg(test)]
 pub fn test_set_preprocess_urs_fuel_override(fuel: Option<usize>) {
-    *PREPROCESS_URS_FUEL_TEST_OVERRIDE.lock().unwrap() = fuel;
-}
-
-/// Decrement linear fuel; when exhausted, append the rest of `src` and return (stops Θ(n²) mutants).
-/// Uses `checked_sub` only (no `fuel == 0`) so `==`/`!=` mutants cannot skip the drain path and spin.
-macro_rules! preprocess_urs_burn {
-    ($fuel:expr, $out:expr, $src:expr, $i:expr) => {{
-        match $fuel.checked_sub(1) {
-            Some(f) => {
-                $fuel = f;
-            }
-            None => {
-                $out.push_str(&$src[$i..]);
-                return $out;
-            }
-        }
-    }};
-}
-
-/// Hot inner loops (comment/string) charge multiple fuel units per byte so mutants time out on fuel, not wall clock.
-macro_rules! preprocess_urs_burn_hot {
-    ($fuel:expr, $out:expr, $src:expr, $i:expr) => {{
-        preprocess_urs_burn!($fuel, $out, $src, $i);
-        preprocess_urs_burn!($fuel, $out, $src, $i);
-        preprocess_urs_burn!($fuel, $out, $src, $i);
-        preprocess_urs_burn!($fuel, $out, $src, $i);
-        preprocess_urs_burn!($fuel, $out, $src, $i);
-        preprocess_urs_burn!($fuel, $out, $src, $i);
-        preprocess_urs_burn!($fuel, $out, $src, $i);
-        preprocess_urs_burn!($fuel, $out, $src, $i);
-        preprocess_urs_burn!($fuel, $out, $src, $i);
-        preprocess_urs_burn!($fuel, $out, $src, $i);
-        preprocess_urs_burn!($fuel, $out, $src, $i);
-        preprocess_urs_burn!($fuel, $out, $src, $i);
-        preprocess_urs_burn!($fuel, $out, $src, $i);
-        preprocess_urs_burn!($fuel, $out, $src, $i);
-        preprocess_urs_burn!($fuel, $out, $src, $i);
-        preprocess_urs_burn!($fuel, $out, $src, $i);
-    }};
-}
-
-// Macros (not `fn`): cargo-mutants cannot replace the whole helper with `true`/`false` and hang.
-// `matches!` avoids a single `==` that `!=` mutants can flip wholesale.
-macro_rules! pp_urs_is_ws {
-    ($c:expr) => {{
-        let __c = $c;
-        matches!(__c, b' ' | b'\t' | b'\n' | b'\r')
-    }};
-}
-
-macro_rules! pp_urs_id_cont {
-    ($c:expr) => {{
-        let __c = $c;
-        matches!(
-            __c,
-            b'_' | b'\'' | b'0'..=b'9' | b'a'..=b'z' | b'A'..=b'Z'
-        )
-    }};
-}
-
-macro_rules! pp_urs_depth_nonzero {
-    ($d:expr) => {{
-        let __d = $d;
-        matches!(__d, 1..)
-    }};
+    preprocess_urs::set_test_fuel_override(fuel);
 }
 
 fn pp_kw_cont(c: u8) -> bool {
@@ -146,6 +84,20 @@ fn pp_kw_cont(c: u8) -> bool {
         c,
         b'_' | b'\'' | b'0'..=b'9' | b'a'..=b'z' | b'A'..=b'Z'
     )
+}
+
+/// Upper bound on `for`-loop rounds for byte preprocessors (replaces unbounded `while scan < len`).
+///
+/// # Parameters
+///
+/// * `source_byte_length` — Length of the UTF-8 input being scanned.
+///
+/// # Returns
+///
+/// A cap of `length + 1` so a single pass cannot iterate more than linearly in input size.
+#[inline]
+fn preprocess_byte_scan_round_limit(source_byte_length: usize) -> usize {
+    source_byte_length.saturating_add(1)
 }
 
 fn is_case_keyword(b: &[u8], i: usize) -> bool {
@@ -174,9 +126,407 @@ fn is_of_keyword(b: &[u8], i: usize) -> bool {
     true
 }
 
+fn span_is_dummy_for_parser_repair(span: &Span) -> bool {
+    span.first.line == 0 && span.first.col == 0 && span.last.line == 0 && span.last.col == 0
+}
+
+fn repair_misparsed_lambda_annotation_expression(expression: &mut crate::source::LocExp) {
+    use crate::source::{Con, EDecl, Exp, Pat};
+
+    match &mut expression.node {
+        Exp::Annot(inner, constructor) => {
+            repair_misparsed_lambda_annotation_expression(inner);
+            repair_misparsed_lambda_annotation_constructor(constructor);
+        }
+        Exp::Var(_, _, _) | Exp::Prim(_) | Exp::Wild | Exp::Hole | Exp::KAbs(_, _) => {}
+        Exp::App(function_expression, argument_expression) => {
+            repair_misparsed_lambda_annotation_expression(function_expression);
+            repair_misparsed_lambda_annotation_expression(argument_expression);
+        }
+        Exp::Abs(_, annotation, body) => {
+            if let Some(annotation_constructor) = annotation {
+                repair_misparsed_lambda_annotation_constructor(annotation_constructor);
+            }
+            repair_misparsed_lambda_annotation_expression(body);
+        }
+        Exp::CApp(inner, constructor) => {
+            repair_misparsed_lambda_annotation_expression(inner);
+            repair_misparsed_lambda_annotation_constructor(constructor);
+        }
+        Exp::CAbs(_, _, kind, body) => {
+            repair_misparsed_lambda_annotation_kind(kind);
+            repair_misparsed_lambda_annotation_expression(body);
+        }
+        Exp::Disjoint(left, right, body) => {
+            repair_misparsed_lambda_annotation_constructor(left);
+            repair_misparsed_lambda_annotation_constructor(right);
+            repair_misparsed_lambda_annotation_expression(body);
+        }
+        Exp::DisjointApp(inner) => repair_misparsed_lambda_annotation_expression(inner),
+        Exp::Record(fields, _) => {
+            for (field_constructor, field_expression) in fields {
+                repair_misparsed_lambda_annotation_constructor(field_constructor);
+                repair_misparsed_lambda_annotation_expression(field_expression);
+            }
+        }
+        Exp::Field(inner, field_constructor)
+        | Exp::Cut(inner, field_constructor)
+        | Exp::CutMulti(inner, field_constructor) => {
+            repair_misparsed_lambda_annotation_expression(inner);
+            repair_misparsed_lambda_annotation_constructor(field_constructor);
+        }
+        Exp::Concat(left, right) => {
+            repair_misparsed_lambda_annotation_expression(left);
+            repair_misparsed_lambda_annotation_expression(right);
+        }
+        Exp::Case(scrutinee, branches) => {
+            repair_misparsed_lambda_annotation_expression(scrutinee);
+            for (pattern, branch_expression) in branches.iter_mut() {
+                repair_misparsed_lambda_annotation_pattern(pattern);
+                repair_misparsed_lambda_annotation_expression(branch_expression);
+            }
+            repair_single_branch_lambda_annotation_case(branches);
+            repair_nested_case_branch_grouping(branches);
+        }
+        Exp::Let(declarations, body) => {
+            for declaration in declarations {
+                match &mut declaration.node {
+                    EDecl::Val(pattern, bound_expression) => {
+                        repair_misparsed_lambda_annotation_pattern(pattern);
+                        repair_misparsed_lambda_annotation_expression(bound_expression);
+                    }
+                    EDecl::ValRec(bindings) => {
+                        for (_, annotation, bound_expression) in bindings {
+                            if let Some(annotation_constructor) = annotation {
+                                repair_misparsed_lambda_annotation_constructor(
+                                    annotation_constructor,
+                                );
+                            }
+                            repair_misparsed_lambda_annotation_expression(bound_expression);
+                        }
+                    }
+                }
+            }
+            repair_misparsed_lambda_annotation_expression(body);
+        }
+        Exp::Infix(_, left, right) => {
+            repair_misparsed_lambda_annotation_expression(left);
+            repair_misparsed_lambda_annotation_expression(right);
+        }
+    }
+
+    fn repair_single_branch_lambda_annotation_case(
+        branches: &mut Vec<(crate::source::LocPat, crate::source::LocExp)>,
+    ) {
+        if branches.len() != 1 {
+            return;
+        }
+        let (pattern, branch_expression) = &mut branches[0];
+        let Pat::Annot(inner_pattern, annotation_constructor) = &mut pattern.node else {
+            return;
+        };
+        let Pat::Var(_) = inner_pattern.node else {
+            return;
+        };
+        let Con::Var(module_path, _) = &annotation_constructor.node else {
+            return;
+        };
+        if !module_path.is_empty() {
+            return;
+        }
+        let Exp::Abs(argument_name, None, inner_body) = &branch_expression.node else {
+            return;
+        };
+        if !span_is_dummy_for_parser_repair(&branch_expression.span) {
+            return;
+        }
+        let applied_argument = crate::error_types::Located::new(
+            Con::Var(Vec::new(), argument_name.clone()),
+            branch_expression.span.clone(),
+        );
+        let repaired_annotation = crate::error_types::Located::new(
+            Con::App(
+                Box::new(annotation_constructor.clone()),
+                Box::new(applied_argument),
+            ),
+            annotation_constructor.span.clone(),
+        );
+        *annotation_constructor = repaired_annotation;
+        *branch_expression = inner_body.as_ref().clone();
+    }
+
+    fn repair_nested_case_branch_grouping(
+        branches: &mut Vec<(crate::source::LocPat, crate::source::LocExp)>,
+    ) {
+        let initial_len = branches.len();
+        for _ in 0..initial_len {
+            let mut repair_index: Option<usize> = None;
+            for index in 0..branches.len().saturating_sub(1) {
+                if branch_expression_accepts_nested_case_branches(&branches[index].1) {
+                    repair_index = Some(index);
+                }
+            }
+            let Some(index) = repair_index else {
+                return;
+            };
+            let trailing_branches: Vec<(crate::source::LocPat, crate::source::LocExp)> =
+                branches.drain(index + 1..).collect();
+            match branches.get_mut(index) {
+                Some((_, branch_expression)) => {
+                    append_nested_case_branches(branch_expression, trailing_branches);
+                }
+                None => return,
+            }
+        }
+
+        fn branch_expression_accepts_nested_case_branches(
+            expression: &crate::source::LocExp,
+        ) -> bool {
+            match &expression.node {
+                Exp::Case(_, _) => true,
+                Exp::Annot(inner, _) => branch_expression_accepts_nested_case_branches(inner),
+                _ => false,
+            }
+        }
+
+        fn append_nested_case_branches(
+            expression: &mut crate::source::LocExp,
+            mut trailing_branches: Vec<(crate::source::LocPat, crate::source::LocExp)>,
+        ) {
+            match &mut expression.node {
+                Exp::Case(_, inner_branches) => inner_branches.append(&mut trailing_branches),
+                Exp::Annot(inner, _) => append_nested_case_branches(inner, trailing_branches),
+                _ => {}
+            }
+        }
+    }
+
+    fn repair_misparsed_lambda_annotation_pattern(pattern: &mut crate::source::LocPat) {
+        use crate::source::Pat;
+        match &mut pattern.node {
+            Pat::Var(_) | Pat::Prim(_) => {}
+            Pat::Con(_, _, argument_pattern) => {
+                if let Some(argument_pattern) = argument_pattern {
+                    repair_misparsed_lambda_annotation_pattern(argument_pattern);
+                }
+            }
+            Pat::Record(fields, _) => {
+                for (_, field_pattern) in fields {
+                    repair_misparsed_lambda_annotation_pattern(field_pattern);
+                }
+            }
+            Pat::Annot(inner_pattern, annotation_constructor) => {
+                repair_misparsed_lambda_annotation_pattern(inner_pattern);
+                repair_misparsed_lambda_annotation_constructor(annotation_constructor);
+            }
+        }
+    }
+
+    fn repair_misparsed_lambda_annotation_constructor(constructor: &mut crate::source::LocCon) {
+        use crate::source::Con;
+        match &mut constructor.node {
+            Con::Annot(inner, kind) => {
+                repair_misparsed_lambda_annotation_constructor(inner);
+                repair_misparsed_lambda_annotation_kind(kind);
+            }
+            Con::TFun(left, right) | Con::Concat(left, right) => {
+                repair_misparsed_lambda_annotation_constructor(left);
+                repair_misparsed_lambda_annotation_constructor(right);
+            }
+            Con::TCFun(_, _, kind, body) => {
+                repair_misparsed_lambda_annotation_kind(kind);
+                repair_misparsed_lambda_annotation_constructor(body);
+            }
+            Con::TRecord(inner) | Con::KAbs(_, inner) | Con::TKFun(_, inner) => {
+                repair_misparsed_lambda_annotation_constructor(inner);
+            }
+            Con::TDisjoint(left, right, body) => {
+                repair_misparsed_lambda_annotation_constructor(left);
+                repair_misparsed_lambda_annotation_constructor(right);
+                repair_misparsed_lambda_annotation_constructor(body);
+            }
+            Con::App(function_constructor, argument_constructor) => {
+                repair_misparsed_lambda_annotation_constructor(function_constructor);
+                repair_misparsed_lambda_annotation_constructor(argument_constructor);
+            }
+            Con::Abs(_, kind, body) => {
+                if let Some(kind) = kind {
+                    repair_misparsed_lambda_annotation_kind(kind);
+                }
+                repair_misparsed_lambda_annotation_constructor(body);
+            }
+            Con::Record(fields) => {
+                for (field_name, field_value) in fields {
+                    repair_misparsed_lambda_annotation_constructor(field_name);
+                    repair_misparsed_lambda_annotation_constructor(field_value);
+                }
+            }
+            Con::Tuple(items) => {
+                for item in items {
+                    repair_misparsed_lambda_annotation_constructor(item);
+                }
+            }
+            Con::Proj(inner, _) => repair_misparsed_lambda_annotation_constructor(inner),
+            Con::Var(_, _) | Con::Name(_) | Con::Map | Con::Unit | Con::Wild(_) => {}
+        }
+    }
+
+    fn repair_misparsed_lambda_annotation_kind(kind: &mut crate::source::LocKind) {
+        use crate::source::Kind;
+        match &mut kind.node {
+            Kind::Arrow(left, right) => {
+                repair_misparsed_lambda_annotation_kind(left);
+                repair_misparsed_lambda_annotation_kind(right);
+            }
+            Kind::Record(inner) | Kind::Fun(_, inner) => {
+                repair_misparsed_lambda_annotation_kind(inner);
+            }
+            Kind::Tuple(items) => {
+                for item in items {
+                    repair_misparsed_lambda_annotation_kind(item);
+                }
+            }
+            Kind::Type | Kind::Name | Kind::Unit | Kind::Wild | Kind::Var(_) => {}
+        }
+    }
+}
+
+fn repair_misparsed_lambda_annotation_file(file: &mut File) {
+    use crate::source::Decl;
+
+    for declaration in file {
+        match &mut declaration.node {
+            Decl::Con(_, _, constructor) => {
+                repair_misparsed_lambda_annotation_constructor_in_decl(constructor)
+            }
+            Decl::Datatype(datatypes) => {
+                for datatype in datatypes {
+                    for (_, argument_constructor) in &mut datatype.constrs {
+                        if let Some(argument_constructor) = argument_constructor {
+                            repair_misparsed_lambda_annotation_constructor_in_decl(
+                                argument_constructor,
+                            );
+                        }
+                    }
+                }
+            }
+            Decl::Val(pattern, expression) => {
+                repair_misparsed_lambda_annotation_pattern_in_decl(pattern);
+                repair_misparsed_lambda_annotation_expression(expression);
+            }
+            Decl::ValRec(bindings) => {
+                for (_, annotation, expression) in bindings {
+                    if let Some(annotation_constructor) = annotation {
+                        repair_misparsed_lambda_annotation_constructor_in_decl(
+                            annotation_constructor,
+                        );
+                    }
+                    repair_misparsed_lambda_annotation_expression(expression);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn repair_misparsed_lambda_annotation_pattern_in_decl(pattern: &mut crate::source::LocPat) {
+        use crate::source::Pat;
+        match &mut pattern.node {
+            Pat::Var(_) | Pat::Prim(_) => {}
+            Pat::Con(_, _, argument_pattern) => {
+                if let Some(argument_pattern) = argument_pattern {
+                    repair_misparsed_lambda_annotation_pattern_in_decl(argument_pattern);
+                }
+            }
+            Pat::Record(fields, _) => {
+                for (_, field_pattern) in fields {
+                    repair_misparsed_lambda_annotation_pattern_in_decl(field_pattern);
+                }
+            }
+            Pat::Annot(inner_pattern, annotation_constructor) => {
+                repair_misparsed_lambda_annotation_pattern_in_decl(inner_pattern);
+                repair_misparsed_lambda_annotation_constructor_in_decl(annotation_constructor);
+            }
+        }
+    }
+
+    fn repair_misparsed_lambda_annotation_constructor_in_decl(
+        constructor: &mut crate::source::LocCon,
+    ) {
+        use crate::source::Con;
+        match &mut constructor.node {
+            Con::Annot(inner, kind) => {
+                repair_misparsed_lambda_annotation_constructor_in_decl(inner);
+                repair_misparsed_lambda_annotation_kind_in_decl(kind);
+            }
+            Con::TFun(left, right) | Con::Concat(left, right) => {
+                repair_misparsed_lambda_annotation_constructor_in_decl(left);
+                repair_misparsed_lambda_annotation_constructor_in_decl(right);
+            }
+            Con::TCFun(_, _, kind, body) => {
+                repair_misparsed_lambda_annotation_kind_in_decl(kind);
+                repair_misparsed_lambda_annotation_constructor_in_decl(body);
+            }
+            Con::TRecord(inner) | Con::KAbs(_, inner) | Con::TKFun(_, inner) => {
+                repair_misparsed_lambda_annotation_constructor_in_decl(inner);
+            }
+            Con::TDisjoint(left, right, body) => {
+                repair_misparsed_lambda_annotation_constructor_in_decl(left);
+                repair_misparsed_lambda_annotation_constructor_in_decl(right);
+                repair_misparsed_lambda_annotation_constructor_in_decl(body);
+            }
+            Con::App(function_constructor, argument_constructor) => {
+                repair_misparsed_lambda_annotation_constructor_in_decl(function_constructor);
+                repair_misparsed_lambda_annotation_constructor_in_decl(argument_constructor);
+            }
+            Con::Abs(_, kind, body) => {
+                if let Some(kind) = kind {
+                    repair_misparsed_lambda_annotation_kind_in_decl(kind);
+                }
+                repair_misparsed_lambda_annotation_constructor_in_decl(body);
+            }
+            Con::Record(fields) => {
+                for (field_name, field_value) in fields {
+                    repair_misparsed_lambda_annotation_constructor_in_decl(field_name);
+                    repair_misparsed_lambda_annotation_constructor_in_decl(field_value);
+                }
+            }
+            Con::Tuple(items) => {
+                for item in items {
+                    repair_misparsed_lambda_annotation_constructor_in_decl(item);
+                }
+            }
+            Con::Proj(inner, _) => repair_misparsed_lambda_annotation_constructor_in_decl(inner),
+            Con::Var(_, _) | Con::Name(_) | Con::Map | Con::Unit | Con::Wild(_) => {}
+        }
+    }
+
+    fn repair_misparsed_lambda_annotation_kind_in_decl(kind: &mut crate::source::LocKind) {
+        use crate::source::Kind;
+        match &mut kind.node {
+            Kind::Arrow(left, right) => {
+                repair_misparsed_lambda_annotation_kind_in_decl(left);
+                repair_misparsed_lambda_annotation_kind_in_decl(right);
+            }
+            Kind::Record(inner) | Kind::Fun(_, inner) => {
+                repair_misparsed_lambda_annotation_kind_in_decl(inner);
+            }
+            Kind::Tuple(items) => {
+                for item in items {
+                    repair_misparsed_lambda_annotation_kind_in_decl(item);
+                }
+            }
+            Kind::Type | Kind::Name | Kind::Unit | Kind::Wild | Kind::Var(_) => {}
+        }
+    }
+}
+
 fn skip_ml_comment_bytes(b: &[u8], mut i: usize, n: usize) -> usize {
     let mut depth = 1usize;
-    while i < n && depth > 0 {
+    let scan_budget = n.saturating_mul(2).saturating_add(1);
+    for _ in 0..scan_budget {
+        if i >= n || depth == 0 {
+            break;
+        }
         if i + 1 < n && b[i] == b'(' && b[i + 1] == b'*' {
             i += 2;
             depth += 1;
@@ -191,7 +541,11 @@ fn skip_ml_comment_bytes(b: &[u8], mut i: usize, n: usize) -> usize {
 }
 
 fn skip_string_bytes(b: &[u8], mut i: usize, n: usize) -> usize {
-    while i < n {
+    let scan_budget = n.saturating_sub(i).saturating_add(1);
+    for _ in 0..scan_budget {
+        if i >= n {
+            break;
+        }
         if b[i] == b'"' {
             return i + 1;
         }
@@ -207,7 +561,11 @@ fn skip_string_bytes(b: &[u8], mut i: usize, n: usize) -> usize {
 /// Byte index just after the `of` in `case` ⟨scrutinee⟩ `of`, or `None` if unterminated.
 fn scan_case_of_end(b: &[u8], mut i: usize, n: usize) -> Option<usize> {
     let mut depth = 0i32;
-    while i < n {
+    let scan_budget = n.saturating_mul(2).saturating_add(1);
+    for _ in 0..scan_budget {
+        if i >= n {
+            break;
+        }
         if i + 1 < n && b[i] == b'(' && b[i + 1] == b'*' {
             i = skip_ml_comment_bytes(b, i + 2, n);
             continue;
@@ -266,7 +624,11 @@ fn case_bar_at(b: &[u8], i: usize, n: usize) -> bool {
 }
 
 fn emit_ws_comments_prefix(out: &mut String, input: &str, b: &[u8], i: &mut usize, n: usize) {
-    while *i < n {
+    let scan_budget = n.saturating_add(1);
+    for _ in 0..scan_budget {
+        if *i >= n {
+            break;
+        }
         if pp_urs_is_ws!(b[*i]) {
             out.push(b[*i] as char);
             *i += 1;
@@ -336,43 +698,66 @@ pub fn rewrite_case_arm_separators(input: &str) -> String {
         i
     }
 
-    /// Copy [i..] to `out` until `=>` at `depth==0`, return index after `=>`.
+    /// Copy [`pattern_scan_index`..] to `pattern_output` until `=>` at nesting depth 0; returns the index after `=>`.
     fn scan_pat_to_arrow(
-        out: &mut String,
-        input: &str,
-        b: &[u8],
-        mut i: usize,
-        n: usize,
+        pattern_output: &mut String,
+        input_text: &str,
+        source_bytes: &[u8],
+        mut pattern_scan_index: usize,
+        source_byte_length: usize,
     ) -> Option<usize> {
-        let mut depth = 0i32;
-        while i < n {
-            if i + 1 < n && b[i] == b'(' && b[i + 1] == b'*' {
-                i = copy_ml_comment(out, input, b, i, n);
+        let mut bracket_nesting_depth = 0i32;
+        let scan_round_limit = preprocess_byte_scan_round_limit(source_byte_length);
+        for _pattern_scan_round in 0..scan_round_limit {
+            if pattern_scan_index >= source_byte_length {
+                return None;
+            }
+            if pattern_scan_index + 1 < source_byte_length
+                && source_bytes[pattern_scan_index] == b'('
+                && source_bytes[pattern_scan_index + 1] == b'*'
+            {
+                pattern_scan_index = copy_ml_comment(
+                    pattern_output,
+                    input_text,
+                    source_bytes,
+                    pattern_scan_index,
+                    source_byte_length,
+                );
                 continue;
             }
-            if b[i] == b'"' {
-                i = copy_string(out, input, b, i, n);
+            if source_bytes[pattern_scan_index] == b'"' {
+                pattern_scan_index = copy_string(
+                    pattern_output,
+                    input_text,
+                    source_bytes,
+                    pattern_scan_index,
+                    source_byte_length,
+                );
                 continue;
             }
-            if depth == 0 && i + 1 < n && b[i] == b'=' && b[i + 1] == b'>' {
-                out.push_str("=>");
-                return Some(i + 2);
+            if bracket_nesting_depth == 0
+                && pattern_scan_index + 1 < source_byte_length
+                && source_bytes[pattern_scan_index] == b'='
+                && source_bytes[pattern_scan_index + 1] == b'>'
+            {
+                pattern_output.push_str("=>");
+                return Some(pattern_scan_index + 2);
             }
-            match b[i] {
+            match source_bytes[pattern_scan_index] {
                 b'(' | b'[' | b'{' => {
-                    out.push(b[i] as char);
-                    depth += 1;
-                    i += 1;
+                    pattern_output.push(source_bytes[pattern_scan_index] as char);
+                    bracket_nesting_depth += 1;
+                    pattern_scan_index += 1;
                 }
                 b')' | b']' | b'}' => {
-                    out.push(b[i] as char);
-                    depth = (depth - 1).max(0);
-                    i += 1;
+                    pattern_output.push(source_bytes[pattern_scan_index] as char);
+                    bracket_nesting_depth = (bracket_nesting_depth - 1).max(0);
+                    pattern_scan_index += 1;
                 }
-                _ => {
-                    let ch = input[i..].chars().next()?;
-                    out.push(ch);
-                    i += ch.len_utf8();
+                _other_byte => {
+                    let unicode_char = input_text[pattern_scan_index..].chars().next()?;
+                    pattern_output.push(unicode_char);
+                    pattern_scan_index += unicode_char.len_utf8();
                 }
             }
         }
@@ -392,90 +777,129 @@ pub fn rewrite_case_arm_separators(input: &str) -> String {
     /// Nested case expressions' `|` separators are inside bracketed subterms or
     /// will be handled by the recursive rewrite applied to the returned body.
     fn scan_body(
-        input: &str,
-        b: &[u8],
-        mut i: usize,
-        n: usize,
+        input_text: &str,
+        source_bytes: &[u8],
+        mut body_scan_index: usize,
+        source_byte_length: usize,
     ) -> Option<(usize, BodyStop, String)> {
-        let mut body = String::new();
-        let mut depth = 0i32;
-        let mut let_depth = 0i32; // tracks open `let` keywords
-        while i < n {
-            if i + 1 < n && b[i] == b'(' && b[i + 1] == b'*' {
-                i = copy_ml_comment(&mut body, input, b, i, n);
+        let mut body_text_accumulator = String::new();
+        let mut bracket_nesting_depth = 0i32;
+        let mut open_let_keyword_depth = 0i32;
+        let scan_round_limit = preprocess_byte_scan_round_limit(source_byte_length);
+        for _body_scan_round in 0..scan_round_limit {
+            if body_scan_index >= source_byte_length {
+                break;
+            }
+            if body_scan_index + 1 < source_byte_length
+                && source_bytes[body_scan_index] == b'('
+                && source_bytes[body_scan_index + 1] == b'*'
+            {
+                body_scan_index = copy_ml_comment(
+                    &mut body_text_accumulator,
+                    input_text,
+                    source_bytes,
+                    body_scan_index,
+                    source_byte_length,
+                );
                 continue;
             }
-            if b[i] == b'"' {
-                i = copy_string(&mut body, input, b, i, n);
+            if source_bytes[body_scan_index] == b'"' {
+                body_scan_index = copy_string(
+                    &mut body_text_accumulator,
+                    input_text,
+                    source_bytes,
+                    body_scan_index,
+                    source_byte_length,
+                );
                 continue;
             }
-            if depth == 0 && arm_sep_at(b, i, n) {
-                return Some((i, BodyStop::NextArm, body));
+            if bracket_nesting_depth == 0
+                && arm_sep_at(source_bytes, body_scan_index, source_byte_length)
+            {
+                return Some((body_scan_index, BodyStop::NextArm, body_text_accumulator));
             }
-            if depth == 0 && case_end_at(b, i, n) {
-                return Some((i, BodyStop::CaseDone, body));
+            if bracket_nesting_depth == 0
+                && case_end_at(source_bytes, body_scan_index, source_byte_length)
+            {
+                return Some((body_scan_index, BodyStop::CaseDone, body_text_accumulator));
             }
-            if depth == 0 && b[i] == b'|' {
-                return Some((i, BodyStop::NextArm, body));
+            if bracket_nesting_depth == 0 && source_bytes[body_scan_index] == b'|' {
+                return Some((body_scan_index, BodyStop::NextArm, body_text_accumulator));
             }
             // `)` / `]` / `}` at depth 0 close an enclosing bracket → arm ends
-            if depth == 0 && matches!(b[i], b')' | b']' | b'}') {
-                return Some((i, BodyStop::CaseDone, body));
+            if bracket_nesting_depth == 0
+                && matches!(source_bytes[body_scan_index], b')' | b']' | b'}')
+            {
+                return Some((body_scan_index, BodyStop::CaseDone, body_text_accumulator));
             }
-            // Keyword tracking at bracket depth 0
-            if depth == 0 && pp_kw_word_at(b, i, n, b"let") {
-                body.push_str("let");
-                i += 3;
-                let_depth += 1;
+            if bracket_nesting_depth == 0
+                && pp_kw_word_at(source_bytes, body_scan_index, source_byte_length, b"let")
+            {
+                body_text_accumulator.push_str("let");
+                body_scan_index += 3;
+                open_let_keyword_depth += 1;
                 continue;
             }
-            if depth == 0 && pp_kw_word_at(b, i, n, b"in") {
-                if let_depth > 0 {
-                    body.push_str("in");
-                    i += 2;
-                } else {
-                    return Some((i, BodyStop::CaseDone, body));
+            if bracket_nesting_depth == 0
+                && pp_kw_word_at(source_bytes, body_scan_index, source_byte_length, b"in")
+            {
+                match open_let_keyword_depth.cmp(&0) {
+                    std::cmp::Ordering::Greater => {
+                        body_text_accumulator.push_str("in");
+                        body_scan_index += 2;
+                    }
+                    std::cmp::Ordering::Equal | std::cmp::Ordering::Less => {
+                        return Some((body_scan_index, BodyStop::CaseDone, body_text_accumulator));
+                    }
                 }
                 continue;
             }
-            if depth == 0 && pp_kw_word_at(b, i, n, b"end") {
-                if let_depth > 0 {
-                    body.push_str("end");
-                    i += 3;
-                    let_depth -= 1;
-                } else {
-                    return Some((i, BodyStop::CaseDone, body));
+            if bracket_nesting_depth == 0
+                && pp_kw_word_at(source_bytes, body_scan_index, source_byte_length, b"end")
+            {
+                match open_let_keyword_depth.cmp(&0) {
+                    std::cmp::Ordering::Greater => {
+                        body_text_accumulator.push_str("end");
+                        body_scan_index += 3;
+                        open_let_keyword_depth -= 1;
+                    }
+                    std::cmp::Ordering::Equal | std::cmp::Ordering::Less => {
+                        return Some((body_scan_index, BodyStop::CaseDone, body_text_accumulator));
+                    }
                 }
                 continue;
             }
-            // Top-level declaration keywords (only safe ones unlikely to appear in XML text)
-            if depth == 0 && let_depth == 0 {
-                for kw in &[b"fun" as &[u8], b"val", b"and"] {
-                    if pp_kw_word_at(b, i, n, kw) {
-                        return Some((i, BodyStop::CaseDone, body));
+            if bracket_nesting_depth == 0 && open_let_keyword_depth == 0 {
+                for declaration_keyword in &[b"fun" as &[u8], b"val", b"and"] {
+                    if pp_kw_word_at(
+                        source_bytes,
+                        body_scan_index,
+                        source_byte_length,
+                        declaration_keyword,
+                    ) {
+                        return Some((body_scan_index, BodyStop::CaseDone, body_text_accumulator));
                     }
                 }
             }
-            match b[i] {
+            match source_bytes[body_scan_index] {
                 b'(' | b'[' | b'{' => {
-                    body.push(b[i] as char);
-                    depth += 1;
-                    i += 1;
+                    body_text_accumulator.push(source_bytes[body_scan_index] as char);
+                    bracket_nesting_depth += 1;
+                    body_scan_index += 1;
                 }
                 b')' | b']' | b'}' => {
-                    // depth > 0 here (checked depth==0 above); decrement
-                    body.push(b[i] as char);
-                    depth -= 1;
-                    i += 1;
+                    body_text_accumulator.push(source_bytes[body_scan_index] as char);
+                    bracket_nesting_depth -= 1;
+                    body_scan_index += 1;
                 }
-                _ => {
-                    let ch = input[i..].chars().next()?;
-                    body.push(ch);
-                    i += ch.len_utf8();
+                _other_byte => {
+                    let unicode_char = input_text[body_scan_index..].chars().next()?;
+                    body_text_accumulator.push(unicode_char);
+                    body_scan_index += unicode_char.len_utf8();
                 }
             }
         }
-        Some((i, BodyStop::CaseDone, body))
+        Some((body_scan_index, BodyStop::CaseDone, body_text_accumulator))
     }
 
     let b = input.as_bytes();
@@ -517,7 +941,10 @@ pub fn rewrite_case_arm_separators(input: &str) -> String {
                     j += 1;
                 }
                 emit_ws_comments_prefix(&mut out, input, b, &mut j, n);
-                loop {
+                // Each arm advances `j`; cap iterations by source length so malformed input cannot spin.
+                let case_arm_budget = n.saturating_add(1);
+                let mut case_arms_resolved = false;
+                'case_arms: for _ in 0..case_arm_budget {
                     let Some(after_arrow) = scan_pat_to_arrow(&mut out, input, b, j, n) else {
                         out.push_str(&input[j..]);
                         return out;
@@ -539,7 +966,8 @@ pub fn rewrite_case_arm_separators(input: &str) -> String {
                                 out.push_str(" case_end ");
                                 i = j;
                             }
-                            break;
+                            case_arms_resolved = true;
+                            break 'case_arms;
                         }
                         BodyStop::NextArm => {
                             if arm_sep_at(b, j, n) {
@@ -558,6 +986,10 @@ pub fn rewrite_case_arm_separators(input: &str) -> String {
                             return out;
                         }
                     }
+                }
+                if !case_arms_resolved {
+                    out.push_str(&input[j..]);
+                    return out;
                 }
                 continue;
             }
@@ -594,146 +1026,202 @@ pub fn rewrite_case_expressions(src: &str) -> String {
 /// # Returns
 ///
 /// Source with bracketed kind binders inserted where detected.
-pub fn rewrite_bare_kind_binders(src: &str) -> String {
-    let b = src.as_bytes();
-    let n = b.len();
-    let mut out = String::with_capacity(n);
-    let mut i = 0usize;
-    // Track depth inside `[...]` brackets.  Inside brackets the binder is
-    // already in bracketed form (e.g. `[tf :: {K} -> Type]`) and must NOT be
-    // rewritten again — doing so would produce `[[tf :: {K}] -> Type]`.
-    let mut bracket_depth: i32 = 0;
-
-    while i < n {
-        // Skip ML comments
-        if i + 1 < n && b[i] == b'(' && b[i + 1] == b'*' {
-            let start = i;
-            i = skip_ml_comment_bytes(b, i + 2, n);
-            out.push_str(&src[start..i]);
+pub fn rewrite_bare_kind_binders(source_text: &str) -> String {
+    let source_bytes = source_text.as_bytes();
+    let source_byte_length = source_bytes.len();
+    let mut output_text = String::with_capacity(source_byte_length);
+    let mut scan_index = 0usize;
+    // Track depth inside `[...]` brackets. Inside brackets the binder is already bracketed.
+    let mut square_bracket_depth: i32 = 0;
+    let outer_scan_limit = preprocess_byte_scan_round_limit(source_byte_length);
+    for _outer_scan_round in 0..outer_scan_limit {
+        if scan_index >= source_byte_length {
+            break;
+        }
+        if scan_index + 1 < source_byte_length
+            && source_bytes[scan_index] == b'('
+            && source_bytes[scan_index + 1] == b'*'
+        {
+            let comment_span_start = scan_index;
+            scan_index = skip_ml_comment_bytes(source_bytes, scan_index + 2, source_byte_length);
+            output_text.push_str(&source_text[comment_span_start..scan_index]);
             continue;
         }
-        // Skip strings
-        if b[i] == b'"' {
-            let start = i;
-            i = skip_string_bytes(b, i + 1, n);
-            out.push_str(&src[start..i]);
+        if source_bytes[scan_index] == b'"' {
+            let string_span_start = scan_index;
+            scan_index = skip_string_bytes(source_bytes, scan_index + 1, source_byte_length);
+            output_text.push_str(&source_text[string_span_start..scan_index]);
             continue;
         }
-        // Check for lowercase ident — only rewrite bare binders at bracket depth 0.
-        if (b[i].is_ascii_lowercase() || b[i] == b'_') && bracket_depth == 0 {
-            // Require word boundary on left
-            if i > 0 && pp_kw_cont(b[i - 1]) {
-                out.push(b[i] as char);
-                i += 1;
+        if (source_bytes[scan_index].is_ascii_lowercase() || source_bytes[scan_index] == b'_')
+            && square_bracket_depth == 0
+        {
+            if scan_index > 0 && pp_kw_cont(source_bytes[scan_index - 1]) {
+                output_text.push(source_bytes[scan_index] as char);
+                scan_index += 1;
                 continue;
             }
-            // Scan identifier
-            let id_start = i;
-            while i < n && pp_kw_cont(b[i]) {
-                i += 1;
-            }
-            let id = &src[id_start..i];
-            // Skip whitespace
-            let ws_start = i;
-            while i < n && matches!(b[i], b' ' | b'\t' | b'\n' | b'\r') {
-                i += 1;
-            }
-            let ws1 = &src[ws_start..i];
-            // Check for `:::` or `::` (not `::::`)
-            let is_triple =
-                i + 3 <= n && &b[i..i + 3] == b":::" && b.get(i + 3).copied() != Some(b':');
-            let is_double = !is_triple
-                && i + 2 <= n
-                && &b[i..i + 2] == b"::"
-                && b.get(i + 2).copied() != Some(b':');
-            if is_triple || is_double {
-                let colon_str = if is_triple { ":::" } else { "::" };
-                i += colon_str.len();
-                // Skip whitespace after :: or :::
-                let ws2_start = i;
-                while i < n && matches!(b[i], b' ' | b'\t') {
-                    i += 1;
+            let identifier_byte_start = scan_index;
+            let identifier_tail_limit = preprocess_byte_scan_round_limit(source_byte_length);
+            for _identifier_byte_round in 0..identifier_tail_limit {
+                if scan_index >= source_byte_length || !pp_kw_cont(source_bytes[scan_index]) {
+                    break;
                 }
-                let ws2 = &src[ws2_start..i];
-                // Scan kind expression: tokens until `->` at bracket depth 0
-                let kind_start = i;
-                let mut depth = 0i32;
-                let mut found_arrow = false;
-                let mut arrow_pos = i;
-                let mut j = i;
-                while j < n {
-                    if j + 1 < n && b[j] == b'(' && b[j + 1] == b'*' {
-                        j = skip_ml_comment_bytes(b, j + 2, n);
-                        continue;
-                    }
-                    if b[j] == b'"' {
-                        j = skip_string_bytes(b, j + 1, n);
-                        continue;
-                    }
-                    if matches!(b[j], b'(' | b'[' | b'{') {
-                        depth += 1;
-                        j += 1;
-                        continue;
-                    }
-                    if matches!(b[j], b')' | b']' | b'}') {
-                        depth -= 1;
-                        if depth < 0 {
+                scan_index += 1;
+            }
+            let binder_identifier = &source_text[identifier_byte_start..scan_index];
+            let whitespace_after_id_start = scan_index;
+            let horizontal_whitespace_limit = preprocess_byte_scan_round_limit(source_byte_length);
+            for _whitespace_round in 0..horizontal_whitespace_limit {
+                if scan_index >= source_byte_length
+                    || !matches!(source_bytes[scan_index], b' ' | b'\t' | b'\n' | b'\r')
+                {
+                    break;
+                }
+                scan_index += 1;
+            }
+            let whitespace_between_id_and_colons =
+                &source_text[whitespace_after_id_start..scan_index];
+            let is_triple_colon = scan_index + 3 <= source_byte_length
+                && &source_bytes[scan_index..scan_index + 3] == b":::"
+                && source_bytes.get(scan_index + 3).copied() != Some(b':');
+            let is_double_colon = !is_triple_colon
+                && scan_index + 2 <= source_byte_length
+                && &source_bytes[scan_index..scan_index + 2] == b"::"
+                && source_bytes.get(scan_index + 2).copied() != Some(b':');
+            match (is_triple_colon, is_double_colon) {
+                (true, _) | (_, true) => {
+                    let colon_token: &'static str = match is_triple_colon {
+                        true => ":::",
+                        false => "::",
+                    };
+                    scan_index += colon_token.len();
+                    let whitespace_after_colons_start = scan_index;
+                    let after_colon_ws_limit = preprocess_byte_scan_round_limit(source_byte_length);
+                    for _after_colon_ws_round in 0..after_colon_ws_limit {
+                        if scan_index >= source_byte_length
+                            || !matches!(source_bytes[scan_index], b' ' | b'\t')
+                        {
                             break;
                         }
-                        j += 1;
-                        continue;
+                        scan_index += 1;
                     }
-                    if depth == 0 && j + 2 <= n && &b[j..j + 2] == b"->" {
-                        found_arrow = true;
-                        arrow_pos = j;
-                        break;
+                    let whitespace_after_colons =
+                        &source_text[whitespace_after_colons_start..scan_index];
+                    let kind_expression_start = scan_index;
+                    let mut kind_paren_depth = 0i32;
+                    let mut found_top_level_arrow = false;
+                    let mut arrow_byte_index = scan_index;
+                    let mut kind_scan_index = scan_index;
+                    let kind_scan_limit = preprocess_byte_scan_round_limit(source_byte_length);
+                    for _kind_scan_round in 0..kind_scan_limit {
+                        if kind_scan_index >= source_byte_length {
+                            break;
+                        }
+                        if kind_scan_index + 1 < source_byte_length
+                            && source_bytes[kind_scan_index] == b'('
+                            && source_bytes[kind_scan_index + 1] == b'*'
+                        {
+                            kind_scan_index = skip_ml_comment_bytes(
+                                source_bytes,
+                                kind_scan_index + 2,
+                                source_byte_length,
+                            );
+                            continue;
+                        }
+                        if source_bytes[kind_scan_index] == b'"' {
+                            kind_scan_index = skip_string_bytes(
+                                source_bytes,
+                                kind_scan_index + 1,
+                                source_byte_length,
+                            );
+                            continue;
+                        }
+                        match source_bytes[kind_scan_index] {
+                            b'(' | b'[' | b'{' => {
+                                kind_paren_depth += 1;
+                                kind_scan_index += 1;
+                            }
+                            b')' | b']' | b'}' => {
+                                kind_paren_depth -= 1;
+                                if kind_paren_depth < 0 {
+                                    break;
+                                }
+                                kind_scan_index += 1;
+                            }
+                            _other
+                                if kind_paren_depth == 0
+                                    && kind_scan_index + 2 <= source_byte_length
+                                    && &source_bytes[kind_scan_index..kind_scan_index + 2]
+                                        == b"->" =>
+                            {
+                                found_top_level_arrow = true;
+                                arrow_byte_index = kind_scan_index;
+                                break;
+                            }
+                            _other
+                                if kind_paren_depth == 0
+                                    && matches!(
+                                        source_bytes[kind_scan_index],
+                                        b',' | b'=' | b'|' | b';'
+                                    ) =>
+                            {
+                                break;
+                            }
+                            _other => {
+                                kind_scan_index += 1;
+                            }
+                        }
                     }
-                    // Stop at tokens that can't appear in a kind at depth 0
-                    if depth == 0 && matches!(b[j], b',' | b'=' | b'|' | b';') {
-                        break;
-                    }
-                    j += 1;
-                }
-                if found_arrow {
-                    let kind_text = src[kind_start..arrow_pos].trim_end();
-                    out.push('[');
-                    out.push_str(id);
-                    out.push_str(ws1);
-                    out.push_str(colon_str);
-                    out.push_str(ws2);
-                    out.push_str(kind_text);
-                    out.push_str("] -> ");
-                    i = arrow_pos + 2;
-                    while i < n && matches!(b[i], b' ' | b'\t') {
-                        i += 1;
+                    match found_top_level_arrow {
+                        true => {
+                            let kind_expression_text =
+                                source_text[kind_expression_start..arrow_byte_index].trim_end();
+                            output_text.push('[');
+                            output_text.push_str(binder_identifier);
+                            output_text.push_str(whitespace_between_id_and_colons);
+                            output_text.push_str(colon_token);
+                            output_text.push_str(whitespace_after_colons);
+                            output_text.push_str(kind_expression_text);
+                            output_text.push_str("] -> ");
+                            scan_index = arrow_byte_index + 2;
+                            let spaces_after_arrow_limit =
+                                preprocess_byte_scan_round_limit(source_byte_length);
+                            for _spaces_after_arrow in 0..spaces_after_arrow_limit {
+                                if scan_index >= source_byte_length
+                                    || !matches!(source_bytes[scan_index], b' ' | b'\t')
+                                {
+                                    break;
+                                }
+                                scan_index += 1;
+                            }
+                        }
+                        false => {
+                            output_text.push_str(binder_identifier);
+                            output_text.push_str(whitespace_between_id_and_colons);
+                            output_text.push_str(colon_token);
+                            output_text.push_str(whitespace_after_colons);
+                        }
                     }
                     continue;
-                } else {
-                    // No arrow: emit id, whitespace, `::` or `:::`, whitespace as-is
-                    out.push_str(id);
-                    out.push_str(ws1);
-                    out.push_str(colon_str);
-                    out.push_str(ws2);
-                    // i is already at kind_start
+                }
+                (false, false) => {
+                    output_text.push_str(binder_identifier);
+                    output_text.push_str(whitespace_between_id_and_colons);
                     continue;
                 }
-            } else {
-                out.push_str(id);
-                out.push_str(ws1);
-                // i is already past ws1
-                continue;
             }
         }
-        let ch = src[i..].chars().next().unwrap_or('\0');
-        if ch == '[' {
-            bracket_depth += 1;
-        } else if ch == ']' {
-            bracket_depth -= 1;
+        let next_char = source_text[scan_index..].chars().next().unwrap_or('\0');
+        match next_char {
+            '[' => square_bracket_depth += 1,
+            ']' => square_bracket_depth -= 1,
+            _ => {}
         }
-        out.push(ch);
-        i += ch.len_utf8();
+        output_text.push(next_char);
+        scan_index += next_char.len_utf8();
     }
-    out
+    output_text
 }
 
 /// Strip SQL table-constraint continuation lines from `.ur` source.
@@ -816,117 +1304,165 @@ fn pp_kw_word_at(b: &[u8], i: usize, n: usize, word: &[u8]) -> bool {
 /// # Returns
 ///
 /// Source where eligible `{...}` become `(...)`.
-pub fn rewrite_sql_brace_splices(input: &str) -> String {
-    let b = input.as_bytes();
-    let n = b.len();
-    let mut out = String::with_capacity(n);
-    let mut i = 0usize;
-    while i < n {
-        // Skip comments
-        if i + 1 < n && b[i] == b'(' && b[i + 1] == b'*' {
-            let start = i;
-            i = skip_ml_comment_bytes(b, i + 2, n);
-            out.push_str(&input[start..i]);
+pub fn rewrite_sql_brace_splices(source_text: &str) -> String {
+    let source_bytes = source_text.as_bytes();
+    let source_byte_length = source_bytes.len();
+    let mut output_text = String::with_capacity(source_byte_length);
+    let mut scan_index = 0usize;
+    let outer_limit = preprocess_byte_scan_round_limit(source_byte_length);
+    for _outer_round in 0..outer_limit {
+        if scan_index >= source_byte_length {
+            break;
+        }
+        if scan_index + 1 < source_byte_length
+            && source_bytes[scan_index] == b'('
+            && source_bytes[scan_index + 1] == b'*'
+        {
+            let comment_start = scan_index;
+            scan_index = skip_ml_comment_bytes(source_bytes, scan_index + 2, source_byte_length);
+            output_text.push_str(&source_text[comment_start..scan_index]);
             continue;
         }
-        // Skip strings
-        if b[i] == b'"' {
-            let start = i;
-            i = skip_string_bytes(b, i + 1, n);
-            out.push_str(&input[start..i]);
+        if source_bytes[scan_index] == b'"' {
+            let string_start = scan_index;
+            scan_index = skip_string_bytes(source_bytes, scan_index + 1, source_byte_length);
+            output_text.push_str(&source_text[string_start..scan_index]);
             continue;
         }
-        if b[i] != b'{' {
-            let ch = input[i..].chars().next().unwrap_or('\0');
-            out.push(ch);
-            i += ch.len_utf8();
+        if source_bytes[scan_index] != b'{' {
+            let unicode_char = source_text[scan_index..].chars().next().unwrap_or('\0');
+            output_text.push(unicode_char);
+            scan_index += unicode_char.len_utf8();
             continue;
         }
-        // Found `{`. Check what follows to decide if it's a SQL splice.
-        // If next non-ws is `[` → SQL text splice `{[...]}` handled by grammar, leave alone.
-        // If next non-ws is `}` → empty record, leave alone.
-        // If next non-ws is `...` → spread record, leave alone.
-        // If next non-ws is ident/UIDENT followed by `=` → record field, leave alone.
-        // Otherwise → SQL splice: emit `(` instead of `{` and `)` instead of matching `}`.
-        let mut j = i + 1;
-        while j < n && pp_urs_is_ws!(b[j]) {
-            j += 1;
+        let mut after_brace_index = scan_index + 1;
+        let ws1_limit = preprocess_byte_scan_round_limit(source_byte_length);
+        for _ws_round in 0..ws1_limit {
+            if after_brace_index >= source_byte_length
+                || !pp_urs_is_ws!(source_bytes[after_brace_index])
+            {
+                break;
+            }
+            after_brace_index += 1;
         }
-        // Skip comment
-        if j + 1 < n && b[j] == b'(' && b[j + 1] == b'*' {
-            j = skip_ml_comment_bytes(b, j + 2, n);
-            while j < n && pp_urs_is_ws!(b[j]) {
-                j += 1;
+        if after_brace_index + 1 < source_byte_length
+            && source_bytes[after_brace_index] == b'('
+            && source_bytes[after_brace_index + 1] == b'*'
+        {
+            after_brace_index =
+                skip_ml_comment_bytes(source_bytes, after_brace_index + 2, source_byte_length);
+            let ws2_limit = preprocess_byte_scan_round_limit(source_byte_length);
+            for _ws2_round in 0..ws2_limit {
+                if after_brace_index >= source_byte_length
+                    || !pp_urs_is_ws!(source_bytes[after_brace_index])
+                {
+                    break;
+                }
+                after_brace_index += 1;
             }
         }
-        let is_sql_splice = if j >= n {
-            false
-        } else if b[j] == b'[' {
-            // `{[...]}` — text splice, leave alone
-            false
-        } else if b[j] == b'}' {
-            // empty record
-            false
-        } else if j + 2 < n && &b[j..j + 3] == b"..." {
-            // spread record
-            false
-        } else {
-            // Check if it's `ident =` (record field)
-            let ident_start = j;
-            if b[ident_start].is_ascii_alphabetic() || b[ident_start] == b'_' {
-                let mut k = ident_start + 1;
-                while k < n && (b[k].is_ascii_alphanumeric() || b[k] == b'_' || b[k] == b'\'') {
-                    k += 1;
+        let treat_brace_block_as_sql_splice: bool = match after_brace_index >= source_byte_length {
+            true => false,
+            false => match source_bytes[after_brace_index] {
+                b'[' | b'}' => false,
+                _first_byte
+                    if after_brace_index + 2 < source_byte_length
+                        && &source_bytes[after_brace_index..after_brace_index + 3] == b"..." =>
+                {
+                    false
                 }
-                // Skip whitespace after ident
-                while k < n && pp_urs_is_ws!(b[k]) {
-                    k += 1;
+                first_byte if first_byte.is_ascii_alphabetic() || first_byte == b'_' => {
+                    let mut after_ident_index = after_brace_index + 1;
+                    let ident_tail_limit = preprocess_byte_scan_round_limit(source_byte_length);
+                    for _ident_tail in 0..ident_tail_limit {
+                        if after_ident_index >= source_byte_length
+                            || !(source_bytes[after_ident_index].is_ascii_alphanumeric()
+                                || source_bytes[after_ident_index] == b'_'
+                                || source_bytes[after_ident_index] == b'\'')
+                        {
+                            break;
+                        }
+                        after_ident_index += 1;
+                    }
+                    let after_ident_ws_limit = preprocess_byte_scan_round_limit(source_byte_length);
+                    for _after_ident_ws in 0..after_ident_ws_limit {
+                        if after_ident_index >= source_byte_length
+                            || !pp_urs_is_ws!(source_bytes[after_ident_index])
+                        {
+                            break;
+                        }
+                        after_ident_index += 1;
+                    }
+                    match (
+                        after_ident_index < source_byte_length
+                            && source_bytes[after_ident_index] == b'=',
+                        after_ident_index + 1 < source_byte_length,
+                        source_bytes.get(after_ident_index + 1).copied(),
+                    ) {
+                        (true, true, Some(b'>')) | (true, true, Some(b'=')) => true,
+                        (true, _, _) => false,
+                        _ => true,
+                    }
                 }
-                // If followed by `=` (but not `=>` or `==`), it's a record field
-                if k < n && b[k] == b'=' && (k + 1 >= n || (b[k + 1] != b'>' && b[k + 1] != b'=')) {
-                    false // record field
-                } else {
-                    true // SQL splice
-                }
-            } else {
-                // Starts with something other than ident → likely an expression
-                true
-            }
+                _starts_like_expression => true,
+            },
         };
-        if !is_sql_splice {
-            out.push('{');
-            i += 1;
-            continue;
-        }
-        // It's a SQL splice: find matching `}` and replace `{` → `(`, `}` → `)`
-        out.push('(');
-        i += 1;
-        let mut depth = 1i32;
-        while i < n && depth > 0 {
-            if i + 1 < n && b[i] == b'(' && b[i + 1] == b'*' {
-                let start = i;
-                i = skip_ml_comment_bytes(b, i + 2, n);
-                out.push_str(&input[start..i]);
-            } else if b[i] == b'"' {
-                let start = i;
-                i = skip_string_bytes(b, i + 1, n);
-                out.push_str(&input[start..i]);
-            } else if b[i] == b'{' {
-                out.push('(');
-                depth += 1;
-                i += 1;
-            } else if b[i] == b'}' {
-                depth -= 1;
-                out.push(')');
-                i += 1;
-            } else {
-                let ch = input[i..].chars().next().unwrap_or('\0');
-                out.push(ch);
-                i += ch.len_utf8();
+        match treat_brace_block_as_sql_splice {
+            false => {
+                output_text.push('{');
+                scan_index += 1;
+            }
+            true => {
+                output_text.push('(');
+                scan_index += 1;
+                let mut brace_paren_depth = 1i32;
+                let depth_limit = preprocess_byte_scan_round_limit(source_byte_length);
+                for _depth_round in 0..depth_limit {
+                    if scan_index >= source_byte_length || brace_paren_depth <= 0 {
+                        break;
+                    }
+                    match (
+                        scan_index + 1 < source_byte_length,
+                        source_bytes.get(scan_index).copied(),
+                        source_bytes.get(scan_index + 1).copied(),
+                    ) {
+                        (true, Some(b'('), Some(b'*')) => {
+                            let copy_start = scan_index;
+                            scan_index = skip_ml_comment_bytes(
+                                source_bytes,
+                                scan_index + 2,
+                                source_byte_length,
+                            );
+                            output_text.push_str(&source_text[copy_start..scan_index]);
+                        }
+                        (_, Some(b'"'), _) => {
+                            let copy_start = scan_index;
+                            scan_index =
+                                skip_string_bytes(source_bytes, scan_index + 1, source_byte_length);
+                            output_text.push_str(&source_text[copy_start..scan_index]);
+                        }
+                        (_, Some(b'{'), _) => {
+                            output_text.push('(');
+                            brace_paren_depth += 1;
+                            scan_index += 1;
+                        }
+                        (_, Some(b'}'), _) => {
+                            brace_paren_depth -= 1;
+                            output_text.push(')');
+                            scan_index += 1;
+                        }
+                        _ => {
+                            let unicode_char =
+                                source_text[scan_index..].chars().next().unwrap_or('\0');
+                            output_text.push(unicode_char);
+                            scan_index += unicode_char.len_utf8();
+                        }
+                    }
+                }
             }
         }
     }
-    out
+    output_text
 }
 
 /// After `datatype` … `=`, rewrite constructor-list `|` and payload `of` to magic tokens so the
@@ -1004,73 +1540,104 @@ pub fn rewrite_sgn_where(input: &str) -> String {
 ///
 /// Transformed source.
 pub fn rewrite_datatype_constructors(input: &str) -> String {
-    fn find_dtype_equals(input: &str, b: &[u8], mut i: usize, n: usize) -> Option<usize> {
-        let mut depth = 0i32;
-        while i < n {
-            if i + 1 < n && b[i] == b'(' && b[i + 1] == b'*' {
-                i = skip_ml_comment_bytes(b, i + 2, n);
+    /// Locates the first `=` at paren/bracket depth 0 in a `datatype` header (skips comments/strings).
+    fn find_dtype_equals(
+        input_text: &str,
+        source_bytes: &[u8],
+        mut scan_index: usize,
+        source_byte_length: usize,
+    ) -> Option<usize> {
+        let mut paren_bracket_depth = 0i32;
+        let scan_limit = preprocess_byte_scan_round_limit(source_byte_length);
+        for _scan_round in 0..scan_limit {
+            if scan_index >= source_byte_length {
+                return None;
+            }
+            if scan_index + 1 < source_byte_length
+                && source_bytes[scan_index] == b'('
+                && source_bytes[scan_index + 1] == b'*'
+            {
+                scan_index =
+                    skip_ml_comment_bytes(source_bytes, scan_index + 2, source_byte_length);
                 continue;
             }
-            if b[i] == b'"' {
-                i = skip_string_bytes(b, i + 1, n);
+            if source_bytes[scan_index] == b'"' {
+                scan_index = skip_string_bytes(source_bytes, scan_index + 1, source_byte_length);
                 continue;
             }
-            match b[i] {
+            match source_bytes[scan_index] {
                 b'(' | b'[' | b'{' => {
-                    depth += 1;
-                    i += 1;
+                    paren_bracket_depth += 1;
+                    scan_index += 1;
                 }
                 b')' | b']' | b'}' => {
-                    depth = (depth - 1).max(0);
-                    i += 1;
+                    paren_bracket_depth = (paren_bracket_depth - 1).max(0);
+                    scan_index += 1;
                 }
-                b'=' if depth == 0 => return Some(i),
-                _ => {
-                    let w = match input.get(i..).and_then(|s| s.chars().next()) {
-                        Some(c) => c.len_utf8(),
+                b'=' if paren_bracket_depth == 0 => return Some(scan_index),
+                _other_byte => {
+                    let utf8_width = match input_text
+                        .get(scan_index..)
+                        .and_then(|suffix| suffix.chars().next())
+                    {
+                        Some(ch) => ch.len_utf8(),
                         None => return None,
                     };
-                    i += w;
+                    scan_index += utf8_width;
                 }
             }
         }
         None
     }
 
-    fn rewrite_dt_body(out: &mut String, input: &str, b: &[u8], mut i: usize, n: usize) -> usize {
-        let mut depth = 0i32;
-        let mut after_uident = false;
-        while i < n {
-            if i + 1 < n && b[i] == b'(' && b[i + 1] == b'*' {
-                let start = i;
-                i = skip_ml_comment_bytes(b, i + 2, n);
-                out.push_str(&input[start..i]);
+    fn rewrite_dt_body(
+        output_accumulator: &mut String,
+        input_text: &str,
+        source_bytes: &[u8],
+        mut scan_index: usize,
+        source_byte_length: usize,
+    ) -> usize {
+        let mut paren_bracket_depth = 0i32;
+        let mut follows_uppercase_identifier = false;
+        let scan_limit = preprocess_byte_scan_round_limit(source_byte_length);
+        for _body_round in 0..scan_limit {
+            if scan_index >= source_byte_length {
+                break;
+            }
+            if scan_index + 1 < source_byte_length
+                && source_bytes[scan_index] == b'('
+                && source_bytes[scan_index + 1] == b'*'
+            {
+                let comment_copy_start = scan_index;
+                scan_index =
+                    skip_ml_comment_bytes(source_bytes, scan_index + 2, source_byte_length);
+                output_accumulator.push_str(&input_text[comment_copy_start..scan_index]);
                 continue;
             }
-            if b[i] == b'"' {
-                let start = i;
-                i = skip_string_bytes(b, i + 1, n);
-                out.push_str(&input[start..i]);
+            if source_bytes[scan_index] == b'"' {
+                let string_copy_start = scan_index;
+                scan_index = skip_string_bytes(source_bytes, scan_index + 1, source_byte_length);
+                output_accumulator.push_str(&input_text[string_copy_start..scan_index]);
                 continue;
             }
-            if depth == 0 && pp_kw_word_at(b, i, n, b"and") {
-                if after_uident {
-                    out.push_str(" dt_con0 ");
+            if paren_bracket_depth == 0
+                && pp_kw_word_at(source_bytes, scan_index, source_byte_length, b"and")
+            {
+                if follows_uppercase_identifier {
+                    output_accumulator.push_str(" dt_con0 ");
                 }
-                out.push_str(" dt_done ");
-                return i;
+                output_accumulator.push_str(" dt_done ");
+                return scan_index;
             }
-            if depth == 0 && b[i] == b';' {
-                if after_uident {
-                    out.push_str(" dt_con0 ");
+            if paren_bracket_depth == 0 && source_bytes[scan_index] == b';' {
+                if follows_uppercase_identifier {
+                    output_accumulator.push_str(" dt_con0 ");
                 }
-                out.push_str(" dt_done ");
-                return i;
+                output_accumulator.push_str(" dt_done ");
+                return scan_index;
             }
-            // Stop at a new top-level declaration keyword — happens in `.urs` files
-            // where each declaration is separate (not joined by `and`).
-            if depth == 0 {
-                for kw in &[
+            if paren_bracket_depth == 0 {
+                for declaration_keyword in &[
                     b"datatype" as &[u8],
                     b"con",
                     b"val",
@@ -1090,75 +1657,89 @@ pub fn rewrite_datatype_constructors(input: &str) -> String {
                     b"policy",
                     b"include",
                 ] {
-                    if pp_kw_word_at(b, i, n, kw) {
-                        if after_uident {
-                            out.push_str(" dt_con0 ");
+                    if pp_kw_word_at(
+                        source_bytes,
+                        scan_index,
+                        source_byte_length,
+                        declaration_keyword,
+                    ) {
+                        if follows_uppercase_identifier {
+                            output_accumulator.push_str(" dt_con0 ");
                         }
-                        out.push_str(" dt_done ");
-                        return i;
+                        output_accumulator.push_str(" dt_done ");
+                        return scan_index;
                     }
                 }
             }
-            if depth == 0 && b[i] == b'|' {
-                if after_uident {
-                    out.push_str(" dt_con0 ");
+            if paren_bracket_depth == 0 && source_bytes[scan_index] == b'|' {
+                if follows_uppercase_identifier {
+                    output_accumulator.push_str(" dt_con0 ");
                 }
-                out.push_str(" dt_bar ");
-                i += 1;
-                after_uident = false;
+                output_accumulator.push_str(" dt_bar ");
+                scan_index += 1;
+                follows_uppercase_identifier = false;
                 continue;
             }
-            if depth == 0 && after_uident && pp_kw_word_at(b, i, n, b"of") {
-                out.push_str(" dtype_of ");
-                i += 2;
-                after_uident = false;
+            if paren_bracket_depth == 0
+                && follows_uppercase_identifier
+                && pp_kw_word_at(source_bytes, scan_index, source_byte_length, b"of")
+            {
+                output_accumulator.push_str(" dtype_of ");
+                scan_index += 2;
+                follows_uppercase_identifier = false;
                 continue;
             }
-            if depth == 0 && b[i].is_ascii_uppercase() {
-                let start = i;
-                i += 1;
-                while i < n && (b[i].is_ascii_alphanumeric() || b[i] == b'_' || b[i] == b'\'') {
-                    i += 1;
+            if paren_bracket_depth == 0 && source_bytes[scan_index].is_ascii_uppercase() {
+                let uppercase_token_start = scan_index;
+                scan_index += 1;
+                let uident_tail_limit = preprocess_byte_scan_round_limit(source_byte_length);
+                for _uident_tail in 0..uident_tail_limit {
+                    if scan_index >= source_byte_length
+                        || !(source_bytes[scan_index].is_ascii_alphanumeric()
+                            || source_bytes[scan_index] == b'_'
+                            || source_bytes[scan_index] == b'\'')
+                    {
+                        break;
+                    }
+                    scan_index += 1;
                 }
-                out.push_str(&input[start..i]);
-                after_uident = true;
+                output_accumulator.push_str(&input_text[uppercase_token_start..scan_index]);
+                follows_uppercase_identifier = true;
                 continue;
             }
-            // Whitespace between an UIDENT and `|` / `of` must NOT reset after_uident,
-            // otherwise `Foo | Bar` fails to emit `dt_con0` before `dt_bar`.
-            if b[i].is_ascii_whitespace() {
-                out.push(b[i] as char);
-                i += 1;
+            if source_bytes[scan_index].is_ascii_whitespace() {
+                output_accumulator.push(source_bytes[scan_index] as char);
+                scan_index += 1;
                 continue;
             }
-            after_uident = false;
-            match b[i] {
+            follows_uppercase_identifier = false;
+            match source_bytes[scan_index] {
                 b'(' | b'[' | b'{' => {
-                    out.push(b[i] as char);
-                    depth += 1;
-                    i += 1;
+                    output_accumulator.push(source_bytes[scan_index] as char);
+                    paren_bracket_depth += 1;
+                    scan_index += 1;
                 }
                 b')' | b']' | b'}' => {
-                    out.push(b[i] as char);
-                    depth = (depth - 1).max(0);
-                    i += 1;
+                    output_accumulator.push(source_bytes[scan_index] as char);
+                    paren_bracket_depth = (paren_bracket_depth - 1).max(0);
+                    scan_index += 1;
                 }
-                _ => {
-                    let Some(ch) = input[i..].chars().next() else {
+                _other => {
+                    let Some(unicode_char) = input_text[scan_index..].chars().next() else {
                         break;
                     };
-                    out.push(ch);
-                    i += ch.len_utf8();
+                    output_accumulator.push(unicode_char);
+                    scan_index += unicode_char.len_utf8();
                 }
             }
         }
-        if depth == 0 {
-            if after_uident {
-                out.push_str(" dt_con0 ");
+        if paren_bracket_depth == 0 {
+            if follows_uppercase_identifier {
+                output_accumulator.push_str(" dt_con0 ");
             }
-            out.push_str(" dt_done ");
+            output_accumulator.push_str(" dt_done ");
         }
-        i
+        scan_index
     }
 
     let b = input.as_bytes();
@@ -1257,39 +1838,37 @@ fn rewrite_sig_type_class_abstract_lines(input: &str) -> String {
 
     /// First single `=` in `s` that is not part of `==`, `=>`, `<=`, `>=`, `!=`, or `:=`.
     /// Replaced by `sgn_def_con` (see `rewrite_con_class_kind_def_eq`).
-    fn find_defining_single_eq(s: &str) -> Option<usize> {
-        let b = s.as_bytes();
-        let mut i = 0usize;
-        while i < b.len() {
-            if b[i] != b'=' {
-                i += 1;
+    fn find_defining_single_eq(line_text: &str) -> Option<usize> {
+        let bytes = line_text.as_bytes();
+        let byte_length = bytes.len();
+        let mut byte_index = 0usize;
+        let scan_limit = preprocess_byte_scan_round_limit(byte_length);
+        for _equals_scan_round in 0..scan_limit {
+            if byte_index >= byte_length {
+                break;
+            }
+            if bytes[byte_index] != b'=' {
+                byte_index += 1;
                 continue;
             }
-            if i + 1 < b.len() && b[i + 1] == b'=' {
-                i += 2;
-                continue;
+            let skip_width: Option<usize> = match (
+                bytes.get(byte_index + 1).copied(),
+                byte_index
+                    .checked_sub(1)
+                    .and_then(|previous_index| bytes.get(previous_index).copied()),
+            ) {
+                (Some(b'='), _) | (Some(b'>'), _) => Some(2usize),
+                (_, Some(b'<')) | (_, Some(b'>')) | (_, Some(b'!')) | (_, Some(b':')) => {
+                    Some(1usize)
+                }
+                _ => None,
+            };
+            match skip_width {
+                Some(advance) => {
+                    byte_index += advance;
+                }
+                None => return Some(byte_index),
             }
-            if i + 1 < b.len() && b[i + 1] == b'>' {
-                i += 2;
-                continue;
-            }
-            if i > 0 && b[i - 1] == b'<' {
-                i += 1;
-                continue;
-            }
-            if i > 0 && b[i - 1] == b'>' {
-                i += 1;
-                continue;
-            }
-            if i > 0 && b[i - 1] == b'!' {
-                i += 1;
-                continue;
-            }
-            if i > 0 && b[i - 1] == b':' {
-                i += 1;
-                continue;
-            }
-            return Some(i);
         }
         None
     }
@@ -1390,493 +1969,6 @@ fn rewrite_sig_type_class_abstract_lines(input: &str) -> String {
     out
 }
 
-/// Preprocess a `.urs` signature file: case rewrites, signature `where`, datatype tokens, then fuel-bounded pass.
-///
-/// # Arguments
-///
-/// * `src` — Raw `.urs` text.
-///
-/// # Returns
-///
-/// String ready for [`parse_urs`]’s lexer. If internal fuel exhausts, remainder is appended (see body).
-pub fn preprocess_urs(src: &str) -> String {
-    let src = rewrite_case_expressions(&rewrite_sgn_where(&rewrite_datatype_constructors(src)));
-    // Declaration-header keywords after which `IDENT ::` means a kind
-    // annotation (not an implicit quantifier) and must NOT be bracketed.
-    const DECL_KEYWORDS: &[&str] = &[
-        "con",
-        "class",
-        "type",
-        "structure",
-        "signature",
-        "datatype",
-        "val",
-    ];
-
-    let b = src.as_bytes();
-    let n = b.len();
-    // Valid scans advance through the input at most once per loop (≤ n steps).
-    // Keep the cap at n+1 so mutants that break `i` or conditions bail out fast
-    // instead of doing O(8n) work (which times out on large .urs files).
-    let step_cap = n.saturating_add(1);
-    // Cap total work across the whole pass. Comment/string inner loops burn many units per
-    // iteration so `&&`→`||` / `+=` mutants cannot reach Θ(n²) wall time before fuel exhausts.
-    // Upper bound so `*` / oversized literal mutants cannot set fuel to usize::MAX (would time out).
-    const PP_URS_MAX_FUEL: usize = 120_000_000;
-    let mut fuel = n
-        .saturating_mul(1024)
-        .saturating_add(65536)
-        .min(PP_URS_MAX_FUEL);
-    #[cfg(test)]
-    {
-        if let Ok(guard) = PREPROCESS_URS_FUEL_TEST_OVERRIDE.lock() {
-            if let Some(f) = *guard {
-                fuel = f;
-            }
-        }
-    }
-    let mut out = String::with_capacity(n + 128);
-    let mut i = 0;
-    // Track the last non-whitespace, non-comment token we emitted so we can
-    // decide whether an identifier is in "declaration head" position.
-    let mut last_token = String::new();
-
-    // Emit a char and update last_token if it's a word char.
-    // For simplicity we only track the last WORD token (letters/digits).
-    let emit_word = |out: &mut String, last: &mut String, w: &str| {
-        out.push_str(w);
-        last.clear();
-        last.push_str(w);
-    };
-
-    // Bounded outer driver: `for _ in 0..` with `tick > cap` is fragile (`>` → `>=` / `==` mutants).
-    // A fixed `take(step_cap + 1)`-style range always terminates.
-    for _ in 0..step_cap.saturating_add(1) {
-        if b.get(i).is_none() {
-            break;
-        }
-        let i_at_outer = i;
-        preprocess_urs_burn!(fuel, out, src, i);
-        'pp_step: {
-            // Skip ML block comments (* ... *) — `get`/`checked_add` only (no `i+1<n` / `b[i+1]` mutants)
-            if matches!(b.get(i).copied(), Some(b'('))
-                && matches!(i.checked_add(1).and_then(|j| b.get(j)).copied(), Some(b'*'))
-            {
-                out.push_str("(*");
-                i = i.saturating_add(2).min(n);
-                let mut depth = 1usize;
-                for _ in 0..step_cap {
-                    preprocess_urs_burn_hot!(fuel, out, src, i);
-                    if b.get(i).is_none() {
-                        break;
-                    }
-                    if matches!(depth, 0) {
-                        break;
-                    }
-                    let ib = i;
-                    if matches!(b.get(i).copied(), Some(b'(')) {
-                        let nx = i.checked_add(1).and_then(|j| b.get(j)).copied();
-                        if matches!(nx, Some(b'*')) {
-                            out.push_str("(*");
-                            i = i.saturating_add(2).min(n);
-                            depth = depth.saturating_add(1);
-                        } else {
-                            out.push(b[i] as char);
-                            i = i.saturating_add(1).min(n);
-                        }
-                    } else if matches!(b.get(i).copied(), Some(b'*')) {
-                        let nx = i.checked_add(1).and_then(|j| b.get(j)).copied();
-                        if matches!(nx, Some(b')')) {
-                            out.push_str("*)");
-                            i = i.saturating_add(2).min(n);
-                            depth = depth.saturating_sub(1);
-                        } else {
-                            out.push(b[i] as char);
-                            i = i.saturating_add(1).min(n);
-                        }
-                    } else {
-                        out.push(b[i] as char);
-                        i = i.saturating_add(1).min(n);
-                    }
-                    if let Some(0) = i.checked_sub(ib) {
-                        break;
-                    }
-                }
-                if pp_urs_depth_nonzero!(depth) {
-                    out.push_str(&src[i..]);
-                    return out;
-                }
-                break 'pp_step;
-            }
-
-            // Skip string literals verbatim
-            if matches!(b[i], b'"') {
-                out.push('"');
-                last_token.clear();
-                last_token.push('"');
-                i = i.saturating_add(1).min(n);
-                for _ in 0..step_cap {
-                    preprocess_urs_burn_hot!(fuel, out, src, i);
-                    if b.get(i).is_none() {
-                        break;
-                    }
-                    if matches!(b[i], b'"') {
-                        break;
-                    }
-                    let ib = i;
-                    if matches!(b[i], b'\\') {
-                        if let Some(nb) = i.checked_add(1).and_then(|j| b.get(j)).copied() {
-                            out.push(b[i] as char);
-                            out.push(nb as char);
-                            i = i.saturating_add(2).min(n);
-                        } else {
-                            out.push(b[i] as char);
-                            i = i.saturating_add(1).min(n);
-                        }
-                    } else {
-                        out.push(b[i] as char);
-                        i = i.saturating_add(1).min(n);
-                    }
-                    if let Some(0) = i.checked_sub(ib) {
-                        break;
-                    }
-                }
-                if let Some(ch) = b.get(i).copied() {
-                    if matches!(ch, b'"') {
-                        out.push('"');
-                        i = i.saturating_add(1).min(n);
-                    } else {
-                        out.push_str(&src[i..]);
-                        return out;
-                    }
-                }
-                break 'pp_step;
-            }
-
-            // Whitespace: pass through without updating last_token
-            if pp_urs_is_ws!(b[i]) {
-                out.push(b[i] as char);
-                i = i.saturating_add(1).min(n);
-                break 'pp_step;
-            }
-
-            // Identifier (letters, digits, underscore, apostrophe) — `match` avoids `|`/`!` bool mutants
-            let id_word_start = b[i].is_ascii_alphabetic() || b[i] == b'_';
-            if id_word_start {
-                let id_start = i;
-                for _ in 0..step_cap {
-                    preprocess_urs_burn_hot!(fuel, out, src, i);
-                    if b.get(i).is_none() {
-                        break;
-                    }
-                    if pp_urs_id_cont!(b[i]) {
-                    } else {
-                        break;
-                    }
-                    let ib = i;
-                    i = i.saturating_add(1).min(n);
-                    if let Some(0) = i.checked_sub(ib) {
-                        break;
-                    }
-                }
-                if let Some(ch) = b.get(i).copied() {
-                    if pp_urs_id_cont!(ch) {
-                        out.push_str(&src[i..]);
-                        return out;
-                    }
-                }
-                let ident = &src[id_start..i];
-
-                // Only attempt implicit-quantifier transformation for lowercase identifiers
-                // that do NOT immediately follow a declaration keyword.
-                let is_decl_name = DECL_KEYWORDS.contains(&last_token.as_str());
-
-                // Update last_token
-                last_token.clear();
-                last_token.push_str(ident);
-
-                // Preprocessor pseudo-tokens must never be wrapped in [...].
-                let is_pseudo_token = matches!(
-                    ident,
-                    "sgn_where"
-                        | "sgn_subwhere"
-                        | "arm_sep"
-                        | "case_bar"
-                        | "case_end"
-                        | "dt_con0"
-                        | "dt_bar"
-                        | "dt_done"
-                        | "dtype_of"
-                );
-                if is_decl_name || is_pseudo_token {
-                } else {
-                    let allow_quant = b[id_start].is_ascii_lowercase() || b[id_start] == b'_';
-                    if allow_quant {
-                        // Skip whitespace after the identifier
-                        let ws1 = i;
-                        for _ in 0..step_cap {
-                            preprocess_urs_burn_hot!(fuel, out, src, i);
-                            if b.get(i).is_none() {
-                                break;
-                            }
-                            if pp_urs_is_ws!(b[i]) {
-                            } else {
-                                break;
-                            }
-                            let ib = i;
-                            i = i.saturating_add(1).min(n);
-                            if let Some(0) = i.checked_sub(ib) {
-                                break;
-                            }
-                        }
-                        if let Some(ch) = b.get(i).copied() {
-                            if pp_urs_is_ws!(ch) {
-                                out.push_str(&src[i..]);
-                                return out;
-                            }
-                        }
-                        let colon_start = i; // position of the first colon (or non-colon if no match)
-
-                        // Match `:::` or `::` (but not `::::`) — slice `get` only
-                        let colons: &str;
-                        'colon_pick: {
-                            if let Some(s3) = i.checked_add(3).and_then(|e| b.get(i..e)) {
-                                if matches!(s3, b":::") {
-                                    let fourth_colon = matches!(
-                                        i.checked_add(3).and_then(|k| b.get(k)).copied(),
-                                        Some(b':')
-                                    );
-                                    if fourth_colon {
-                                    } else {
-                                        colons = ":::";
-                                        i = i.saturating_add(3).min(n);
-                                        break 'colon_pick;
-                                    }
-                                }
-                            }
-                            if let Some(s2) = i.checked_add(2).and_then(|e| b.get(i..e)) {
-                                if matches!(s2, b"::") {
-                                    let third_colon = matches!(
-                                        i.checked_add(2).and_then(|k| b.get(k)).copied(),
-                                        Some(b':')
-                                    );
-                                    if third_colon {
-                                    } else {
-                                        colons = "::";
-                                        i = i.saturating_add(2).min(n);
-                                        break 'colon_pick;
-                                    }
-                                }
-                            }
-                            // Not a quantifier: emit the identifier and the whitespace
-                            out.push_str(ident);
-                            out.push_str(&src[ws1..i]);
-                            break 'pp_step;
-                        }
-
-                        // Skip whitespace after the colons
-                        let ws2 = i;
-                        for _ in 0..step_cap {
-                            preprocess_urs_burn_hot!(fuel, out, src, i);
-                            if b.get(i).is_none() {
-                                break;
-                            }
-                            if pp_urs_is_ws!(b[i]) {
-                            } else {
-                                break;
-                            }
-                            let ib = i;
-                            i = i.saturating_add(1).min(n);
-                            if let Some(0) = i.checked_sub(ib) {
-                                break;
-                            }
-                        }
-                        if let Some(ch) = b.get(i).copied() {
-                            if pp_urs_is_ws!(ch) {
-                                out.push_str(&src[i..]);
-                                return out;
-                            }
-                        }
-
-                        // Scan the KindAtom: identifier, `{...}`, or `(...)`
-                        let ka_start = i;
-                        if b.get(i).is_some() {
-                            if matches!(b[i], b'{') {
-                                let mut depth = 1usize;
-                                i = i.saturating_add(1).min(n);
-                                for _ in 0..step_cap {
-                                    preprocess_urs_burn_hot!(fuel, out, src, i);
-                                    if b.get(i).is_none() {
-                                        break;
-                                    }
-                                    if matches!(depth, 0) {
-                                        break;
-                                    }
-                                    let ib = i;
-                                    if matches!(b[i], b'{') {
-                                        depth = depth.saturating_add(1);
-                                    } else if matches!(b[i], b'}') {
-                                        depth = depth.saturating_sub(1);
-                                    }
-                                    i = i.saturating_add(1).min(n);
-                                    if let Some(0) = i.checked_sub(ib) {
-                                        break;
-                                    }
-                                }
-                                if pp_urs_depth_nonzero!(depth) {
-                                    out.push_str(&src[i..]);
-                                    return out;
-                                }
-                            } else if matches!(b[i], b'(') {
-                                let mut depth = 1usize;
-                                i = i.saturating_add(1).min(n);
-                                for _ in 0..step_cap {
-                                    preprocess_urs_burn_hot!(fuel, out, src, i);
-                                    if b.get(i).is_none() {
-                                        break;
-                                    }
-                                    if matches!(depth, 0) {
-                                        break;
-                                    }
-                                    let ib = i;
-                                    if matches!(b[i], b'(') {
-                                        depth = depth.saturating_add(1);
-                                    } else if matches!(b[i], b')') {
-                                        depth = depth.saturating_sub(1);
-                                    }
-                                    i = i.saturating_add(1).min(n);
-                                    if let Some(0) = i.checked_sub(ib) {
-                                        break;
-                                    }
-                                }
-                                if pp_urs_depth_nonzero!(depth) {
-                                    out.push_str(&src[i..]);
-                                    return out;
-                                }
-                            } else {
-                                let kind_id = b[i].is_ascii_alphabetic() || b[i] == b'_';
-                                if kind_id {
-                                    for _ in 0..step_cap {
-                                        preprocess_urs_burn_hot!(fuel, out, src, i);
-                                        if b.get(i).is_none() {
-                                            break;
-                                        }
-                                        if pp_urs_id_cont!(b[i]) {
-                                        } else {
-                                            break;
-                                        }
-                                        let ib = i;
-                                        i = i.saturating_add(1).min(n);
-                                        if let Some(0) = i.checked_sub(ib) {
-                                            break;
-                                        }
-                                    }
-                                    if let Some(ch) = b.get(i).copied() {
-                                        if pp_urs_id_cont!(ch) {
-                                            out.push_str(&src[i..]);
-                                            return out;
-                                        }
-                                    }
-                                } else {
-                                    // No valid kind term: emit everything as-is
-                                    out.push_str(ident);
-                                    out.push_str(&src[ws1..ws2]);
-                                    out.push_str(colons);
-                                    out.push_str(&src[ws2..i]);
-                                    break 'pp_step;
-                                }
-                            }
-                        } else {
-                            // No valid kind term: emit everything as-is
-                            out.push_str(ident);
-                            out.push_str(&src[ws1..ws2]);
-                            out.push_str(colons);
-                            out.push_str(&src[ws2..i]);
-                            break 'pp_step;
-                        }
-                        let kind_atom = &src[ka_start..i];
-
-                        // Skip whitespace before potential `->`
-                        let ws3 = i;
-                        for _ in 0..step_cap {
-                            preprocess_urs_burn_hot!(fuel, out, src, i);
-                            if b.get(i).is_none() {
-                                break;
-                            }
-                            if pp_urs_is_ws!(b[i]) {
-                            } else {
-                                break;
-                            }
-                            let ib = i;
-                            i = i.saturating_add(1).min(n);
-                            if let Some(0) = i.checked_sub(ib) {
-                                break;
-                            }
-                        }
-                        if let Some(ch) = b.get(i).copied() {
-                            if pp_urs_is_ws!(ch) {
-                                out.push_str(&src[i..]);
-                                return out;
-                            }
-                        }
-
-                        // Check if followed by `->`
-                        let emit_without_arrow = |o: &mut String| {
-                            o.push_str(ident);
-                            o.push_str(&src[ws1..colon_start]); // whitespace before colons
-                            o.push_str(colons);
-                            o.push_str(&src[ws2..ka_start]); // whitespace after colons
-                            o.push_str(kind_atom);
-                            o.push_str(&src[ws3..i]);
-                        };
-                        if let Some(nb) = i.checked_add(1).and_then(|j| b.get(j)).copied() {
-                            if matches!(b.get(i).copied(), Some(b'-')) {
-                                if matches!(nb, b'>') {
-                                    // Emit bracketed form
-                                    out.push('[');
-                                    out.push_str(ident);
-                                    out.push(' ');
-                                    out.push_str(colons);
-                                    out.push(' ');
-                                    out.push_str(kind_atom);
-                                    out.push(']');
-                                    out.push_str(&src[ws3..i]);
-                                    last_token.clear();
-                                    last_token.push(']');
-                                } else {
-                                    emit_without_arrow(&mut out);
-                                }
-                            } else {
-                                emit_without_arrow(&mut out);
-                            }
-                        } else {
-                            emit_without_arrow(&mut out);
-                        }
-                        break 'pp_step;
-                    }
-                }
-
-                // Emit identifier as-is (either it's a decl-name or uppercase)
-                emit_word(&mut out, &mut last_token, ident);
-                break 'pp_step;
-            }
-
-            // Non-word, non-whitespace character: emit and update last_token
-            out.push(b[i] as char);
-            last_token.clear();
-            last_token.push(b[i] as char);
-            i = i.saturating_add(1).min(n);
-        }
-        if let Some(0) = i.checked_sub(i_at_outer) {
-            out.push_str(src.get(i..).unwrap_or(""));
-            return out;
-        }
-    }
-
-    out.push_str(src.get(i..).unwrap_or(""));
-    out
-}
-
 /// Preprocessed excerpt of `lib/ur/basis.urs` around byte `pos` (dev helpers / mutation tests).
 ///
 /// # Arguments
@@ -1912,50 +2004,65 @@ pub fn basis_urs_preprocessed_window(
 /// # Returns
 ///
 /// Source with `( sql_star )` placeholders.
-pub fn rewrite_sql_star(input: &str) -> String {
-    let b = input.as_bytes();
-    let n = b.len();
-    let mut out = String::with_capacity(n);
-    let mut i = 0usize;
-    while i < n {
-        // Skip ML comments `(* ... *)`
-        if i + 1 < n && b[i] == b'(' && b[i + 1] == b'*' {
-            let start = i;
-            i = skip_ml_comment_bytes(b, i + 2, n);
-            out.push_str(&input[start..i]);
+pub fn rewrite_sql_star(source_text: &str) -> String {
+    let source_bytes = source_text.as_bytes();
+    let source_byte_length = source_bytes.len();
+    let mut output_text = String::with_capacity(source_byte_length);
+    let mut scan_index = 0usize;
+    let outer_limit = preprocess_byte_scan_round_limit(source_byte_length);
+    for _sql_star_scan_round in 0..outer_limit {
+        if scan_index >= source_byte_length {
+            break;
+        }
+        if scan_index + 1 < source_byte_length
+            && source_bytes[scan_index] == b'('
+            && source_bytes[scan_index + 1] == b'*'
+        {
+            let comment_start = scan_index;
+            scan_index = skip_ml_comment_bytes(source_bytes, scan_index + 2, source_byte_length);
+            output_text.push_str(&source_text[comment_start..scan_index]);
             continue;
         }
-        // Skip strings
-        if b[i] == b'"' {
-            let start = i;
-            i = skip_string_bytes(b, i + 1, n);
-            out.push_str(&input[start..i]);
+        if source_bytes[scan_index] == b'"' {
+            let string_start = scan_index;
+            scan_index = skip_string_bytes(source_bytes, scan_index + 1, source_byte_length);
+            output_text.push_str(&source_text[string_start..scan_index]);
             continue;
         }
-        // Look for `(` followed by optional whitespace + `*` + optional whitespace + `)`
-        if b[i] == b'(' {
-            let mut j = i + 1;
-            while j < n && (b[j] == b' ' || b[j] == b'\t' || b[j] == b'\n' || b[j] == b'\r') {
-                j += 1;
-            }
-            if j < n && b[j] == b'*' {
-                let mut k = j + 1;
-                while k < n && (b[k] == b' ' || b[k] == b'\t' || b[k] == b'\n' || b[k] == b'\r') {
-                    k += 1;
+        if source_bytes[scan_index] == b'(' {
+            let mut after_open_paren = scan_index + 1;
+            let ws_after_open_limit = preprocess_byte_scan_round_limit(source_byte_length);
+            for _skip_ws_after_paren in 0..ws_after_open_limit {
+                if after_open_paren >= source_byte_length
+                    || !matches!(source_bytes[after_open_paren], b' ' | b'\t' | b'\n' | b'\r')
+                {
+                    break;
                 }
-                if k < n && b[k] == b')' {
-                    // `( ws* * ws* )` — replace with `( sql_star )`
-                    out.push_str("( sql_star )");
-                    i = k + 1;
+                after_open_paren += 1;
+            }
+            if after_open_paren < source_byte_length && source_bytes[after_open_paren] == b'*' {
+                let mut after_star = after_open_paren + 1;
+                let ws_after_star_limit = preprocess_byte_scan_round_limit(source_byte_length);
+                for _skip_ws_after_star in 0..ws_after_star_limit {
+                    if after_star >= source_byte_length
+                        || !matches!(source_bytes[after_star], b' ' | b'\t' | b'\n' | b'\r')
+                    {
+                        break;
+                    }
+                    after_star += 1;
+                }
+                if after_star < source_byte_length && source_bytes[after_star] == b')' {
+                    output_text.push_str("( sql_star )");
+                    scan_index = after_star + 1;
                     continue;
                 }
             }
         }
-        let ch = input[i..].chars().next().unwrap_or('\0');
-        out.push(ch);
-        i += ch.len_utf8();
+        let unicode_char = source_text[scan_index..].chars().next().unwrap_or('\0');
+        output_text.push(unicode_char);
+        scan_index += unicode_char.len_utf8();
     }
-    out
+    output_text
 }
 
 /// Convert `{expr}` → `(expr)` when the `{` immediately follows a SQL keyword that introduces
@@ -1966,152 +2073,215 @@ pub fn rewrite_sql_star(input: &str) -> String {
 /// # Returns
 ///
 /// Transformed UTF-8 source.
-pub fn rewrite_sql_keyword_brace_splices(input: &str) -> String {
-    let b = input.as_bytes();
-    let n = b.len();
-    let mut out = String::with_capacity(n);
-    let mut i = 0usize;
-
-    // SQL keywords after which `{expr}` is a splice, not a record
-    const SQL_KEYWORDS: &[&[u8]] = &[b"WHERE", b"HAVING", b"ON"];
-
-    while i < n {
-        // Skip ML comments
-        if i + 1 < n && b[i] == b'(' && b[i + 1] == b'*' {
-            let start = i;
-            i = skip_ml_comment_bytes(b, i + 2, n);
-            out.push_str(&input[start..i]);
+pub fn rewrite_sql_keyword_brace_splices(source_text: &str) -> String {
+    let source_bytes = source_text.as_bytes();
+    let source_byte_length = source_bytes.len();
+    let mut output_text = String::with_capacity(source_byte_length);
+    let mut scan_index = 0usize;
+    const SQL_KEYWORDS_AFTER_WHICH_BRACE_IS_SPLICE: &[&[u8]] = &[b"WHERE", b"HAVING", b"ON"];
+    let outer_scan_limit = preprocess_byte_scan_round_limit(source_byte_length);
+    for _keyword_brace_round in 0..outer_scan_limit {
+        if scan_index >= source_byte_length {
+            break;
+        }
+        if scan_index + 1 < source_byte_length
+            && source_bytes[scan_index] == b'('
+            && source_bytes[scan_index + 1] == b'*'
+        {
+            let comment_span_start = scan_index;
+            scan_index = skip_ml_comment_bytes(source_bytes, scan_index + 2, source_byte_length);
+            output_text.push_str(&source_text[comment_span_start..scan_index]);
             continue;
         }
-        // Skip strings
-        if b[i] == b'"' {
-            let start = i;
-            i = skip_string_bytes(b, i + 1, n);
-            out.push_str(&input[start..i]);
+        if source_bytes[scan_index] == b'"' {
+            let string_span_start = scan_index;
+            scan_index = skip_string_bytes(source_bytes, scan_index + 1, source_byte_length);
+            output_text.push_str(&source_text[string_span_start..scan_index]);
             continue;
         }
-        // Check for SQL keywords at word boundary
-        let mut found_keyword = false;
-        for kw in SQL_KEYWORDS {
-            let klen = kw.len();
-            if i + klen <= n && b[i..i + klen].eq_ignore_ascii_case(kw) {
-                // Must be at a word boundary (not preceded by alnum/_)
-                let at_word_start = i == 0 || {
-                    let pb = b[i - 1];
-                    !pb.is_ascii_alphanumeric() && pb != b'_'
-                };
-                // And followed by non-alnum (word boundary)
-                let at_word_end = i + klen >= n || {
-                    let nb = b[i + klen];
-                    !nb.is_ascii_alphanumeric() && nb != b'_'
-                };
-                if at_word_start && at_word_end {
-                    // Emit the keyword
-                    out.push_str(&input[i..i + klen]);
-                    i += klen;
-                    // Skip whitespace after keyword
-                    let ws_start = i;
-                    while i < n && (b[i] == b' ' || b[i] == b'\t' || b[i] == b'\n' || b[i] == b'\r')
-                    {
-                        i += 1;
-                    }
-                    out.push_str(&input[ws_start..i]);
-                    // If next non-whitespace is `{`, check if it's a splice or record
-                    if i < n && b[i] == b'{' {
-                        // Skip `(*...)` comments before peeking inside
-                        let mut j = i + 1;
-                        while j + 1 < n && b[j] == b'(' && b[j + 1] == b'*' {
-                            j = skip_ml_comment_bytes(b, j + 2, n);
-                            while j < n
-                                && (b[j] == b' ' || b[j] == b'\t' || b[j] == b'\n' || b[j] == b'\r')
-                            {
-                                j += 1;
-                            }
-                        }
-                        // Advance past whitespace inside `{`
-                        while j < n
-                            && (b[j] == b' ' || b[j] == b'\t' || b[j] == b'\n' || b[j] == b'\r')
-                        {
-                            j += 1;
-                        }
-                        // `{[...]}` — text splice: leave alone
-                        // `{}` — empty record: leave alone
-                        // `{...}` — spread: leave alone
-                        // `{ident =` — record field: leave alone
-                        // `{ident non-eq}` — SQL splice: convert to `(...)`
-                        let is_sql_splice = if j >= n
-                            || b[j] == b'}'
-                            || b[j] == b'['
-                            || (j + 2 < n && &b[j..j + 3] == b"...")
-                        {
-                            false
-                        } else if b[j].is_ascii_alphabetic() || b[j] == b'_' {
-                            let mut k = j + 1;
-                            while k < n
-                                && (b[k].is_ascii_alphanumeric() || b[k] == b'_' || b[k] == b'\'')
-                            {
-                                k += 1;
-                            }
-                            // Skip whitespace
-                            while k < n && (b[k] == b' ' || b[k] == b'\t') {
-                                k += 1;
-                            }
-                            // If followed by `=` (but not `=>` or `==`) → record field
-                            !(k < n
-                                && b[k] == b'='
-                                && (k + 1 >= n || (b[k + 1] != b'>' && b[k + 1] != b'=')))
-                        } else {
-                            true
-                        };
-                        if is_sql_splice {
-                            // Convert only the outermost { → ( and matching } → )
-                            // Inner braces are emitted verbatim so grammar rules handle them.
-                            out.push('(');
-                            i += 1; // skip `{`
-                            let mut depth = 1i32;
-                            while i < n && depth > 0 {
-                                if i + 1 < n && b[i] == b'(' && b[i + 1] == b'*' {
-                                    let start = i;
-                                    i = skip_ml_comment_bytes(b, i + 2, n);
-                                    out.push_str(&input[start..i]);
-                                } else if b[i] == b'"' {
-                                    let start = i;
-                                    i = skip_string_bytes(b, i + 1, n);
-                                    out.push_str(&input[start..i]);
-                                } else if b[i] == b'{' {
-                                    out.push('{');
-                                    depth += 1;
-                                    i += 1;
-                                } else if b[i] == b'}' {
-                                    depth -= 1;
-                                    if depth > 0 {
-                                        out.push('}');
-                                    } else {
-                                        out.push(')'); // closing outer splice
-                                    }
-                                    i += 1;
-                                } else {
-                                    let ch = input[i..].chars().next().unwrap_or('\0');
-                                    out.push(ch);
-                                    i += ch.len_utf8();
-                                }
-                            }
-                        }
-                        // else: leave as-is (will be handled normally below)
-                    }
-                    found_keyword = true;
+        let mut consumed_sql_keyword_branch = false;
+        for keyword_bytes in SQL_KEYWORDS_AFTER_WHICH_BRACE_IS_SPLICE {
+            let keyword_byte_length = keyword_bytes.len();
+            if scan_index + keyword_byte_length > source_byte_length {
+                continue;
+            }
+            if !source_bytes[scan_index..scan_index + keyword_byte_length]
+                .eq_ignore_ascii_case(keyword_bytes)
+            {
+                continue;
+            }
+            let keyword_at_token_start = scan_index == 0
+                || ({
+                    let previous_byte = source_bytes[scan_index - 1];
+                    !previous_byte.is_ascii_alphanumeric() && previous_byte != b'_'
+                });
+            let keyword_at_token_end = scan_index + keyword_byte_length >= source_byte_length
+                || ({
+                    let next_byte = source_bytes[scan_index + keyword_byte_length];
+                    !next_byte.is_ascii_alphanumeric() && next_byte != b'_'
+                });
+            match (keyword_at_token_start, keyword_at_token_end) {
+                (true, true) => {}
+                _ => continue,
+            }
+            output_text.push_str(&source_text[scan_index..scan_index + keyword_byte_length]);
+            scan_index += keyword_byte_length;
+            let whitespace_after_keyword_start = scan_index;
+            let ws_limit = preprocess_byte_scan_round_limit(source_byte_length);
+            for _after_keyword_ws in 0..ws_limit {
+                if scan_index >= source_byte_length
+                    || !matches!(source_bytes[scan_index], b' ' | b'\t' | b'\n' | b'\r')
+                {
                     break;
                 }
+                scan_index += 1;
             }
+            output_text.push_str(&source_text[whitespace_after_keyword_start..scan_index]);
+            if scan_index < source_byte_length && source_bytes[scan_index] == b'{' {
+                let mut peek_index = scan_index + 1;
+                let comment_peek_limit = preprocess_byte_scan_round_limit(source_byte_length);
+                for _leading_comment_round in 0..comment_peek_limit {
+                    if peek_index + 1 >= source_byte_length
+                        || !(source_bytes[peek_index] == b'('
+                            && source_bytes[peek_index + 1] == b'*')
+                    {
+                        break;
+                    }
+                    peek_index =
+                        skip_ml_comment_bytes(source_bytes, peek_index + 2, source_byte_length);
+                    let after_comment_ws_limit =
+                        preprocess_byte_scan_round_limit(source_byte_length);
+                    for _after_comment_ws in 0..after_comment_ws_limit {
+                        if peek_index >= source_byte_length
+                            || !matches!(source_bytes[peek_index], b' ' | b'\t' | b'\n' | b'\r')
+                        {
+                            break;
+                        }
+                        peek_index += 1;
+                    }
+                }
+                let inside_brace_ws_limit = preprocess_byte_scan_round_limit(source_byte_length);
+                for _inside_brace_ws in 0..inside_brace_ws_limit {
+                    if peek_index >= source_byte_length
+                        || !matches!(source_bytes[peek_index], b' ' | b'\t' | b'\n' | b'\r')
+                    {
+                        break;
+                    }
+                    peek_index += 1;
+                }
+                let treat_brace_as_sql_splice: bool = match peek_index >= source_byte_length {
+                    true => false,
+                    false => match source_bytes[peek_index] {
+                        b'[' | b'}' => false,
+                        _ellipsis
+                            if peek_index + 2 < source_byte_length
+                                && &source_bytes[peek_index..peek_index + 3] == b"..." =>
+                        {
+                            false
+                        }
+                        head if head.is_ascii_alphabetic() || head == b'_' => {
+                            let mut after_ident_index = peek_index + 1;
+                            let ident_suffix_limit =
+                                preprocess_byte_scan_round_limit(source_byte_length);
+                            for _ident_suffix in 0..ident_suffix_limit {
+                                if after_ident_index >= source_byte_length
+                                    || !(source_bytes[after_ident_index].is_ascii_alphanumeric()
+                                        || source_bytes[after_ident_index] == b'_'
+                                        || source_bytes[after_ident_index] == b'\'')
+                                {
+                                    break;
+                                }
+                                after_ident_index += 1;
+                            }
+                            let ident_ws_limit =
+                                preprocess_byte_scan_round_limit(source_byte_length);
+                            for _after_ident_ws in 0..ident_ws_limit {
+                                if after_ident_index >= source_byte_length
+                                    || !matches!(source_bytes[after_ident_index], b' ' | b'\t')
+                                {
+                                    break;
+                                }
+                                after_ident_index += 1;
+                            }
+                            match (
+                                after_ident_index < source_byte_length
+                                    && source_bytes[after_ident_index] == b'=',
+                                after_ident_index + 1 < source_byte_length,
+                                source_bytes.get(after_ident_index + 1).copied(),
+                            ) {
+                                (true, true, Some(b'>')) | (true, true, Some(b'=')) => true,
+                                (true, _, _) => false,
+                                _ => true,
+                            }
+                        }
+                        _expression_like => true,
+                    },
+                };
+                if treat_brace_as_sql_splice {
+                    output_text.push('(');
+                    scan_index += 1;
+                    let mut brace_nesting_depth = 1i32;
+                    let depth_limit = preprocess_byte_scan_round_limit(source_byte_length);
+                    for _brace_copy_round in 0..depth_limit {
+                        if scan_index >= source_byte_length || brace_nesting_depth <= 0 {
+                            break;
+                        }
+                        match (
+                            scan_index + 1 < source_byte_length,
+                            source_bytes.get(scan_index).copied(),
+                            source_bytes.get(scan_index + 1).copied(),
+                        ) {
+                            (true, Some(b'('), Some(b'*')) => {
+                                let copy_start = scan_index;
+                                scan_index = skip_ml_comment_bytes(
+                                    source_bytes,
+                                    scan_index + 2,
+                                    source_byte_length,
+                                );
+                                output_text.push_str(&source_text[copy_start..scan_index]);
+                            }
+                            (_, Some(b'"'), _) => {
+                                let copy_start = scan_index;
+                                scan_index = skip_string_bytes(
+                                    source_bytes,
+                                    scan_index + 1,
+                                    source_byte_length,
+                                );
+                                output_text.push_str(&source_text[copy_start..scan_index]);
+                            }
+                            (_, Some(b'{'), _) => {
+                                output_text.push('{');
+                                brace_nesting_depth += 1;
+                                scan_index += 1;
+                            }
+                            (_, Some(b'}'), _) => {
+                                brace_nesting_depth -= 1;
+                                match brace_nesting_depth.cmp(&0) {
+                                    std::cmp::Ordering::Greater => output_text.push('}'),
+                                    _ => output_text.push(')'),
+                                }
+                                scan_index += 1;
+                            }
+                            _ => {
+                                let ch = source_text[scan_index..].chars().next().unwrap_or('\0');
+                                output_text.push(ch);
+                                scan_index += ch.len_utf8();
+                            }
+                        }
+                    }
+                }
+            }
+            consumed_sql_keyword_branch = true;
+            break;
         }
-        if found_keyword {
+        if consumed_sql_keyword_branch {
             continue;
         }
-        let ch = input[i..].chars().next().unwrap_or('\0');
-        out.push(ch);
-        i += ch.len_utf8();
+        let unicode_char = source_text[scan_index..].chars().next().unwrap_or('\0');
+        output_text.push(unicode_char);
+        scan_index += unicode_char.len_utf8();
     }
-    out
+    output_text
 }
 
 /// Preprocess `.ur` source exactly like [`parse_ur`] before the lexer (rewrites only, no parse).
@@ -2205,6 +2375,7 @@ pub fn parse_ur(
         match grammar::FileParser::new().parse(lexer) {
             Ok(mut file) => {
                 crate::source::attach_file_label_to_source_file(&mut file, _filename, &pre);
+                repair_misparsed_lambda_annotation_file(&mut file);
                 Some(file)
             }
             Err(parse_error) => {

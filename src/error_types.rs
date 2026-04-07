@@ -19,6 +19,7 @@
 //! [`format_tool_diagnostic_banner_and_body`] when the failure is not a [`CompileError`].
 //! [`CompileError`]'s [`std::fmt::Display`] delegates to [`format_compile_error_for_terminal`] with
 //! [`crate::cli_common::diagnostic_locale_for_cli`] so default printing matches the catalog + locale story.
+//! Use [`UrDiagnostic`] when you want the same name across compiler, LSP, DAP, and CLI (`CompileError` is that type).
 
 use std::fmt;
 use std::fmt::Write as _;
@@ -635,15 +636,11 @@ impl fmt::Display for CompileError {
     }
 }
 
-impl std::error::Error for CompileError {
-    /// Returns the underlying [`std::io::Error`] when this is [`CompileError::Io`].
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            CompileError::Io(io_error) => Some(io_error),
-            _ => None,
-        }
-    }
-}
+/// [`std::error::Error::source`] is not overridden: full text (including I/O context for
+/// [`CompileError::Io`]) is formatted in [`Display`](std::fmt::Display) via
+/// [`format_compile_error_for_terminal`] / [`format_compile_error_for_user`], so callers do not
+/// need an error chain through [`std::error::Error::source`].
+impl std::error::Error for CompileError {}
 
 /// Full multi-line diagnostic (banner, body, `-->`, hints) in `locale`.
 ///
@@ -801,7 +798,24 @@ impl From<std::io::Error> for CompileError {
     }
 }
 
+/// Alias for [`CompileError`]: one structured diagnostic type for the compiler, LSP, CLI, DAP, and debugger.
+pub type UrDiagnostic = CompileError;
+
 impl CompileError {
+    /// Catalog-backed diagnostic with no source span (tools, protocol adapters, orchestration).
+    ///
+    /// # Arguments
+    ///
+    /// * `id` — Stable [`DiagnosticId`] template.
+    /// * `args` — Placeholder values for `{0}`, `{1}`, … in that template.
+    ///
+    /// # Returns
+    ///
+    /// [`CompileError::Plain`] holding [`DiagnosticPayload::new`].
+    pub fn catalog(id: DiagnosticId, args: Vec<String>) -> Self {
+        CompileError::Plain(DiagnosticPayload::new(id, args))
+    }
+
     /// Localized body (and hint trailer) without banner or `-->` line — used internally for splitting hints.
     ///
     /// # Arguments

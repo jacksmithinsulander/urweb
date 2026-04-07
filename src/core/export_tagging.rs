@@ -33,15 +33,13 @@ impl UnionFind {
     /// cannot loop forever (Power-of-Ten / defensive guard on compiler state).
     pub(crate) fn representative(&self, mut node: usize) -> usize {
         let hop_limit = self.parent.len().saturating_add(1);
-        let mut hops = 0usize;
-        while let Some(&parent) = self.parent.get(&node) {
-            if hops >= hop_limit {
-                panic!("UnionFind::representative exceeded hop limit (cycle or inconsistent map)");
-            }
-            hops += 1;
+        for _ in 0..hop_limit {
+            let Some(&parent) = self.parent.get(&node) else {
+                return node;
+            };
             node = parent;
         }
-        node
+        panic!("UnionFind::representative exceeded hop limit (cycle or inconsistent map)");
     }
 
     pub(crate) fn equate(&mut self, node_one: usize, node_two: usize) {
@@ -81,20 +79,20 @@ pub(crate) fn unravel_app(
 ) -> Option<(usize, Vec<LocatedExpression>)> {
     let mut args = Vec::new();
     let mut cur = expression;
-    let mut depth = 0usize;
-    loop {
+    // One iteration peels at most one `App`; cap peels, then require a [`Expression::Named`] head.
+    for _ in 0..MAX_UNRAVEL_APP_DEPTH {
         match &cur.node {
             Expression::Named(name_id) => return Some((*name_id, args)),
             Expression::App(function, argument) => {
-                if depth >= MAX_UNRAVEL_APP_DEPTH {
-                    return None;
-                }
-                depth += 1;
                 args.insert(0, *argument.clone());
                 cur = function;
             }
             _ => return None,
         }
+    }
+    match &cur.node {
+        Expression::Named(name_id) => Some((*name_id, args)),
+        _ => None,
     }
 }
 

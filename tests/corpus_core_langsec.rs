@@ -51,6 +51,85 @@ fn try_elaborate_single_module(ur_src: &str) -> Result<(), String> {
         .flatten()
 }
 
+fn try_elaborate_named_module(module_name: &str, ur_src: &str) -> Result<(), String> {
+    let module_name_owned = module_name.to_string();
+    let implementation_text = ur_src.to_string();
+    run_with_elaboration_stack(move || {
+        let _guard = CORPUS_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let dir = tempdir().map_err(|tempfile_error| tempfile_error.to_string())?;
+        let root = dir.path();
+        fs::write(root.join("app.urp"), format!("{module_name_owned}\n"))
+            .map_err(|io_error| io_error.to_string())?;
+        fs::write(
+            root.join(format!("{module_name_owned}.ur")),
+            &implementation_text,
+        )
+        .map_err(|io_error| io_error.to_string())?;
+        let urp = root.join("app.urp");
+        let mut job = compiler::parse_urp(&urp).map_err(|parse_error| parse_error.to_string())?;
+        let mut settings = Settings::new();
+        settings.boot_linking = true;
+        let workspace_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let workspace_basis = workspace_root.join("lib/ur/basis.urs");
+        let previous_boot_root = std::env::var_os("URWEB_BOOT_ROOT");
+        if workspace_basis.is_file() {
+            std::env::set_var("URWEB_BOOT_ROOT", &workspace_root);
+        }
+        let boot_apply = compiler::apply_boot_settings(&mut job, &mut settings);
+        match &previous_boot_root {
+            None => std::env::remove_var("URWEB_BOOT_ROOT"),
+            Some(value) => std::env::set_var("URWEB_BOOT_ROOT", value),
+        }
+        boot_apply?;
+        let mut errors = ErrorReporter::new_silent();
+        let Some(file) = compiler::parse_sources(&job, &settings, &mut errors) else {
+            return Err(format!("parse_sources: {errors:?}"));
+        };
+        let Some(_elab) = compiler::elaborate(file, &settings, &mut errors) else {
+            return Err(format!("elaborate returned None: {errors:?}"));
+        };
+        if errors.has_hard_errors() {
+            return Err(format!("elaborate errors: {errors:?}"));
+        }
+        Ok(())
+    })
+    .flatten()
+}
+
+/// Elaborate one synthetic module/signature pair in a temp dir.
+///
+/// # Errors
+///
+/// I/O, parse, boot settings, `parse_sources`, elaboration, or reported hard errors as `String`.
+fn try_elaborate_module_pair(ur_src: &str, urs_src: &str) -> Result<(), String> {
+    try_elaborate_named_module_pair("CoreMod", ur_src, urs_src)
+}
+
+/// Elaborate one synthetic named module/signature pair in a temp dir.
+///
+/// # Errors
+///
+/// I/O, parse, boot settings, `parse_sources`, elaboration, or reported hard errors as `String`.
+fn try_elaborate_named_module_pair(
+    module_name: &str,
+    ur_src: &str,
+    urs_src: &str,
+) -> Result<(), String> {
+    let module_name_owned = module_name.to_string();
+    let implementation_text = ur_src.to_string();
+    let signature_text = urs_src.to_string();
+    run_with_elaboration_stack(move || {
+        try_elaborate_named_module_pair_on_thread(
+            &module_name_owned,
+            &implementation_text,
+            &signature_text,
+        )
+    })
+    .flatten()
+}
+
 /// Elaborate one synthetic module in a temp dir (locked, larger stack via caller).
 ///
 /// # Errors
@@ -81,6 +160,56 @@ fn try_elaborate_single_module_on_thread(ur_src: &str) -> Result<(), String> {
         Some(value) => std::env::set_var("URWEB_BOOT_ROOT", value), // Restore prior env for test isolation.
     }
     boot_apply?; // Propagate missing Basis / invalid boot root as a clear failure.
+    let mut errors = ErrorReporter::new_silent();
+    let Some(file) = compiler::parse_sources(&job, &settings, &mut errors) else {
+        return Err(format!("parse_sources: {errors:?}"));
+    };
+    let Some(_elab) = compiler::elaborate(file, &settings, &mut errors) else {
+        return Err(format!("elaborate returned None: {errors:?}"));
+    };
+    if errors.has_hard_errors() {
+        return Err(format!("elaborate errors: {errors:?}"));
+    }
+    Ok(())
+}
+
+/// Elaborate one synthetic named module/signature pair in a temp dir (locked, larger stack via caller).
+///
+/// # Errors
+///
+/// I/O, parse, boot settings, `parse_sources`, elaboration, or reported hard errors as `String`.
+fn try_elaborate_named_module_pair_on_thread(
+    module_name: &str,
+    ur_src: &str,
+    urs_src: &str,
+) -> Result<(), String> {
+    let _guard = CORPUS_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let dir = tempdir().map_err(|tempfile_error| tempfile_error.to_string())?;
+    let root = dir.path();
+    fs::write(root.join("app.urp"), format!("{module_name}\n"))
+        .map_err(|io_error| io_error.to_string())?;
+    fs::write(root.join(format!("{module_name}.ur")), ur_src)
+        .map_err(|io_error| io_error.to_string())?;
+    fs::write(root.join(format!("{module_name}.urs")), urs_src)
+        .map_err(|io_error| io_error.to_string())?;
+    let urp = root.join("app.urp");
+    let mut job = compiler::parse_urp(&urp).map_err(|parse_error| parse_error.to_string())?;
+    let mut settings = Settings::new();
+    settings.boot_linking = true;
+    let workspace_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let workspace_basis = workspace_root.join("lib/ur/basis.urs");
+    let previous_boot_root = std::env::var_os("URWEB_BOOT_ROOT");
+    if workspace_basis.is_file() {
+        std::env::set_var("URWEB_BOOT_ROOT", &workspace_root);
+    }
+    let boot_apply = compiler::apply_boot_settings(&mut job, &mut settings);
+    match &previous_boot_root {
+        None => std::env::remove_var("URWEB_BOOT_ROOT"),
+        Some(value) => std::env::set_var("URWEB_BOOT_ROOT", value),
+    }
+    boot_apply?;
     let mut errors = ErrorReporter::new_silent();
     let Some(file) = compiler::parse_sources(&job, &settings, &mut errors) else {
         return Err(format!("parse_sources: {errors:?}"));
@@ -240,6 +369,320 @@ fn corpus_core_row_concat_disjoint_elaborates() {
         return;
     }
     try_elaborate_single_module("type ok = {A : {}} ++ {B : {}}\n").expect("disjoint row concat");
+}
+
+#[test]
+fn corpus_core_folder_map0_elaborates() {
+    if !corpus_enabled() {
+        return;
+    }
+    try_elaborate_single_module(concat!(
+        "fun useFolder [r ::: {Type}] (fl : folder r) =\n",
+        "    fl [fn r :: {Type} => $(map (fn _ :: Type => option) r)]\n",
+        "       (fn [nm :: Name] [t :: Type] [rest :: {Type}] [[nm] ~ rest] acc =>\n",
+        "           acc ++ {nm = None})\n",
+        "       {}\n",
+    ))
+    .expect("folder map0-style elaboration");
+}
+
+#[test]
+fn corpus_core_show_option_elaborates() {
+    if !corpus_enabled() {
+        return;
+    }
+    try_elaborate_single_module(concat!(
+        "fun localShowOption [t ::: Type] (_ : show t) =\n",
+        "    mkShow (fn opt : option t =>\n",
+        "               case opt of\n",
+        "                   None => \"\"\n",
+        "                 | Some x => show x)\n",
+    ))
+    .expect("show_option-style elaboration");
+}
+
+#[test]
+fn corpus_core_show_option_signature_pair_elaborates() {
+    if !corpus_enabled() {
+        return;
+    }
+    try_elaborate_module_pair(
+        concat!(
+            "fun show_option [t ::: Type] (_ : show t) =\n",
+            "    mkShow (fn opt : option t =>\n",
+            "               case opt of\n",
+            "                   None => \"\"\n",
+            "                 | Some x => show x)\n",
+        ),
+        "val show_option : t ::: Type -> show t -> show (option t)\n",
+    )
+    .expect("show_option signature-pair elaboration");
+}
+
+#[test]
+fn corpus_core_top_prefix_through_show_option_elaborates() {
+    if !corpus_enabled() {
+        return;
+    }
+    let top_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("lib/ur/top.ur");
+    let Ok(top_source) = fs::read_to_string(top_path) else {
+        return;
+    };
+    let prefix: String = top_source
+        .lines()
+        .take_while(|line| !line.starts_with("fun read_option "))
+        .map(|line| format!("{line}\n"))
+        .collect();
+    try_elaborate_single_module(&prefix).expect("Top prefix through show_option elaboration");
+}
+
+#[test]
+fn corpus_core_top_named_prefix_through_show_option_elaborates() {
+    if !corpus_enabled() {
+        return;
+    }
+    let top_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("lib/ur/top.ur");
+    let Ok(top_source) = fs::read_to_string(top_path) else {
+        return;
+    };
+    let prefix: String = top_source
+        .lines()
+        .take_while(|line| !line.starts_with("fun read_option "))
+        .map(|line| format!("{line}\n"))
+        .collect();
+    try_elaborate_named_module("Top", &prefix)
+        .expect("Top-named prefix through show_option elaboration");
+}
+
+#[test]
+fn corpus_core_top_named_prefix_through_show_option_signature_pair_elaborates() {
+    if !corpus_enabled() {
+        return;
+    }
+    let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let top_impl_path = manifest_dir.join("lib/ur/top.ur");
+    let top_sig_path = manifest_dir.join("lib/ur/top.urs");
+    let (Ok(top_impl_source), Ok(top_sig_source)) = (
+        fs::read_to_string(top_impl_path),
+        fs::read_to_string(top_sig_path),
+    ) else {
+        return;
+    };
+    let implementation_prefix: String = top_impl_source
+        .lines()
+        .take_while(|line| !line.starts_with("fun read_option "))
+        .map(|line| format!("{line}\n"))
+        .collect();
+    let signature_prefix: String = top_sig_source
+        .lines()
+        .take_while(|line| !line.starts_with("val read_option "))
+        .map(|line| format!("{line}\n"))
+        .collect();
+    try_elaborate_named_module_pair("Top", &implementation_prefix, &signature_prefix)
+        .expect("Top-named prefix through show_option signature elaboration");
+}
+
+#[test]
+fn corpus_core_read_option_elaborates() {
+    if !corpus_enabled() {
+        return;
+    }
+    try_elaborate_single_module(concat!(
+        "fun localReadOption [t ::: Type] (_ : read t) =\n",
+        "    mkRead (fn s =>\n",
+        "               case s of\n",
+        "                   \"\" => None\n",
+        "                 | _ => Some (readError s : t))\n",
+        "           (fn s =>\n",
+        "               case s of\n",
+        "                   \"\" => Some None\n",
+        "                 | _ => case read s of\n",
+        "                            None => None\n",
+        "                          | v => Some v)\n",
+    ))
+    .expect("read_option-style elaboration");
+}
+
+#[test]
+fn corpus_core_existential_intro_elim_elaborates() {
+    if !corpus_enabled() {
+        return;
+    }
+    try_elaborate_single_module(concat!(
+        "con ex = K ==> fn tf :: (K -> Type) =>\n",
+        "            res ::: Type -> (choice :: K -> tf choice -> res) -> res\n",
+        "\n",
+        "fun ex_intro [K] [tf :: K -> Type] [choice :: K] (body : tf choice) : ex tf =\n",
+        " fn [res] (f : choice :: K -> tf choice -> res) =>\n",
+        "    f [choice] body\n",
+        "\n",
+        "fun ex_elim [K] [tf ::: K -> Type] (v : ex tf) [res ::: Type] = @@v [res]\n",
+    ))
+    .expect("existential intro/elim elaboration");
+}
+
+#[test]
+fn corpus_core_existential_intro_elim_after_constructor_alias_elaborates() {
+    if !corpus_enabled() {
+        return;
+    }
+    try_elaborate_single_module(concat!(
+        "con foo = fn t :: Type => t\n",
+        "\n",
+        "con ex = K ==> fn tf :: (K -> Type) =>\n",
+        "            res ::: Type -> (choice :: K -> tf choice -> res) -> res\n",
+        "\n",
+        "fun ex_intro [K] [tf :: K -> Type] [choice :: K] (body : tf choice) : ex tf =\n",
+        " fn [res] (f : choice :: K -> tf choice -> res) =>\n",
+        "    f [choice] body\n",
+        "\n",
+        "fun ex_elim [K] [tf ::: K -> Type] (v : ex tf) [res ::: Type] = @@v [res]\n",
+    ))
+    .expect("existential intro/elim after constructor alias elaboration");
+}
+
+#[test]
+fn corpus_core_mapx_via_foldr_elaborates() {
+    if !corpus_enabled() {
+        return;
+    }
+    try_elaborate_single_module(concat!(
+        "fun localMapX [K] [tf :: K -> Type] [ctx :: {Unit}]\n",
+        "               (f : nm :: Name -> t :: K -> rest :: {K}\n",
+        "                    -> [[nm] ~ rest] =>\n",
+        "                    tf t -> xml ctx [] []) =\n",
+        "    @@foldR [tf] [fn _ => xml ctx [] []]\n",
+        "      (fn [nm :: Name] [t :: K] [rest :: {K}] [[nm] ~ rest] r acc =>\n",
+        "          <xml>{f [nm] [t] [rest] r}{acc}</xml>)\n",
+        "      <xml/>\n",
+    ))
+    .expect("mapX-style foldR elaboration");
+}
+
+#[test]
+fn corpus_core_mapx_signature_pair_elaborates() {
+    if !corpus_enabled() {
+        return;
+    }
+    try_elaborate_module_pair(
+        concat!(
+            "fun localMapX [K] [tf :: K -> Type] [ctx :: {Unit}]\n",
+            "               (f : nm :: Name -> t :: K -> rest :: {K}\n",
+            "                    -> [[nm] ~ rest] =>\n",
+            "                    tf t -> xml ctx [] []) =\n",
+            "    @@foldR [tf] [fn _ => xml ctx [] []]\n",
+            "      (fn [nm :: Name] [t :: K] [rest :: {K}] [[nm] ~ rest] r acc =>\n",
+            "          <xml>{f [nm] [t] [rest] r}{acc}</xml>)\n",
+            "      <xml/>\n",
+        ),
+        concat!(
+            "val localMapX : K --> tf :: (K -> Type) -> ctx :: {Unit}\n",
+            "                -> (nm :: Name -> t :: K -> rest :: {K}\n",
+            "                    -> [[nm] ~ rest] =>\n",
+            "                    tf t -> xml ctx [] [])\n",
+            "                -> r ::: {K} -> folder r -> $(map tf r) -> xml ctx [] []\n",
+        ),
+    )
+    .expect("mapX-style signature elaboration");
+}
+
+#[test]
+fn corpus_core_local_folder_foldr_mapx_pair_elaborates() {
+    if !corpus_enabled() {
+        return;
+    }
+    try_elaborate_module_pair(
+        concat!(
+            "con folder = K ==> fn r :: {K} =>\n",
+            "                  tf :: ({K} -> Type)\n",
+            "                  -> (nm :: Name -> v :: K -> r :: {K} -> [[nm] ~ r] =>\n",
+            "                      tf r -> tf ([nm = v] ++ r))\n",
+            "                  -> tf [] -> tf r\n",
+            "\n",
+            "fun foldR [K] [tf :: K -> Type] [tr :: {K} -> Type]\n",
+            "          (f : nm :: Name -> t :: K -> rest :: {K}\n",
+            "               -> [[nm] ~ rest] =>\n",
+            "               tf t -> tr rest -> tr ([nm = t] ++ rest))\n",
+            "          (i : tr []) [r ::: {K}] (fl : folder r) =\n",
+            "    fl [fn r :: {K} => $(map tf r) -> tr r]\n",
+            "       (fn [nm :: Name] [t :: K] [rest :: {K}] [[nm] ~ rest] (acc : _ -> tr rest) r =>\n",
+            "           f [nm] [t] [rest] r.nm (acc (r -- nm)))\n",
+            "       (fn _ => i)\n",
+            "\n",
+            "fun mapX [K] [tf :: K -> Type] [ctx :: {Unit}]\n",
+            "          (f : nm :: Name -> t :: K -> rest :: {K}\n",
+            "               -> [[nm] ~ rest] =>\n",
+            "               tf t -> xml ctx [] []) =\n",
+            "    @@foldR [tf] [fn _ => xml ctx [] []]\n",
+            "      (fn [nm :: Name] [t :: K] [rest :: {K}] [[nm] ~ rest] r acc =>\n",
+            "          <xml>{f [nm] [t] [rest] r}{acc}</xml>)\n",
+            "      <xml/>\n",
+        ),
+        concat!(
+            "con folder :: K --> {K} -> Type\n",
+            "val foldR : K --> tf :: (K -> Type) -> tr :: ({K} -> Type)\n",
+            "            -> (nm :: Name -> t :: K -> rest :: {K}\n",
+            "                -> [[nm] ~ rest] =>\n",
+            "                tf t -> tr rest -> tr ([nm = t] ++ rest))\n",
+            "            -> tr [] -> r ::: {K} -> folder r -> $(map tf r) -> tr r\n",
+            "val mapX : K --> tf :: (K -> Type) -> ctx :: {Unit}\n",
+            "           -> (nm :: Name -> t :: K -> rest :: {K}\n",
+            "               -> [[nm] ~ rest] =>\n",
+            "               tf t -> xml ctx [] [])\n",
+            "           -> r ::: {K} -> folder r -> $(map tf r) -> xml ctx [] []\n",
+        ),
+    )
+    .expect("local folder/foldR/mapX signature elaboration");
+}
+
+#[test]
+fn corpus_core_top_named_folder_foldr_mapx_pair_elaborates() {
+    if !corpus_enabled() {
+        return;
+    }
+    try_elaborate_named_module_pair(
+        "Top",
+        concat!(
+            "con folder = K ==> fn r :: {K} =>\n",
+            "                  tf :: ({K} -> Type)\n",
+            "                  -> (nm :: Name -> v :: K -> r :: {K} -> [[nm] ~ r] =>\n",
+            "                      tf r -> tf ([nm = v] ++ r))\n",
+            "                  -> tf [] -> tf r\n",
+            "\n",
+            "fun foldR [K] [tf :: K -> Type] [tr :: {K} -> Type]\n",
+            "          (f : nm :: Name -> t :: K -> rest :: {K}\n",
+            "               -> [[nm] ~ rest] =>\n",
+            "               tf t -> tr rest -> tr ([nm = t] ++ rest))\n",
+            "          (i : tr []) [r ::: {K}] (fl : folder r) =\n",
+            "    fl [fn r :: {K} => $(map tf r) -> tr r]\n",
+            "       (fn [nm :: Name] [t :: K] [rest :: {K}] [[nm] ~ rest] (acc : _ -> tr rest) r =>\n",
+            "           f [nm] [t] [rest] r.nm (acc (r -- nm)))\n",
+            "       (fn _ => i)\n",
+            "\n",
+            "fun mapX [K] [tf :: K -> Type] [ctx :: {Unit}]\n",
+            "          (f : nm :: Name -> t :: K -> rest :: {K}\n",
+            "               -> [[nm] ~ rest] =>\n",
+            "               tf t -> xml ctx [] []) =\n",
+            "    @@foldR [tf] [fn _ => xml ctx [] []]\n",
+            "      (fn [nm :: Name] [t :: K] [rest :: {K}] [[nm] ~ rest] r acc =>\n",
+            "          <xml>{f [nm] [t] [rest] r}{acc}</xml>)\n",
+            "      <xml/>\n",
+        ),
+        concat!(
+            "con folder :: K --> {K} -> Type\n",
+            "val foldR : K --> tf :: (K -> Type) -> tr :: ({K} -> Type)\n",
+            "            -> (nm :: Name -> t :: K -> rest :: {K}\n",
+            "                -> [[nm] ~ rest] =>\n",
+            "                tf t -> tr rest -> tr ([nm = t] ++ rest))\n",
+            "            -> tr [] -> r ::: {K} -> folder r -> $(map tf r) -> tr r\n",
+            "val mapX : K --> tf :: (K -> Type) -> ctx :: {Unit}\n",
+            "           -> (nm :: Name -> t :: K -> rest :: {K}\n",
+            "               -> [[nm] ~ rest] =>\n",
+            "               tf t -> xml ctx [] [])\n",
+            "           -> r ::: {K} -> folder r -> $(map tf r) -> xml ctx [] []\n",
+        ),
+    )
+    .expect("Top-named local folder/foldR/mapX signature elaboration");
 }
 
 /// Full Basis boot (no user modules): ratchet [`DiagnosticId::ElabUnresolvedDisjointness`].

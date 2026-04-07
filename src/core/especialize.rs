@@ -826,8 +826,7 @@ fn build_known(file: &File) -> HashSet<usize> {
     // Fixed-point: iterate until stable (bounded to prevent runaway mutants).
     const MAX_BUILD_KNOWN_ITERATIONS: usize = 10_000;
     let mut known: HashSet<usize> = HashSet::new();
-    let mut iterations = 0;
-    loop {
+    for _ in 0..MAX_BUILD_KNOWN_ITERATIONS {
         let mut changed = false;
         for d in file {
             match &d.node {
@@ -853,8 +852,7 @@ fn build_known(file: &File) -> HashSet<usize> {
                 _ => {}
             }
         }
-        iterations += 1;
-        if !changed || iterations >= MAX_BUILD_KNOWN_ITERATIONS {
+        if !changed {
             break;
         }
     }

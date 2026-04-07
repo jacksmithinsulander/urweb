@@ -32,8 +32,9 @@
 //! [`fold_postfixes`] even when the generator needs further grammar or engine work
 //! to eliminate table conflicts.
 //!
-//! **`loop` / `while` in this module:** each comparison/add/mul/app loop consumes at least one token
-//! per iteration (`bump` or `break`), so iterations are bounded by the lexer token count (hence input size).
+//! **Operator/application loops:** each comparison/add/mul/app iteration consumes at least one token
+//! when it continues (`bump` + primary parse); an explicit `tokens.len() - pos` budget caps pathological cursors
+//! (Power-of-Ten / LangSec: no unbounded spin on internal state).
 //!
 //! ## Precedence (tight → loose), aligned with `grammar.lalrpop` `ArithExp`
 //! Juxtaposition (application) → `*`, `/`, `%` → `+`, `-`, `^` (desugared to
@@ -191,33 +192,44 @@ fn apply_postfix(base: LocExp, op: ExpPostfixOp) -> LocExp {
                             Exp::App(f2, Box::new(Located::new(Exp::Var(q, name, inf), xspan)))
                         }
                         xnode => {
-                            let f_loc = Located::new(
-                                Exp::App(f2, Box::new(Located::new(xnode, xspan))),
+                            let field_base = Located::new(xnode, xspan);
+                            let updated_argument = apply_field_postfix_to_non_app_expression(
+                                field_base,
+                                FieldSelector::ConstructorVariable(name),
                                 fspan.clone(),
                             );
-                            // Lowercase ident field access uses CVar (SML: `ident → CVar`),
-                            // so bound Name-kinded variables work as dynamic field selectors.
-                            Exp::Field(Box::new(f_loc), Located::dummy(Con::Var(vec![], name)))
+                            Exp::App(f2, Box::new(updated_argument))
                         }
                     }
                 }
-                fnode => Exp::Field(
-                    Box::new(Located::new(fnode, fspan.clone())),
-                    // Lowercase ident field access uses CVar per SML ident grammar rule.
-                    Located::dummy(Con::Var(vec![], name)),
+                fnode => apply_field_postfix_to_expression(
+                    Located::new(fnode, fspan.clone()),
+                    FieldSelector::ConstructorVariable(name),
                 ),
             };
             Located::new(exp, fspan)
         }
         ExpPostfixOp::DotHash(name) => Located::new(
-            Exp::Field(Box::new(base), Located::dummy(Con::Name(name))),
+            apply_field_postfix_to_expression(
+                Located::new(base.node, fspan.clone()),
+                FieldSelector::Name(name),
+            ),
             fspan,
         ),
         ExpPostfixOp::DotInt(n) => Located::new(
-            Exp::Field(Box::new(base), Located::dummy(Con::Name(n.to_string()))),
+            apply_field_postfix_to_expression(
+                Located::new(base.node, fspan.clone()),
+                FieldSelector::Name(n.to_string()),
+            ),
             fspan,
         ),
-        ExpPostfixOp::DotCon(c) => Located::new(Exp::Field(Box::new(base), c), fspan),
+        ExpPostfixOp::DotCon(c) => Located::new(
+            apply_field_postfix_to_expression(
+                Located::new(base.node, fspan.clone()),
+                FieldSelector::Constructor(c),
+            ),
+            fspan,
+        ),
         ExpPostfixOp::DotCons(c) => Located::new(Exp::CApp(Box::new(base), c), fspan),
         ExpPostfixOp::DotUident(name) => {
             let exp = match base.node {
@@ -243,6 +255,46 @@ fn apply_postfix(base: LocExp, op: ExpPostfixOp) -> LocExp {
             Located::new(exp, fspan)
         }
     }
+}
+
+enum FieldSelector {
+    ConstructorVariable(String),
+    Name(String),
+    Constructor(LocCon),
+}
+
+fn apply_field_postfix_to_expression(base: LocExp, selector: FieldSelector) -> Exp {
+    match base.node {
+        Exp::App(function_expression, argument_expression) => {
+            let updated_argument = apply_field_postfix_to_non_app_expression(
+                *argument_expression,
+                selector,
+                base.span.clone(),
+            );
+            Exp::App(function_expression, Box::new(updated_argument))
+        }
+        base_node => {
+            apply_field_postfix_to_non_app_expression(
+                Located::new(base_node, base.span.clone()),
+                selector,
+                base.span.clone(),
+            )
+            .node
+        }
+    }
+}
+
+fn apply_field_postfix_to_non_app_expression(
+    base: LocExp,
+    selector: FieldSelector,
+    span: crate::error_types::Span,
+) -> LocExp {
+    let field_constructor = match selector {
+        FieldSelector::ConstructorVariable(name) => Located::dummy(Con::Var(vec![], name)),
+        FieldSelector::Name(name) => Located::dummy(Con::Name(name)),
+        FieldSelector::Constructor(constructor) => constructor,
+    };
+    Located::new(Exp::Field(Box::new(base), field_constructor), span)
 }
 
 /// Apply postfix operators after [`fold_juxtaposition_apps`]; outer span is `(lo, hi)`.
@@ -307,7 +359,8 @@ where
     F: FnMut(&mut TokenCursor<'_>) -> Result<LocExp, ExprRecognizeError>,
 {
     let mut lhs = parse_cons(cur, primary)?;
-    loop {
+    let cmp_budget = cur.tokens.len().saturating_sub(cur.pos).saturating_add(1);
+    for _ in 0..cmp_budget {
         let Some(&(l, ref tok, _r)) = cur.peek() else {
             break;
         };
@@ -361,7 +414,8 @@ where
     F: FnMut(&mut TokenCursor<'_>) -> Result<LocExp, ExprRecognizeError>,
 {
     let mut lhs = parse_mul(cur, primary)?;
-    loop {
+    let add_budget = cur.tokens.len().saturating_sub(cur.pos).saturating_add(1);
+    for _ in 0..add_budget {
         let Some(&(l, ref tok, _r)) = cur.peek() else {
             break;
         };
@@ -407,7 +461,8 @@ where
     F: FnMut(&mut TokenCursor<'_>) -> Result<LocExp, ExprRecognizeError>,
 {
     let mut lhs = parse_app(cur, primary)?;
-    loop {
+    let mul_budget = cur.tokens.len().saturating_sub(cur.pos).saturating_add(1);
+    for _ in 0..mul_budget {
         let Some(&(l, ref tok, _r)) = cur.peek() else {
             break;
         };
@@ -439,7 +494,8 @@ where
     let first_idx = cur.pos;
     let mut lhs = primary(cur)?;
     let lo = cur.tokens.get(first_idx).map(|t| t.0).unwrap_or(0);
-    loop {
+    let app_budget = cur.tokens.len().saturating_sub(cur.pos).saturating_add(1);
+    for _ in 0..app_budget {
         let Some((_, ref tok, _)) = cur.peek() else {
             break;
         };

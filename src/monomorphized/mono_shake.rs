@@ -337,8 +337,7 @@ pub fn shake(file: File) -> File {
     // Fix ValRec groups: when any member is reachable, mark all members.
     // Bounded to prevent runaway mutants from looping forever.
     const MAX_SHAKE_VALREC_ITERATIONS: usize = 10_000;
-    let mut iterations = 0;
-    loop {
+    for _ in 0..MAX_SHAKE_VALREC_ITERATIONS {
         let mut changed = false;
         for d in &decls {
             if let Decl::ValRec(vis) = &d.node {
@@ -354,8 +353,7 @@ pub fn shake(file: File) -> File {
                 }
             }
         }
-        iterations += 1;
-        if !changed || iterations >= MAX_SHAKE_VALREC_ITERATIONS {
+        if !changed {
             break;
         }
     }

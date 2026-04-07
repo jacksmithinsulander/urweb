@@ -458,6 +458,8 @@ fn template_en(id: DiagnosticId) -> &'static str {
         DiagnosticId::CliDebuggerUsageBody => "ur-debugger — native debugger (Debug Adapter Protocol + GDB)\n\nModes:\n  --dap              DAP server on stdio (editors)\n  --gdb -- [args]    Passthrough: gdb -q --interpreter=mi3 [args]\n  --tty [--run] PROG [ARG ...]\n                     Interactive GDB: gdb -q [--ex run] --args PROG [ARG ...]\n\nBuild with `ur-compile -debug` so the binary includes debug symbols.\n\nExamples:\n  ur-debugger --dap\n  ur-debugger --gdb -- -ex 'file ./myapp' -ex run\n  ur-debugger --tty --run ./myapp",
         DiagnosticId::CliDevPreprocessWindowFailed => "Development helper: could not read the preprocessor window.\n\n{0}",
         DiagnosticId::CliPhaseIncompleteNoOutput => "The compiler stopped: the {0} phase produced no output.\n\nThere may be an earlier diagnostic — scroll up — or this may be an internal bug with a small repro.",
+        DiagnosticId::CliDebuggerGdbMiDriverLoopExhausted => "Internal error: the GDB/MI driver loop finished without the usual completion token (please report this bug).",
+        DiagnosticId::CliDebuggerDapStdioLoopExhausted => "The Debug Adapter Protocol message loop reached its safety limit ({0} messages) without a clean end-of-file or shutdown. If this was a real session, please report a bug; otherwise the editor or client may be misbehaving.",
     }
 }
 
@@ -908,6 +910,8 @@ fn template_sv(id: DiagnosticId) -> &'static str {
         DiagnosticId::CliDebuggerUsageBody => "ur-debugger — inbyggd debugger (DAP + GDB). Se engelska hjälptexten ovan.",
         DiagnosticId::CliDevPreprocessWindowFailed => "Utvecklingshelper: kunde inte läsa preprocessorfönstret.\n\n{0}",
         DiagnosticId::CliPhaseIncompleteNoOutput => "Kompilatorn stoppade: fasen {0} gav inget resultat.\n\nLeta efter tidigare diagnostik eller rapportera en bugg.",
+        DiagnosticId::CliDebuggerGdbMiDriverLoopExhausted => "Internt fel: GDB/MI-drivslingan avslutades utan förväntad sluttoken (rapportera gärna buggen).",
+        DiagnosticId::CliDebuggerDapStdioLoopExhausted => "Debug Adapter Protocol-meddelandeslingan nådde säkerhetsgränsen ({0} meddelanden) utan ren filslut eller avstängning. Om det var en riktig session, rapportera buggen; annars kan klienten bete sig fel.",
     }
 }
 
@@ -1358,5 +1362,7 @@ fn template_es(id: DiagnosticId) -> &'static str {
         DiagnosticId::CliDebuggerUsageBody => "ur-debugger — depurador nativo (DAP + GDB). Vea la ayuda en inglés arriba.",
         DiagnosticId::CliDevPreprocessWindowFailed => "Herramienta de desarrollo: fallo al leer la ventana del preprocessador.\n\n{0}",
         DiagnosticId::CliPhaseIncompleteNoOutput => "El compilador se detuvo: la fase {0} no produjo salida.\n\nBusca diagnósticos anteriores o repórtalo con un ejemplo mínimo.",
+        DiagnosticId::CliDebuggerGdbMiDriverLoopExhausted => "Error interno: el bucle del controlador GDB/MI terminó sin el token de finalización esperado (por favor repórtelo).",
+        DiagnosticId::CliDebuggerDapStdioLoopExhausted => "El bucle de mensajes del Debug Adapter Protocol alcanzó el límite de seguridad ({0} mensajes) sin un fin de archivo limpio ni apagado. Si la sesión era legítima, repórtelo; si no, el editor o cliente puede estar mal.",
     }
 }

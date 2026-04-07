@@ -50,7 +50,11 @@ pub fn run_compiler_args(args: &[String]) -> i32 {
     let mut demo_guided = false;
 
     let mut args_iter = args.iter();
-    while let Some(arg) = args_iter.next() {
+    // Each pass consumes at least one argv entry; cap passes by argv length so a flag-parse bug cannot spin.
+    for _cli_flag_pass in 0..args.len() {
+        let Some(arg) = args_iter.next() else {
+            break;
+        };
         let raw = arg.trim_start_matches('-');
         let (flag, opt_val) = if let Some(eq) = raw.find('=') {
             let (flag_part, value_part) = raw.split_at(eq);

@@ -1554,9 +1554,6 @@ fn collect_arg_types(t: &LocTyp, n: usize) -> Vec<LocTyp> {
     let mut cur = t.clone();
     for _ in 0..n {
         cjr_test_tick();
-        if result.len() >= n {
-            break;
-        }
         match cur.node.clone() {
             Typ::Fun(dom, ran) => {
                 result.push(*dom);
@@ -2633,9 +2630,19 @@ fn assign_fnums(peer_map: &BTreeMap<String, BTreeSet<String>>) -> BTreeMap<Strin
                 unusable.insert(n);
             }
         }
+        // Cap linear “mex” scan so pathological peer sets cannot burn unbounded CPU (Power of Ten).
+        const MAX_FNUM_ASSIGN_SCAN: usize = 1_048_576;
         let mut n = 0usize;
-        while unusable.contains(&n) {
+        for _ in 0..MAX_FNUM_ASSIGN_SCAN {
+            if !unusable.contains(&n) {
+                break;
+            }
             n += 1;
+        }
+        if unusable.contains(&n) {
+            panic!(
+                "assign_fnums: index scan exceeded {MAX_FNUM_ASSIGN_SCAN} (peer conflict explosion)"
+            );
         }
         fnums.insert(x.clone(), n);
     }

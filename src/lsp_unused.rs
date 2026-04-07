@@ -150,33 +150,36 @@ fn collect_named_from_declaration_roots(decl: &Declaration, s: &mut HashSet<usiz
 }
 
 fn expand_used_from_roots(elab: &ElabFile, roots: &mut HashSet<usize>) {
-    let mut changed = true;
-    while changed {
-        changed = false;
+    let fixpoint_round_cap = elab.len().saturating_mul(64).max(512);
+    for _fixpoint_round in 0..fixpoint_round_cap {
+        let mut expanded_reachable_named_ids = false;
         for d in elab {
             match &d.node {
                 Declaration::Val(_, id, _, e) => {
                     if roots.contains(id) {
-                        let before = roots.len();
+                        let named_id_count_before = roots.len();
                         collect_named_ids_expr(e, roots);
-                        if roots.len() > before {
-                            changed = true;
+                        if roots.len() > named_id_count_before {
+                            expanded_reachable_named_ids = true;
                         }
                     }
                 }
                 Declaration::ValRec(recs) => {
                     for (_, id, _, e) in recs {
                         if roots.contains(id) {
-                            let before = roots.len();
+                            let named_id_count_before = roots.len();
                             collect_named_ids_expr(e, roots);
-                            if roots.len() > before {
-                                changed = true;
+                            if roots.len() > named_id_count_before {
+                                expanded_reachable_named_ids = true;
                             }
                         }
                     }
                 }
                 _ => {}
             }
+        }
+        if !expanded_reachable_named_ids {
+            break;
         }
     }
 }

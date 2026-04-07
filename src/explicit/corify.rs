@@ -1082,6 +1082,45 @@ fn classify_datatype_core(
     }
 }
 
+/// Deferred page export: wrapper has been added to explicit AST; core `Export` is built after `corify_str` binds it (static dispatch, no `dyn` callback).
+struct PendingPageExport {
+    /// Module id for `ModProj` to the wrapper `val`.
+    module_entry: usize,
+    wrap_name: String,
+    span: Span,
+    export_kind: ExportKind,
+}
+
+/// Build a core `Declaration::Export` for [`PendingPageExport`] using the freshly corified wrapper name.
+fn corify_pending_page_export(
+    st: &St,
+    lcx: &mut CorifyCx<'_>,
+    pending: &PendingPageExport,
+) -> core_ir::LocatedDeclaration {
+    let e = expl::LocatedExpression {
+        node: expl::Expression::ModProj(pending.module_entry, vec![], pending.wrap_name.clone()),
+        span: pending.span.clone(),
+    };
+    let ce = corify_exp(st, e, lcx);
+    match ce.node {
+        core_ir::Expression::Named(n) => Located {
+            node: core_ir::Declaration::Export(pending.export_kind, n, false),
+            span: pending.span.clone(),
+        },
+        _ => {
+            lcx.report_at(
+                pending.span.clone(),
+                DiagnosticPayload::new(DiagnosticId::CorifyExportDidNotCorifyToGlobalName, vec![]),
+            );
+            let n = alloc(lcx.counter);
+            Located {
+                node: core_ir::Declaration::Export(pending.export_kind, n, false),
+                span: pending.span.clone(),
+            }
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // corify_decl
 // ---------------------------------------------------------------------------
@@ -1818,16 +1857,7 @@ fn corify_decl(
                         };
 
                         let mut wrap_decls: Vec<expl::LocatedDeclaration> = Vec::new();
-                        let mut export_fns: Vec<
-                            Box<
-                                dyn Fn(
-                                    &St,
-                                    &mut ErrorReporter,
-                                    &mut usize,
-                                )
-                                    -> core_ir::LocatedDeclaration,
-                            >,
-                        > = Vec::new();
+                        let mut pending_exports: Vec<PendingPageExport> = Vec::new();
 
                         for sgi in sgis {
                             if let expl::SignatureItem::Val(s, _, t) = sgi.node {
@@ -2019,50 +2049,12 @@ fn corify_decl(
                                         span: span.clone(),
                                     });
 
-                                    let _s_clone = s.clone();
-                                    let wrap_name_clone = wrap_name.clone();
-                                    let span_clone = span.clone();
-                                    export_fns.push(Box::new(
-                                        move |st2: &St, errs: &mut ErrorReporter, ctr: &mut usize| {
-                                            let mut lcx = CorifyCx {
-                                                errors: errs,
-                                                counter: ctr,
-                                            };
-                                            let e = expl::LocatedExpression {
-                                                node: expl::Expression::ModProj(
-                                                    en,
-                                                    vec![],
-                                                    wrap_name_clone.clone(),
-                                                ),
-                                                span: span_clone.clone(),
-                                            };
-                                            let ce = corify_exp(st2, e, &mut lcx);
-                                            match ce.node {
-                                                core_ir::Expression::Named(n) => Located {
-                                                    node: core_ir::Declaration::Export(
-                                                        exp_kind, n, false,
-                                                    ),
-                                                    span: span_clone.clone(),
-                                                },
-                                                _ => {
-                                                    lcx.report_at(
-                                                        span_clone.clone(),
-                                                        DiagnosticPayload::new(
-                                                            DiagnosticId::CorifyExportDidNotCorifyToGlobalName,
-                                                            vec![],
-                                                        ),
-                                                    );
-                                                    let n = alloc(lcx.counter);
-                                                    Located {
-                                                        node: core_ir::Declaration::Export(
-                                                            exp_kind, n, false,
-                                                        ),
-                                                        span: span_clone.clone(),
-                                                    }
-                                                }
-                                            }
-                                        },
-                                    ));
+                                    pending_exports.push(PendingPageExport {
+                                        module_entry: en,
+                                        wrap_name,
+                                        span: span.clone(),
+                                        export_kind: exp_kind,
+                                    });
                                 }
                             }
                         }
@@ -2079,9 +2071,9 @@ fn corify_decl(
                         let (ds, inner) = corify_str(&wrapper_mods, wrapper_str, st, cfx, settings);
                         st.bind_str("wrapper", en, &inner, cfx, &span);
 
-                        let export_ds: Vec<core_ir::LocatedDeclaration> = export_fns
+                        let export_ds: Vec<core_ir::LocatedDeclaration> = pending_exports
                             .iter()
-                            .map(|f| f(st, cfx.errors, cfx.counter))
+                            .map(|pending| corify_pending_page_export(&*st, cfx, pending))
                             .collect();
 
                         let mut out = ds;
