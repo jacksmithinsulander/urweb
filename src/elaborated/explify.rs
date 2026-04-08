@@ -565,6 +565,7 @@ fn explify_sgi(
         elab::SignatureItem::DatatypeImp {
             name,
             id,
+            params: _,
             orig_mod,
             orig_path,
             orig_name,
@@ -744,6 +745,7 @@ fn explify_decl(
         elab::Declaration::DatatypeImp {
             name,
             id,
+            params: _,
             orig_mod,
             orig_path,
             orig_name,

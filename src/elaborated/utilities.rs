@@ -2544,6 +2544,7 @@ pub mod sgn {
             SignatureItem::DatatypeImp {
                 name,
                 id,
+                params,
                 orig_mod,
                 orig_path,
                 orig_name,
@@ -2565,6 +2566,7 @@ pub mod sgn {
                 SignatureItem::DatatypeImp {
                     name,
                     id,
+                    params,
                     orig_mod,
                     orig_path,
                     orig_name,
@@ -2926,6 +2928,7 @@ pub mod decl {
             Declaration::DatatypeImp {
                 name,
                 id,
+                params,
                 orig_mod,
                 orig_path,
                 orig_name,
@@ -2940,6 +2943,7 @@ pub mod decl {
                     Declaration::DatatypeImp {
                         name,
                         id,
+                        params,
                         orig_mod,
                         orig_path,
                         orig_name,

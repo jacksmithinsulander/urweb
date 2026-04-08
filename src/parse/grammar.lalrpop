@@ -12,7 +12,17 @@
 
 use crate::error_types::{Located, Span};
 use crate::source::*;
-use crate::parse::grammar_helpers::{con_record_field_pun, exp_var_from_dotted_at_path};
+use crate::parse::grammar_helpers::{
+    con_record_field_pun,
+    desugar_simple_sql_select,
+    desugar_monadic_bind,
+    exp_var_from_dotted_at_path,
+    sql_binary_expression,
+    sql_count_all_expression,
+    sql_integer_expression,
+    sql_is_null_expression,
+    sql_table_reference,
+};
 use crate::parse::xml_helpers::{
     XmlAttr, XmlAttrsAcc, FunParam, capitalize_attr, xml_attrs_empty, xml_attrs_push, xml_desugar_tag_open,
     xml_empty_cdata, wrap_fun_params, str_to_decl_open,
@@ -67,6 +77,8 @@ extern {
         "rec"       => crate::parse::lexical_analyzer::Token::Rec,
         "sequence"  => crate::parse::lexical_analyzer::Token::Sequence,
         "sig"       => crate::parse::lexical_analyzer::Token::Sig,
+        "SQL"       => crate::parse::lexical_analyzer::Token::Sql,
+        "SELECT"    => crate::parse::lexical_analyzer::Token::Select,
         "signature" => crate::parse::lexical_analyzer::Token::Signature,
         "struct"    => crate::parse::lexical_analyzer::Token::Struct,
         "structure" => crate::parse::lexical_analyzer::Token::Structure,
@@ -78,6 +90,13 @@ extern {
         "type"      => crate::parse::lexical_analyzer::Token::Type,  // ltype in SML grammar
         "val"       => crate::parse::lexical_analyzer::Token::Val,
         "view"      => crate::parse::lexical_analyzer::Token::View,
+        "AS"        => crate::parse::lexical_analyzer::Token::As,
+        "COUNT"     => crate::parse::lexical_analyzer::Token::Count,
+        "FROM"      => crate::parse::lexical_analyzer::Token::From,
+        "IS"        => crate::parse::lexical_analyzer::Token::Is,
+        "NULL"      => crate::parse::lexical_analyzer::Token::Null,
+        "AND"       => crate::parse::lexical_analyzer::Token::AndUpper,
+        "OR"        => crate::parse::lexical_analyzer::Token::OrUpper,
         "urweb_put" => crate::parse::lexical_analyzer::Token::UrwebPut,
         "urweb_get" => crate::parse::lexical_analyzer::Token::UrwebGet,
         "urweb_tb_transfer" => crate::parse::lexical_analyzer::Token::UrwebTbTransfer,
@@ -881,12 +900,12 @@ ExpNode: Exp = {
         wrap_fun_params(params, e).node,
     // Monadic bind: `x <- e1; e2`  (also `_ <- e1; e2`)
     <name:"IDENT"> "<-" <e1:NonSeqExp> ";" <e2:Exp> =>
-        Exp::Let(vec![Located::dummy(EDecl::Val(Located::dummy(Pat::Var(name)), e1))], Box::new(e2)),
+        desugar_monadic_bind(name, e1, e2),
     "_" "<-" <e1:NonSeqExp> ";" <e2:Exp> =>
-        Exp::Let(vec![Located::dummy(EDecl::Val(Located::dummy(Pat::Var("_".into())), e1))], Box::new(e2)),
+        desugar_monadic_bind("_".into(), e1, e2),
     // Sequencing — right-associative via NonSeqExp on left, Exp on right
     <e1:NonSeqExp> ";" <e2:Exp> =>
-        Exp::Let(vec![Located::dummy(EDecl::Val(Located::dummy(Pat::Var("_".into())), e1))], Box::new(e2)),
+        desugar_monadic_bind("_".into(), e1, e2),
     <e:NonSeqExp> => e.node,
 };
 
@@ -1180,6 +1199,47 @@ LambdaParams: Vec<FunParam> = {
     <ps:LambdaParams> <p:LambdaParam> => { let mut v = ps; v.push(p); v },
 };
 
+SqlAlias: String = {
+    <name:"IDENT"> => name,
+    <name:"UIDENT"> => name,
+};
+
+SqlTableRef: (String, LocExp) = {
+    <l:@L> <name:"IDENT"> <r:@R> => sql_table_reference(name, &Span::from_offsets("", l, r, &[])),
+    <l:@L> <name:"UIDENT"> <r:@R> => sql_table_reference(name, &Span::from_offsets("", l, r, &[])),
+};
+
+SqlAtom: LocExp = {
+    <l:@L> "{" <e:Exp> "}" <r:@R> => Located::new(e.node, Span::from_offsets("", l, r, &[])),
+    <l:@L> <n:"INT"> <r:@R> => sql_integer_expression(n, &Span::from_offsets("", l, r, &[])),
+    <l:@L> "COUNT" "(" "*" ")" <r:@R> => sql_count_all_expression(&Span::from_offsets("", l, r, &[])),
+    "(" <e:SqlExp> ")" => e,
+};
+
+SqlExp: LocExp = {
+    #[precedence(level="1")]
+    <e:SqlAtom> => e,
+
+    #[precedence(level="2")] #[assoc(side="left")]
+    <l:@L> <e:SqlExp> "IS" "NULL" <r:@R> =>
+        sql_is_null_expression(e, &Span::from_offsets("", l, r, &[])),
+
+    #[precedence(level="3")] #[assoc(side="left")]
+    <l:@L> <e1:SqlExp> "=" <e2:SqlExp> <r:@R> =>
+        sql_binary_expression("eq", e1, e2, &Span::from_offsets("", l, r, &[])),
+    #[precedence(level="3")] #[assoc(side="left")]
+    <l:@L> <e1:SqlExp> ">" <e2:SqlExp> <r:@R> =>
+        sql_binary_expression("gt", e1, e2, &Span::from_offsets("", l, r, &[])),
+
+    #[precedence(level="4")] #[assoc(side="left")]
+    <l:@L> <e1:SqlExp> "AND" <e2:SqlExp> <r:@R> =>
+        sql_binary_expression("and", e1, e2, &Span::from_offsets("", l, r, &[])),
+
+    #[precedence(level="5")] #[assoc(side="left")]
+    <l:@L> <e1:SqlExp> "OR" <e2:SqlExp> <r:@R> =>
+        sql_binary_expression("or", e1, e2, &Span::from_offsets("", l, r, &[])),
+};
+
 AtomExpNode: Exp = {
     // Unit literal: `()` → empty record
     "()" => Exp::Record(vec![], false),
@@ -1225,6 +1285,12 @@ AtomExpNode: Exp = {
     "{" "..." "}" => Exp::Record(vec![], true),
     "{" <fields:ExpFieldList> "}" => Exp::Record(fields, false),
     "{" <fields:ExpFieldList> "," "..." "}" => Exp::Record(fields, true),
+    <l:@L> "(" "SQL" <e:SqlExp> ")" <r:@R> =>
+        Located::new(e.node, Span::from_offsets("", l, r, &[])).node,
+    <l:@L> "(" "SELECT" <selected:SqlExp> "AS" <alias:SqlAlias> "FROM" <table:SqlTableRef> ")" <r:@R> => {
+        let span = Span::from_offsets("", l, r, &[]);
+        desugar_simple_sql_select(alias, selected, table.0, table.1, &span)
+    },
     // Parenthesized expression — uses full Exp to allow sequencing
     "(" <e:Exp> ")" => e.node,
     // Tuple expression: `(e1, e2, ...)` → record with integer field names

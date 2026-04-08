@@ -1509,7 +1509,7 @@ impl Env {
                     EVarEntry::Rel(index, type_con) => {
                         EVarEntry::Rel(index, type_operations::lift_con_in_con(type_con))
                     }
-                    named_entry => named_entry,
+                    EVarEntry::Named(id, type_con) => EVarEntry::Named(id, type_con),
                 };
                 (exp_name, updated_entry)
             })
@@ -2568,6 +2568,7 @@ pub fn sgi_binds(elaboration_environment: Env, sgn_item: &LocatedSignatureItem) 
         SignatureItem::DatatypeImp {
             name,
             id,
+            params,
             orig_mod,
             orig_path,
             orig_name,
@@ -2575,6 +2576,14 @@ pub fn sgi_binds(elaboration_environment: Env, sgn_item: &LocatedSignatureItem) 
             constrs,
         } => {
             let kind_type = Located::new(Kind::Type, span.clone());
+            let datatype_kind = params
+                .iter()
+                .fold(kind_type.clone(), |accumulated_kind, _| {
+                    Located::new(
+                        Kind::Arrow(Box::new(kind_type.clone()), Box::new(accumulated_kind)),
+                        span.clone(),
+                    )
+                });
             let definition = Located::new(
                 Constructor::ModProj(*orig_mod, orig_path.clone(), orig_name.clone()),
                 span.clone(),
@@ -2582,7 +2591,7 @@ pub fn sgi_binds(elaboration_environment: Env, sgn_item: &LocatedSignatureItem) 
             let elaboration_environment = elaboration_environment.push_c_named_as(
                 name.clone(),
                 *id,
-                kind_type.clone(),
+                datatype_kind,
                 Some(definition),
             );
 
@@ -2590,7 +2599,7 @@ pub fn sgi_binds(elaboration_environment: Env, sgn_item: &LocatedSignatureItem) 
                 elaboration_environment,
                 |accumulated_env, (con_name, con_id, arg_type)| {
                     let expression_type =
-                        build_constructor_type(*id, &[], arg_type.as_ref(), span.clone());
+                        build_constructor_type(*id, params, arg_type.as_ref(), span.clone());
                     accumulated_env.push_e_named_as(con_name.clone(), *con_id, expression_type)
                 },
             )
@@ -2741,6 +2750,7 @@ pub fn decl_binds(elaboration_environment: Env, declaration: &LocatedDeclaration
         Declaration::DatatypeImp {
             name,
             id,
+            params,
             orig_mod,
             orig_path,
             orig_name,
@@ -2748,6 +2758,14 @@ pub fn decl_binds(elaboration_environment: Env, declaration: &LocatedDeclaration
             constrs,
         } => {
             let kind_type = Located::new(Kind::Type, span.clone());
+            let datatype_kind = params
+                .iter()
+                .fold(kind_type.clone(), |accumulated_kind, _| {
+                    Located::new(
+                        Kind::Arrow(Box::new(kind_type.clone()), Box::new(accumulated_kind)),
+                        span.clone(),
+                    )
+                });
             let definition = Located::new(
                 Constructor::ModProj(*orig_mod, orig_path.clone(), orig_name.clone()),
                 span.clone(),
@@ -2755,7 +2773,7 @@ pub fn decl_binds(elaboration_environment: Env, declaration: &LocatedDeclaration
             let elaboration_environment = elaboration_environment.push_c_named_as(
                 name.clone(),
                 *id,
-                kind_type,
+                datatype_kind,
                 Some(definition),
             );
 
@@ -2763,7 +2781,7 @@ pub fn decl_binds(elaboration_environment: Env, declaration: &LocatedDeclaration
                 elaboration_environment,
                 |accumulated_env, (con_name, con_id, arg_type)| {
                     let expression_type =
-                        build_constructor_type(*id, &[], arg_type.as_ref(), span.clone());
+                        build_constructor_type(*id, params, arg_type.as_ref(), span.clone());
                     accumulated_env.push_e_named_as(con_name.clone(), *con_id, expression_type)
                 },
             )

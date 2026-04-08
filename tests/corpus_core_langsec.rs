@@ -483,6 +483,80 @@ fn corpus_core_top_named_prefix_through_show_option_signature_pair_elaborates() 
 }
 
 #[test]
+fn corpus_core_top_named_prefix_through_query_xi_signature_pair_elaborates() {
+    if !corpus_enabled() {
+        return;
+    }
+    let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let top_impl_path = manifest_dir.join("lib/ur/top.ur");
+    let top_sig_path = manifest_dir.join("lib/ur/top.urs");
+    let (Ok(top_impl_source), Ok(top_sig_source)) = (
+        fs::read_to_string(top_impl_path),
+        fs::read_to_string(top_sig_path),
+    ) else {
+        return;
+    };
+    let implementation_prefix: String = top_impl_source
+        .lines()
+        .take_while(|line| !line.starts_with("fun hasRows "))
+        .map(|line| format!("{line}\n"))
+        .collect();
+    let signature_prefix: String = top_sig_source
+        .lines()
+        .take_while(|line| !line.starts_with("val hasRows "))
+        .map(|line| format!("{line}\n"))
+        .collect();
+    try_elaborate_named_module_pair("Top", &implementation_prefix, &signature_prefix)
+        .expect("Top-named prefix through queryXI signature elaboration");
+}
+
+#[test]
+fn corpus_core_top_named_exact_prefix_through_mapux_rev_signature_pair_elaborates() {
+    if !corpus_enabled() {
+        return;
+    }
+    let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let top_impl_path = manifest_dir.join("lib/ur/top.ur");
+    let top_sig_path = manifest_dir.join("lib/ur/top.urs");
+    let (Ok(top_impl_source), Ok(top_sig_source)) = (
+        fs::read_to_string(top_impl_path),
+        fs::read_to_string(top_sig_path),
+    ) else {
+        return;
+    };
+    let implementation_prefix: String = top_impl_source
+        .lines()
+        .take_while(|line| !line.starts_with("fun mapUX2 "))
+        .map(|line| format!("{line}\n"))
+        .collect();
+    let signature_prefix: String = top_sig_source
+        .lines()
+        .take_while(|line| !line.starts_with("val mapUX2 "))
+        .map(|line| format!("{line}\n"))
+        .collect();
+    try_elaborate_named_module_pair("Top", &implementation_prefix, &signature_prefix)
+        .expect("Top exact prefix through mapUX_rev signature elaboration");
+}
+
+#[test]
+fn corpus_core_top_named_full_module_pair_elaborates() {
+    if !corpus_enabled() {
+        return;
+    }
+    let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let top_impl_path = manifest_dir.join("lib/ur/top.ur");
+    let top_sig_path = manifest_dir.join("lib/ur/top.urs");
+    let (Ok(top_impl_source), Ok(top_sig_source)) = (
+        fs::read_to_string(top_impl_path),
+        fs::read_to_string(top_sig_path),
+    ) else {
+        return;
+    };
+    try_elaborate_named_module_pair("Top", &top_impl_source, &top_sig_source)
+        .expect("Top full module/signature elaboration");
+}
+
+#[test]
 fn corpus_core_read_option_elaborates() {
     if !corpus_enabled() {
         return;
@@ -501,6 +575,242 @@ fn corpus_core_read_option_elaborates() {
         "                          | v => Some v)\n",
     ))
     .expect("read_option-style elaboration");
+}
+
+#[test]
+fn corpus_core_query1_elaborates() {
+    if !corpus_enabled() {
+        return;
+    }
+    try_elaborate_single_module(concat!(
+        "fun localQuery1 [t ::: Name] [fs ::: {Type}] [state ::: Type]\n",
+        "    (q : sql_query [] [] [t = fs] [])\n",
+        "    (f : $fs -> state -> transaction state)\n",
+        "    (i : state) =\n",
+        "    query q (fn r => f r.t) i\n",
+    ))
+    .expect("query1-style elaboration");
+}
+
+#[test]
+fn corpus_core_query1_prime_elaborates() {
+    if !corpus_enabled() {
+        return;
+    }
+    try_elaborate_single_module(concat!(
+        "fun localQuery1Prime [t ::: Name] [fs ::: {Type}] [state ::: Type]\n",
+        "    (q : sql_query [] [] [t = fs] [])\n",
+        "    (f : $fs -> state -> state) (i : state) =\n",
+        "    query q (fn r s => return (f r.t s)) i\n",
+    ))
+    .expect("query1'-style elaboration");
+}
+
+#[test]
+fn corpus_core_query1_prime_followed_by_val_rev_elaborates() {
+    if !corpus_enabled() {
+        return;
+    }
+    try_elaborate_single_module(concat!(
+        "fun localQuery1Prime [t ::: Name] [fs ::: {Type}] [state ::: Type]\n",
+        "    (q : sql_query [] [] [t = fs] [])\n",
+        "    (f : $fs -> state -> state) (i : state) =\n",
+        "    query q (fn r s => return (f r.t s)) i\n",
+        "\n",
+        "val rev = fn [a] =>\n",
+        "    let\n",
+        "        fun rev' acc (ls : list a) =\n",
+        "            case ls of\n",
+        "                [] => acc\n",
+        "              | x :: rest => rev' (x :: acc) rest\n",
+        "    in\n",
+        "        rev' []\n",
+        "    end\n",
+    ))
+    .expect("query1'-then-val-rev elaboration");
+}
+
+#[test]
+fn corpus_core_rev_with_list_cons_elaborates() {
+    if !corpus_enabled() {
+        return;
+    }
+    try_elaborate_single_module(concat!(
+        "val rev = fn [a] =>\n",
+        "    let\n",
+        "        fun rev' acc (ls : list a) =\n",
+        "            case ls of\n",
+        "                [] => acc\n",
+        "              | x :: rest => rev' (x :: acc) rest\n",
+        "    in\n",
+        "        rev' []\n",
+        "    end\n",
+    ))
+    .expect("rev/list-cons elaboration");
+}
+
+#[test]
+fn corpus_core_top_level_val_binding_visible_to_later_decl() {
+    if !corpus_enabled() {
+        return;
+    }
+    try_elaborate_single_module(concat!(
+        "val id = fn [t] => fn (x : t) => x\n",
+        "\n",
+        "fun applyId (n : int) = id n\n",
+    ))
+    .expect("top-level val binding should remain visible");
+}
+
+#[test]
+fn corpus_core_query_i1_elaborates() {
+    if !corpus_enabled() {
+        return;
+    }
+    try_elaborate_single_module(concat!(
+        "fun localQueryI1 [nm ::: Name] [fs ::: {Type}]\n",
+        "    (q : sql_query [] [] [nm = fs] [])\n",
+        "    (f : $fs -> transaction unit) =\n",
+        "    query q\n",
+        "          (fn fs _ => f fs.nm)\n",
+        "          ()\n",
+    ))
+    .expect("queryI1-style elaboration");
+}
+
+#[test]
+fn corpus_core_query_xi_elaborates() {
+    if !corpus_enabled() {
+        return;
+    }
+    try_elaborate_single_module(concat!(
+        "fun localRev [a] (ls : list a) : list a =\n",
+        "    let\n",
+        "        fun rev' ls acc =\n",
+        "            case ls of\n",
+        "                [] => acc\n",
+        "              | x :: rest => rev' rest (x :: acc)\n",
+        "    in\n",
+        "        rev' ls []\n",
+        "    end\n",
+        "\n",
+        "fun localQueryXI [tables ::: {{Type}}] [exps ::: {Type}] [ctx ::: {Unit}] [inp ::: {Type}]\n",
+        "    [tables ~ exps] (q : sql_query [] [] tables exps)\n",
+        "    (f : int -> $(exps ++ map (fn fields :: {Type} => $fields) tables)\n",
+        "         -> xml ctx inp []) =\n",
+        "    let\n",
+        "        fun qxi ls i =\n",
+        "            case ls of\n",
+        "                [] => <xml/>\n",
+        "              | x :: rest => <xml>{f i x}{qxi rest (i+1)}</xml>\n",
+        "    in\n",
+        "        ls <- queryL q;\n",
+        "        return (qxi (localRev ls) 0)\n",
+        "    end\n",
+    ))
+    .expect("queryXI-style elaboration");
+}
+
+#[test]
+fn corpus_core_query_l_with_val_rev_elaborates() {
+    if !corpus_enabled() {
+        return;
+    }
+    try_elaborate_single_module(concat!(
+        "val rev = fn [a] =>\n",
+        "    let\n",
+        "        fun rev' acc (ls : list a) =\n",
+        "            case ls of\n",
+        "                [] => acc\n",
+        "              | x :: rest => rev' (x :: acc) rest\n",
+        "    in\n",
+        "        rev' []\n",
+        "    end\n",
+        "\n",
+        "fun localQueryL [tables] [exps] [tables ~ exps]\n",
+        "    (q : sql_query [] [] tables exps) =\n",
+        "    ls <- query q (fn r ls => return (r :: ls)) [];\n",
+        "    return (rev ls)\n",
+    ))
+    .expect("queryL-with-val-rev elaboration");
+}
+
+#[test]
+fn corpus_core_query_l1_with_val_rev_elaborates() {
+    if !corpus_enabled() {
+        return;
+    }
+    try_elaborate_single_module(concat!(
+        "val rev = fn [a] =>\n",
+        "    let\n",
+        "        fun rev' acc (ls : list a) =\n",
+        "            case ls of\n",
+        "                [] => acc\n",
+        "              | x :: rest => rev' (x :: acc) rest\n",
+        "    in\n",
+        "        rev' []\n",
+        "    end\n",
+        "\n",
+        "fun localQueryL1 [t ::: Name] [fs ::: {Type}]\n",
+        "    (q : sql_query [] [] [t = fs] []) =\n",
+        "    ls <- query q (fn r ls => return (r.t :: ls)) [];\n",
+        "    return (rev ls)\n",
+    ))
+    .expect("queryL1-with-val-rev elaboration");
+}
+
+#[test]
+fn corpus_core_query_i_elaborates() {
+    if !corpus_enabled() {
+        return;
+    }
+    try_elaborate_single_module(concat!(
+        "fun localQueryI [tables ::: {{Type}}] [exps ::: {Type}]\n",
+        "    [tables ~ exps] (q : sql_query [] [] tables exps)\n",
+        "    (f : $(exps ++ map (fn fields :: {Type} => $fields) tables)\n",
+        "         -> transaction unit) =\n",
+        "    query q\n",
+        "          (fn fs _ => f fs)\n",
+        "          ()\n",
+    ))
+    .expect("queryI-style elaboration");
+}
+
+#[test]
+fn corpus_core_one_or_no_rows1_elaborates() {
+    if !corpus_enabled() {
+        return;
+    }
+    try_elaborate_single_module(concat!(
+        "fun localOneOrNoRows1 [nm ::: Name] [fs ::: {Type}]\n",
+        "    (q : sql_query [] [] [nm = fs] []) =\n",
+        "    query q\n",
+        "          (fn rows _ => return (Some rows.nm))\n",
+        "          None\n",
+    ))
+    .expect("oneOrNoRows1-style elaboration");
+}
+
+#[test]
+fn corpus_core_one_row1_elaborates() {
+    if !corpus_enabled() {
+        return;
+    }
+    try_elaborate_single_module(concat!(
+        "fun localOneOrNoRows1 [nm ::: Name] [fs ::: {Type}]\n",
+        "    (q : sql_query [] [] [nm = fs] []) =\n",
+        "    query q\n",
+        "          (fn rows _ => return (Some rows.nm))\n",
+        "          None\n",
+        "\n",
+        "fun localOneRow1 [nm ::: Name] [fs ::: {Type}]\n",
+        "    (q : sql_query [] [] [nm = fs] []) =\n",
+        "    result <- localOneOrNoRows1 q;\n",
+        "    return (case result of\n",
+        "                None => error <xml>Query returned no rows</xml>\n",
+        "              | Some row => row)\n",
+    ))
+    .expect("oneRow1-style elaboration");
 }
 
 #[test]
@@ -683,6 +993,118 @@ fn corpus_core_top_named_folder_foldr_mapx_pair_elaborates() {
         ),
     )
     .expect("Top-named local folder/foldR/mapX signature elaboration");
+}
+
+#[test]
+fn corpus_core_top_named_foldr4_mapux_mapx_prefix_pair_elaborates() {
+    if !corpus_enabled() {
+        return;
+    }
+    try_elaborate_named_module_pair(
+        "Top",
+        concat!(
+            "con folder = K ==> fn r :: {K} =>\n",
+            "                  tf :: ({K} -> Type)\n",
+            "                  -> (nm :: Name -> v :: K -> r :: {K} -> [[nm] ~ r] =>\n",
+            "                      tf r -> tf ([nm = v] ++ r))\n",
+            "                  -> tf [] -> tf r\n",
+            "\n",
+            "fun foldR [K] [tf :: K -> Type] [tr :: {K} -> Type]\n",
+            "          (f : nm :: Name -> t :: K -> rest :: {K}\n",
+            "               -> [[nm] ~ rest] =>\n",
+            "               tf t -> tr rest -> tr ([nm = t] ++ rest))\n",
+            "          (i : tr []) [r ::: {K}] (fl : folder r) =\n",
+            "    fl [fn r :: {K} => $(map tf r) -> tr r]\n",
+            "       (fn [nm :: Name] [t :: K] [rest :: {K}] [[nm] ~ rest] (acc : _ -> tr rest) r =>\n",
+            "           f [nm] [t] [rest] r.nm (acc (r -- nm)))\n",
+            "       (fn _ => i)\n",
+            "\n",
+            "fun foldR4 [K] [tf1 :: K -> Type] [tf2 :: K -> Type]\n",
+            "           [tf3 :: K -> Type] [tf4 :: K -> Type] [tr :: {K} -> Type]\n",
+            "           (f : nm :: Name -> t :: K -> rest :: {K}\n",
+            "                -> [[nm] ~ rest] =>\n",
+            "                tf1 t -> tf2 t -> tf3 t -> tf4 t -> tr rest -> tr ([nm = t] ++ rest))\n",
+            "           (i : tr []) [r ::: {K}] (fl : folder r) =\n",
+            "    fl [fn r :: {K} => $(map tf1 r) -> $(map tf2 r) -> $(map tf3 r) -> $(map tf4 r) -> tr r]\n",
+            "       (fn [nm :: Name] [t :: K] [rest :: {K}] [[nm] ~ rest]\n",
+            "                        (acc : _ -> _ -> _ -> _ -> tr rest) r1 r2 r3 r4 =>\n",
+            "           f [nm] [t] [rest] r1.nm r2.nm r3.nm r4.nm\n",
+            "             (acc (r1 -- nm) (r2 -- nm) (r3 -- nm) (r4 -- nm)))\n",
+            "       (fn _ _ _ _ => i)\n",
+            "\n",
+            "fun mapUX [tf :: Type] [ctx :: {Unit}]\n",
+            "          (f : nm :: Name -> rest :: {Unit} -> [[nm] ~ rest] => tf -> xml ctx [] []) =\n",
+            "    @@foldR [fn _ => tf] [fn _ => xml ctx [] []]\n",
+            "      (fn [nm :: Name] [u :: Unit] [rest :: {Unit}] [[nm] ~ rest] r acc =>\n",
+            "          <xml>{f [nm] [rest] r}{acc}</xml>)\n",
+            "      <xml/>\n",
+            "\n",
+            "fun mapX [K] [tf :: K -> Type] [ctx :: {Unit}]\n",
+            "          (f : nm :: Name -> t :: K -> rest :: {K}\n",
+            "               -> [[nm] ~ rest] => tf t -> xml ctx [] []) =\n",
+            "    @@foldR [tf] [fn _ => xml ctx [] []]\n",
+            "      (fn [nm :: Name] [t :: K] [rest :: {K}] [[nm] ~ rest] r acc =>\n",
+            "          <xml>{f [nm] [t] [rest] r}{acc}</xml>)\n",
+            "      <xml/>\n",
+        ),
+        concat!(
+            "con folder :: K --> {K} -> Type\n",
+            "val foldR : K --> tf :: (K -> Type) -> tr :: ({K} -> Type)\n",
+            "            -> (nm :: Name -> t :: K -> rest :: {K}\n",
+            "                -> [[nm] ~ rest] =>\n",
+            "                tf t -> tr rest -> tr ([nm = t] ++ rest))\n",
+            "            -> tr [] -> r ::: {K} -> folder r -> $(map tf r) -> tr r\n",
+            "val foldR4 : K --> tf1 :: (K -> Type) -> tf2 :: (K -> Type)\n",
+            "             -> tf3 :: (K -> Type) -> tf4 :: (K -> Type) -> tr :: ({K} -> Type)\n",
+            "             -> (nm :: Name -> t :: K -> rest :: {K}\n",
+            "                 -> [[nm] ~ rest] =>\n",
+            "                 tf1 t -> tf2 t -> tf3 t -> tf4 t -> tr rest -> tr ([nm = t] ++ rest))\n",
+            "             -> tr [] -> r ::: {K} -> folder r\n",
+            "             -> $(map tf1 r) -> $(map tf2 r) -> $(map tf3 r) -> $(map tf4 r) -> tr r\n",
+            "val mapUX : tf :: Type -> ctx :: {Unit}\n",
+            "            -> (nm :: Name -> rest :: {Unit} -> [[nm] ~ rest] => tf -> xml ctx [] [])\n",
+            "            -> r ::: {Unit} -> folder r -> $(mapU tf r) -> xml ctx [] []\n",
+            "val mapX : K --> tf :: (K -> Type) -> ctx :: {Unit}\n",
+            "           -> (nm :: Name -> t :: K -> rest :: {K}\n",
+            "               -> [[nm] ~ rest] => tf t -> xml ctx [] [])\n",
+            "           -> r ::: {K} -> folder r -> $(map tf r) -> xml ctx [] []\n",
+        ),
+    )
+    .expect("Top-named foldR4/mapUX/mapX prefix elaboration");
+}
+
+#[test]
+fn corpus_core_sql_nonempty_and_eqnullable_elaborate() {
+    if !corpus_enabled() {
+        return;
+    }
+    try_elaborate_single_module(concat!(
+        "fun oneOrNoRows [tabs ::: {{Type}}] [exps ::: {Type}] [tables ~ exps]\n",
+        "                (q : sql_query [] [] tables exps) = return None\n",
+        "\n",
+        "fun oneRowE1 [tabs ::: {Unit}] [nm ::: Name] [t ::: Type] [tabs ~ [nm]]\n",
+        "             (q : sql_query [] [] (mapU [] tabs) [nm = t]) =\n",
+        "    o <- oneOrNoRows q;\n",
+        "    return (case o of None => error <xml>Query returned no rows</xml> | Some r => r.nm)\n",
+        "\n",
+        "fun nonempty [fs] [us] (t : sql_table fs us) =\n",
+        "    oneRowE1 (SELECT COUNT( * ) > 0 AS B FROM t)\n",
+        "\n",
+        "fun eqNullable [tables ::: {{Type}}] [agg ::: {{Type}}] [exps ::: {Type}]\n",
+        "    [t ::: Type] (_ : sql_injectable (option t))\n",
+        "    (e1 : sql_exp tables agg exps (option t))\n",
+        "    (e2 : sql_exp tables agg exps (option t)) =\n",
+        "    (SQL ({e1} IS NULL AND {e2} IS NULL) OR {e1} = {e2})\n",
+        "\n",
+        "fun eqNullable' [tables ::: {{Type}}] [agg ::: {{Type}}] [exps ::: {Type}]\n",
+        "    [t ::: Type] (_ : sql_injectable (option t))\n",
+        "    (e1 : sql_exp tables agg exps (option t))\n",
+        "    (e2 : option t) =\n",
+        "    case e2 of\n",
+        "        None => (SQL {e1} IS NULL)\n",
+        "      | Some _ => sql_binary sql_eq e1 (sql_inject e2)\n",
+    ))
+    .expect("narrow SQL surface elaboration");
 }
 
 /// Full Basis boot (no user modules): ratchet [`DiagnosticId::ElabUnresolvedDisjointness`].

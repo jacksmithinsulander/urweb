@@ -270,6 +270,7 @@ pub enum SignatureItem {
     DatatypeImp {
         name: String,
         id: usize,
+        params: Vec<String>,
         orig_mod: usize,
         orig_path: Vec<String>,
         orig_name: String,
@@ -314,6 +315,7 @@ pub enum Declaration {
     DatatypeImp {
         name: String,
         id: usize,
+        params: Vec<String>,
         orig_mod: usize,
         orig_path: Vec<String>,
         orig_name: String,

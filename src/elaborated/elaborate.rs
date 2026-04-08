@@ -208,6 +208,9 @@ pub fn unify_kinds(
         // use site is constrained to types (e.g. `t :: K` under `map`/`folder` in `lib/ur/top.ur`).
         // Without this, rigid `Rel` vs `Type` fails where the reference compiler accepts the program.
         (elab::Kind::Rel(_), elab::Kind::Type) | (elab::Kind::Type, elab::Kind::Rel(_)) => Ok(()),
+        // The same parity rule applies when a generic kind parameter is specialized to `Unit`
+        // through row-folder helpers like `mapUX` / `foldUR*` in `lib/ur/top.ur`.
+        (elab::Kind::Rel(_), elab::Kind::Unit) | (elab::Kind::Unit, elab::Kind::Rel(_)) => Ok(()),
         // `{Type}` vs kind variable `K` used as row index kind (see `r ::: {K}` with `K` fixed to `{Type}`).
         (elab::Kind::Rel(_), elab::Kind::Record(inner))
         | (elab::Kind::Record(inner), elab::Kind::Rel(_)) => {
@@ -388,6 +391,20 @@ fn check_kind(
     expected: &elab::LocatedKind,
 ) {
     if let Err(unify_failure) = unify_kinds(elaboration_environment, got, expected) {
+        if std::env::var("URWEB_DEBUG_TOP_KIND_MISMATCH")
+            .ok()
+            .as_deref()
+            == Some("1")
+            && span.file.ends_with("/lib/ur/top.ur")
+        {
+            eprintln!(
+                "top kind mismatch debug line={} got_kind={} expected_kind={} constructor={}",
+                span.first.line,
+                crate::elaborated::type_display::format_kind(got),
+                crate::elaborated::type_display::format_kind(expected),
+                crate::elaborated::type_display::format_constructor(_constructor_under_check),
+            );
+        }
         elaboration_context.error(
             span.clone(),
             DiagnosticPayload::new(
@@ -508,6 +525,36 @@ fn constructor_is_folder_head(
             .unwrap_or(false),
         elab::Constructor::ModProj(_, _, name) => name == "folder",
         _ => false,
+    }
+}
+
+fn constructor_has_unit_kind(
+    elaboration_context: &mut ElabCtx,
+    elaboration_environment: &Env,
+    constructor: &elab::LocatedConstructor,
+) -> bool {
+    match &hnorm_con_expression_head(elaboration_environment, constructor.clone()).node {
+        elab::Constructor::Rel(index) => elaboration_environment
+            .lookup_c_rel(*index)
+            .ok()
+            .is_some_and(|(_, kind)| matches!(hnorm_kind(kind.clone()).node, elab::Kind::Unit)),
+        elab::Constructor::Named(id) => elaboration_environment
+            .lookup_c_named(*id)
+            .ok()
+            .is_some_and(|(_, kind, _)| matches!(hnorm_kind(kind.clone()).node, elab::Kind::Unit)),
+        elab::Constructor::Unit => true,
+        elab::Constructor::Unif(_, _, kind, _, _) => {
+            matches!(hnorm_kind(kind.as_ref().clone()).node, elab::Kind::Unit)
+        }
+        _ => matches!(
+            hnorm_kind(kindof(
+                elaboration_context,
+                elaboration_environment,
+                constructor,
+            ))
+            .node,
+            elab::Kind::Unit
+        ),
     }
 }
 
@@ -1056,9 +1103,10 @@ fn elab_con_inner(
                 );
                 fields.push((nce, vce));
             }
+            let field_kind = ku.clone();
             let krow = Located::new(elab::Kind::Record(Box::new(ku)), span.clone());
             let result = Located::new(
-                elab::Constructor::Record(Box::new(krow.clone()), fields),
+                elab::Constructor::Record(Box::new(field_kind), fields),
                 span,
             );
             (result, krow)
@@ -1751,6 +1799,36 @@ pub fn format_failed_to_unify_constructors_message(failure: &FailedToUnifyConstr
     }
 }
 
+fn debug_constructor_head_name(
+    elaboration_environment: &Env,
+    constructor: &elab::LocatedConstructor,
+) -> String {
+    let normalized_constructor =
+        hnorm_con_expression_head(elaboration_environment, constructor.clone());
+    let normalized_head = constructor_head_after_apps(&normalized_constructor);
+    match &normalized_head.node {
+        elab::Constructor::Named(id) => match elaboration_environment.lookup_c_named(*id) {
+            Ok((name, kind, definition)) => format!(
+                "Named(#{id}, name={name}, kind={}, has_def={})",
+                crate::elaborated::type_display::format_kind(kind),
+                definition.is_some()
+            ),
+            Err(_) => format!("Named(#{id}, missing)"),
+        },
+        elab::Constructor::ModProj(module_id, path, name) => {
+            format!("ModProj(mod={module_id}, path={path:?}, name={name})")
+        }
+        elab::Constructor::Rel(index) => match elaboration_environment.lookup_c_rel(*index) {
+            Ok((name, kind)) => format!(
+                "Rel('{index}, name={name}, kind={})",
+                crate::elaborated::type_display::format_kind(kind)
+            ),
+            Err(_) => format!("Rel('{index}, missing)"),
+        },
+        _ => crate::elaborated::type_display::format_constructor(&normalized_constructor),
+    }
+}
+
 /// Record summary for row unification.
 #[derive(Debug, Clone)]
 struct RecordSummary {
@@ -1773,6 +1851,100 @@ const RECORD_SUMMARY_MAX_DEPTH: usize = 8192;
 /// Named type aliases are unfolded via `elaboration_environment` so their fields are visible to the row unifier.
 fn record_summary(elaboration_environment: &Env, c: elab::LocatedConstructor) -> RecordSummary {
     record_summary_inner(elaboration_environment, c, 0)
+}
+
+/// Extract tuple components from a closed numeric-field record row (`{1: t1, 2: t2, ...}`).
+///
+/// Returns `None` unless `row_constructor` reduces to a closed record with exactly the positive
+/// integer labels `1..=n` and no open tail, matching the tuple sugar used in source expressions
+/// and patterns.
+fn closed_numeric_record_components(
+    elaboration_environment: &Env,
+    row_constructor: &elab::LocatedConstructor,
+) -> Option<Vec<elab::LocatedConstructor>> {
+    let row_summary = record_summary(elaboration_environment, row_constructor.clone());
+    match (row_summary.unifs.is_empty(), row_summary.others.is_empty()) {
+        (true, true) => {}
+        _ => return None,
+    }
+    if row_summary.fields.is_empty() {
+        return None;
+    }
+
+    let mut ordered_components: Vec<Option<elab::LocatedConstructor>> =
+        vec![None; row_summary.fields.len()];
+    for (field_name, field_type) in row_summary.fields {
+        let normalized_name = hnorm_con(field_name);
+        let tuple_index = match normalized_name.node {
+            elab::Constructor::Name(field_label) => match field_label.parse::<usize>() {
+                Ok(parsed_index) if parsed_index >= 1 => parsed_index,
+                _ => return None,
+            },
+            _ => return None,
+        };
+        if tuple_index > ordered_components.len() {
+            return None;
+        }
+        match ordered_components[tuple_index - 1].replace(field_type) {
+            None => {}
+            Some(_) => return None,
+        }
+    }
+
+    let mut tuple_components: Vec<elab::LocatedConstructor> =
+        Vec::with_capacity(ordered_components.len());
+    for component in ordered_components {
+        match component {
+            Some(field_type) => tuple_components.push(field_type),
+            None => return None,
+        }
+    }
+    Some(tuple_components)
+}
+
+/// Unify a closed numeric-field record type with a tuple/product type component-wise.
+fn unify_closed_numeric_record_with_tuple(
+    elaboration_context: &mut ElabCtx,
+    elaboration_environment: &Env,
+    diagnostic_span: &Span,
+    left_normalized: &elab::LocatedConstructor,
+    right_normalized: &elab::LocatedConstructor,
+    record_row: &elab::LocatedConstructor,
+    tuple_components: &[elab::LocatedConstructor],
+    recursion_depth: usize,
+) -> Result<(), Box<FailedToUnifyConstructors>> {
+    let record_components =
+        match closed_numeric_record_components(elaboration_environment, record_row) {
+            Some(components) => components,
+            None => {
+                return Err(Box::new(
+                    FailedToUnifyConstructors::IncompatibleConstructors(
+                        left_normalized.clone(),
+                        right_normalized.clone(),
+                    ),
+                ));
+            }
+        };
+    if record_components.len() != tuple_components.len() {
+        return Err(Box::new(
+            FailedToUnifyConstructors::IncompatibleConstructors(
+                left_normalized.clone(),
+                right_normalized.clone(),
+            ),
+        ));
+    }
+    for (record_component, tuple_component) in record_components.iter().zip(tuple_components.iter())
+    {
+        unify_cons_inner(
+            elaboration_context,
+            elaboration_environment,
+            diagnostic_span,
+            record_component,
+            tuple_component,
+            recursion_depth + 1,
+        )?;
+    }
+    Ok(())
 }
 
 fn record_summary_inner(
@@ -1917,6 +2089,18 @@ fn unify_cons_inner(
 
     // Quick structural equality check
     if cons_eq_simple(&left_normalized, &right_normalized) {
+        return Ok(());
+    }
+
+    if constructor_has_unit_kind(
+        elaboration_context,
+        elaboration_environment,
+        &left_normalized,
+    ) && constructor_has_unit_kind(
+        elaboration_context,
+        elaboration_environment,
+        &right_normalized,
+    ) {
         return Ok(());
     }
 
@@ -2156,8 +2340,23 @@ fn unify_cons_inner(
                     ),
                 ));
             }
-            unify_kinds(elaboration_environment, k1, k2)
-                .map_err(|ek| Box::new(FailedToUnifyConstructors::KindUnificationFailed(*ek)))?;
+            if let Err(kind_failure) = unify_kinds(elaboration_environment, k1, k2) {
+                if std::env::var("URWEB_DEBUG_TOP_CON_KIND").ok().as_deref() == Some("1")
+                    && diagnostic_span.file.ends_with("/lib/ur/top.ur")
+                {
+                    eprintln!(
+                        "top con kind debug line={} left={} right={} left_kind={} right_kind={}",
+                        diagnostic_span.first.line,
+                        crate::elaborated::type_display::format_constructor(&left_normalized),
+                        crate::elaborated::type_display::format_constructor(&right_normalized),
+                        crate::elaborated::type_display::format_kind(k1),
+                        crate::elaborated::type_display::format_kind(k2),
+                    );
+                }
+                return Err(Box::new(FailedToUnifyConstructors::KindUnificationFailed(
+                    *kind_failure,
+                )));
+            }
             let constructor_environment_extended = elaboration_environment
                 .clone()
                 .push_c_rel(x1.clone(), *k1.clone());
@@ -2178,6 +2377,30 @@ fn unify_cons_inner(
             r2,
             recursion_depth + 1,
         ),
+        (elab::Constructor::TRecord(record_row), elab::Constructor::Tuple(tuple_components)) => {
+            unify_closed_numeric_record_with_tuple(
+                elaboration_context,
+                elaboration_environment,
+                diagnostic_span,
+                &left_normalized,
+                &right_normalized,
+                record_row,
+                tuple_components,
+                recursion_depth,
+            )
+        }
+        (elab::Constructor::Tuple(tuple_components), elab::Constructor::TRecord(record_row)) => {
+            unify_closed_numeric_record_with_tuple(
+                elaboration_context,
+                elaboration_environment,
+                diagnostic_span,
+                &right_normalized,
+                &left_normalized,
+                record_row,
+                tuple_components,
+                recursion_depth,
+            )
+        }
         (elab::Constructor::TDisjoint(_, _, b1), _) => unify_cons_inner(
             elaboration_context,
             elaboration_environment,
@@ -2213,8 +2436,23 @@ fn unify_cons_inner(
             )
         }
         (elab::Constructor::Abs(x1, k1, b1), elab::Constructor::Abs(_, k2, b2)) => {
-            unify_kinds(elaboration_environment, k1, k2)
-                .map_err(|ek| Box::new(FailedToUnifyConstructors::KindUnificationFailed(*ek)))?;
+            if let Err(kind_failure) = unify_kinds(elaboration_environment, k1, k2) {
+                if std::env::var("URWEB_DEBUG_TOP_CON_KIND").ok().as_deref() == Some("1")
+                    && diagnostic_span.file.ends_with("/lib/ur/top.ur")
+                {
+                    eprintln!(
+                        "top con kind debug line={} left={} right={} left_kind={} right_kind={}",
+                        diagnostic_span.first.line,
+                        crate::elaborated::type_display::format_constructor(&left_normalized),
+                        crate::elaborated::type_display::format_constructor(&right_normalized),
+                        crate::elaborated::type_display::format_kind(k1),
+                        crate::elaborated::type_display::format_kind(k2),
+                    );
+                }
+                return Err(Box::new(FailedToUnifyConstructors::KindUnificationFailed(
+                    *kind_failure,
+                )));
+            }
             let constructor_environment_extended = elaboration_environment
                 .clone()
                 .push_c_rel(x1.clone(), *k1.clone());
@@ -2248,8 +2486,25 @@ fn unify_cons_inner(
                 f2,
                 recursion_depth + 1,
             )?;
-            unify_kinds(elaboration_environment, k1, k2)
-                .map_err(|ek| Box::new(FailedToUnifyConstructors::KindUnificationFailed(*ek)))
+            if let Err(kind_failure) = unify_kinds(elaboration_environment, k1, k2) {
+                if std::env::var("URWEB_DEBUG_TOP_CON_KIND").ok().as_deref() == Some("1")
+                    && diagnostic_span.file.ends_with("/lib/ur/top.ur")
+                {
+                    eprintln!(
+                        "top con kind debug line={} left={} right={} left_kind={} right_kind={}",
+                        diagnostic_span.first.line,
+                        crate::elaborated::type_display::format_constructor(&left_normalized),
+                        crate::elaborated::type_display::format_constructor(&right_normalized),
+                        crate::elaborated::type_display::format_kind(k1),
+                        crate::elaborated::type_display::format_kind(k2),
+                    );
+                }
+                Err(Box::new(FailedToUnifyConstructors::KindUnificationFailed(
+                    *kind_failure,
+                )))
+            } else {
+                Ok(())
+            }
         }
         (elab::Constructor::Name(s1), elab::Constructor::Name(s2)) => {
             if s1.to_lowercase() == s2.to_lowercase() {
@@ -2488,6 +2743,121 @@ fn unify_rows(
             }
         }
         return Ok(());
+    }
+
+    let empty_row = || {
+        Located::new(
+            elab::Constructor::Record(Box::new(row_kind.clone()), Vec::new()),
+            diagnostic_span.clone(),
+        )
+    };
+
+    // Mirror the first SML `unifySummaries` empty-row cases:
+    // if one side has only row-tail unifs and the other side is structurally empty,
+    // solve each unknown tail to the empty row immediately.
+    if left_summary.fields.is_empty()
+        && left_summary.others.is_empty()
+        && right_summary.unifs.is_empty()
+        && right_summary.fields.is_empty()
+        && right_summary.others.is_empty()
+    {
+        let solution = empty_row();
+        for left_unif in &left_summary.unifs {
+            let row_tail_cell = match &left_unif.node {
+                elab::Constructor::Unif(_, _, _, _, row_tail_cell) => row_tail_cell.clone(),
+                _ => unreachable!("RecordSummary.unifs must contain Constructor::Unif nodes"),
+            };
+            *crate::compiler_diagnostics::lock_for_compile(
+                row_tail_cell.as_ref(),
+                "elaboration unification cell empty-row left",
+            ) = elab::CUnif::Known(Box::new(solution.clone()));
+        }
+        return Ok(());
+    }
+    if right_summary.fields.is_empty()
+        && right_summary.others.is_empty()
+        && left_summary.unifs.is_empty()
+        && left_summary.fields.is_empty()
+        && left_summary.others.is_empty()
+    {
+        let solution = empty_row();
+        for right_unif in &right_summary.unifs {
+            let row_tail_cell = match &right_unif.node {
+                elab::Constructor::Unif(_, _, _, _, row_tail_cell) => row_tail_cell.clone(),
+                _ => unreachable!("RecordSummary.unifs must contain Constructor::Unif nodes"),
+            };
+            *crate::compiler_diagnostics::lock_for_compile(
+                row_tail_cell.as_ref(),
+                "elaboration unification cell empty-row right",
+            ) = elab::CUnif::Known(Box::new(solution.clone()));
+        }
+        return Ok(());
+    }
+
+    // When one side is a single rigid/abstract row piece and the other side is a pure
+    // concatenation of unknown row tails, solve the first tail to that row and the rest
+    // to empty. This matches the common `inp` vs `?use ++ ?bind` XML/join shape in boot Top.
+    if left_summary.fields.is_empty()
+        && left_summary.unifs.is_empty()
+        && left_summary.others.len() == 1
+        && right_summary.fields.is_empty()
+        && right_summary.others.is_empty()
+        && !right_summary.unifs.is_empty()
+    {
+        let left_row_piece = left_summary.others[0].clone();
+        let first_right_tail_cell = match &right_summary.unifs[0].node {
+            elab::Constructor::Unif(_, _, _, _, row_tail_cell) => row_tail_cell.clone(),
+            _ => unreachable!("RecordSummary.unifs must contain Constructor::Unif nodes"),
+        };
+        if !occurs_cunif(&first_right_tail_cell, &left_row_piece) {
+            *crate::compiler_diagnostics::lock_for_compile(
+                first_right_tail_cell.as_ref(),
+                "elaboration unification cell rigid-row right-first",
+            ) = elab::CUnif::Known(Box::new(left_row_piece));
+            let empty_solution = empty_row();
+            for right_unif in &right_summary.unifs[1..] {
+                let row_tail_cell = match &right_unif.node {
+                    elab::Constructor::Unif(_, _, _, _, unif_cell) => unif_cell.clone(),
+                    _ => unreachable!("RecordSummary.unifs must contain Constructor::Unif nodes"),
+                };
+                *crate::compiler_diagnostics::lock_for_compile(
+                    row_tail_cell.as_ref(),
+                    "elaboration unification cell rigid-row right-rest",
+                ) = elab::CUnif::Known(Box::new(empty_solution.clone()));
+            }
+            return Ok(());
+        }
+    }
+    if right_summary.fields.is_empty()
+        && right_summary.unifs.is_empty()
+        && right_summary.others.len() == 1
+        && left_summary.fields.is_empty()
+        && left_summary.others.is_empty()
+        && !left_summary.unifs.is_empty()
+    {
+        let right_row_piece = right_summary.others[0].clone();
+        let first_left_tail_cell = match &left_summary.unifs[0].node {
+            elab::Constructor::Unif(_, _, _, _, row_tail_cell) => row_tail_cell.clone(),
+            _ => unreachable!("RecordSummary.unifs must contain Constructor::Unif nodes"),
+        };
+        if !occurs_cunif(&first_left_tail_cell, &right_row_piece) {
+            *crate::compiler_diagnostics::lock_for_compile(
+                first_left_tail_cell.as_ref(),
+                "elaboration unification cell rigid-row left-first",
+            ) = elab::CUnif::Known(Box::new(right_row_piece));
+            let empty_solution = empty_row();
+            for left_unif in &left_summary.unifs[1..] {
+                let row_tail_cell = match &left_unif.node {
+                    elab::Constructor::Unif(_, _, _, _, unif_cell) => unif_cell.clone(),
+                    _ => unreachable!("RecordSummary.unifs must contain Constructor::Unif nodes"),
+                };
+                *crate::compiler_diagnostics::lock_for_compile(
+                    row_tail_cell.as_ref(),
+                    "elaboration unification cell rigid-row left-rest",
+                ) = elab::CUnif::Known(Box::new(empty_solution.clone()));
+            }
+            return Ok(());
+        }
     }
 
     // Mirrors SML `unifySummaries` pattern 1: `([(_, r)], [], [], _, _, _)`.
@@ -3340,9 +3710,8 @@ fn unsummarize_summary(
 ) -> elab::LocatedConstructor {
     // Start with the fields assembled into a Record constructor.
     let ktype = Located::new(elab::Kind::Type, span.clone());
-    let krow = Located::new(elab::Kind::Record(Box::new(ktype)), span.clone());
     let mut result = Located::new(
-        elab::Constructor::Record(Box::new(krow), fields.to_vec()),
+        elab::Constructor::Record(Box::new(ktype), fields.to_vec()),
         span.clone(),
     );
     // Concat each unification-variable tail piece onto the result row.
@@ -3380,6 +3749,40 @@ fn check_con(
         got,
         expected,
     ) {
+        if std::env::var("URWEB_DEBUG_TOP_TYPE_MISMATCH")
+            .ok()
+            .as_deref()
+            == Some("1")
+            && span.file.ends_with("/lib/ur/top.ur")
+            && matches!(
+                span.first.line,
+                256 | 260
+                    | 281
+                    | 305
+                    | 312
+                    | 325
+                    | 335
+                    | 344
+                    | 353
+                    | 384
+                    | 385
+                    | 390
+                    | 391
+                    | 396
+                    | 397
+                    | 406
+                    | 413
+            )
+        {
+            eprintln!(
+                "top mismatch debug line={} got={} expected={} got_head={} expected_head={}",
+                span.first.line,
+                crate::elaborated::type_display::format_constructor(got),
+                crate::elaborated::type_display::format_constructor(expected),
+                debug_constructor_head_name(elaboration_environment, got),
+                debug_constructor_head_name(elaboration_environment, expected),
+            );
+        }
         elaboration_context.error(
             span.clone(),
             DiagnosticPayload::new(
@@ -3665,7 +4068,7 @@ fn elab_pat_record(
     let row_con = if is_open {
         let rest = fresh_cunif(elaboration_environment, span.clone(), krow.clone(), "_rest");
         let known_row = Located::new(
-            elab::Constructor::Record(Box::new(krow.clone()), row_fields),
+            elab::Constructor::Record(Box::new(ktype.clone()), row_fields),
             span.clone(),
         );
         Located::new(
@@ -3674,7 +4077,7 @@ fn elab_pat_record(
         )
     } else {
         Located::new(
-            elab::Constructor::Record(Box::new(krow.clone()), row_fields),
+            elab::Constructor::Record(Box::new(ktype.clone()), row_fields),
             span.clone(),
         )
     };
@@ -3852,6 +4255,20 @@ fn elab_exp_inner(
                     span.file, span.first.line, fe, ftn
                 );
             }
+            if std::env::var("URWEB_DEBUG_TOP_APP_NONFUNCTION")
+                .ok()
+                .as_deref()
+                == Some("1")
+                && span.file.ends_with("/lib/ur/top.ur")
+                && (181..=230).contains(&span.first.line)
+            {
+                eprintln!(
+                    "top app debug line={} ft={} ft_head={}",
+                    span.first.line,
+                    crate::elaborated::type_display::format_constructor(&ftn),
+                    debug_constructor_head_name(elaboration_environment, &ftn),
+                );
+            }
             match ftn.node.clone() {
                 elab::Constructor::TFun(dom, ran) => {
                     let (ae, at) = elab_exp(
@@ -4020,7 +4437,19 @@ fn elab_exp_inner(
             let (ce, ck) = elab_con(elaboration_context, elaboration_environment, c);
             // `CApp` needs full-tree `named_c` expansion (`lib/ur/top.ur`); see
             // [`hnorm_con_constructor_abstraction`] (not `f e`, not `unify_cons`).
-            let e1tn = hnorm_con_constructor_abstraction(elaboration_environment, e1t);
+            let e1tn = hnorm_con_constructor_abstraction(elaboration_environment, e1t.clone());
+            if std::env::var("URWEB_DEBUG_TOP_CAPP").ok().as_deref() == Some("1")
+                && span.file.ends_with("/lib/ur/top.ur")
+                && (180..=230).contains(&span.first.line)
+            {
+                eprintln!(
+                    "top capp debug line={} head_type={} head_norm={} head_norm_head={}",
+                    span.first.line,
+                    crate::elaborated::type_display::format_constructor(&e1t),
+                    crate::elaborated::type_display::format_constructor(&e1tn),
+                    debug_constructor_head_name(elaboration_environment, &e1tn),
+                );
+            }
             match e1tn.node {
                 elab::Constructor::TCFun(_, _x, k, body) => {
                     check_kind(
@@ -4031,9 +4460,31 @@ fn elab_exp_inner(
                         &ck,
                         &k,
                     );
-                    let result_type = match sub_con_in_con(0, &ce, *body) {
-                        Ok(t) => t,
-                        Err(_) => elaborated_constructor_error_at_span(span.clone()),
+                    // Clone the constructor body so debug reporting can still inspect the original on failure.
+                    let constructor_body = *body.clone();
+                    // Substitute the constructor argument through the result body, matching SML constructor application.
+                    let result_type = match sub_con_in_con(0, &ce, constructor_body) {
+                        Ok(substituted_type) => hnorm_con_constructor_abstraction(
+                            elaboration_environment,
+                            substituted_type,
+                        ),
+                        Err(_) => {
+                            if std::env::var("URWEB_DEBUG_TOP_CAPP").ok().as_deref() == Some("1")
+                                && span.file.ends_with("/lib/ur/top.ur")
+                                && (180..=230).contains(&span.first.line)
+                            {
+                                eprintln!(
+                                    "top capp debug line={} substitution_hit_subunif arg={} body_head={}",
+                                    span.first.line,
+                                    crate::elaborated::type_display::format_constructor(&ce),
+                                    debug_constructor_head_name(
+                                        elaboration_environment,
+                                        body.as_ref()
+                                    ),
+                                );
+                            }
+                            elaborated_constructor_error_at_span(span.clone())
+                        }
                     };
                     let second_infer = infer_for_second_elab_head(e1.as_ref(), &e1e);
                     let result =
@@ -4288,13 +4739,7 @@ fn elab_exp_inner(
                 elab::Constructor::Concat(
                     Box::new(Located::new(
                         elab::Constructor::Record(
-                            Box::new(Located::new(
-                                elab::Kind::Record(Box::new(Located::new(
-                                    elab::Kind::Type,
-                                    span.clone(),
-                                ))),
-                                span.clone(),
-                            )),
+                            Box::new(Located::new(elab::Kind::Type, span.clone())),
                             vec![(fce.clone(), field_type.clone())],
                         ),
                         span.clone(),
@@ -4417,13 +4862,7 @@ fn elab_exp_inner(
                 elab::Constructor::Concat(
                     Box::new(Located::new(
                         elab::Constructor::Record(
-                            Box::new(Located::new(
-                                elab::Kind::Record(Box::new(Located::new(
-                                    elab::Kind::Type,
-                                    span.clone(),
-                                ))),
-                                span.clone(),
-                            )),
+                            Box::new(Located::new(elab::Kind::Type, span.clone())),
                             vec![(fce.clone(), field_type.clone())],
                         ),
                         span.clone(),
@@ -4574,6 +5013,7 @@ fn elab_exp_inner(
                     elab_decls.push(d);
                 }
                 cur_env = new_env;
+                solve_constraints(elaboration_context, &cur_env);
             }
             let (bodye, bodytype) = elab_exp(
                 elaboration_context,
@@ -4831,6 +5271,17 @@ fn elab_exp_var(
     span: &Span,
 ) -> (elab::LocatedExpression, elab::LocatedConstructor) {
     if ms.is_empty() {
+        if std::env::var("URWEB_DEBUG_TOP_VAR_LOOKUP").ok().as_deref() == Some("1")
+            && span.file.ends_with("/lib/ur/top.ur")
+            && (256..=264).contains(&span.first.line)
+        {
+            eprintln!(
+                "top var debug line={} name={} lookup={:?}",
+                span.first.line,
+                x,
+                elaboration_environment.lookup_e(x),
+            );
+        }
         match elaboration_environment.lookup_e(x) {
             VarLookup::Rel(idx, t) => {
                 let e = Located::new(elab::Expression::Rel(idx), span.clone());
@@ -5055,7 +5506,6 @@ fn elab_exp_record(
     span: &Span,
 ) -> (elab::LocatedExpression, elab::LocatedConstructor) {
     let ktype = Located::new(elab::Kind::Type, span.clone());
-    let krow = Located::new(elab::Kind::Record(Box::new(ktype.clone())), span.clone());
     let mut fields = Vec::new(); // (name_con, value_exp, field_type)
     let mut row_fields = Vec::new();
 
@@ -5081,7 +5531,7 @@ fn elab_exp_record(
     }
 
     let row_con = Located::new(
-        elab::Constructor::Record(Box::new(krow.clone()), row_fields),
+        elab::Constructor::Record(Box::new(ktype.clone()), row_fields),
         span.clone(),
     );
     let result_type = Located::new(elab::Constructor::TRecord(Box::new(row_con)), span.clone());
@@ -5364,8 +5814,23 @@ fn elab_edecl(
                 elab_bindings.push((x.clone(), annot_types[i].clone(), ee));
             }
 
-            let decl = Located::new(elab::ElaboratedDeclaration::ValRec(elab_bindings), span);
-            (Some(decl), pre_env)
+            solve_constraints(elaboration_context, &pre_env);
+            let mut normalized_env = elaboration_environment.clone();
+            let mut normalized_bindings: Vec<(
+                String,
+                elab::LocatedConstructor,
+                elab::LocatedExpression,
+            )> = Vec::with_capacity(elab_bindings.len());
+            for (name, binding_type, expression) in elab_bindings {
+                let normalized_type = hnorm_con_expression_head(&pre_env, binding_type);
+                normalized_env = normalized_env.push_e_rel(name.clone(), normalized_type.clone());
+                normalized_bindings.push((name, normalized_type, expression));
+            }
+            let decl = Located::new(
+                elab::ElaboratedDeclaration::ValRec(normalized_bindings),
+                span,
+            );
+            (Some(decl), normalized_env)
         }
     }
 }
@@ -5666,6 +6131,7 @@ fn elab_datatype_imp_sig(
             elab::SignatureItem::DatatypeImp {
                 name: x.to_string(),
                 id,
+                params: dt.params.clone(),
                 orig_mod: str_id,
                 orig_path: ms.to_vec(),
                 orig_name: y.to_string(),
@@ -6083,6 +6549,7 @@ pub fn elab_decl(
                 if let elab::SignatureItem::DatatypeImp {
                     name,
                     id,
+                    params,
                     orig_mod,
                     orig_path,
                     orig_name,
@@ -6094,6 +6561,7 @@ pub fn elab_decl(
                         elab::Declaration::DatatypeImp {
                             name,
                             id,
+                            params,
                             orig_mod,
                             orig_path,
                             orig_name,
@@ -6124,10 +6592,11 @@ pub fn elab_decl(
             let (pate, new_env) = elab_pat(elaboration_context, elaboration_environment, pat, &et);
             // Collect declared bindings
             let mut decls = Vec::new();
-            collect_val_decls(&pate, &ee, &et, &span, &mut decls, &mut new_env.clone());
+            let mut value_env = new_env;
+            collect_val_decls(&pate, &ee, &et, &span, &mut decls, &mut value_env);
             // Solve constraints
-            solve_constraints(elaboration_context, &new_env);
-            (decls, new_env, disjointness_environment.clone())
+            solve_constraints(elaboration_context, &value_env);
+            (decls, value_env, disjointness_environment.clone())
         }
 
         source::Decl::ValRec(bindings) => {
@@ -6167,8 +6636,25 @@ pub fn elab_decl(
             }
 
             solve_constraints(elaboration_context, &pre_env);
-            let decl_out = Located::new(elab::Declaration::ValRec(elab_recs), span);
-            (vec![decl_out], pre_env, disjointness_environment.clone())
+            let mut normalized_env = pre_env.clone();
+            let mut normalized_recs: Vec<(
+                String,
+                usize,
+                elab::LocatedConstructor,
+                elab::LocatedExpression,
+            )> = Vec::with_capacity(elab_recs.len());
+            for (name, id, declared_type, expression) in elab_recs {
+                let normalized_type = hnorm_con_expression_head(&pre_env, declared_type);
+                normalized_env =
+                    normalized_env.push_e_named_as(name.clone(), id, normalized_type.clone());
+                normalized_recs.push((name, id, normalized_type, expression));
+            }
+            let decl_out = Located::new(elab::Declaration::ValRec(normalized_recs), span);
+            (
+                vec![decl_out],
+                normalized_env,
+                disjointness_environment.clone(),
+            )
         }
 
         source::Decl::Sgn(x, sgn) => {
@@ -6614,6 +7100,7 @@ fn enrich_env_from_sgi(
         elab::SignatureItem::DatatypeImp {
             name,
             id,
+            params,
             orig_mod,
             orig_path,
             orig_name,
@@ -6622,6 +7109,14 @@ fn enrich_env_from_sgi(
         } => {
             let dummy_span = Span::dummy();
             let kind_type = Located::new(elab::Kind::Type, dummy_span.clone());
+            let datatype_kind = params
+                .iter()
+                .fold(kind_type.clone(), |accumulated_kind, _| {
+                    Located::new(
+                        elab::Kind::Arrow(Box::new(kind_type.clone()), Box::new(accumulated_kind)),
+                        dummy_span.clone(),
+                    )
+                });
             let definition = Located::new(
                 elab::Constructor::ModProj(*orig_mod, orig_path.clone(), orig_name.clone()),
                 dummy_span.clone(),
@@ -6629,14 +7124,14 @@ fn enrich_env_from_sgi(
             let mut cur_env = elaboration_environment.push_c_named_as(
                 name.clone(),
                 *id,
-                kind_type,
+                datatype_kind,
                 Some(definition),
             );
-            cur_env = cur_env.push_datatype(*id, Vec::new(), constrs.clone());
+            cur_env = cur_env.push_datatype(*id, params.clone(), constrs.clone());
             for (con_name, con_id, arg_type) in constrs {
                 let expression_type = crate::elaborated::environment::build_constructor_type(
                     *id,
-                    &[],
+                    params,
                     arg_type.as_ref(),
                     dummy_span.clone(),
                 );
@@ -6738,6 +7233,10 @@ pub fn elab_str(
                     elab_decl(elaboration_context, &cur_env, &cur_denv, d);
                 cur_env = new_env;
                 cur_denv = new_denv;
+                // Keep deferred elaboration constraints declaration-local inside structures,
+                // matching the SML pipeline more closely and preventing earlier helpers from
+                // leaking unresolved state into later declarations like `rev` / `queryL`.
+                solve_constraints(elaboration_context, &cur_env);
                 elab_decls.extend(ds);
             }
             // Build signature from the declarations
@@ -6915,6 +7414,7 @@ fn decls_to_sgn(decls: &[elab::LocatedDeclaration], span: &Span) -> elab::Locate
             elab::Declaration::DatatypeImp {
                 name,
                 id,
+                params,
                 orig_mod,
                 orig_path,
                 orig_name,
@@ -6925,6 +7425,7 @@ fn decls_to_sgn(decls: &[elab::LocatedDeclaration], span: &Span) -> elab::Locate
                     elab::SignatureItem::DatatypeImp {
                         name: name.clone(),
                         id: *id,
+                        params: params.clone(),
                         orig_mod: *orig_mod,
                         orig_path: orig_path.clone(),
                         orig_name: orig_name.clone(),
@@ -6987,106 +7488,122 @@ fn decls_to_sgn(decls: &[elab::LocatedDeclaration], span: &Span) -> elab::Locate
 // Constraint solving
 // ---------------------------------------------------------------------------
 
+const CONSTRAINT_SOLVE_MAX_PASSES: usize = 8;
+
 fn solve_constraints(elaboration_context: &mut ElabCtx, _elaboration_environment: &Env) {
-    let constraints = std::mem::take(&mut elaboration_context.constraints);
+    let mut pending_constraints = std::mem::take(&mut elaboration_context.constraints);
     let mut remaining = Vec::new();
 
-    for c in constraints {
-        match c {
-            Constraint::Disjoint {
-                span,
-                elaboration_environment: c_env,
-                goal,
-            } => {
-                let goals = disjoint::prove(
-                    goal.span.clone(),
-                    &goal.disjointness_environment,
-                    goal.left_constructor.clone(),
-                    goal.right_constructor.clone(),
-                );
-                if !goals.is_empty() {
-                    // Re-add unresolved goals
-                    for g in goals {
-                        remaining.push(Constraint::Disjoint {
-                            span: span.clone(),
-                            elaboration_environment: c_env.clone(),
-                            goal: g,
-                        });
+    for _pass_index in 0..CONSTRAINT_SOLVE_MAX_PASSES {
+        if pending_constraints.is_empty() {
+            break;
+        }
+        let mut next_pending = Vec::new();
+        let mut made_progress = false;
+        for c in pending_constraints {
+            match c {
+                Constraint::Disjoint {
+                    span,
+                    elaboration_environment: c_env,
+                    goal,
+                } => {
+                    let goals = disjoint::prove(
+                        goal.span.clone(),
+                        &goal.disjointness_environment,
+                        goal.left_constructor.clone(),
+                        goal.right_constructor.clone(),
+                    );
+                    if goals.is_empty() {
+                        made_progress = true;
+                    } else {
+                        for g in goals {
+                            next_pending.push(Constraint::Disjoint {
+                                span: span.clone(),
+                                elaboration_environment: c_env.clone(),
+                                goal: g,
+                            });
+                        }
                     }
                 }
-            }
-            Constraint::TypeClass {
-                span,
-                elaboration_environment: c_env,
-                class,
-                result,
-            } => {
-                // Try to resolve the class instance
-                match resolve_class(&c_env, &class, &span) {
+                Constraint::TypeClass {
+                    span,
+                    elaboration_environment: c_env,
+                    class,
+                    result,
+                } => match resolve_class(&c_env, &class, &span) {
                     Some((witness, matched_head)) => {
-                        // Unify the class constraint with the matched rule head.
-                        // This instantiates any type variables, e.g. solving `Unif(m) = transaction`
-                        // when the class is `monad Unif(m)` and the head is `monad transaction`.
                         let _ =
                             unify_cons(elaboration_context, &c_env, &span, &class, &matched_head);
                         *crate::compiler_diagnostics::lock_for_compile(
                             result.as_ref(),
                             "elaboration unification cell",
                         ) = Some(witness);
+                        made_progress = true;
                     }
                     None => {
-                        remaining.push(Constraint::TypeClass {
+                        next_pending.push(Constraint::TypeClass {
                             span: span.clone(),
                             elaboration_environment: c_env,
                             class,
                             result,
                         });
                     }
+                },
+                Constraint::RowUnification {
+                    span,
+                    elaboration_environment: c_env,
+                    left_constructor,
+                    right_constructor,
+                } => {
+                    let retry_result = unify_rows(
+                        elaboration_context,
+                        &c_env,
+                        &span,
+                        &left_constructor,
+                        &right_constructor,
+                        0,
+                    );
+                    if retry_result.is_ok() {
+                        made_progress = true;
+                    } else {
+                        let map_result = guess_map(
+                            elaboration_context,
+                            &c_env,
+                            &span,
+                            &left_constructor,
+                            &right_constructor,
+                            0,
+                        );
+                        match map_result {
+                            Ok(()) => {
+                                made_progress = true;
+                            }
+                            Err(_) => {
+                                next_pending.push(Constraint::RowUnification {
+                                    span,
+                                    elaboration_environment: c_env,
+                                    left_constructor,
+                                    right_constructor,
+                                });
+                            }
+                        }
+                    }
                 }
-            }
-            Constraint::RowUnification {
-                span,
-                elaboration_environment: c_env,
-                left_constructor,
-                right_constructor,
-            } => {
-                // Retry row unification with `may_delay = false` (the caller resets it before
-                // calling us). More unification variables may have been filled in since deferral.
-                let retry_result = unify_rows(
-                    elaboration_context,
-                    &c_env,
-                    &span,
-                    &left_constructor,
-                    &right_constructor,
-                    0, // start fresh depth counter
-                );
-                if retry_result.is_ok() {
-                    // Row summary unification resolved it; cells mutated in-place.
-                    continue;
-                }
-                // Row summary failed — try guess_map in case one side is `map f r` and
-                // the other is a concrete record or unif variable (mirrors SML's guessMap
-                // being tried after unifyCons'' raises).
-                let map_result = guess_map(
-                    elaboration_context,
-                    &c_env,
-                    &span,
-                    &left_constructor,
-                    &right_constructor,
-                    0,
-                );
-                if map_result.is_err() {
-                    // Still unresolvable — keep in remaining so we can report it below.
-                    remaining.push(Constraint::RowUnification {
-                        span,
-                        elaboration_environment: c_env,
-                        left_constructor,
-                        right_constructor,
-                    });
-                }
-                // On success (either path), cells were mutated in-place; nothing else to do.
             }
         }
+        if next_pending.is_empty() {
+            pending_constraints = next_pending;
+            break;
+        }
+        if !made_progress {
+            remaining = next_pending;
+            pending_constraints = Vec::new();
+            break;
+        }
+        pending_constraints = next_pending;
+    }
+    if remaining.is_empty() {
+        remaining = pending_constraints;
     }
 
     // Report truly unresolvable constraints
@@ -7734,6 +8251,7 @@ pub fn elab_file(
         );
         elaboration_environment = new_env; // Step: env after `elab_decl` on this AST node.
         disjointness_environment = new_denv; // Step: parallel disjointness state.
+        solve_constraints(&mut elaboration_context, &elaboration_environment);
         all_decls.extend(ds); // Accumulate elaborated declarations.
 
         // Mirror SML `elabFile` `dopen` on `Basis` / `Top` once those structures exist.
@@ -7820,6 +8338,191 @@ mod tests {
         );
         assert!(matches!(ee.node, elab::Expression::Rel(0)));
         assert!(matches!(et.node, elab::Constructor::Unit));
+    }
+
+    #[test]
+    fn unify_cons_treats_all_unit_kind_constructors_as_equal() {
+        let span = crate::error_types::Span::dummy();
+        let unit_kind = Located::new(elab::Kind::Unit, span.clone());
+        let left_constructor = Located::new(elab::Constructor::Rel(0), span.clone());
+        let right_constructor = Located::new(elab::Constructor::Unit, span.clone());
+        let elaboration_environment = Env::empty().push_c_rel("u".into(), unit_kind);
+        let mut elaboration_context = ElabCtx::new();
+        let result = unify_cons(
+            &mut elaboration_context,
+            &elaboration_environment,
+            &span,
+            &left_constructor,
+            &right_constructor,
+        );
+        assert!(
+            result.is_ok(),
+            "Unit-kinded constructors should unify extensionally, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn unify_kinds_treats_rel_and_unit_as_compatible() {
+        let span = crate::error_types::Span::dummy();
+        let left_kind = Located::new(elab::Kind::Rel(0), span.clone());
+        let right_kind = Located::new(elab::Kind::Unit, span.clone());
+        let elaboration_environment = Env::empty();
+        let result = unify_kinds(&elaboration_environment, &left_kind, &right_kind);
+        assert!(
+            result.is_ok(),
+            "kind variable and Unit should unify for folder parity, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn unify_cons_treats_closed_numeric_records_as_tuples() {
+        let span = crate::error_types::Span::dummy();
+        let type_kind = Located::new(elab::Kind::Type, span.clone());
+        let row_kind = Located::new(
+            elab::Kind::Record(Box::new(type_kind.clone())),
+            span.clone(),
+        );
+        let record_row = Located::new(
+            elab::Constructor::Record(
+                Box::new(row_kind),
+                vec![
+                    (
+                        Located::new(elab::Constructor::Name("1".into()), span.clone()),
+                        Located::new(elab::Constructor::Rel(0), span.clone()),
+                    ),
+                    (
+                        Located::new(elab::Constructor::Name("2".into()), span.clone()),
+                        Located::new(elab::Constructor::Rel(1), span.clone()),
+                    ),
+                ],
+            ),
+            span.clone(),
+        );
+        let left_constructor = Located::new(
+            elab::Constructor::TRecord(Box::new(record_row)),
+            span.clone(),
+        );
+        let right_constructor = Located::new(
+            elab::Constructor::Tuple(vec![
+                Located::new(elab::Constructor::Rel(0), span.clone()),
+                Located::new(elab::Constructor::Rel(1), span.clone()),
+            ]),
+            span.clone(),
+        );
+        let elaboration_environment = Env::empty()
+            .push_c_rel("b".into(), type_kind.clone())
+            .push_c_rel("a".into(), type_kind);
+        let mut elaboration_context = ElabCtx::new();
+        let result = unify_cons(
+            &mut elaboration_context,
+            &elaboration_environment,
+            &span,
+            &left_constructor,
+            &right_constructor,
+        );
+        assert!(
+            result.is_ok(),
+            "closed numeric records should unify with tuples, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn unify_rows_solves_unknown_tail_to_empty_row() {
+        let span = crate::error_types::Span::dummy();
+        let type_kind = Located::new(elab::Kind::Type, span.clone());
+        let row_kind = Located::new(elab::Kind::Record(Box::new(type_kind)), span.clone());
+        let elaboration_environment = Env::empty();
+        let mut elaboration_context = ElabCtx::new();
+        let unknown_tail = fresh_cunif(
+            &elaboration_environment,
+            span.clone(),
+            row_kind.clone(),
+            "tail",
+        );
+        let empty_row = Located::new(
+            elab::Constructor::Record(Box::new(row_kind), Vec::new()),
+            span.clone(),
+        );
+
+        let result = unify_rows(
+            &mut elaboration_context,
+            &elaboration_environment,
+            &span,
+            &unknown_tail,
+            &empty_row,
+            0,
+        );
+        assert!(
+            result.is_ok(),
+            "empty-row tail solve should succeed: {:?}",
+            result
+        );
+
+        let solved = hnorm_con(unknown_tail);
+        assert!(
+            cons_eq_simple(&solved, &empty_row),
+            "unknown tail should normalize to the empty row, got {}",
+            crate::elaborated::type_display::format_constructor(&solved)
+        );
+    }
+
+    #[test]
+    fn unify_rows_solves_rigid_row_against_unknown_concat_tails() {
+        let span = crate::error_types::Span::dummy();
+        let type_kind = Located::new(elab::Kind::Type, span.clone());
+        let row_kind = Located::new(
+            elab::Kind::Record(Box::new(type_kind.clone())),
+            span.clone(),
+        );
+        let elaboration_environment = Env::empty().push_c_rel("inp".into(), row_kind.clone());
+        let mut elaboration_context = ElabCtx::new();
+        let first_tail = fresh_cunif(
+            &elaboration_environment,
+            span.clone(),
+            row_kind.clone(),
+            "use",
+        );
+        let second_tail = fresh_cunif(
+            &elaboration_environment,
+            span.clone(),
+            row_kind.clone(),
+            "bind",
+        );
+        let rigid_row = Located::new(elab::Constructor::Rel(0), span.clone());
+        let unknown_concat = Located::new(
+            elab::Constructor::Concat(Box::new(first_tail.clone()), Box::new(second_tail.clone())),
+            span.clone(),
+        );
+
+        let result = unify_rows(
+            &mut elaboration_context,
+            &elaboration_environment,
+            &span,
+            &rigid_row,
+            &unknown_concat,
+            0,
+        );
+        assert!(
+            result.is_ok(),
+            "rigid-row/unknown-concat solve should succeed: {:?}",
+            result
+        );
+
+        let solved_first_tail = hnorm_con(first_tail);
+        let solved_second_tail = hnorm_con(second_tail);
+        assert!(
+            matches!(solved_first_tail.node, elab::Constructor::Rel(0)),
+            "first tail should normalize to the rigid row, got {}",
+            crate::elaborated::type_display::format_constructor(&solved_first_tail)
+        );
+        assert!(
+            matches!(solved_second_tail.node, elab::Constructor::Record(_, ref fields) if fields.is_empty()),
+            "second tail should normalize to the empty row, got {}",
+            crate::elaborated::type_display::format_constructor(&solved_second_tail)
+        );
     }
 
     /// After `open Basis`, datatype constructors (`True`, `False`, …) must appear in
@@ -8139,10 +8842,13 @@ mod tests {
                     for (decl_index, decl) in top_decls.iter().enumerate() {
                         if std::env::var("URWEB_TEST_BOOT_INCREMENTAL_DEBUG").ok().as_deref()
                             == Some("1")
-                            && decl_index == 16
+                            && matches!(decl_index, 16 | 55 | 56 | 57 | 58 | 59 | 60)
                         {
                             eprintln!(
-                                "boot debug decl_index=16 show_c={:?} show_e={:?} mkShow={:?} read_e={:?} none_ctor={} some_ctor={}",
+                                "boot debug decl_index={decl_index} return_e={:?} query_e={:?} oneOrNoRows_e={:?} show_c={:?} show_e={:?} mkShow={:?} read_e={:?} none_ctor={} some_ctor={}",
+                                env.lookup_e("return"),
+                                env.lookup_e("query"),
+                                env.lookup_e("oneOrNoRows"),
                                 env.lookup_c("show"),
                                 env.lookup_e("show"),
                                 env.lookup_e("mkShow"),
@@ -8175,7 +8881,60 @@ mod tests {
             }
         }
         let mut elab_errors = ErrorReporter::new_silent();
-        let _elaborated_file = elab_file(source_file, &settings, &mut elab_errors);
+        let _elaborated_file = elab_file(source_file.clone(), &settings, &mut elab_errors);
+        if std::env::var("URWEB_TEST_BOOT_ID_DEBUG").ok().as_deref() == Some("1") {
+            let mut boot_env = Env::empty();
+            let mut boot_denv = disjoint::empty_env();
+            let mut boot_ctx = ElabCtx::new();
+            if let Some(basis_decl) = source_file.iter().find(|decl| {
+                matches!(&decl.node, crate::source::Decl::FfiStr(name, _, _) if name == "Basis")
+            }) {
+                let (_basis_decls, basis_env, basis_denv) =
+                    elab_decl(&mut boot_ctx, &boot_env, &boot_denv, basis_decl);
+                boot_env = basis_env;
+                boot_denv = basis_denv;
+                let (_open_decls, open_env, open_denv) = elab_open(
+                    &mut boot_ctx,
+                    &boot_env,
+                    &boot_denv,
+                    &["Basis".to_string()],
+                    &basis_decl.span,
+                );
+                boot_env = open_env;
+                boot_denv = open_denv;
+            }
+            for decl in &source_file {
+                if matches!(&decl.node, crate::source::Decl::FfiStr(name, _, _) if name == "Basis")
+                {
+                    continue;
+                }
+                let (_decls, new_env, new_denv) =
+                    elab_decl(&mut boot_ctx, &boot_env, &boot_denv, decl);
+                boot_env = new_env;
+                boot_denv = new_denv;
+            }
+            for target_id in [12_usize, 15, 113, 420] {
+                match boot_env.lookup_c_named(target_id) {
+                    Ok((name, kind, definition)) => {
+                        eprintln!(
+                            "boot id debug constructor #{target_id}: name={name} kind={:?} has_def={}",
+                            kind,
+                            definition.is_some()
+                        );
+                    }
+                    Err(_) => eprintln!("boot id debug constructor #{target_id}: <missing>"),
+                }
+                match boot_env.lookup_e_named(target_id) {
+                    Ok((name, type_con)) => {
+                        eprintln!(
+                            "boot id debug expression #{target_id}: name={name} type={:?}",
+                            type_con
+                        );
+                    }
+                    Err(_) => eprintln!("boot id debug expression #{target_id}: <missing>"),
+                }
+            }
+        }
         let mut histogram: HashMap<DiagnosticId, usize> = HashMap::new();
         for error in &elab_errors.errors {
             if let CompileError::TypeError { payload, .. } = error {

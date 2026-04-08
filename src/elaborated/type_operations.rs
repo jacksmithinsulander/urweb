@@ -23,9 +23,10 @@ fn lift_kind_in_kind_bound(by: usize, bound: usize, kind: LocatedKind) -> Locate
     let node = match kind.node {
         Kind::Rel(n) => {
             if n < bound {
-                Kind::Rel(n)
+                Kind::Rel(n) // bound: not lifted
             } else {
-                Kind::Rel(n + by)
+                // Saturating prevents overflow when n is a sentinel large value from an error path.
+                Kind::Rel(n.saturating_add(by))
             }
         }
         Kind::Arrow(domain_kind, range_kind) => Kind::Arrow(
@@ -336,13 +337,17 @@ fn lift_con_in_con_bound(
     let node = match constructor.node {
         Constructor::Rel(n) => {
             if n < bound {
-                Constructor::Rel(n)
+                Constructor::Rel(n) // bound: not lifted
             } else {
-                Constructor::Rel(n + by)
+                // Use saturating_add: if `n` is a sentinel (e.g. usize::MAX from a failed lookup),
+                // adding `by` would overflow; saturating keeps it large (still "unbound") safely.
+                Constructor::Rel(n.saturating_add(by))
             }
         }
-        // Unification variables track their nesting level
-        Constructor::Unif(nl, s, k, name, r) => Constructor::Unif(nl + by, s, k, name, r),
+        // Unification variables track their nesting level; saturating prevents overflow on error paths.
+        Constructor::Unif(nl, s, k, name, r) => {
+            Constructor::Unif(nl.saturating_add(by), s, k, name, r)
+        }
         Constructor::TFun(domain, codomain) => Constructor::TFun(
             Box::new(lift_con_in_con_bound(by, bound, *domain)),
             Box::new(lift_con_in_con_bound(by, bound, *codomain)),
@@ -618,15 +623,23 @@ fn sub_con_in_con_inner(
         // We represent SML's `-1` sentinel as `usize::MAX` (wrapping underflow from 0).
         // `wrapping_sub(1)` matches the SML decrement exactly: nl=0 → usize::MAX (= -1 sentinel),
         // and usize::MAX (already -1) is caught first and raises SubUnif.
-        Constructor::Unif(nl, s, k, name, r) => {
-            if nl == usize::MAX {
-                // This Unif already holds the ~1 sentinel: block substitution.
-                return Err(SubUnif);
+        Constructor::Unif(nl, s, k, name, r) => match read_cunif(&r) {
+            Some(known_constructor) => {
+                // Keep parity with SML `ElabUtil.Con.mapB`, which traverses through solved constructor unifiers.
+                let lifted_known_constructor = mlift_con_in_con(nl, known_constructor);
+                // Continue substitution through the solved constructor instead of treating the cell as opaque.
+                return sub_con_in_con_inner(by, xn, rep, lifted_known_constructor);
             }
-            // Decrement nesting level by 1; nl=0 wraps to usize::MAX (the ~1 sentinel),
-            // matching SML's CUnif(0) → CUnif(0-1) = CUnif(~1) behavior.
-            Constructor::Unif(nl.wrapping_sub(1), s, k, name, r)
-        }
+            None => {
+                if nl == usize::MAX {
+                    // This Unif already holds the ~1 sentinel: block substitution.
+                    return Err(SubUnif);
+                }
+                // Decrement nesting level by 1; nl=0 wraps to usize::MAX (the ~1 sentinel),
+                // matching SML's CUnif(0) → CUnif(0-1) = CUnif(~1) behavior.
+                Constructor::Unif(nl.wrapping_sub(1), s, k, name, r)
+            }
+        },
         Constructor::TFun(domain, codomain) => Constructor::TFun(
             Box::new(sub_con_in_con_inner(by, xn, rep, *domain)?),
             Box::new(sub_con_in_con_inner(by, xn, rep, *codomain)?),
@@ -1649,6 +1662,7 @@ mod tests {
     use super::*;
     use crate::elaborated::{Constructor, Explicitness, Kind};
     use crate::error_types::Located;
+    use std::sync::{Arc, Mutex};
 
     fn dummy<T>(node: T) -> Located<T> {
         Located::dummy(node)
@@ -1769,6 +1783,31 @@ mod tests {
         let c = dummy(Constructor::Rel(2));
         let out = sub_con_in_con(0, &rep, c).unwrap();
         assert!(matches!(out.node, Constructor::Rel(1)));
+    }
+
+    #[test]
+    fn sub_con_in_con_peels_known_unif_before_sentinel_check() {
+        // Build a solved constructor unifier whose stored constructor still contains the target Rel(0).
+        let known_constructor = dummy(Constructor::Rel(0));
+        // Store the solved constructor in the unification cell so substitution must traverse through it.
+        let reference = Arc::new(Mutex::new(CUnif::Known(Box::new(known_constructor))));
+        // Use a zero nesting level so a non-parity implementation would wrap to the ~1 sentinel on this node.
+        let constructor = dummy(Constructor::Unif(
+            0,
+            crate::error_types::Span::dummy(),
+            Box::new(dummy(Kind::Type)),
+            "known".into(),
+            reference,
+        ));
+        // Substitute a concrete constructor for Rel(0).
+        let replacement = dummy(Constructor::Named(7));
+        // The solved unifier should be traversed first, so substitution succeeds instead of producing SubUnif.
+        let substituted_constructor = sub_con_in_con(0, &replacement, constructor).unwrap();
+        // The inner Rel(0) should be replaced by the requested constructor.
+        assert!(matches!(
+            substituted_constructor.node,
+            Constructor::Named(7)
+        ));
     }
 
     #[test]

@@ -3007,6 +3007,116 @@ mod tests {
     }
 
     #[test]
+    fn parse_query1_prime_followed_by_val_rev_stays_two_decls() {
+        let source_text = concat!(
+            "fun localQuery1Prime [t ::: Name] [fs ::: {Type}] [state ::: Type]\n",
+            "    (q : sql_query [] [] [t = fs] [])\n",
+            "    (f : $fs -> state -> state) (i : state) =\n",
+            "    query q (fn r s => return (f r.t s)) i\n",
+            "\n",
+            "val rev = fn [a] =>\n",
+            "    let\n",
+            "        fun rev' acc (ls : list a) =\n",
+            "            case ls of\n",
+            "                [] => acc\n",
+            "              | x :: rest => rev' (x :: acc) rest\n",
+            "    in\n",
+            "        rev' []\n",
+            "    end\n",
+        );
+        let mut errors = ErrorReporter::new_silent();
+        let Some(file) = parse_ur(
+            "adjacent.ur",
+            source_text,
+            &mut errors,
+            crate::db::ProjectDb::default(),
+        ) else {
+            panic!("parse_ur failed: {:?}", errors.errors);
+        };
+        assert_eq!(file.len(), 2, "expected two top-level declarations");
+        match &file[1].node {
+            crate::source::Decl::Val(pattern, _) => match &pattern.node {
+                crate::source::Pat::Var(name) => assert_eq!(name, "rev"),
+                other => panic!("expected rev variable pattern, got {:?}", other),
+            },
+            other => panic!("expected second declaration to be val rev, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_monadic_bind_desugars_to_basis_bind_application() {
+        let mut errors = ErrorReporter::new_silent();
+        let Some(file) = parse_ur(
+            "bind_desugar.ur",
+            "fun demo q = ls <- q; return ls\n",
+            &mut errors,
+            crate::db::ProjectDb::default(),
+        ) else {
+            panic!("parse_ur failed: {:?}", errors.errors);
+        };
+        let crate::source::Decl::ValRec(bindings) = &file[0].node else {
+            panic!("expected top-level fun to parse as val rec");
+        };
+        let (_, _, body) = bindings
+            .first()
+            .unwrap_or_else(|| panic!("expected one binding, got {:?}", bindings));
+        let crate::source::Exp::Abs(argument_name, None, fun_body) = &body.node else {
+            panic!(
+                "expected top-level fun to remain a lambda around bind body, got {:?}",
+                body.node
+            );
+        };
+        assert_eq!(argument_name, "q");
+        let crate::source::Exp::App(bind_apply, lambda) = &fun_body.node else {
+            panic!(
+                "expected monadic bind body to desugar to application, got {:?}",
+                fun_body.node
+            );
+        };
+        let crate::source::Exp::App(bind_head, bound_expression) = &bind_apply.node else {
+            panic!(
+                "expected bind application head to be curried application, got {:?}",
+                bind_apply.node
+            );
+        };
+        let crate::source::Exp::Var(module_path, function_name, crate::source::Inference::Infer) =
+            &bind_head.node
+        else {
+            panic!("expected Basis.bind head, got {:?}", bind_head.node);
+        };
+        assert_eq!(module_path, &vec!["Basis".to_string()]);
+        assert_eq!(function_name, "bind");
+        let crate::source::Exp::Var(_, bound_name, _) = &bound_expression.node else {
+            panic!(
+                "expected first bind argument to stay as q, got {:?}",
+                bound_expression.node
+            );
+        };
+        assert_eq!(bound_name, "q");
+        let crate::source::Exp::Abs(parameter_name, None, lambda_body) = &lambda.node else {
+            panic!("expected bind continuation lambda, got {:?}", lambda.node);
+        };
+        assert_eq!(parameter_name, "ls");
+        let crate::source::Exp::App(return_head, returned_value) = &lambda_body.node else {
+            panic!(
+                "expected continuation body to remain return application, got {:?}",
+                lambda_body.node
+            );
+        };
+        let crate::source::Exp::Var(return_module, return_name, crate::source::Inference::Infer) =
+            &return_head.node
+        else {
+            panic!("expected return head, got {:?}", return_head.node);
+        };
+        assert_eq!(return_module, &Vec::<String>::new());
+        assert_eq!(return_name, "return");
+        let crate::source::Exp::Var(_, returned_name, _) = &returned_value.node else {
+            panic!("expected returned variable, got {:?}", returned_value.node);
+        };
+        assert_eq!(returned_name, "ls");
+    }
+
+    #[test]
     fn preprocess_top_folder_wraps_tf_binder_in_brackets() {
         let src = r"(** Row folding *)
 
