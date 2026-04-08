@@ -233,7 +233,9 @@ fn apply_postfix(base: LocExp, op: ExpPostfixOp) -> LocExp {
         ExpPostfixOp::DotCons(c) => Located::new(Exp::CApp(Box::new(base), c), fspan),
         ExpPostfixOp::DotUident(name) => {
             let exp = match base.node {
-                Exp::Var(mut quals, last, inf) => {
+                Exp::Var(mut quals, last, inf)
+                    if last.chars().next().is_some_and(|ch| ch.is_uppercase()) =>
+                {
                     quals.push(last);
                     Exp::Var(quals, name, inf)
                 }
@@ -243,14 +245,28 @@ fn apply_postfix(base: LocExp, op: ExpPostfixOp) -> LocExp {
                         span: xspan,
                     } = *xbox;
                     match xnode {
-                        Exp::Var(mut q, last, inf) if q.is_empty() => {
+                        Exp::Var(mut q, last, inf)
+                            if q.is_empty()
+                                && last.chars().next().is_some_and(|ch| ch.is_uppercase()) =>
+                        {
                             q.push(last);
                             Exp::App(f2, Box::new(Located::new(Exp::Var(q, name, inf), xspan)))
                         }
-                        _ => Exp::Var(vec![], name, Inference::Infer),
+                        xnode => {
+                            let field_base = Located::new(xnode, xspan);
+                            let updated_argument = apply_field_postfix_to_non_app_expression(
+                                field_base,
+                                FieldSelector::Name(name),
+                                fspan.clone(),
+                            );
+                            Exp::App(f2, Box::new(updated_argument))
+                        }
                     }
                 }
-                _ => Exp::Var(vec![], name, Inference::Infer),
+                fnode => apply_field_postfix_to_expression(
+                    Located::new(fnode, fspan.clone()),
+                    FieldSelector::Name(name),
+                ),
             };
             Located::new(exp, fspan)
         }

@@ -14,13 +14,14 @@ use crate::error_types::{Located, Span};
 use crate::source::*;
 use crate::parse::grammar_helpers::{
     con_record_field_pun,
-    desugar_simple_sql_select,
     desugar_monadic_bind,
+    desugar_simple_sql_select,
     exp_var_from_dotted_at_path,
     sql_binary_expression,
     sql_count_all_expression,
     sql_integer_expression,
     sql_is_null_expression,
+    sql_current_timestamp_expression,
 };
 use crate::parse::xml_helpers::{
     XmlAttr, XmlAttrsAcc, FunParam, capitalize_attr, xml_attrs_empty, xml_attrs_push, xml_desugar_tag_open,
@@ -1223,6 +1224,7 @@ SqlTableRef: (String, LocExp) = {
 SqlAtom: LocExp = {
     <l:@L> "{" <e:Exp> "}" <r:@R> => Located::new(e.node, Span::from_offsets("", l, r, &[])),
     <l:@L> <n:"INT"> <r:@R> => sql_integer_expression(n, &Span::from_offsets("", l, r, &[])),
+    <l:@L> "CURRENT_TIMESTAMP" <r:@R> => sql_current_timestamp_expression(&Span::from_offsets("", l, r, &[])),
     <l:@L> "COUNT" "(" "*" ")" <r:@R> => sql_count_all_expression(&Span::from_offsets("", l, r, &[])),
     <l:@L> "COUNT" "(" "SQL_STAR" ")" <r:@R> => sql_count_all_expression(&Span::from_offsets("", l, r, &[])),
     "(" <e:SqlExp> ")" => e,

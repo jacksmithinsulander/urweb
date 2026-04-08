@@ -211,7 +211,7 @@ fn capitalize_identifier(name: &str) -> String {
     }
 }
 
-fn sql_name_from_surface(name: &str) -> String {
+pub fn sql_name_from_surface(name: &str) -> String {
     capitalize_identifier(name)
 }
 
@@ -348,8 +348,43 @@ fn sql_subset_expression(subset: LocCon, span: &Span) -> LocExp {
     constructor_apply_expression(basis_var_expression("sql_subset", span), subset, span)
 }
 
-fn sql_true_expression(span: &Span) -> LocExp {
+pub fn sql_true_expression(span: &Span) -> LocExp {
     sql_inject_expression(basis_bool_expression(true, span), span)
+}
+
+pub fn sql_single_field_row(field_name: String, span: &Span) -> LocCon {
+    row_record_constructor(
+        vec![(
+            sql_name_constructor(&field_name, span),
+            Located::new(Con::Wild(Box::new(Located::new(Kind::Type, span.clone()))), span.clone()),
+        )],
+        span,
+    )
+}
+
+pub fn sql_select_expression_item(alias_name: String, expression: LocExp) -> SqlSelectItem {
+    SqlSelectItem::Expression {
+        alias_name,
+        expression,
+    }
+}
+
+pub fn sql_select_single_field_item(
+    table_name: String,
+    field_name: String,
+    span: &Span,
+) -> SqlSelectItem {
+    SqlSelectItem::Fields {
+        table_name: sql_name_from_surface(&table_name),
+        fields: sql_single_field_row(field_name, span),
+    }
+}
+
+pub fn sql_select_dynamic_fields_item(table_name: String, fields: LocCon) -> SqlSelectItem {
+    SqlSelectItem::Fields {
+        table_name: sql_name_from_surface(&table_name),
+        fields,
+    }
 }
 
 fn sql_wild_type_row(span: &Span) -> LocCon {

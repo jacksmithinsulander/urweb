@@ -130,6 +130,75 @@ fn try_elaborate_named_module_pair(
     .flatten()
 }
 
+/// Elaborate a synthetic multi-module project in a temp dir.
+///
+/// `modules` is a list of `(module_name, implementation_source, optional_signature_source)` tuples.
+fn try_elaborate_project(
+    modules: &[(&str, &str, Option<&str>)],
+    urp_lines: &[&str],
+) -> Result<(), String> {
+    let owned_modules: Vec<(String, String, Option<String>)> = modules
+        .iter()
+        .map(|(module_name, implementation_source, signature_source)| {
+            (
+                (*module_name).to_string(),
+                (*implementation_source).to_string(),
+                signature_source.map(|source| source.to_string()),
+            )
+        })
+        .collect();
+    let owned_urp = urp_lines
+        .iter()
+        .map(|line| (*line).to_string())
+        .collect::<Vec<_>>();
+    run_with_elaboration_stack(move || {
+        let _guard = CORPUS_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let dir = tempdir().map_err(|tempfile_error| tempfile_error.to_string())?;
+        let root = dir.path();
+        let urp_text = owned_urp.join("\n") + "\n";
+        fs::write(root.join("app.urp"), urp_text).map_err(|io_error| io_error.to_string())?;
+        for (module_name, implementation_source, signature_source) in &owned_modules {
+            fs::write(root.join(format!("{module_name}.ur")), implementation_source)
+                .map_err(|io_error| io_error.to_string())?;
+            match signature_source {
+                Some(signature_text) => fs::write(root.join(format!("{module_name}.urs")), signature_text)
+                    .map_err(|io_error| io_error.to_string())?,
+                None => {}
+            }
+        }
+        let urp = root.join("app.urp");
+        let mut job = compiler::parse_urp(&urp).map_err(|parse_error| parse_error.to_string())?;
+        let mut settings = Settings::new();
+        settings.boot_linking = true;
+        let workspace_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let workspace_basis = workspace_root.join("lib/ur/basis.urs");
+        let previous_boot_root = std::env::var_os("URWEB_BOOT_ROOT");
+        if workspace_basis.is_file() {
+            std::env::set_var("URWEB_BOOT_ROOT", &workspace_root);
+        }
+        let boot_apply = compiler::apply_boot_settings(&mut job, &mut settings);
+        match &previous_boot_root {
+            None => std::env::remove_var("URWEB_BOOT_ROOT"),
+            Some(value) => std::env::set_var("URWEB_BOOT_ROOT", value),
+        }
+        boot_apply?;
+        let mut errors = ErrorReporter::new_silent();
+        let Some(file) = compiler::parse_sources(&job, &settings, &mut errors) else {
+            return Err(format!("parse_sources: {errors:?}"));
+        };
+        let Some(_elab) = compiler::elaborate(file, &settings, &mut errors) else {
+            return Err(format!("elaborate returned None: {errors:?}"));
+        };
+        if errors.has_hard_errors() {
+            return Err(format!("elaborate errors: {errors:?}"));
+        }
+        Ok(())
+    })
+    .flatten()
+}
+
 /// Elaborate one synthetic module in a temp dir (locked, larger stack via caller).
 ///
 /// # Errors
@@ -1125,6 +1194,307 @@ fn corpus_core_sql_count_star_placeholder_elaborates() {
         "    oneRowE1 (SELECT COUNT(sql_star) > 0 AS B FROM t)\n",
     ))
     .expect("sql_star placeholder elaboration");
+}
+
+#[test]
+fn corpus_core_sql_default_table_field_where_elaborates() {
+    if !corpus_enabled() {
+        return;
+    }
+    try_elaborate_single_module(concat!(
+        "functor Make(M : sig\n",
+        "                 type data\n",
+        "                 val inj : sql_injectable data\n",
+        "             end) = struct\n",
+        "\n",
+        "    type ref = int\n",
+        "\n",
+        "    sequence s\n",
+        "    table t : { Id : int, Data : M.data }\n",
+        "      PRIMARY KEY Id\n",
+        "\n",
+        "    fun new d =\n",
+        "        id <- nextval s;\n",
+        "        dml (INSERT INTO t (Id, Data) VALUES ({[id]}, {[d]}));\n",
+        "        return id\n",
+        "\n",
+        "    fun read r =\n",
+        "        o <- oneOrNoRows (SELECT t.Data FROM t WHERE t.Id = {[r]});\n",
+        "        case o of\n",
+        "            None => error <xml>gone</xml>\n",
+        "          | Some row => return row.T.Data\n",
+        "\n",
+        "    fun write r d =\n",
+        "        dml (UPDATE t SET Data = {[d]} WHERE Id = {[r]})\n",
+        "\n",
+        "    fun delete r =\n",
+        "        dml (DELETE FROM t WHERE Id = {[r]})\n",
+        "\n",
+        "end\n",
+    ))
+    .expect("default-table SQL field compatibility");
+}
+
+#[test]
+fn corpus_core_sql_single_selected_field_preserves_type_shape() {
+    if !corpus_enabled() {
+        return;
+    }
+    try_elaborate_single_module(concat!(
+        "table channels : { Client : client, Channel : channel (string * int * float) }\n",
+        "  PRIMARY KEY Client\n",
+        "\n",
+        "fun writeBack v =\n",
+        "    me <- self;\n",
+        "    r <- oneRow (SELECT channels.Channel FROM channels WHERE channels.Client = {[me]});\n",
+        "    send r.Channels.Channel v\n",
+    ))
+    .expect("single selected SQL field keeps wildcard type information");
+}
+
+#[test]
+fn corpus_core_recursive_user_list_datatype_elaborates() {
+    if !corpus_enabled() {
+        return;
+    }
+    try_elaborate_single_module(concat!(
+        "datatype list t = Nil | Cons of t * list t\n",
+        "\n",
+        "fun length [t] (ls : list t) =\n",
+        "    let\n",
+        "        fun length' (ls : list t) (acc : int) =\n",
+        "            case ls of\n",
+        "                Nil => acc\n",
+        "              | Cons (_, ls') => length' ls' (acc + 1)\n",
+        "    in\n",
+        "        length' ls 0\n",
+        "    end\n",
+        "\n",
+        "fun rev [t] (ls : list t) =\n",
+        "    let\n",
+        "        fun rev' (ls : list t) (acc : list t) =\n",
+        "            case ls of\n",
+        "                Nil => acc\n",
+        "              | Cons (x, ls') => rev' ls' (Cons (x, acc))\n",
+        "    in\n",
+        "        rev' ls Nil\n",
+        "    end\n",
+    ))
+    .expect("recursive user-defined list datatype elaboration");
+}
+
+#[test]
+fn corpus_core_demo_list_signature_pair_elaborates() {
+    if !corpus_enabled() {
+        return;
+    }
+    try_elaborate_module_pair(
+        concat!(
+            "datatype list t = Nil | Cons of t * list t\n",
+            "\n",
+            "fun length [t] (ls : list t) =\n",
+            "    let\n",
+            "        fun length' (ls : list t) (acc : int) =\n",
+            "            case ls of\n",
+            "                Nil => acc\n",
+            "              | Cons (_, ls') => length' ls' (acc + 1)\n",
+            "    in\n",
+            "        length' ls 0\n",
+            "    end\n",
+            "\n",
+            "fun rev [t] (ls : list t) =\n",
+            "    let\n",
+            "        fun rev' (ls : list t) (acc : list t) =\n",
+            "            case ls of\n",
+            "                Nil => acc\n",
+            "              | Cons (x, ls') => rev' ls' (Cons (x, acc))\n",
+            "    in\n",
+            "        rev' ls Nil\n",
+            "    end\n",
+        ),
+        concat!(
+            "datatype list t = Nil | Cons of t * list t\n",
+            "\n",
+            "val length : t ::: Type -> list t -> int\n",
+            "\n",
+            "val rev : t ::: Type -> list t -> list t\n",
+        ),
+    )
+    .expect("demo list signature pair elaboration");
+}
+
+#[test]
+fn corpus_core_demo_list_shop_project_elaborates() {
+    if !corpus_enabled() {
+        return;
+    }
+    try_elaborate_project(
+        &[
+            (
+                "List",
+                concat!(
+                    "datatype list t = Nil | Cons of t * list t\n",
+                    "\n",
+                    "fun length [t] (ls : list t) =\n",
+                    "    let\n",
+                    "        fun length' (ls : list t) (acc : int) =\n",
+                    "            case ls of\n",
+                    "                Nil => acc\n",
+                    "              | Cons (_, ls') => length' ls' (acc + 1)\n",
+                    "    in\n",
+                    "        length' ls 0\n",
+                    "    end\n",
+                    "\n",
+                    "fun rev [t] (ls : list t) =\n",
+                    "    let\n",
+                    "        fun rev' (ls : list t) (acc : list t) =\n",
+                    "            case ls of\n",
+                    "                Nil => acc\n",
+                    "              | Cons (x, ls') => rev' ls' (Cons (x, acc))\n",
+                    "    in\n",
+                    "        rev' ls Nil\n",
+                    "    end\n",
+                ),
+                Some(concat!(
+                    "datatype list t = Nil | Cons of t * list t\n",
+                    "\n",
+                    "val length : t ::: Type -> list t -> int\n",
+                    "\n",
+                    "val rev : t ::: Type -> list t -> list t\n",
+                )),
+            ),
+            (
+                "ListFun",
+                concat!(
+                    "open List\n",
+                    "\n",
+                    "functor Make(M : sig\n",
+                    "                 type t\n",
+                    "                 val toString : t -> string\n",
+                    "                 val fromString : string -> option t\n",
+                    "             end) = struct\n",
+                    "    fun toXml (ls : list M.t) =\n",
+                    "        case ls of\n",
+                    "            Nil => <xml>[]</xml>\n",
+                    "          | Cons (x, ls') => <xml>{[M.toString x]} :: {toXml ls'}</xml>\n",
+                    "\n",
+                    "    fun console (ls : list M.t) =\n",
+                    "        let\n",
+                    "            fun cons (r : {X : string}) =\n",
+                    "                case M.fromString r.X of\n",
+                    "                    None => return <xml><body>Invalid string!</body></xml>\n",
+                    "                  | Some v => console (Cons (v, ls))\n",
+                    "        in\n",
+                    "            return <xml><body>\n",
+                    "              Current list: {toXml ls}<br/>\n",
+                    "              Reversed list: {toXml (rev ls)}<br/>\n",
+                    "              Length: {[length ls]}<br/>\n",
+                    "              <br/>\n",
+                    "\n",
+                    "              <form>\n",
+                    "                Add element: <textbox{#X}/> <submit action={cons}/>\n",
+                    "              </form>\n",
+                    "            </body></xml>\n",
+                    "        end\n",
+                    "\n",
+                    "    fun main () = console Nil\n",
+                    "end\n",
+                ),
+                Some(concat!(
+                    "functor Make(M : sig\n",
+                    "                 type t\n",
+                    "                 val toString : t -> string\n",
+                    "                 val fromString : string -> option t\n",
+                    "             end) : sig\n",
+                    "    val main : unit -> transaction page\n",
+                    "end\n",
+                )),
+            ),
+            (
+                "ListShop",
+                concat!(
+                    "structure I = struct\n",
+                    "    type t = int\n",
+                    "    val toString = show\n",
+                    "    val fromString = read\n",
+                    "end\n",
+                    "\n",
+                    "structure S = struct\n",
+                    "    type t = string\n",
+                    "    val toString = show\n",
+                    "    val fromString = read\n",
+                    "end\n",
+                    "\n",
+                    "structure IL = ListFun.Make(I)\n",
+                    "structure SL = ListFun.Make(S)\n",
+                    "\n",
+                    "fun main () = return <xml><body>\n",
+                    "  Pick your poison:<br/>\n",
+                    "  <li> <a link={IL.main ()}>Integers</a></li>\n",
+                    "  <li> <a link={SL.main ()}>Strings</a></li>\n",
+                    "</body></xml>\n",
+                ),
+                Some("val main : unit -> transaction page\n"),
+            ),
+        ],
+        &["List", "ListFun", "ListShop"],
+    )
+    .expect("demo listShop project elaboration");
+}
+
+#[test]
+fn corpus_core_top_one_row1_and_one_rowe1_elaborate() {
+    if !corpus_enabled() {
+        return;
+    }
+    try_elaborate_single_module(concat!(
+        "fun query [tables ::: {{Type}}] [exps ::: {Type}] [state ::: Type]\n",
+        "          (q : sql_query [] [] tables exps)\n",
+        "          (f : $(exps ++ map (fn fields :: {Type} => $fields) tables) -> state -> transaction state)\n",
+        "          (initial : state) = return initial\n",
+        "\n",
+        "fun oneOrNoRows [tables ::: {{Type}}] [exps ::: {Type}]\n",
+        "                [tables ~ exps]\n",
+        "                (q : sql_query [] [] tables exps) =\n",
+        "    query q\n",
+        "          (fn fs _ => return (Some fs))\n",
+        "          None\n",
+        "\n",
+        "fun oneRow1 [nm ::: Name] [fs ::: {Type}] (q : sql_query [] [] [nm = fs] []) =\n",
+        "    o <- oneOrNoRows q;\n",
+        "    return (case o of\n",
+        "                None => error <xml>Query returned no rows</xml>\n",
+        "              | Some r => r.nm)\n",
+        "\n",
+        "fun oneRowE1 [tabs ::: {Unit}] [nm ::: Name] [t ::: Type] [tabs ~ [nm]]\n",
+        "             (q : sql_query [] [] (mapU [] tabs) [nm = t]) =\n",
+        "    o <- oneOrNoRows q;\n",
+        "    return (case o of\n",
+        "                None => error <xml>Query returned no rows</xml>\n",
+        "              | Some r => r.nm)\n",
+    ))
+    .expect("Top oneRow1/oneRowE1 elaboration");
+}
+
+#[test]
+fn corpus_core_top_post_fields_elaborates() {
+    if !corpus_enabled() {
+        return;
+    }
+    try_elaborate_single_module(concat!(
+        "fun postFields pb =\n",
+        "    let\n",
+        "        fun postFields' s =\n",
+        "            case firstFormField s of\n",
+        "                None => []\n",
+        "              | Some f => (fieldName f, fieldValue f) :: postFields' (remainingFields f)\n",
+        "    in\n",
+        "        case postType pb of\n",
+        "            \"application/x-www-form-urlencoded\" => postFields' (postData pb)\n",
+        "          | _ => error <xml>Tried to get POST fields, but MIME type is not \"application/x-www-form-urlencoded\"</xml>\n",
+        "    end\n",
+    ))
+    .expect("Top postFields elaboration");
 }
 
 /// Full Basis boot (no user modules): ratchet [`DiagnosticId::ElabUnresolvedDisjointness`].

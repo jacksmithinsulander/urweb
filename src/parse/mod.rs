@@ -39,6 +39,7 @@ pub mod expected_symbol_labels;
 pub mod expr_langsec;
 pub mod grammar_helpers;
 pub mod lexical_analyzer;
+mod sql_compat;
 pub mod xml_helpers;
 
 /// Name for LALRPOP reduce-value tuples (keeps generated `grammar.rs` clippy-clean for `type_complexity`).
@@ -2292,9 +2293,9 @@ pub fn rewrite_sql_keyword_brace_splices(source_text: &str) -> String {
 ///
 /// Transformed source string.
 pub fn preprocess_ur_for_parse(src: &str) -> String {
-    rewrite_case_expressions(&rewrite_sgn_where(&rewrite_datatype_constructors(
-        &rewrite_bare_kind_binders(&rewrite_sql_star(&rewrite_sql_keyword_brace_splices(
-            &strip_table_constraints(src),
+    sql_compat::rewrite_legacy_sql_placeholders(&rewrite_case_expressions(&rewrite_sgn_where(
+        &rewrite_datatype_constructors(&rewrite_bare_kind_binders(&rewrite_sql_star(
+            &rewrite_sql_keyword_brace_splices(&strip_table_constraints(src)),
         ))),
     )))
 }
@@ -2376,6 +2377,27 @@ pub fn parse_ur(
             Ok(mut file) => {
                 crate::source::attach_file_label_to_source_file(&mut file, _filename, &pre);
                 repair_misparsed_lambda_annotation_file(&mut file);
+                if let Err(detail) = sql_compat::repair_sql_placeholders_in_file(&mut file) {
+                    let label_span = Span {
+                        file: _filename.to_string(),
+                        ..Span::dummy()
+                    };
+                    let payload = DiagnosticPayload::new(
+                        DiagnosticId::ParseUrSyntaxFailed,
+                        vec![
+                            _filename.to_string(),
+                            format!("legacy SQL compatibility rewrite failed: {detail}"),
+                            String::new(),
+                        ],
+                    );
+                    errors.report(CompileError::parse_at_with_hint(
+                        label_span,
+                        payload,
+                        DiagnosticId::HintParseUrSyntax,
+                        vec![],
+                    ));
+                    return None;
+                }
                 Some(file)
             }
             Err(parse_error) => {
@@ -3040,6 +3062,30 @@ mod tests {
                 other => panic!("expected rev variable pattern, got {:?}", other),
             },
             other => panic!("expected second declaration to be val rev, got {:?}", other),
+        }
+    }
+
+    #[test]
+    #[cfg(generated_parser)]
+    fn parse_uppercase_field_postfix_on_value_is_field_access() {
+        use crate::source::{Decl, Exp};
+        let mut errors = ErrorReporter::new_silent();
+        let file = parse_ur(
+            "field_upper.ur",
+            "val demo = r.C\n",
+            &mut errors,
+            crate::db::ProjectDb::default(),
+        )
+        .expect("parse");
+        let Decl::Val(_, expression) = &file[0].node else {
+            panic!("expected Val");
+        };
+        match &expression.node {
+            Exp::Field(base, field_name) => {
+                assert!(matches!(&base.node, Exp::Var(q, n, _) if q.is_empty() && n == "r"));
+                assert!(matches!(&field_name.node, crate::source::Con::Name(name) if name == "C"));
+            }
+            other => panic!("expected field access, got {:?}", other),
         }
     }
 

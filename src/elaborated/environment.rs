@@ -295,16 +295,17 @@ impl ClassName {
 // ---------------------------------------------------------------------------
 
 /// A single typeclass resolution rule:
-/// `(num_quantifiers, hypotheses, conclusion_con, witness_exp)`.
+/// `(quantifier_kinds, hypotheses, conclusion_con, witness_exp)`.
 ///
-/// - `num_quantifiers`: number of universally-quantified constructor variables.
+/// - `quantifier_kinds`: kinds of universally-quantified constructor variables, from outermost
+///   binder to innermost binder.
 /// - `hypotheses`: the list of class constraints that must be satisfied.
 /// - `conclusion`: the constructor to which the rule's head matches.
 /// - `witness`: the expression term to inject when the rule fires.
 ///
 /// Mirrors `type rules = (int * con list * con * exp) list`.
 pub type ClassRule = (
-    usize,
+    Vec<LocatedKind>,
     Vec<LocatedConstructor>,
     LocatedConstructor,
     LocatedExpression,
@@ -1419,9 +1420,12 @@ impl Env {
                 let updated_open_rules = rules
                     .open_rules
                     .into_iter()
-                    .map(|(num_quantifiers, hypotheses, conclusion, witness)| {
+                    .map(|(quantifier_kinds, hypotheses, conclusion, witness)| {
                         (
-                            num_quantifiers,
+                            quantifier_kinds
+                                .into_iter()
+                                .map(type_operations::lift_kind_in_kind)
+                                .collect(),
                             hypotheses
                                 .into_iter()
                                 .map(type_operations::lift_kind_in_con)
@@ -1529,9 +1533,9 @@ impl Env {
                 let updated_open_rules = rules
                     .open_rules
                     .into_iter()
-                    .map(|(num_quantifiers, hypotheses, conclusion, witness)| {
+                    .map(|(quantifier_kinds, hypotheses, conclusion, witness)| {
                         (
-                            num_quantifiers,
+                            quantifier_kinds,
                             hypotheses
                                 .into_iter()
                                 .map(type_operations::lift_con_in_con)
@@ -1707,7 +1711,9 @@ impl Env {
     /// Mirrors `fun pushClass (env : env) n = ...` in `elab_env.sml`.
     pub fn push_class(self, class_id: usize) -> Self {
         let mut new_classes = self.classes;
-        new_classes.insert(ClassName::Named(class_id), ClassRules::empty());
+        new_classes
+            .entry(ClassName::Named(class_id))
+            .or_insert_with(ClassRules::empty);
         Env {
             classes: new_classes,
             ..self
@@ -1763,9 +1769,9 @@ impl Env {
                 let updated_open_rules = rules
                     .open_rules
                     .into_iter()
-                    .map(|(num_quantifiers, hypotheses, conclusion, witness)| {
+                    .map(|(quantifier_kinds, hypotheses, conclusion, witness)| {
                         (
-                            num_quantifiers,
+                            quantifier_kinds,
                             hypotheses,
                             conclusion,
                             lift_exp_in_exp_bound(0, witness),
@@ -2083,24 +2089,24 @@ fn class_head_of(constructor: &LocatedConstructor) -> Option<ClassName> {
 // ---------------------------------------------------------------------------
 
 /// Try to interpret a constructor `c` as a typeclass instance type, returning
-/// `(class_head, num_quantifiers, hypotheses, conclusion)` if successful.
+/// `(class_head, quantifier_kinds, hypotheses, conclusion)` if successful.
 ///
 /// Mirrors `fun rule_in c = ...` in `elab_env.sml`.
 fn rule_in(
     c: &LocatedConstructor,
 ) -> Option<(
     ClassName,
-    usize,
+    Vec<LocatedKind>,
     Vec<LocatedConstructor>,
     LocatedConstructor,
 )> {
     // Peel TCFun quantifiers (counting them), chasing through solved CUnif.
     fn quantifiers(
         c: &LocatedConstructor,
-        nvars: usize,
+        quantifier_kinds: Vec<LocatedKind>,
     ) -> Option<(
         ClassName,
-        usize,
+        Vec<LocatedKind>,
         Vec<LocatedConstructor>,
         LocatedConstructor,
     )> {
@@ -2114,13 +2120,17 @@ fn rule_in(
                     super::CUnif::Known(inner) => {
                         let inner = inner.clone();
                         drop(guard);
-                        quantifiers(&inner, nvars)
+                        quantifiers(&inner, quantifier_kinds)
                     }
                     super::CUnif::Unknown => None,
                 }
             }
-            Constructor::TCFun(_, _, _, body) => quantifiers(body, nvars + 1),
-            _ => clauses(c, nvars, vec![]),
+            Constructor::TCFun(_, _, kind_annotation, body) => {
+                let mut updated_quantifier_kinds = quantifier_kinds;
+                updated_quantifier_kinds.push((**kind_annotation).clone());
+                quantifiers(body, updated_quantifier_kinds)
+            }
+            _ => clauses(c, quantifier_kinds, vec![]),
         }
     }
 
@@ -2128,11 +2138,11 @@ fn rule_in(
     // remaining conclusion has a class head.
     fn clauses(
         c: &LocatedConstructor,
-        nvars: usize,
+        quantifier_kinds: Vec<LocatedKind>,
         hyps: Vec<LocatedConstructor>,
     ) -> Option<(
         ClassName,
-        usize,
+        Vec<LocatedKind>,
         Vec<LocatedConstructor>,
         LocatedConstructor,
     )> {
@@ -2141,16 +2151,16 @@ fn rule_in(
                 if class_head_of(hyp).is_some() {
                     let mut new_hyps = hyps;
                     new_hyps.push(*hyp.clone());
-                    clauses(body, nvars, new_hyps)
+                    clauses(body, quantifier_kinds, new_hyps)
                 } else {
                     None
                 }
             }
-            _ => class_head_of(c).map(|cn| (cn, nvars, hyps, c.clone())),
+            _ => class_head_of(c).map(|cn| (cn, quantifier_kinds, hyps, c.clone())),
         }
     }
 
-    quantifiers(c, 0)
+    quantifiers(c, vec![])
 }
 
 // ---------------------------------------------------------------------------
@@ -2994,6 +3004,61 @@ mod tests {
         assert!(matches!(out.node, Constructor::Unit));
     }
 
+    #[test]
+    fn hnorm_con_constructor_abstraction_reduces_named_kapp_app_alias() {
+        let sp = dummy_span();
+        let type_kind = Located::new(Kind::Type, sp.clone());
+        let identity_definition = Located::new(
+            Constructor::KAbs(
+                "K".into(),
+                Box::new(Located::new(
+                    Constructor::Abs(
+                        "x".into(),
+                        Box::new(Located::new(Kind::Rel(0), sp.clone())),
+                        Box::new(Located::new(Constructor::Rel(0), sp.clone())),
+                    ),
+                    sp.clone(),
+                )),
+            ),
+            sp.clone(),
+        );
+        let env = Env::empty().push_c_named_as(
+            "PolyIdentity".into(),
+            17usize,
+            Located::new(
+                Kind::Fun(
+                    "K".into(),
+                    Box::new(Located::new(
+                        Kind::Arrow(
+                            Box::new(Located::new(Kind::Rel(0), sp.clone())),
+                            Box::new(Located::new(Kind::Rel(0), sp.clone())),
+                        ),
+                        sp.clone(),
+                    )),
+                ),
+                sp.clone(),
+            ),
+            Some(identity_definition),
+        );
+        let applied_alias = Located::new(
+            Constructor::App(
+                Box::new(Located::new(
+                    Constructor::KApp(Box::new(con_named(17)), Box::new(type_kind)),
+                    sp.clone(),
+                )),
+                Box::new(Located::new(Constructor::Unit, sp.clone())),
+            ),
+            sp.clone(),
+        );
+
+        let out = hnorm_con_constructor_abstraction(&env, applied_alias);
+        assert!(
+            matches!(out.node, Constructor::Unit),
+            "named alias should reduce through KApp/App, got {:?}",
+            out.node
+        );
+    }
+
     fn sgn_error() -> LocatedSignature {
         Located::new(Signature::Error, dummy_span())
     }
@@ -3427,6 +3492,35 @@ mod tests {
         // A different id should not be a class.
         let other_con = Located::new(Constructor::Named(51), dummy_span());
         assert!(!env.is_class(&other_con));
+    }
+
+    /// Re-registering a class during `open` must not discard previously collected rules.
+    #[test]
+    fn push_class_preserves_existing_rules() {
+        let class_name = ClassName::Named(50);
+        let rule_head = Located::new(Constructor::Named(50), dummy_span());
+        let witness = Located::new(Expression::Named(77), dummy_span());
+        let env = Env::empty()
+            .push_c_named_as("Eq".to_string(), 50, kind_type(), None)
+            .push_class(50)
+            .add_class_rule(
+                class_name.clone(),
+                (Vec::new(), Vec::new(), rule_head.clone(), witness),
+            );
+
+        let preserved_env = env.push_class(50);
+        let preserved_rules = preserved_env
+            .classes()
+            .get(&class_name)
+            .expect("class should remain registered");
+
+        assert_eq!(preserved_rules.closed_rules.len(), 1);
+        assert!(preserved_rules.open_rules.is_empty());
+        assert!(matches!(
+            preserved_rules.closed_rules[0].2.node,
+            Constructor::Named(50)
+        ));
+        assert_eq!(preserved_rules.closed_rules[0].2.span.first.line, rule_head.span.first.line);
     }
 
     // -----------------------------------------------------------------------
