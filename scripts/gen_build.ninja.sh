@@ -232,10 +232,10 @@ echo ""
 echo "build rust: rust_build_rule | FORCE"
 echo ""
 
-# ── samu rust-test — cargo tests + same integration suite as ML ───────────────
+# ── samu rust-test — executable integration suite with Rust compiler ───────────
 echo "rule rust_test_rule"
 echo "  command = sh \$srcdir/scripts/run-tests-rust.sh \$srcdir \$builddir"
-echo "  description = Cargo test workspace + run-tests.sh with URWEB=urweb-rust"
+echo "  description = Run executable integration suite with URWEB=urweb-rust"
 echo "  pool = console"
 echo ""
 echo "build rust-test: rust_test_rule | rust"

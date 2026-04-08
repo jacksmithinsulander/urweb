@@ -1,11 +1,179 @@
--- XML ------------- /Users/jacksmith/prog/urweb/lib/ur/top.ur
+-- XML --------------- /Users/jacksmith/prog/urweb/demo/sql.ur
 
-I could not parse `/Users/jacksmith/prog/urweb/lib/ur/top.ur` into valid Ur/Web syntax.
+I could not parse `/Users/jacksmith/prog/urweb/demo/sql.ur` into valid Ur/Web syntax.
 
 Parser detail:
-unexpected token identifier `sql_star` at bytes 16560–16568; expected one of: star `*`
+unexpected token `*` at bytes 98–99; expected one of: opening `(`; keyword `COUNT`; an integer literal (like `42`); opening `{`
 
-    --> /Users/jacksmith/prog/urweb/lib/ur/top.ur:0:0-0:0
+    --> /Users/jacksmith/prog/urweb/demo/sql.ur:0:0-0:0
+
+Hint: Start from the location in the detail above. Common fixes: balance `(` `[` `{{` and string quotes; inside `<xml>...</xml>` every tag must close and `{{...}}` splices must nest cleanly; in `query` / SQL splices check braces; in `fn`/`fun` bodies check `=>`.
+
+
+-- XML ------------ /Users/jacksmith/prog/urweb/demo/refFun.ur
+
+I could not parse `/Users/jacksmith/prog/urweb/demo/refFun.ur` into valid Ur/Web syntax.
+
+Parser detail:
+unexpected token `INSERT` at bytes 256–262; expected one of: opening `(`; unit `()`; at `@`; `@@` qualified path (no type inference); `@` qualified path (types only); the start of an XML tag (`<tag`); a character literal (`#"a"`); a floating-point literal (like `3.14`); a name (starts with lower-case or `_`); an integer literal (like `42`); keyword `SELECT`; keyword `SQL`; … (+16 more kinds of token)
+
+    --> /Users/jacksmith/prog/urweb/demo/refFun.ur:0:0-0:0
+
+Hint: Start from the location in the detail above. Common fixes: balance `(` `[` `{{` and string quotes; inside `<xml>...</xml>` every tag must close and `{{...}}` splices must nest cleanly; in `query` / SQL splices check braces; in `fn`/`fun` bodies check `=>`.
+
+
+-- XML ----------- /Users/jacksmith/prog/urweb/demo/treeFun.ur
+
+I could not parse `/Users/jacksmith/prog/urweb/demo/treeFun.ur` into valid Ur/Web syntax.
+
+Parser detail:
+unexpected token `*` at bytes 609–610; expected one of: opening `(`; keyword `COUNT`; an integer literal (like `42`); opening `{`
+
+    --> /Users/jacksmith/prog/urweb/demo/treeFun.ur:0:0-0:0
+
+Hint: Start from the location in the detail above. Common fixes: balance `(` `[` `{{` and string quotes; inside `<xml>...</xml>` every tag must close and `{{...}}` splices must nest cleanly; in `query` / SQL splices check braces; in `fn`/`fun` bodies check `=>`.
+
+
+-- XML -------------- /Users/jacksmith/prog/urweb/demo/tree.ur
+
+I could not parse `/Users/jacksmith/prog/urweb/demo/tree.ur` into valid Ur/Web syntax.
+
+Parser detail:
+unexpected token `INSERT` at bytes 671–677; expected one of: opening `(`; unit `()`; at `@`; `@@` qualified path (no type inference); `@` qualified path (types only); the start of an XML tag (`<tag`); a character literal (`#"a"`); a floating-point literal (like `3.14`); a name (starts with lower-case or `_`); an integer literal (like `42`); keyword `SELECT`; keyword `SQL`; … (+16 more kinds of token)
+
+    --> /Users/jacksmith/prog/urweb/demo/tree.ur:0:0-0:0
+
+Hint: Start from the location in the detail above. Common fixes: balance `(` `[` `{{` and string quotes; inside `<xml>...</xml>` every tag must close and `{{...}}` splices must nest cleanly; in `query` / SQL splices check braces; in `fn`/`fun` bodies check `=>`.
+
+
+-- XML -------- /Users/jacksmith/prog/urweb/demo/constraints.ur
+
+I could not parse `/Users/jacksmith/prog/urweb/demo/constraints.ur` into valid Ur/Web syntax.
+
+Parser detail:
+unexpected token `*` at bytes 104–105; expected one of: opening `(`; keyword `COUNT`; an integer literal (like `42`); opening `{`
+
+    --> /Users/jacksmith/prog/urweb/demo/constraints.ur:0:0-0:0
+
+Hint: Start from the location in the detail above. Common fixes: balance `(` `[` `{{` and string quotes; inside `<xml>...</xml>` every tag must close and `{{...}}` splices must nest cleanly; in `query` / SQL splices check braces; in `fn`/`fun` bodies check `=>`.
+
+
+-- XML ------------- /Users/jacksmith/prog/urweb/demo/outer.ur
+
+I could not parse `/Users/jacksmith/prog/urweb/demo/outer.ur` into valid Ur/Web syntax.
+
+Parser detail:
+unexpected token identifier `t` at bytes 145–146; expected one of: opening `(`; keyword `COUNT`; an integer literal (like `42`); opening `{`
+
+    --> /Users/jacksmith/prog/urweb/demo/outer.ur:0:0-0:0
+
+Hint: Start from the location in the detail above. Common fixes: balance `(` `[` `{{` and string quotes; inside `<xml>...</xml>` every tag must close and `{{...}}` splices must nest cleanly; in `query` / SQL splices check braces; in `fn`/`fun` bodies check `=>`.
+
+
+-- XML -------------- /Users/jacksmith/prog/urweb/demo/view.ur
+
+I could not parse `/Users/jacksmith/prog/urweb/demo/view.ur` into valid Ur/Web syntax.
+
+Parser detail:
+unexpected token `SELECT` at bytes 31–37; expected one of: opening `(`; unit `()`; at `@`; `@@` qualified path (no type inference); `@` qualified path (types only); the start of an XML tag (`<tag`); a character literal (`#"a"`); a floating-point literal (like `3.14`); a name (starts with lower-case or `_`); an integer literal (like `42`); a double-quoted string literal; a capitalized name (module or datatype constructor); … (+13 more kinds of token)
+
+    --> /Users/jacksmith/prog/urweb/demo/view.ur:0:0-0:0
+
+Hint: Start from the location in the detail above. Common fixes: balance `(` `[` `{{` and string quotes; inside `<xml>...</xml>` every tag must close and `{{...}}` splices must nest cleanly; in `query` / SQL splices check braces; in `fn`/`fun` bodies check `=>`.
+
+
+-- XML --------- /Users/jacksmith/prog/urweb/demo/cookieSec.ur
+
+I could not parse `/Users/jacksmith/prog/urweb/demo/cookieSec.ur` into valid Ur/Web syntax.
+
+Parser detail:
+unexpected token `*` at bytes 152–153; expected one of: opening `(`; keyword `COUNT`; an integer literal (like `42`); opening `{`
+
+    --> /Users/jacksmith/prog/urweb/demo/cookieSec.ur:0:0-0:0
+
+Hint: Start from the location in the detail above. Common fixes: balance `(` `[` `{{` and string quotes; inside `<xml>...</xml>` every tag must close and `{{...}}` splices must nest cleanly; in `query` / SQL splices check braces; in `fn`/`fun` bodies check `=>`.
+
+
+-- XML -------------- /Users/jacksmith/prog/urweb/demo/crud.ur
+
+I could not parse `/Users/jacksmith/prog/urweb/demo/crud.ur` into valid Ur/Web syntax.
+
+Parser detail:
+unexpected token `*` at bytes 1558–1559; expected one of: opening `(`; keyword `COUNT`; an integer literal (like `42`); opening `{`
+
+    --> /Users/jacksmith/prog/urweb/demo/crud.ur:0:0-0:0
+
+Hint: Start from the location in the detail above. Common fixes: balance `(` `[` `{{` and string quotes; inside `<xml>...</xml>` every tag must close and `{{...}}` splices must nest cleanly; in `query` / SQL splices check braces; in `fn`/`fun` bodies check `=>`.
+
+
+-- XML ------------- /Users/jacksmith/prog/urweb/demo/noisy.ur
+
+I could not parse `/Users/jacksmith/prog/urweb/demo/noisy.ur` into valid Ur/Web syntax.
+
+Parser detail:
+unexpected token `INSERT` at bytes 138–144; expected one of: opening `(`; unit `()`; at `@`; `@@` qualified path (no type inference); `@` qualified path (types only); the start of an XML tag (`<tag`); a character literal (`#"a"`); a floating-point literal (like `3.14`); a name (starts with lower-case or `_`); an integer literal (like `42`); keyword `SELECT`; keyword `SQL`; … (+16 more kinds of token)
+
+    --> /Users/jacksmith/prog/urweb/demo/noisy.ur:0:0-0:0
+
+Hint: Start from the location in the detail above. Common fixes: balance `(` `[` `{{` and string quotes; inside `<xml>...</xml>` every tag must close and `{{...}}` splices must nest cleanly; in `query` / SQL splices check braces; in `fn`/`fun` bodies check `=>`.
+
+
+-- XML ------------- /Users/jacksmith/prog/urweb/demo/batch.ur
+
+I could not parse `/Users/jacksmith/prog/urweb/demo/batch.ur` into valid Ur/Web syntax.
+
+Parser detail:
+unexpected token `*` at bytes 147–148; expected one of: opening `(`; keyword `COUNT`; an integer literal (like `42`); opening `{`
+
+    --> /Users/jacksmith/prog/urweb/demo/batch.ur:0:0-0:0
+
+Hint: Start from the location in the detail above. Common fixes: balance `(` `[` `{{` and string quotes; inside `<xml>...</xml>` every tag must close and `{{...}}` splices must nest cleanly; in `query` / SQL splices check braces; in `fn`/`fun` bodies check `=>`.
+
+
+-- XML ---------- /Users/jacksmith/prog/urweb/demo/batchFun.ur
+
+I could not parse `/Users/jacksmith/prog/urweb/demo/batchFun.ur` into valid Ur/Web syntax.
+
+Parser detail:
+unexpected token `*` at bytes 1267–1268; expected one of: opening `(`; keyword `COUNT`; an integer literal (like `42`); opening `{`
+
+    --> /Users/jacksmith/prog/urweb/demo/batchFun.ur:0:0-0:0
+
+Hint: Start from the location in the detail above. Common fixes: balance `(` `[` `{{` and string quotes; inside `<xml>...</xml>` every tag must close and `{{...}}` splices must nest cleanly; in `query` / SQL splices check braces; in `fn`/`fun` bodies check `=>`.
+
+
+-- XML --------- /Users/jacksmith/prog/urweb/demo/roundTrip.ur
+
+I could not parse `/Users/jacksmith/prog/urweb/demo/roundTrip.ur` into valid Ur/Web syntax.
+
+Parser detail:
+unexpected token identifier `channels` at bytes 139–147; expected one of: opening `(`; keyword `COUNT`; an integer literal (like `42`); opening `{`
+
+    --> /Users/jacksmith/prog/urweb/demo/roundTrip.ur:0:0-0:0
+
+Hint: Start from the location in the detail above. Common fixes: balance `(` `[` `{{` and string quotes; inside `<xml>...</xml>` every tag must close and `{{...}}` splices must nest cleanly; in `query` / SQL splices check braces; in `fn`/`fun` bodies check `=>`.
+
+
+-- PARSE -------- /Users/jacksmith/prog/urweb/demo/broadcast.ur
+
+I could not parse `/Users/jacksmith/prog/urweb/demo/broadcast.ur` into valid Ur/Web syntax.
+
+Parser detail:
+unexpected token identifier `t` at bytes 292–293; expected one of: opening `(`; keyword `COUNT`; an integer literal (like `42`); opening `{`
+
+    --> /Users/jacksmith/prog/urweb/demo/broadcast.ur:0:0-0:0
+
+Hint: Start from the location in the detail above. Common fixes: balance `(` `[` `{{` and string quotes; inside `<xml>...</xml>` every tag must close and `{{...}}` splices must nest cleanly; in `query` / SQL splices check braces; in `fn`/`fun` bodies check `=>`.
+
+
+-- XML -------------- /Users/jacksmith/prog/urweb/demo/chat.ur
+
+I could not parse `/Users/jacksmith/prog/urweb/demo/chat.ur` into valid Ur/Web syntax.
+
+Parser detail:
+unexpected token identifier `t` at bytes 241–242; expected one of: opening `(`; keyword `COUNT`; an integer literal (like `42`); opening `{`
+
+    --> /Users/jacksmith/prog/urweb/demo/chat.ur:0:0-0:0
 
 Hint: Start from the location in the detail above. Common fixes: balance `(` `[` `{{` and string quotes; inside `<xml>...</xml>` every tag must close and `{{...}}` splices must nest cleanly; in `query` / SQL splices check braces; in `fn`/`fun` bodies check `=>`.
 

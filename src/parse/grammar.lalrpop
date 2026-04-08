@@ -21,7 +21,6 @@ use crate::parse::grammar_helpers::{
     sql_count_all_expression,
     sql_integer_expression,
     sql_is_null_expression,
-    sql_table_reference,
 };
 use crate::parse::xml_helpers::{
     XmlAttr, XmlAttrsAcc, FunParam, capitalize_attr, xml_attrs_empty, xml_attrs_push, xml_desugar_tag_open,
@@ -92,11 +91,23 @@ extern {
         "view"      => crate::parse::lexical_analyzer::Token::View,
         "AS"        => crate::parse::lexical_analyzer::Token::As,
         "COUNT"     => crate::parse::lexical_analyzer::Token::Count,
+        "CURRENT_TIMESTAMP" => crate::parse::lexical_analyzer::Token::CurrentTimestamp,
+        "DELETE"    => crate::parse::lexical_analyzer::Token::Delete,
         "FROM"      => crate::parse::lexical_analyzer::Token::From,
+        "INSERT"    => crate::parse::lexical_analyzer::Token::Insert,
+        "INTO"      => crate::parse::lexical_analyzer::Token::Into,
         "IS"        => crate::parse::lexical_analyzer::Token::Is,
+        "JOIN"      => crate::parse::lexical_analyzer::Token::Join,
+        "LEFT"      => crate::parse::lexical_analyzer::Token::Left,
         "NULL"      => crate::parse::lexical_analyzer::Token::Null,
+        "ON"        => crate::parse::lexical_analyzer::Token::On,
         "AND"       => crate::parse::lexical_analyzer::Token::AndUpper,
         "OR"        => crate::parse::lexical_analyzer::Token::OrUpper,
+        "SET"       => crate::parse::lexical_analyzer::Token::Set,
+        "SQL_STAR"  => crate::parse::lexical_analyzer::Token::SqlStar,
+        "UPDATE"    => crate::parse::lexical_analyzer::Token::Update,
+        "VALUES"    => crate::parse::lexical_analyzer::Token::Values,
+        "WHERE"     => crate::parse::lexical_analyzer::Token::Cwhere,
         "urweb_put" => crate::parse::lexical_analyzer::Token::UrwebPut,
         "urweb_get" => crate::parse::lexical_analyzer::Token::UrwebGet,
         "urweb_tb_transfer" => crate::parse::lexical_analyzer::Token::UrwebTbTransfer,
@@ -1205,14 +1216,15 @@ SqlAlias: String = {
 };
 
 SqlTableRef: (String, LocExp) = {
-    <l:@L> <name:"IDENT"> <r:@R> => sql_table_reference(name, &Span::from_offsets("", l, r, &[])),
-    <l:@L> <name:"UIDENT"> <r:@R> => sql_table_reference(name, &Span::from_offsets("", l, r, &[])),
+    <l:@L> <name:"IDENT"> <r:@R> => crate::parse::grammar_helpers::sql_table_reference(name, &Span::from_offsets("", l, r, &[])),
+    <l:@L> <name:"UIDENT"> <r:@R> => crate::parse::grammar_helpers::sql_table_reference(name, &Span::from_offsets("", l, r, &[])),
 };
 
 SqlAtom: LocExp = {
     <l:@L> "{" <e:Exp> "}" <r:@R> => Located::new(e.node, Span::from_offsets("", l, r, &[])),
     <l:@L> <n:"INT"> <r:@R> => sql_integer_expression(n, &Span::from_offsets("", l, r, &[])),
     <l:@L> "COUNT" "(" "*" ")" <r:@R> => sql_count_all_expression(&Span::from_offsets("", l, r, &[])),
+    <l:@L> "COUNT" "(" "SQL_STAR" ")" <r:@R> => sql_count_all_expression(&Span::from_offsets("", l, r, &[])),
     "(" <e:SqlExp> ")" => e,
 };
 

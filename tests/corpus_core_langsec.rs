@@ -1107,6 +1107,26 @@ fn corpus_core_sql_nonempty_and_eqnullable_elaborate() {
     .expect("narrow SQL surface elaboration");
 }
 
+#[test]
+fn corpus_core_sql_count_star_placeholder_elaborates() {
+    if !corpus_enabled() {
+        return;
+    }
+    try_elaborate_single_module(concat!(
+        "fun oneOrNoRows [tabs ::: {{Type}}] [exps ::: {Type}] [tables ~ exps]\n",
+        "                (q : sql_query [] [] tables exps) = return None\n",
+        "\n",
+        "fun oneRowE1 [tabs ::: {Unit}] [nm ::: Name] [t ::: Type] [tabs ~ [nm]]\n",
+        "             (q : sql_query [] [] (mapU [] tabs) [nm = t]) =\n",
+        "    o <- oneOrNoRows q;\n",
+        "    return (case o of None => error <xml>Query returned no rows</xml> | Some r => r.nm)\n",
+        "\n",
+        "fun nonempty [fs] [us] (t : sql_table fs us) =\n",
+        "    oneRowE1 (SELECT COUNT(sql_star) > 0 AS B FROM t)\n",
+    ))
+    .expect("sql_star placeholder elaboration");
+}
+
 /// Full Basis boot (no user modules): ratchet [`DiagnosticId::ElabUnresolvedDisjointness`].
 #[test]
 fn corpus_boot_elaboration_disjointness_progress() {
