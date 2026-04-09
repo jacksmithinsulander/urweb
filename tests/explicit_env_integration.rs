@@ -272,8 +272,18 @@ fn env_push_k_rel_returns_new_env() {
 #[test]
 fn env_lookup_k_rel() {
     let env = Env::new().push_k_rel("x".into()).push_k_rel("y".into());
-    assert_eq!(env.lookup_k_rel(0).unwrap(), "y");
-    assert_eq!(env.lookup_k_rel(1).unwrap(), "x");
+    // verify k-rel lookup at index 0 succeeds and returns "y"
+    let looked_up_0 = match env.lookup_k_rel(0) {
+        Ok(v) => v,
+        Err(e) => panic!("lookup_k_rel(0) failed: {e}"),
+    };
+    assert_eq!(looked_up_0, "y");
+    // verify k-rel lookup at index 1 succeeds and returns "x"
+    let looked_up_1 = match env.lookup_k_rel(1) {
+        Ok(v) => v,
+        Err(e) => panic!("lookup_k_rel(1) failed: {e}"),
+    };
+    assert_eq!(looked_up_1, "x");
     assert!(matches!(env.lookup_k_rel(2), Err(EnvError::UnboundRel(2))));
 }
 
@@ -290,7 +300,11 @@ fn env_push_c_named() {
     let mut env = Env::new();
     let k = Located::dummy(Kind::Type);
     env.push_c_named("T".into(), 10, k, None);
-    let (name, _, _) = env.lookup_c_named(10).unwrap();
+    // look up constructor with id 10; must succeed since it was just pushed
+    let (name, _, _) = match env.lookup_c_named(10) {
+        Ok(v) => v,
+        Err(e) => panic!("lookup_c_named(10) failed: {e}"),
+    };
     assert_eq!(name, "T");
 }
 
@@ -299,7 +313,11 @@ fn env_push_e_rel() {
     let mut env = Env::new();
     let t = Located::dummy(Constructor::Unit);
     env.push_e_rel("x".into(), t);
-    let (name, _) = env.lookup_e_rel(0).unwrap();
+    // look up expression relative binding at index 0; must succeed after push_e_rel
+    let (name, _) = match env.lookup_e_rel(0) {
+        Ok(v) => v,
+        Err(e) => panic!("lookup_e_rel(0) failed: {e}"),
+    };
     assert_eq!(name, "x");
 }
 
@@ -308,7 +326,11 @@ fn env_push_e_named() {
     let mut env = Env::new();
     let t = Located::dummy(Constructor::Unit);
     env.push_e_named("v".into(), 7, t);
-    let (name, _) = env.lookup_e_named(7).unwrap();
+    // look up named expression binding with id 7; must succeed after push_e_named
+    let (name, _) = match env.lookup_e_named(7) {
+        Ok(v) => v,
+        Err(e) => panic!("lookup_e_named(7) failed: {e}"),
+    };
     assert_eq!(name, "v");
 }
 
@@ -317,7 +339,11 @@ fn env_push_sgn_named() {
     let mut env = Env::new();
     let sgn = Located::dummy(Signature::Const(vec![]));
     env.push_sgn_named("M".into(), 1, sgn);
-    let (name, _) = env.lookup_sgn_named(1).unwrap();
+    // look up named signature binding with id 1; must succeed after push_sgn_named
+    let (name, _) = match env.lookup_sgn_named(1) {
+        Ok(v) => v,
+        Err(e) => panic!("lookup_sgn_named(1) failed: {e}"),
+    };
     assert_eq!(name, "M");
 }
 
@@ -326,7 +352,11 @@ fn env_push_str_named() {
     let mut env = Env::new();
     let sgn = Located::dummy(Signature::Const(vec![]));
     env.push_str_named("S".into(), 2, sgn);
-    let (name, _) = env.lookup_str_named(2).unwrap();
+    // look up named structure binding with id 2; must succeed after push_str_named
+    let (name, _) = match env.lookup_str_named(2) {
+        Ok(v) => v,
+        Err(e) => panic!("lookup_str_named(2) failed: {e}"),
+    };
     assert_eq!(name, "S");
 }
 
@@ -337,7 +367,11 @@ fn env_decl_binds_con() {
     let d = Located::dummy(Declaration::Constructor("T".into(), 99, k, c));
     let mut env = Env::new();
     env.decl_binds(&d);
-    let (name, _, _) = env.lookup_c_named(99).unwrap();
+    // look up constructor with id 99; must succeed since decl_binds was called
+    let (name, _, _) = match env.lookup_c_named(99) {
+        Ok(v) => v,
+        Err(e) => panic!("lookup_c_named(99) failed: {e}"),
+    };
     assert_eq!(name, "T");
 }
 
@@ -353,7 +387,11 @@ fn env_decl_binds_datatype_with_params() {
     let d = Located::dummy(Declaration::Datatype(vec![dt]));
     let mut env = Env::new();
     env.decl_binds(&d);
-    let (_, t) = env.lookup_e_named(11).unwrap();
+    // look up expression named binding with id 11; must succeed since datatype constructor was bound
+    let (_, t) = match env.lookup_e_named(11) {
+        Ok(v) => v,
+        Err(e) => panic!("lookup_e_named(11) failed: {e}"),
+    };
     // Type is TCFun("a", Type, App(Named(10), Rel(0))); body must contain Rel(0)
     let Constructor::TCFun(_, _, body) = &t.node else {
         panic!("expected TCFun")
@@ -379,7 +417,11 @@ fn env_decl_binds_datatype_two_params() {
     let d = Located::dummy(Declaration::Datatype(vec![dt]));
     let mut env = Env::new();
     env.decl_binds(&d);
-    let (_, t) = env.lookup_e_named(21).unwrap();
+    // look up expression named binding with id 21; must succeed after two-param datatype bind
+    let (_, t) = match env.lookup_e_named(21) {
+        Ok(v) => v,
+        Err(e) => panic!("lookup_e_named(21) failed: {e}"),
+    };
     // TCFun("b", ..., TCFun("a", ..., App(App(Named(20), Rel(1)), Rel(0))))
     let Constructor::TCFun(_, _, inner) = &t.node else {
         panic!("expected TCFun")
@@ -409,7 +451,11 @@ fn env_pat_binds_adds_variable() {
     let p = Located::dummy(ur::explicit::Pattern::Var("z".into(), t));
     let mut env = Env::new();
     env.pat_binds(&p);
-    let (name, _) = env.lookup_e_rel(0).unwrap();
+    // look up relative expression binding at index 0; must succeed after pat_binds
+    let (name, _) = match env.lookup_e_rel(0) {
+        Ok(v) => v,
+        Err(e) => panic!("lookup_e_rel(0) failed: {e}"),
+    };
     assert_eq!(name, "z");
 }
 
@@ -420,7 +466,11 @@ fn env_decl_binds_val() {
     let d = Located::dummy(Declaration::Val("x".into(), 5, t, e));
     let mut env = Env::new();
     env.decl_binds(&d);
-    let (name, _) = env.lookup_e_named(5).unwrap();
+    // look up named expression binding with id 5; must succeed after decl_binds Val
+    let (name, _) = match env.lookup_e_named(5) {
+        Ok(v) => v,
+        Err(e) => panic!("lookup_e_named(5) failed: {e}"),
+    };
     assert_eq!(name, "x");
 }
 
@@ -431,7 +481,11 @@ fn env_sgi_binds_con() {
     let sgi = Located::dummy(SignatureItem::Constructor("C".into(), 8, k, c));
     let mut env = Env::new();
     env.sgi_binds(&sgi);
-    let (name, _, _) = env.lookup_c_named(8).unwrap();
+    // look up constructor with id 8; must succeed after sgi_binds
+    let (name, _, _) = match env.lookup_c_named(8) {
+        Ok(v) => v,
+        Err(e) => panic!("lookup_c_named(8) failed: {e}"),
+    };
     assert_eq!(name, "C");
 }
 
@@ -516,7 +570,11 @@ fn env_push_c_rel_then_lookup() {
     let k = Located::dummy(Kind::Type);
     let mut env = Env::new();
     env = env.push_c_rel("a".into(), k);
-    let (name, _) = env.lookup_c_rel(0).unwrap();
+    // look up constructor relative binding at index 0; must succeed after push_c_rel
+    let (name, _) = match env.lookup_c_rel(0) {
+        Ok(v) => v,
+        Err(e) => panic!("lookup_c_rel(0) failed: {e}"),
+    };
     assert_eq!(name, "a");
 }
 
@@ -525,6 +583,10 @@ fn env_push_e_rel_then_lookup() {
     let t = Located::dummy(Constructor::Unit);
     let mut env = Env::new();
     env.push_e_rel("x".into(), t);
-    let (name, _) = env.lookup_e_rel(0).unwrap();
+    // look up expression relative binding at index 0; must succeed after push_e_rel
+    let (name, _) = match env.lookup_e_rel(0) {
+        Ok(v) => v,
+        Err(e) => panic!("lookup_e_rel(0) failed: {e}"),
+    };
     assert_eq!(name, "x");
 }

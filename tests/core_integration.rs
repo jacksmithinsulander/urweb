@@ -33,11 +33,19 @@ fn integration_classify_then_env_datatype() {
     assert_eq!(datatype_kind, DatatypeKind::Option);
 
     let env = Env::empty().push_datatype(10, vec!["a".into()], constructor_specifications);
-    let (params, constrs) = env.lookup_datatype(10).unwrap();
+    // look up datatype with id 10; must succeed since it was just pushed
+    let (params, constrs) = match env.lookup_datatype(10) {
+        Ok(v) => v,
+        Err(e) => panic!("lookup_datatype(10) failed: {e}"),
+    };
     assert_eq!(params.len(), 1);
     assert_eq!(constrs.len(), 2);
 
-    let some_info = env.lookup_constructor("Some").unwrap();
+    // look up constructor named "Some"; must succeed since it was registered with the datatype
+    let some_info = match env.lookup_constructor("Some") {
+        Some(info) => info,
+        None => panic!("lookup_constructor(\"Some\") returned None"),
+    };
     assert_eq!(some_info.1, 10);
     assert_eq!(some_info.4, 1);
 }
@@ -1184,8 +1192,16 @@ fn integration_file_max_name_after_decl_binds() {
     assert_eq!(max, 100);
 
     let env = Env::empty().bind_file(&decls);
-    env.lookup_c_named(50).unwrap();
-    env.lookup_e_named(100).unwrap();
+    // verify constructor with id 50 is bound after bind_file; failure means a decl was not registered
+    match env.lookup_c_named(50) {
+        Ok(_) => {}
+        Err(e) => panic!("lookup_c_named(50) failed: {e}"),
+    }
+    // verify expression with id 100 is bound after bind_file; failure means a decl was not registered
+    match env.lookup_e_named(100) {
+        Ok(_) => {}
+        Err(e) => panic!("lookup_e_named(100) failed: {e}"),
+    }
 }
 
 #[test]
@@ -1214,9 +1230,17 @@ fn integration_env_decl_binds_con_and_val() {
     ];
 
     let env = Env::empty().bind_file(&decls);
-    let (name, _, _) = env.lookup_c_named(1).unwrap();
+    // look up constructor with id 1; must succeed after bind_file with a Constructor decl
+    let (name, _, _) = match env.lookup_c_named(1) {
+        Ok(v) => v,
+        Err(e) => panic!("lookup_c_named(1) failed: {e}"),
+    };
     assert_eq!(name, "T");
-    let (name, _) = env.lookup_e_named(2).unwrap();
+    // look up expression with id 2; must succeed after bind_file with a Val decl
+    let (name, _) = match env.lookup_e_named(2) {
+        Ok(v) => v,
+        Err(e) => panic!("lookup_e_named(2) failed: {e}"),
+    };
     assert_eq!(name, "x");
 }
 
@@ -1796,7 +1820,11 @@ fn integration_unpoly_unravel_capp_named() {
     let n = Located::dummy(Expression::Named(99));
     let res = unpoly::unravel_capp(&n);
     assert!(res.is_some());
-    let (id, args) = res.unwrap();
+    // destructure the unravel_capp result; Some was verified on the line above
+    let (id, args) = match res {
+        Some(v) => v,
+        None => panic!("unravel_capp returned None for Named(99)"),
+    };
     assert_eq!(id, 99);
     assert!(args.is_empty());
 }
@@ -1808,7 +1836,11 @@ fn integration_unpoly_unravel_capp_capp_layer() {
     let capp = Located::dummy(Expression::CApp(Box::new(named), unit_con));
     let res = unpoly::unravel_capp(&capp);
     assert!(res.is_some());
-    let (id, args) = res.unwrap();
+    // destructure the unravel_capp result; Some was verified on the line above
+    let (id, args) = match res {
+        Some(v) => v,
+        None => panic!("unravel_capp returned None for CApp(Named(5), _)"),
+    };
     assert_eq!(id, 5);
     assert_eq!(args.len(), 1);
 }
@@ -2120,7 +2152,12 @@ fn integration_core_rpcify_minimal_val() {
     let mut errors = ur::error_types::ErrorReporter::new_silent();
     let result = compiler::core_rpcify(file, &settings, &mut errors);
     assert!(result.is_some());
-    assert_eq!(result.unwrap().len(), 1);
+    // extract the file from the Some; is_some() was asserted above
+    let rpcified = match result {
+        Some(v) => v,
+        None => panic!("core_rpcify returned None for minimal val file"),
+    };
+    assert_eq!(rpcified.len(), 1);
 }
 
 #[test]
@@ -2328,7 +2365,12 @@ fn integration_core_rpcify_database() {
     let mut errors = ur::error_types::ErrorReporter::new_silent();
     let result = compiler::core_rpcify(file, &settings, &mut errors);
     assert!(result.is_some());
-    assert_eq!(result.unwrap().len(), 1);
+    // extract the file from the Some; is_some() was asserted above
+    let rpcified = match result {
+        Some(v) => v,
+        None => panic!("core_rpcify returned None for database file"),
+    };
+    assert_eq!(rpcified.len(), 1);
 }
 
 #[test]

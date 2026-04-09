@@ -659,10 +659,14 @@ mod tests {
         ];
         let (out, errs) = effectize(file, &s);
         assert!(errs.is_empty());
-        let export = out
+        // Find the Export declaration in the output; panic with a message if missing.
+        let export = match out
             .iter()
             .find(|d| matches!(d.node, Declaration::Export(_, _, _)))
-            .unwrap();
+        {
+            Some(v) => v,
+            None => panic!("effectize output contains no Export declaration"),
+        };
         match &export.node {
             Declaration::Export(ExportKind::Action(effect), n, has_state) => {
                 assert_eq!(*n, 100);
@@ -696,10 +700,14 @@ mod tests {
         ];
         let (out, errs) = effectize(file, &s);
         assert!(errs.is_empty());
-        let export = out
+        // Find the Export declaration in the output; panic with a message if missing.
+        let export = match out
             .iter()
             .find(|d| matches!(d.node, Declaration::Export(_, _, _)))
-            .unwrap();
+        {
+            Some(v) => v,
+            None => panic!("effectize output contains no Export declaration"),
+        };
         match &export.node {
             Declaration::Export(ExportKind::Action(effect), _, _) => {
                 assert_eq!(*effect, Effect::ReadOnly);
@@ -750,10 +758,15 @@ mod tests {
             .iter()
             .filter(|d| matches!(d.node, Declaration::Export(_, _, _)))
             .collect();
-        let exp_b = exports
+        // Find export for b (id=11); panic with a message if it is missing.
+        let exp_b = match exports
             .iter()
-            .find(|d| matches!(&d.node, Declaration::Export(_, n, _) if *n == 11));
-        match exp_b.unwrap().node {
+            .find(|d| matches!(&d.node, Declaration::Export(_, n, _) if *n == 11))
+        {
+            Some(v) => v,
+            None => panic!("no Export declaration found for id=11"),
+        };
+        match exp_b.node {
             Declaration::Export(ExportKind::Action(effect), 11, _) => {
                 assert_eq!(
                     effect,
@@ -763,10 +776,15 @@ mod tests {
             }
             _ => panic!("expected Action export for b"),
         }
-        let exp_a = exports
+        // Find export for a (id=10); panic with a message if it is missing.
+        let exp_a = match exports
             .iter()
-            .find(|d| matches!(&d.node, Declaration::Export(_, n, _) if *n == 10));
-        match exp_a.unwrap().node {
+            .find(|d| matches!(&d.node, Declaration::Export(_, n, _) if *n == 10))
+        {
+            Some(v) => v,
+            None => panic!("no Export declaration found for id=10"),
+        };
+        match exp_a.node {
             Declaration::Export(ExportKind::Action(effect), 10, _) => {
                 assert_eq!(
                     effect,
@@ -817,10 +835,14 @@ mod tests {
         ];
         let (out, errs) = effectize(file, &s);
         assert!(errs.is_empty());
-        let export = out
+        // Find the Export for id=14; panic with a message if it is missing.
+        let export = match out
             .iter()
             .find(|d| matches!(&d.node, Declaration::Export(_, 14, _)))
-            .unwrap();
+        {
+            Some(v) => v,
+            None => panic!("no Export declaration found for id=14"),
+        };
         match &export.node {
             Declaration::Export(ExportKind::Action(effect), 14, _) => {
                 assert_eq!(
@@ -882,10 +904,14 @@ mod tests {
         ];
         let (out, errs) = effectize(file, &s);
         assert!(errs.is_empty());
-        let export = out
+        // Find the Export for id=10 (the caller); panic with a message if it is missing.
+        let export = match out
             .iter()
             .find(|d| matches!(&d.node, Declaration::Export(_, n, _) if *n == 10))
-            .unwrap();
+        {
+            Some(v) => v,
+            None => panic!("no Export declaration found for id=10"),
+        };
         match &export.node {
             Declaration::Export(ExportKind::Action(_effect), 10, has_state) => {
                 assert!(
@@ -964,10 +990,14 @@ mod tests {
         ];
         let (out, errs) = effectize(file, &s);
         assert!(errs.is_empty());
-        let export = out
+        // Find the Export for id=2 (b); panic with a message if it is missing.
+        let export = match out
             .iter()
             .find(|d| matches!(&d.node, Declaration::Export(_, n, _) if *n == 2))
-            .unwrap();
+        {
+            Some(v) => v,
+            None => panic!("no Export declaration found for id=2"),
+        };
         match &export.node {
             Declaration::Export(ExportKind::Action(effect), 2, _) => {
                 assert_eq!(
@@ -1020,10 +1050,14 @@ mod tests {
         ];
         let (out, errs) = effectize(file, &s);
         assert!(errs.is_empty());
-        let export = out
+        // Find the Export for id=3 (c); panic with a message if it is missing.
+        let export = match out
             .iter()
             .find(|d| matches!(&d.node, Declaration::Export(_, n, _) if *n == 3))
-            .unwrap();
+        {
+            Some(v) => v,
+            None => panic!("no Export declaration found for id=3"),
+        };
         match &export.node {
             Declaration::Export(ExportKind::Action(effect), 3, _) => {
                 assert_eq!(

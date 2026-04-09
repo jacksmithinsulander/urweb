@@ -2012,13 +2012,14 @@ mod tests {
             span.clone(),
         )];
         let result = reduce(file, &Settings::default());
-        let body = result
-            .iter()
-            .find_map(|d| match &d.node {
-                Declaration::Val(_, 1, _, e, _) => Some(e.clone()),
-                _ => None,
-            })
-            .unwrap();
+        // Find the Val declaration with id=1 and extract its body; panic with a message if absent.
+        let body = match result.iter().find_map(|d| match &d.node {
+            Declaration::Val(_, 1, _, e, _) => Some(e.clone()),
+            _ => None,
+        }) {
+            Some(v) => v,
+            None => panic!("no Val declaration with id=1 found in reduce output"),
+        };
         assert!(
             matches!(body.node, Expression::Prim(Prim::Int(42))),
             "App of Abs must beta-reduce"

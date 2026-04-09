@@ -849,6 +849,87 @@ pub fn parse_basis_sources(
     parse_sources(&boot_job, settings, errors) // Delegate to the standard parser, which reads Basis and Top.
 }
 
+/// Frozen `Basis` / `Top` elaboration state for fast single-module test elaboration.
+pub type BootElaborationSnapshot = crate::elaborated::elaborate::BootElaborationSnapshot;
+
+/// Elaborate parsed boot sources once and keep the resulting `Basis` / `Top` environment snapshot.
+///
+/// # Arguments
+///
+/// * `cached_boot` — Parsed boot declarations from [`parse_basis_sources`].
+/// * `errors` — Receives elaboration errors.
+///
+/// # Returns
+///
+/// [`BootElaborationSnapshot`] when `Basis` and `Top` elaborate successfully.
+pub fn elaborate_boot_snapshot(
+    cached_boot: &crate::source::File,
+    errors: &mut ErrorReporter,
+) -> Option<BootElaborationSnapshot> {
+    crate::elaborated::elaborate::elab_boot_file_to_snapshot(cached_boot, errors)
+}
+
+/// Elaborate cached boot sources plus the project-sensitive prelude declarations that
+/// [`parse_sources`] would inject before user modules.
+///
+/// This is useful for tests that elaborate many small modules against the same backend-sensitive
+/// prelude, such as native `UrwebNative` surfaces.
+///
+/// # Parameters
+///
+/// * `cached_boot` — Parsed boot declarations from [`parse_basis_sources`].
+/// * `job` — Resolved project job whose `database` / boot settings determine injected decls.
+/// * `settings` — Compilation settings used to determine the effective backend.
+/// * `errors` — Receives elaboration errors.
+///
+/// # Returns
+///
+/// [`BootElaborationSnapshot`] containing the elaborated boot + project prelude environment.
+pub fn elaborate_boot_snapshot_with_project_prelude(
+    cached_boot: &crate::source::File,
+    job: &Job,
+    settings: &Settings,
+    errors: &mut ErrorReporter,
+) -> Option<BootElaborationSnapshot> {
+    use crate::error_types::{Located, Span};
+    use crate::source;
+
+    let mut file = cached_boot.clone();
+
+    if let Some(database_path) = &job.database {
+        let database_span = Span {
+            file: "<project>".into(),
+            ..Span::dummy()
+        };
+        file.push(Located::new(
+            source::Decl::Database(database_path.clone()),
+            database_span,
+        ));
+    }
+
+    let project_db = crate::db::effective_project_db(settings);
+    if project_db.exposes_urweb_native_surface() && job.basis_lib_dir.is_some() {
+        let native_span = Span {
+            file: "<urweb_native>.urs".into(),
+            ..Span::dummy()
+        };
+        let native_sgn = Located::new(
+            source::Sgn::Const(urweb_native_ffi_sgn_items()),
+            native_span.clone(),
+        );
+        file.push(Located::new(
+            source::Decl::FfiStr("UrwebNative".into(), native_sgn, None),
+            native_span.clone(),
+        ));
+        file.push(Located::new(
+            source::Decl::Open("UrwebNative".into(), vec![]),
+            native_span,
+        ));
+    }
+
+    crate::elaborated::elaborate::elab_boot_file_to_snapshot(&file, errors)
+}
+
 /// Elaborate one in-memory Ur/Web module (and optional signature) on top of pre-parsed boot sources.
 ///
 /// Intended for test harnesses that elaborate many small modules against the same Basis. By
@@ -943,6 +1024,89 @@ pub fn elaborate_module_on_cached_boot(
     };
     if errors.has_hard_errors() {
         return Err(format!("elaborate errors: {errors:?}")); // Hard errors prevent further compilation.
+    }
+    Ok(())
+}
+
+/// Elaborate one in-memory Ur/Web module (and optional signature) on top of cached boot elaboration.
+///
+/// This is faster than [`elaborate_module_on_cached_boot`] because it reuses the elaborated boot
+/// environment rather than reprocessing `Basis` and `Top` on every invocation.
+///
+/// # Parameters
+///
+/// * `boot_snapshot` — Frozen boot state from [`elaborate_boot_snapshot`].
+/// * `module_name` — Module name used for the generated structure declaration.
+/// * `ur_text` — Source text of the implementation module.
+/// * `urs_text` — Optional source text of the module signature.
+/// * `settings` — Compilation settings.
+/// * `errors` — Diagnostic sink; hard errors are reported here.
+///
+/// # Returns
+///
+/// `Ok(())` on success; `Err(String)` on parse or elaboration failure.
+pub fn elaborate_module_on_cached_boot_snapshot(
+    boot_snapshot: &BootElaborationSnapshot,
+    module_name: &str,
+    ur_text: &str,
+    urs_text: Option<&str>,
+    _settings: &Settings,
+    errors: &mut ErrorReporter,
+) -> Result<(), String> {
+    use crate::error_types::{Located, Span};
+    use crate::source;
+
+    let sgn_opt = match urs_text {
+        None => None,
+        Some(text) => {
+            let mut sgn_errors = ErrorReporter::new_silent();
+            match crate::parse::parse_urs(&format!("{module_name}.urs"), text, &mut sgn_errors) {
+                None => return Err(format!("parse_urs failed: {sgn_errors:?}")),
+                Some(sgis) => {
+                    let sig_span = Span {
+                        file: format!("{module_name}.urs"),
+                        ..Span::dummy()
+                    };
+                    Some(Located::new(source::Sgn::Const(sgis), sig_span))
+                }
+            }
+        }
+    };
+
+    let mut ur_errors = ErrorReporter::new_silent();
+    let impl_span = Span {
+        file: format!("{module_name}.ur"),
+        ..Span::dummy()
+    };
+    let Some(user_decls) = crate::parse::parse_ur(
+        &impl_span.file,
+        ur_text,
+        &mut ur_errors,
+        crate::db::ProjectDb::default(),
+    ) else {
+        return Err(format!("parse_ur failed: {ur_errors:?}"));
+    };
+
+    let str_node = Located::new(source::Str::Const(user_decls), impl_span.clone());
+    let mut file = vec![Located::new(
+        source::Decl::Str(module_name.to_string(), sgn_opt, None, str_node, false),
+        impl_span.clone(),
+    )];
+
+    let export_span = Span::dummy();
+    let export_ref = Located::new(
+        source::Str::Var(module_name.to_string()),
+        export_span.clone(),
+    );
+    file.push(Located::new(source::Decl::Export(export_ref), export_span));
+
+    let Some(_elab) =
+        crate::elaborated::elaborate::elab_file_from_boot_snapshot(boot_snapshot, file, errors)
+    else {
+        return Err(format!("elaborate returned None: {errors:?}"));
+    };
+    if errors.has_hard_errors() {
+        return Err(format!("elaborate errors: {errors:?}"));
     }
     Ok(())
 }
@@ -2344,6 +2508,55 @@ pub fn compile_to_outputs(urp_path: &Path, settings: &mut Settings) -> Result<(S
     Ok((c_code, sql_ddl))
 }
 
+/// Resolve and elaborate a project through the parse + elaboration phases only.
+///
+/// This keeps the same project-discovery, boot-linking, database/backend resolution, and parser
+/// behavior as [`compile_to_outputs`], but stops once type/module elaboration has succeeded.
+///
+/// # Arguments
+///
+/// * `urp_path` — Project descriptor path or a path inside the project that can resolve to one.
+/// * `settings` — Compiler settings to apply before parse/elaboration.
+///
+/// # Errors
+///
+/// Returns the same style of project-resolution, parse, or elaboration errors as
+/// [`compile_to_outputs`].
+pub fn elaborate_project(urp_path: &Path, settings: &mut Settings) -> Result<()> {
+    let urp_path_buf = resolve_urp_project_path(urp_path);
+    crate::db::apply_urp_manifest_diagnostic_locale(&urp_path_buf, settings)
+        .map_err(|error_message| anyhow::anyhow!(error_message))?;
+    let mut errors = ErrorReporter::from_settings(settings);
+    let mut job = crate::urp_parser::parse_urp_with_reporter(&urp_path_buf, &mut errors)?;
+    apply_boot_settings(&mut job, settings)
+        .map_err(|error_message| anyhow::anyhow!(error_message))?;
+    apply_job_db_settings(&job, settings)
+        .map_err(|error_message| anyhow::anyhow!(error_message))?;
+    crate::db::apply_urp_manifest_db_defaults(&urp_path_buf, settings)
+        .map_err(|error_message| anyhow::anyhow!(error_message))?;
+    crate::db::reconcile_ur_manifest_with_resolved_db(&urp_path_buf, settings)
+        .map_err(|error_message| anyhow::anyhow!(error_message))?;
+
+    settings.set_url_prefix(&job.prefix);
+    settings.timeout = job.timeout;
+    settings.headers = job.headers.clone();
+    settings.scripts = job.scripts.clone();
+    settings.debug = job.debug;
+
+    let source_file = parse_sources(&job, settings, &mut errors)
+        .ok_or_else(|| anyhow_phase_incomplete(settings, "parsing"))?;
+    bail_if_errors_reported(&errors, "Parsing", settings.diagnostic_locale)?;
+
+    elaborate(source_file, settings, &mut errors)
+        .ok_or_else(|| anyhow_phase_incomplete(settings, "elaboration"))?;
+    bail_if_errors_reported(
+        &errors,
+        "Elaboration (types and modules)",
+        settings.diagnostic_locale,
+    )?;
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Module name helper (used by main.rs)
 // ---------------------------------------------------------------------------
@@ -2374,6 +2587,7 @@ pub fn module_of(filename: &str) -> String {
 mod tests {
     use super::*;
     use crate::db::{DatabaseBackend, ProjectDb};
+    use anyhow::{anyhow, Context as _}; // error construction and chaining for tests
     use std::path::Path;
     use std::sync::atomic::Ordering;
 
@@ -2392,13 +2606,22 @@ mod tests {
             "compiler tests cwd",
         );
         let prev = std::env::current_dir().unwrap_or_else(|_| {
-            let t = std::env::temp_dir();
-            std::env::set_current_dir(&t).expect("chdir to temp_dir");
+            let t = std::env::temp_dir(); // fall back to temp dir when current_dir() is unavailable
+            match std::env::set_current_dir(&t) {
+                Ok(()) => {} // chdir to temp dir succeeded
+                Err(error) => panic!("chdir to temp_dir failed: {error}"),
+            }
             t
         });
-        std::env::set_current_dir(dir).expect("chdir to test project directory");
+        match std::env::set_current_dir(dir) {
+            Ok(()) => {} // chdir to test project directory succeeded
+            Err(error) => panic!("chdir to test project directory failed: {error}"),
+        }
         let out = f();
-        std::env::set_current_dir(&prev).expect("restore cwd");
+        match std::env::set_current_dir(&prev) {
+            Ok(()) => {} // restore the previous working directory
+            Err(error) => panic!("restore cwd failed: {error}"),
+        }
         out
     }
 
@@ -2435,43 +2658,53 @@ mod tests {
     /// Temporary directories on macOS often use `/var/folders/...` while canonical paths use
     /// `/private/var/folders/...`; [`super::resolve_boot_root`] also canonicalizes `URWEB_BOOT_ROOT`.
     ///
-    /// # Panics
-    ///
-    /// Panics if either path cannot be canonicalized or the canonical [`std::path::PathBuf`] values differ.
-    fn assert_paths_canonically_equal(left: &Path, right: &Path) {
-        let left_canonical = std::fs::canonicalize(left).expect("canonicalize left test path"); // symlinks, /private on macOS
-        let right_canonical = std::fs::canonicalize(right).expect("canonicalize right test path"); // same for other operand
+    /// Returns an error if either path cannot be canonicalized.
+    fn assert_paths_canonically_equal(left: &Path, right: &Path) -> anyhow::Result<()> {
+        let left_canonical = std::fs::canonicalize(left)
+            .with_context(|| format!("canonicalize left test path: {}", left.display()))?; // handle symlinks and /private prefix on macOS
+        let right_canonical = std::fs::canonicalize(right)
+            .with_context(|| format!("canonicalize right test path: {}", right.display()))?; // same canonicalization for the right operand
         assert_eq!(
             left_canonical, right_canonical,
             "expected the same directory after canonicalization (macOS /private prefix, symlinks)"
         ); // surface both paths when they mismatch
+        Ok(()) // both paths canonicalize to the same location
     }
 
     #[test]
-    fn module_of_simple() {
+    fn module_of_simple() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         assert_eq!(module_of("foo.ur"), "Foo");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn module_of_path() {
+    fn module_of_path() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         assert_eq!(module_of("/a/b/myApp.ur"), "MyApp");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn module_of_no_extension() {
+    fn module_of_no_extension() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         assert_eq!(module_of("hello"), "Hello");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn job_default() {
+    fn job_default() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let j = Job::default();
         assert_eq!(j.prefix, "/");
         assert_eq!(j.timeout, 120);
+        Ok(()) // return success to the test harness
     }
 
     /// Mutants that make [`super::bail_if_errors_reported`] always `Ok(())` let the pipeline run on broken input and can hit mutation timeouts.
     #[test]
-    fn bail_if_errors_reported_fails_when_diagnostics_present() {
+    fn bail_if_errors_reported_fails_when_diagnostics_present() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let mut errors = ErrorReporter::new();
         errors.report(crate::error_types::CompileError::Plain(
             DiagnosticPayload::new(DiagnosticId::MutationTestingBadPlaceholder, Vec::new()),
@@ -2486,21 +2719,25 @@ mod tests {
             msg.contains("Parsing") && msg.contains('1'),
             "message should name the phase and error count: {msg}"
         );
+        Ok(()) // return success to the test harness
     }
 
     /// Silent success path for [`super::bail_if_errors_reported`] (catches inverted condition mutants).
     #[test]
-    fn bail_if_errors_reported_ok_when_no_diagnostics() {
+    fn bail_if_errors_reported_ok_when_no_diagnostics() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let errors = ErrorReporter::new();
         assert!(
             bail_if_errors_reported(&errors, "Parsing", DiagnosticLocale::En).is_ok(),
             "empty error buffer must not bail"
         );
+        Ok(()) // return success to the test harness
     }
 
     /// Warnings stored on the reporter must not abort batch compile (`.urp` soft failures, core recovery).
     #[test]
-    fn bail_if_errors_reported_ok_when_only_warnings() {
+    fn bail_if_errors_reported_ok_when_only_warnings() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         use crate::error_types::{CompileError, Span};
 
         let mut errors = ErrorReporter::new();
@@ -2512,36 +2749,40 @@ mod tests {
             bail_if_errors_reported(&errors, "Parsing", DiagnosticLocale::En).is_ok(),
             "warning-only buffer must not bail"
         );
+        Ok(()) // return success to the test harness
     }
 
     /// [`super::boot_root_from`] must walk parents until `lib/ur/basis.urs` exists (`None` / wrong `Some` mutants break boot and native fallbacks).
     #[test]
-    fn boot_root_from_finds_checkout_markers() {
-        let tmp = tempfile::tempdir().unwrap();
+    fn boot_root_from_finds_checkout_markers() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
+        let tmp = tempfile::tempdir()?; // create temporary directory for test fixtures
         let basis_dir = tmp.path().join("lib/ur");
-        std::fs::create_dir_all(&basis_dir).unwrap();
-        std::fs::write(basis_dir.join("basis.urs"), "(* test sig *)").unwrap();
+        std::fs::create_dir_all(&basis_dir)?; // create the basis library directory
+        std::fs::write(basis_dir.join("basis.urs"), "(* test sig *)")?; // write the basis.urs sentinel file
         let start = tmp.path().join("nested/deep");
-        std::fs::create_dir_all(&start).unwrap();
+        std::fs::create_dir_all(&start)?;
         let root = boot_root_from(start);
         assert_eq!(
             root.as_deref(),
             Some(tmp.path()),
             "expected parent scan to find directory containing lib/ur/basis.urs"
         );
+        Ok(()) // return success to the test harness
     }
 
     /// [`super::resolve_boot_root`] must prefer [`super::URWEB_BOOT_ROOT_ENV`] when it points at a valid tree.
     #[test]
-    fn resolve_boot_root_honors_urweb_boot_root_env() {
+    fn resolve_boot_root_honors_urweb_boot_root_env() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let _guard = crate::compiler_diagnostics::lock_for_compile(
             &crate::compiler_diagnostics::TEST_CWD_LOCK,
             "resolve_boot_root URWEB_BOOT_ROOT",
         );
-        let tmp = tempfile::tempdir().unwrap();
+        let tmp = tempfile::tempdir()?; // create temporary directory for test fixtures
         let basis_dir = tmp.path().join("lib/ur");
-        std::fs::create_dir_all(&basis_dir).unwrap();
-        std::fs::write(basis_dir.join("basis.urs"), "(* test sig *)").unwrap();
+        std::fs::create_dir_all(&basis_dir)?; // create the basis library directory
+        std::fs::write(basis_dir.join("basis.urs"), "(* test sig *)")?; // write the basis.urs sentinel file
         let previous = std::env::var_os(URWEB_BOOT_ROOT_ENV);
         std::env::set_var(URWEB_BOOT_ROOT_ENV, tmp.path());
         let root = resolve_boot_root();
@@ -2549,23 +2790,26 @@ mod tests {
             None => std::env::remove_var(URWEB_BOOT_ROOT_ENV),
             Some(value) => std::env::set_var(URWEB_BOOT_ROOT_ENV, value),
         }
-        let root_path = root
-            .as_deref()
-            .expect("URWEB_BOOT_ROOT with basis.urs must resolve"); // resolver returns Some(...)
-        assert_paths_canonically_equal(root_path, tmp.path()); // string compare fails across /var vs /private
+        let root_path = match root.as_deref() {
+            Some(path) => path,
+            None => return Err(anyhow!("URWEB_BOOT_ROOT with basis.urs must resolve")),
+        }; // resolver returns Some(...)
+        assert_paths_canonically_equal(root_path, tmp.path())?; // string compare fails across /var vs /private
+        Ok(()) // return success to the test harness
     }
 
     /// [`super::apply_boot_settings`] must replace an existing `basis_lib_dir` when boot linking resolves a root.
     #[test]
-    fn apply_boot_settings_overrides_basis_lib_dir_when_boot_root_known() {
+    fn apply_boot_settings_overrides_basis_lib_dir_when_boot_root_known() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let _guard = crate::compiler_diagnostics::lock_for_compile(
             &crate::compiler_diagnostics::TEST_CWD_LOCK,
             "apply_boot_settings basis_lib_dir override",
         );
-        let tmp = tempfile::tempdir().unwrap();
+        let tmp = tempfile::tempdir()?; // create temporary directory for test fixtures
         let basis_dir = tmp.path().join("lib/ur");
-        std::fs::create_dir_all(&basis_dir).unwrap();
-        std::fs::write(basis_dir.join("basis.urs"), "(* test sig *)").unwrap();
+        std::fs::create_dir_all(&basis_dir)?; // create the basis library directory
+        std::fs::write(basis_dir.join("basis.urs"), "(* test sig *)")?; // write the basis.urs sentinel file
         let previous = std::env::var_os(URWEB_BOOT_ROOT_ENV);
         std::env::set_var(URWEB_BOOT_ROOT_ENV, tmp.path());
         let wrong = tmp.path().join("not_lib_ur");
@@ -2578,7 +2822,7 @@ mod tests {
             ..Default::default()
         };
         apply_boot_settings(&mut job, &mut settings)
-            .expect("apply_boot_settings with temp URWEB_BOOT_ROOT");
+            .map_err(|error| anyhow!("apply_boot_settings with temp URWEB_BOOT_ROOT: {error}"))?;
         match &previous {
             None => std::env::remove_var(URWEB_BOOT_ROOT_ENV),
             Some(value) => std::env::set_var(URWEB_BOOT_ROOT_ENV, value),
@@ -2586,8 +2830,9 @@ mod tests {
         let configured_basis = job
             .basis_lib_dir
             .as_deref()
-            .expect("apply_boot_settings sets basis"); // overwritten from boot root
-        assert_paths_canonically_equal(configured_basis, basis_dir.as_path()); // canonical root/lib/ur vs temp paths
+            .ok_or_else(|| anyhow!("apply_boot_settings must set basis_lib_dir"))?; // catches no-op body mutant
+        assert_paths_canonically_equal(configured_basis, basis_dir.as_path())?; // compare canonicalized root/lib/ur against temp path
+        Ok(()) // return success to the test harness
     }
 
     /// [`super::apply_boot_settings_with_explicit_root`] must set `basis_lib_dir` from the supplied root.
@@ -2595,11 +2840,12 @@ mod tests {
     /// Catches mutants: `replace apply_boot_settings_with_explicit_root body with Ok(())`,
     /// `replace apply_boot_settings_from_root call with ()`, `delete basis_lib_dir assignment`.
     #[test]
-    fn apply_boot_settings_with_explicit_root_sets_basis_lib_dir() {
-        let tmp = tempfile::tempdir().unwrap(); // Temp checkout root with minimal Basis layout.
+    fn apply_boot_settings_with_explicit_root_sets_basis_lib_dir() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
+        let tmp = tempfile::tempdir()?; // create temp checkout root with minimal Basis layout
         let basis_dir = tmp.path().join("lib/ur"); // Expected basis_lib_dir after application.
-        std::fs::create_dir_all(&basis_dir).unwrap(); // Create the library directory.
-        std::fs::write(basis_dir.join("basis.urs"), "(* test sig *)").unwrap(); // Required sentinel file.
+        std::fs::create_dir_all(&basis_dir)?; // create the library directory for the test fixture
+        std::fs::write(basis_dir.join("basis.urs"), "(* test sig *)")?; // write the required basis.urs sentinel file
         let mut job = Job {
             basis_lib_dir: None, // Start with no basis — must be populated by the function.
             ..Default::default()
@@ -2609,12 +2855,12 @@ mod tests {
             ..Default::default()
         };
         apply_boot_settings_with_explicit_root(&mut job, &mut settings, tmp.path())
-            .expect("explicit root with valid basis.urs must succeed"); // Catches Ok(()) body-replacement mutant.
-        let configured_basis = job
-            .basis_lib_dir
-            .as_deref()
-            .expect("apply_boot_settings_with_explicit_root must set basis_lib_dir"); // Catches no-op body mutant.
-        assert_paths_canonically_equal(configured_basis, basis_dir.as_path()); // Root/lib/ur must match temp path.
+            .map_err(|error| anyhow!("explicit root with valid basis.urs must succeed: {error}"))?; // catches Ok(()) body-replacement mutant
+        let configured_basis = job.basis_lib_dir.as_deref().ok_or_else(|| {
+            anyhow!("apply_boot_settings_with_explicit_root must set basis_lib_dir")
+        })?; // catches no-op body mutant
+        assert_paths_canonically_equal(configured_basis, basis_dir.as_path())?; // compare canonicalized root/lib/ur against temp path
+        Ok(()) // return success to the test harness
     }
 
     /// [`super::apply_boot_settings_with_explicit_root`] must no-op when `boot_linking` is false.
@@ -2622,11 +2868,12 @@ mod tests {
     /// Catches `replace !settings.boot_linking with true/false` and
     /// `replace early return Ok(()) with Err(...)` mutants.
     #[test]
-    fn apply_boot_settings_with_explicit_root_noop_when_boot_linking_false() {
-        let tmp = tempfile::tempdir().unwrap(); // Root that would be valid, but should not be applied.
+    fn apply_boot_settings_with_explicit_root_noop_when_boot_linking_false() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
+        let tmp = tempfile::tempdir()?; // create temp root that would be valid but must not be applied
         let basis_dir = tmp.path().join("lib/ur"); // Would be set as basis_lib_dir if applied.
-        std::fs::create_dir_all(&basis_dir).unwrap(); // Create layout just in case function ignores the flag.
-        std::fs::write(basis_dir.join("basis.urs"), "(* test sig *)").unwrap(); // Present but must not be used.
+        std::fs::create_dir_all(&basis_dir)?; // create layout just in case the function ignores the boot_linking flag
+        std::fs::write(basis_dir.join("basis.urs"), "(* test sig *)")?; // write basis.urs (present but must not be used with boot_linking=false)
         let mut job = Job {
             basis_lib_dir: None, // Must remain None after calling with boot_linking=false.
             ..Default::default()
@@ -2636,19 +2883,21 @@ mod tests {
             ..Default::default()
         };
         apply_boot_settings_with_explicit_root(&mut job, &mut settings, tmp.path())
-            .expect("boot_linking=false must return Ok(())"); // Catches Err-returning mutant.
+            .map_err(|error| anyhow!("boot_linking=false must return Ok(()): {error}"))?; // catches Err-returning mutant
         assert!(
             job.basis_lib_dir.is_none(),
             "boot_linking=false must not set basis_lib_dir (catches noop-guard mutant)"
         ); // Confirms early-return skipped the assignment.
+        Ok(()) // return success to the test harness
     }
 
     /// [`super::apply_boot_settings_with_explicit_root`] must return `Err` when root lacks `basis.urs`.
     ///
     /// Catches `replace is_file() check with true` and `replace Err(…) with Ok(())` mutants.
     #[test]
-    fn apply_boot_settings_with_explicit_root_err_when_basis_absent() {
-        let tmp = tempfile::tempdir().unwrap(); // Root with no lib/ur/basis.urs.
+    fn apply_boot_settings_with_explicit_root_err_when_basis_absent() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
+        let tmp = tempfile::tempdir()?; // create temp root with no lib/ur/basis.urs
         let mut job = Job::default(); // Unmodified job; should remain so after error.
         let mut settings = Settings {
             boot_linking: true, // Boot linking on — but Basis is missing, so must return Err.
@@ -2659,51 +2908,60 @@ mod tests {
             result.is_err(),
             "missing lib/ur/basis.urs must cause Err (catches always-Ok mutant)"
         ); // Confirms the is_file guard fires correctly.
+        Ok(()) // return success to the test harness
     }
 
     /// [`super::ur_disk_paths_same`] is used for LSP overlay selection; `true`/`false` mutants mis-apply editor buffers.
     #[test]
-    fn ur_disk_paths_same_same_file_true() {
-        let tmp = tempfile::tempdir().unwrap();
+    fn ur_disk_paths_same_same_file_true() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
+        let tmp = tempfile::tempdir()?; // create temporary directory for test fixtures
         let p = tmp.path().join("mod.ur");
-        std::fs::write(&p, "val x = 1\n").unwrap();
+        std::fs::write(&p, "val x = 1\n")?; // write fixture file to disk
         assert!(
             ur_disk_paths_same(&p, &p),
             "identical paths must compare equal without canonical I/O errors"
         );
+        Ok(()) // return success to the test harness
     }
 
     /// Symlinked paths should match after canonicalization (LSP / temp-project layouts).
     #[cfg(unix)]
     #[test]
-    fn ur_disk_paths_same_symlink_matches_target() {
-        let tmp = tempfile::tempdir().unwrap();
+    fn ur_disk_paths_same_symlink_matches_target() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
+        let tmp = tempfile::tempdir()?; // create temporary directory for test fixtures
         let real = tmp.path().join("real.ur");
-        std::fs::write(&real, "val x = 1\n").unwrap();
+        std::fs::write(&real, "val x = 1\n")?; // write fixture file to disk
         let alias = tmp.path().join("alias.ur");
-        std::os::unix::fs::symlink(&real, &alias).expect("symlink");
+        std::os::unix::fs::symlink(&real, &alias)
+            .with_context(|| "create symlink alias.ur -> real.ur")?; // create the symlink for canonical comparison test
         assert!(
             ur_disk_paths_same(&real, &alias),
             "canonical comparison must treat symlink alias as the same file"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn ur_disk_paths_same_unrelated_files_are_false() {
-        let tmp = tempfile::tempdir().unwrap();
+    fn ur_disk_paths_same_unrelated_files_are_false() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
+        let tmp = tempfile::tempdir()?; // create temporary directory for test fixtures
         let a = tmp.path().join("a.ur");
         let b = tmp.path().join("b.ur");
-        std::fs::write(&a, "1").unwrap();
-        std::fs::write(&b, "2").unwrap();
+        std::fs::write(&a, "1")?; // write fixture file to disk
+        std::fs::write(&b, "2")?; // write fixture file to disk
         assert!(
             !ur_disk_paths_same(&a, &b),
             "mutants forcing true would break LSP overlay selection"
         );
+        Ok(()) // return success to the test harness
     }
 
     /// `append_*` no-op mutants skip these counters (see `cargo mutants` timeouts on argv builders).
     #[test]
-    fn append_urweb_native_fallbacks_execute() {
+    fn append_urweb_native_fallbacks_execute() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let previous = std::env::var_os("URWEB_NATIVE_LIB_DIR");
         std::env::remove_var("URWEB_NATIVE_LIB_DIR");
         APPEND_NATIVE_INCLUDE_FALLBACK_INVOCATIONS.store(0, Ordering::SeqCst);
@@ -2721,17 +2979,20 @@ mod tests {
             Some(value) => std::env::set_var("URWEB_NATIVE_LIB_DIR", value),
             None => std::env::remove_var("URWEB_NATIVE_LIB_DIR"),
         }
+        Ok(()) // return success to the test harness
     }
 
     /// Whole-function mutants (`None` / `Some(Default::default())`) omit the first [`RESOLVE_BOOT_ROOT_INVOCATIONS`] bump.
     #[test]
-    fn resolve_boot_root_runs_observable_body() {
+    fn resolve_boot_root_runs_observable_body() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         RESOLVE_BOOT_ROOT_INVOCATIONS.store(0, Ordering::SeqCst);
         let _ = resolve_boot_root();
         assert!(
             RESOLVE_BOOT_ROOT_INVOCATIONS.load(Ordering::SeqCst) >= 1,
             "replace resolve_boot_root body must not skip the hook"
         );
+        Ok(()) // return success to the test harness
     }
 
     /// Boot linking sets `Top`’s wrapper span to `"<top>"` in [`parse_sources_inner`].
@@ -2739,19 +3000,21 @@ mod tests {
     /// The checkout `lib/ur/top.ur` may exceed this parser’s grammar; the test uses a tiny `lib/ur`
     /// under a temp dir (real `basis.urs` copied from the workspace, minimal `top.ur` / `top.urs`).
     #[test]
-    fn parse_sources_boot_mode_preserves_top_marker_span_file() {
+    fn parse_sources_boot_mode_preserves_top_marker_span_file() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let manifest_lib =
             std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("lib/ur/basis.urs");
         if !manifest_lib.is_file() {
-            return;
+            return Ok(());
         }
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir()?; // create temporary directory for test fixtures
         let mini_lib = dir.path().join("lib/ur");
-        std::fs::create_dir_all(&mini_lib).unwrap();
-        std::fs::copy(&manifest_lib, mini_lib.join("basis.urs")).expect("copy basis.urs");
-        std::fs::write(mini_lib.join("top.urs"), "val boot_top_tiny : int\n").unwrap();
-        std::fs::write(mini_lib.join("top.ur"), "val boot_top_tiny = 0\n").unwrap();
-        std::fs::write(dir.path().join("Main.ur"), "val main = 1\n").unwrap();
+        std::fs::create_dir_all(&mini_lib)?; // create the mini lib/ur directory structure
+        std::fs::copy(&manifest_lib, mini_lib.join("basis.urs"))
+            .with_context(|| "copy basis.urs into mini test lib")?; // copy the real basis.urs for the integration test
+        std::fs::write(mini_lib.join("top.urs"), "val boot_top_tiny : int\n")?;
+        std::fs::write(mini_lib.join("top.ur"), "val boot_top_tiny = 0\n")?;
+        std::fs::write(dir.path().join("Main.ur"), "val main = 1\n")?;
         let job = Job {
             sources: vec!["Main".into()],
             basis_lib_dir: Some(mini_lib),
@@ -2768,7 +3031,8 @@ mod tests {
                 crate::source::Decl::FfiStr(name, _, _) if name == "Basis"
             )
         });
-        let basis_mod = basis_mod.expect("expected Basis FFI from boot parse_sources_inner");
+        let basis_mod = basis_mod
+            .ok_or_else(|| anyhow!("expected Basis FFI decl from boot parse_sources_inner"))?; // find the Basis FfiStr declaration
         assert_eq!(
             basis_mod.span.file, "<basis>",
             "Basis span.file must remain <basis> (parse_sources_inner Span literal)"
@@ -2779,11 +3043,13 @@ mod tests {
                 crate::source::Decl::Str(name, _, _, _, _) if name == "Top"
             )
         });
-        let top_mod = top_mod.expect("expected Top structure parsed from synthetic lib/ur/top.ur");
+        let top_mod = top_mod
+            .ok_or_else(|| anyhow!("expected Top structure parsed from synthetic lib/ur/top.ur"))?; // find the synthetic Top module declaration
         assert_eq!(
             top_mod.span.file, "<top>",
             "Top synthetic span.file must remain <top>"
         );
+        Ok(()) // return success to the test harness
     }
 
     /// SML `elabFile` `dopen`s `Top` after linking `top.ur`; [`elab_file`] auto-opens `Top` the same way.
@@ -2791,23 +3057,24 @@ mod tests {
     /// Uses a tiny `top.urs` / `top.ur` pair so elaboration succeeds (unlike the full standard library).
     /// User code references `boot_top_tiny` **without** `Top.` — that only typechecks if `Top` was opened.
     #[test]
-    fn elaborate_boot_auto_opens_top_for_unqualified_top_vals() {
+    fn elaborate_boot_auto_opens_top_for_unqualified_top_vals() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let manifest_lib =
             std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("lib/ur/basis.urs");
         if !manifest_lib.is_file() {
-            return;
+            return Ok(());
         }
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir()?; // create temporary directory for test fixtures
         let mini_lib = dir.path().join("lib/ur");
-        std::fs::create_dir_all(&mini_lib).unwrap();
-        std::fs::copy(&manifest_lib, mini_lib.join("basis.urs")).expect("copy basis.urs");
-        std::fs::write(mini_lib.join("top.urs"), "val boot_top_tiny : int\n").unwrap();
-        std::fs::write(mini_lib.join("top.ur"), "val boot_top_tiny = 0\n").unwrap();
+        std::fs::create_dir_all(&mini_lib)?; // create the mini lib/ur directory structure
+        std::fs::copy(&manifest_lib, mini_lib.join("basis.urs"))
+            .with_context(|| "copy basis.urs into mini test lib")?; // copy the real basis.urs for the integration test
+        std::fs::write(mini_lib.join("top.urs"), "val boot_top_tiny : int\n")?;
+        std::fs::write(mini_lib.join("top.ur"), "val boot_top_tiny = 0\n")?;
         std::fs::write(
             dir.path().join("Main.ur"),
             "val client : int = boot_top_tiny + 1\n",
-        )
-        .unwrap();
+        )?;
         let job = Job {
             sources: vec!["Main".into()],
             basis_lib_dir: Some(mini_lib),
@@ -2826,6 +3093,7 @@ mod tests {
             "expected unqualified boot_top_tiny in scope after Top dopen: {:?}",
             elab_errors.errors
         );
+        Ok(()) // return success to the test harness
     }
 
     /// Goal: `demo/sum.ur` elaborates with real `lib/ur` boot the way the ML compiler does.
@@ -2836,27 +3104,38 @@ mod tests {
     /// `cargo test -p ur elaborate_demo_sum_elaborates_after_boot_parity -- --ignored --nocapture`.
     #[test]
     #[ignore = "lib/ur boot elab still reports type errors (~200+); un-ignore when boot histogram hits 0"]
-    fn elaborate_demo_sum_elaborates_after_boot_parity() {
+    fn elaborate_demo_sum_elaborates_after_boot_parity() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         const STACK: usize = crate::COMPILE_THREAD_STACK_BYTES; // boot + demo elaboration depth
-        std::thread::Builder::new()
+        let join_handle = std::thread::Builder::new()
             .name("elaborate_demo_sum_large_stack".into())
             .stack_size(STACK)
             .spawn(elaborate_demo_sum_elaborates_after_boot_parity_body)
-            .expect("spawn demo/sum elaboration thread")
-            .join()
-            .expect("demo/sum elaboration thread join");
+            .with_context(|| "spawn demo/sum elaboration thread")?; // spawn the large-stack elaboration thread
+        match join_handle.join() {
+            Ok(Ok(())) => {} // elaboration thread completed without panicking
+            Ok(Err(error)) => return Err(error), // surface worker-thread elaboration errors
+            Err(panic_payload) => {
+                return Err(anyhow!(
+                    "demo/sum elaboration thread panicked: {:?}",
+                    panic_payload
+                ))
+            } // propagate the thread panic as an anyhow error
+        }
+        Ok(()) // return success to the test harness
     }
 
     /// Worker for [`elaborate_demo_sum_elaborates_after_boot_parity`].
-    fn elaborate_demo_sum_elaborates_after_boot_parity_body() {
+    fn elaborate_demo_sum_elaborates_after_boot_parity_body() -> anyhow::Result<()> {
         let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let lib_dir = manifest_dir.join("lib/ur");
         let sum_ur = manifest_dir.join("demo/sum.ur");
         if !lib_dir.join("basis.urs").is_file() || !sum_ur.is_file() {
-            return;
+            return Ok(());
         }
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::copy(&sum_ur, dir.path().join("sum.ur")).expect("copy demo/sum.ur");
+        let dir = tempfile::tempdir()?; // create temporary directory for test fixtures
+        std::fs::copy(&sum_ur, dir.path().join("sum.ur"))
+            .with_context(|| "copy demo/sum.ur into temp dir")?; // copy sum.ur so parse_sources can find it
         let job = Job {
             sources: vec!["sum".into()],
             basis_lib_dir: Some(lib_dir),
@@ -2876,11 +3155,13 @@ mod tests {
             "demo/sum.ur must elaborate with full boot (Top opened like SML elabFile): {} errors",
             elab_errors.errors.len()
         );
+        Ok(())
     }
 
     /// Synthetic UrwebNative FFI items must stay non-empty with stable names (empty `vec!` mutants break native-surface projects).
     #[test]
-    fn urweb_native_ffi_sgn_items_contains_expected_vals() {
+    fn urweb_native_ffi_sgn_items_contains_expected_vals() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let items = urweb_native_ffi_sgn_items();
         assert_eq!(
             items.len(),
@@ -2897,11 +3178,13 @@ mod tests {
         assert!(val_names.contains(&"urweb_put"));
         assert!(val_names.contains(&"urweb_get"));
         assert!(val_names.contains(&"urweb_tb_transfer"));
+        Ok(()) // return success to the test harness
     }
 
     /// [`super::apply_job_db_settings`] must reject unknown DBMS tokens when the backend slot is still empty.
     #[test]
-    fn apply_job_db_settings_rejects_unknown_dbms() {
+    fn apply_job_db_settings_rejects_unknown_dbms() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let job = Job {
             dbms: Some("___not_a_valid_dbms_token___".into()),
             ..Default::default()
@@ -2912,30 +3195,35 @@ mod tests {
             out.is_err(),
             "invalid job dbms must not be ignored (mutant Ok(()) loses validation)"
         );
+        Ok(()) // return success to the test harness
     }
 
     /// [`resolve_project_job_and_settings`] must return the real [`Job`] from the `.urp`, not a blank default.
     #[test]
-    fn resolve_project_job_and_settings_preserves_urp_sources() {
-        let dir = tempfile::tempdir().unwrap();
+    fn resolve_project_job_and_settings_preserves_urp_sources() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
+        let dir = tempfile::tempdir()?; // create temporary directory for test fixtures
         let urp = dir.path().join("demo.urp");
-        std::fs::write(&urp, "Main\n").unwrap();
-        std::fs::write(dir.path().join("Main.ur"), "val x = 1\n").unwrap();
-        let (job, _) = resolve_project_job_and_settings(&urp).expect("resolve project");
+        std::fs::write(&urp, "Main\n")?; // write fixture file to disk
+        std::fs::write(dir.path().join("Main.ur"), "val x = 1\n")?;
+        let (job, _) = resolve_project_job_and_settings(&urp)
+            .map_err(|error| anyhow!("resolve_project_job_and_settings must succeed: {error}"))?; // parse and resolve the test project
         assert!(
             job.sources.iter().any(|s| s.contains("Main")),
             ".urp module list must not be replaced by Job::default() ({:?})",
             job.sources
         );
+        Ok(()) // return success to the test harness
     }
 
     /// [`resolve_project_settings_for_urp`] should surface manifest database defaults.
     #[test]
-    fn resolve_project_settings_for_urp_reads_ur_toml_db() {
-        let dir = tempfile::tempdir().unwrap();
+    fn resolve_project_settings_for_urp_reads_ur_toml_db() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
+        let dir = tempfile::tempdir()?; // create temporary directory for test fixtures
         let urp = dir.path().join("one.urp");
-        std::fs::write(&urp, "Main\n").unwrap();
-        std::fs::write(dir.path().join("Main.ur"), "val x = 1\n").unwrap();
+        std::fs::write(&urp, "Main\n")?; // write fixture file to disk
+        std::fs::write(dir.path().join("Main.ur"), "val x = 1\n")?;
         std::fs::write(
             dir.path().join("ur.toml"),
             r#"[package]
@@ -2946,26 +3234,28 @@ kind = "app"
 entry = "Main"
 db = "sqlite"
 "#,
-        )
-        .unwrap();
-        let settings = resolve_project_settings_for_urp(&urp).expect("settings");
+        )?;
+        let settings = resolve_project_settings_for_urp(&urp)
+            .map_err(|error| anyhow!("resolve_project_settings_for_urp must succeed: {error}"))?; // read and merge manifest settings
         assert_eq!(
             settings.db_backend.as_ref().map(|b| b.canonical_name()),
             Some("sqlite"),
             "manifest sqlite must merge into settings"
         );
+        Ok(()) // return success to the test harness
     }
 
     /// [`effective_project_db_for_workspace_root`] must follow the same resolution as batch compile (not `ProjectDb::default()`).
     #[test]
-    fn effective_project_db_for_workspace_root_matches_manifest_sqlite() {
+    fn effective_project_db_for_workspace_root_matches_manifest_sqlite() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let _guard = crate::compiler_diagnostics::lock_for_compile(
             &crate::compiler_diagnostics::TEST_CWD_LOCK,
             "effective_project_db URWEB_BOOT_ROOT",
         );
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("w.urp"), "Main\n").unwrap();
-        std::fs::write(dir.path().join("Main.ur"), "val x = 1\n").unwrap();
+        let dir = tempfile::tempdir()?; // create temporary directory for test fixtures
+        std::fs::write(dir.path().join("w.urp"), "Main\n")?;
+        std::fs::write(dir.path().join("Main.ur"), "val x = 1\n")?;
         std::fs::write(
             dir.path().join("ur.toml"),
             r#"[package]
@@ -2976,8 +3266,7 @@ kind = "app"
 entry = "Main"
 db = "sqlite"
 "#,
-        )
-        .unwrap();
+        )?;
         let previous_boot_root = std::env::var_os(URWEB_BOOT_ROOT_ENV);
         std::env::set_var(URWEB_BOOT_ROOT_ENV, env!("CARGO_MANIFEST_DIR")); // temp tree lacks lib/ur; point at workspace root
         let db_result = effective_project_db_for_workspace_root(dir.path());
@@ -2985,22 +3274,26 @@ db = "sqlite"
             None => std::env::remove_var(URWEB_BOOT_ROOT_ENV),
             Some(value) => std::env::set_var(URWEB_BOOT_ROOT_ENV, value),
         }
-        let db = db_result.expect("project db");
+        let db = db_result.map_err(|error| {
+            anyhow!("effective_project_db_for_workspace_root must succeed: {error}")
+        })?; // extract the resolved project database backend
         assert_eq!(
             db.canonical_name(),
             "sqlite",
             "mutants returning Ok(ProjectDb::default()) yield postgres, not sqlite"
         );
+        Ok(()) // return success to the test harness
     }
 
     /// Invalid overlay text must not return a bogus empty parse (`Some(Default)` mutants).
     #[test]
-    fn parse_sources_with_overlay_invalid_buffer_fails() {
-        let dir = tempfile::tempdir().unwrap();
+    fn parse_sources_with_overlay_invalid_buffer_fails() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
+        let dir = tempfile::tempdir()?; // create temporary directory for test fixtures
         let urp = dir.path().join("p.urp");
-        std::fs::write(&urp, "Main\n").unwrap();
-        std::fs::write(dir.path().join("Main.ur"), "val x = 1\n").unwrap();
-        let job = parse_urp(&urp).unwrap();
+        std::fs::write(&urp, "Main\n")?; // write fixture file to disk
+        std::fs::write(dir.path().join("Main.ur"), "val x = 1\n")?;
+        let job = parse_urp(&urp)?; // parse the test .urp project file
         let mut errors = ErrorReporter::new_silent();
         let settings = Settings::new();
         let main_path = dir.path().join("Main.ur");
@@ -3012,34 +3305,40 @@ db = "sqlite"
             "broken overlay must not produce Some(parse) {:?}",
             got.as_ref().map(|f| f.len())
         );
+        Ok(()) // return success to the test harness
     }
 
     // Pipeline stub tests: each panics until implemented. Mutants that replace with
     // Ok/Some/Default would not panic and fail these tests.
 
     #[test]
-    fn parse_urp_simple_sources() {
-        let dir = tempfile::tempdir().unwrap();
+    fn parse_urp_simple_sources() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
+        let dir = tempfile::tempdir()?; // create temporary directory for test fixtures
         let p = dir.path().join("x.urp");
-        std::fs::write(&p, "foo\nbar\n").unwrap();
-        let job = parse_urp(&p).unwrap();
+        std::fs::write(&p, "foo\nbar\n")?; // write fixture file to disk
+        let job = parse_urp(&p)?; // parse the test .urp project file
         assert_eq!(job.sources.len(), 2);
         assert!(job.sources[0].ends_with("foo"));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn parse_urp_with_directives() {
-        let dir = tempfile::tempdir().unwrap();
+    fn parse_urp_with_directives() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
+        let dir = tempfile::tempdir()?; // create temporary directory for test fixtures
         let p = dir.path().join("app.urp");
-        std::fs::write(&p, "database mydb\ndebug\n\nmod1\n").unwrap();
-        let job = parse_urp(&p).unwrap();
+        std::fs::write(&p, "database mydb\ndebug\n\nmod1\n")?; // write fixture file to disk
+        let job = parse_urp(&p)?; // parse the test .urp project file
         assert_eq!(job.database.as_deref(), Some("mydb"));
         assert!(job.debug);
         assert_eq!(job.sources.len(), 1);
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn parse_sources_empty_job_returns_empty() {
+    fn parse_sources_empty_job_returns_empty() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // With no sources and no ffi, parse_sources returns Some([Basis]) —
         // the synthetic Basis FfiStr is always prepended.
         let mut errors = ErrorReporter::new();
@@ -3047,18 +3346,22 @@ db = "sqlite"
         let result = parse_sources(&Job::default(), &settings, &mut errors);
         assert!(result.is_some());
         // Only the synthetic Basis decl is present (no user sources).
-        assert_eq!(result.unwrap().len(), 1);
+        let source_decls =
+            result.ok_or_else(|| anyhow!("parse_sources must return Some for empty job"))?; // extract the source file from the Option
+        assert_eq!(source_decls.len(), 1);
         assert!(!errors.has_errors());
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn parse_sources_returns_meaningful_content() {
+    fn parse_sources_returns_meaningful_content() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // Catches mutants: replace parse_sources result with Some(Default::default()).
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir()?; // create temporary directory for test fixtures
         let urp_path = dir.path().join("app.urp");
-        std::fs::write(&urp_path, "database dbname=test\nsql out.sql\n\nx\n").unwrap();
-        std::fs::write(dir.path().join("x.ur"), "val x = 1").unwrap();
-        let job = parse_urp(&urp_path).unwrap();
+        std::fs::write(&urp_path, "database dbname=test\nsql out.sql\n\nx\n")?; // write fixture file to disk
+        std::fs::write(dir.path().join("x.ur"), "val x = 1")?;
+        let job = parse_urp(&urp_path)?; // parse the test .urp project file
         let mut errors = ErrorReporter::new();
         let settings = Settings::new();
         let result =
@@ -3067,8 +3370,9 @@ db = "sqlite"
             result.is_some(),
             "parse_sources must return Some (catches replace with None)"
         );
-        let source_file = result.unwrap();
-        // source_file[0] is the synthetic Basis FfiStr; optional project `database` line adds Decl::Database next.
+        let source_file =
+            result.ok_or_else(|| anyhow!("parse_sources returned None unexpectedly"))?; // extract the source file, propagating if None
+                                                                                        // source_file[0] is the synthetic Basis FfiStr; optional project `database` line adds Decl::Database next.
         assert!(
             source_file.iter().any(|d| d.span.file.ends_with("x.ur")),
             "parse_sources must include x.ur module (catches Some(Default::default()))"
@@ -3086,16 +3390,18 @@ db = "sqlite"
             "span.file must be set to source path (catches delete field file mutant): {}",
             user_module.span.file
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn parse_sources_sets_span_file_for_urs_signature() {
-        let dir = tempfile::tempdir().unwrap();
+    fn parse_sources_sets_span_file_for_urs_signature() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
+        let dir = tempfile::tempdir()?; // create temporary directory for test fixtures
         let urp_path = dir.path().join("app.urp");
-        std::fs::write(&urp_path, "database dbname=test\nsql out.sql\n\nx\n").unwrap();
-        std::fs::write(dir.path().join("x.ur"), "val x = 1").unwrap();
-        std::fs::write(dir.path().join("x.urs"), "val x : int").unwrap();
-        let job = parse_urp(&urp_path).unwrap();
+        std::fs::write(&urp_path, "database dbname=test\nsql out.sql\n\nx\n")?; // write fixture file to disk
+        std::fs::write(dir.path().join("x.ur"), "val x = 1")?;
+        std::fs::write(dir.path().join("x.urs"), "val x : int")?;
+        let job = parse_urp(&urp_path)?; // parse the test .urp project file
         let mut errors = ErrorReporter::new();
         let settings = Settings::new();
         let result =
@@ -3118,22 +3424,24 @@ db = "sqlite"
             "signature span.file must name .urs path (catches delete field file in sgn_span): {}",
             sgn.span.file
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn compile_to_outputs_produces_c_and_sql() {
+    fn compile_to_outputs_produces_c_and_sql() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // Catches mutants that replace pipeline phases with Default::default().
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir()?; // create temporary directory for test fixtures
         let urp_path = dir.path().join("app.urp");
-        std::fs::write(&urp_path, "database dbname=test\nsql out.sql\n\nx\n").unwrap();
-        std::fs::write(dir.path().join("x.ur"), "val x = 1").unwrap();
+        std::fs::write(&urp_path, "database dbname=test\nsql out.sql\n\nx\n")?; // write fixture file to disk
+        std::fs::write(dir.path().join("x.ur"), "val x = 1")?;
         let mut settings = Settings {
             db_backend: Some(ProjectDb::sqlite()),
             ..Default::default()
         };
         let result =
             with_parse_test_cwd(dir.path(), || compile_to_outputs(&urp_path, &mut settings));
-        let (c_code, _sql_ddl) = result.expect("compile_to_outputs must succeed");
+        let (c_code, _sql_ddl) = result.with_context(|| "compile_to_outputs must succeed")?; // extract the generated C code and SQL DDL
         assert!(
             c_code.contains("#include"),
             "C output must contain includes (catches cjr_print -> String::new()): {}",
@@ -3147,10 +3455,12 @@ db = "sqlite"
             !c_code.contains("xyzzy"),
             "C output must not be placeholder (catches replace with xyzzy mutant)"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn check_marshal_reports_disallowed_cookie() {
+    fn check_marshal_reports_disallowed_cookie() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // Catches mutant: replace check_marshal with ().
         use crate::core::{Constructor, Declaration};
         use crate::error_types::Located;
@@ -3167,10 +3477,12 @@ db = "sqlite"
             errors.has_errors(),
             "check_marshal must report errors for disallowed cookie (catches replace with () mutant)"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn mono_path_check_reports_duplicate_export() {
+    fn mono_path_check_reports_duplicate_export() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // Catches mutant: replace mono_path_check with ().
         use crate::error_types::Located;
         use crate::export::{Effect, ExportKind};
@@ -3203,10 +3515,12 @@ db = "sqlite"
             errors.has_errors(),
             "mono_path_check must report duplicate path (catches replace with () mutant)"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn mono_iflow_passthrough_when_debug_false() {
+    fn mono_iflow_passthrough_when_debug_false() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // When debug=false, mono_iflow must return Some(file) unchanged.
         let file = minimal_mono_file();
         let settings = Settings::default();
@@ -3221,10 +3535,12 @@ db = "sqlite"
             !errors.has_errors(),
             "mono_iflow must not report errors on empty file with debug=false"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn mono_sqlcache_passthrough_when_sqlcache_false() {
+    fn mono_sqlcache_passthrough_when_sqlcache_false() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // When sqlcache=false, mono_sqlcache must return Some(file) unchanged.
         let file = minimal_mono_file();
         let settings = Settings::default();
@@ -3245,10 +3561,12 @@ db = "sqlite"
             1,
             "mono_sqlcache must preserve file contents when sqlcache=false"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn mono_sqlcache_wraps_queries_when_enabled() {
+    fn mono_sqlcache_wraps_queries_when_enabled() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // When sqlcache=true, mono_sqlcache must transform the file.
         use crate::error_types::Located;
         use crate::monomorphized::{Decl, Exp, QueryMeta, Typ};
@@ -3277,8 +3595,7 @@ db = "sqlite"
         };
         let mut errors = ErrorReporter::new();
         let result = mono_sqlcache(file, &settings, &mut errors);
-        assert!(result.is_some(), "mono_sqlcache must return Some");
-        let (decls, _) = result.unwrap();
+        let (decls, _) = result.ok_or_else(|| anyhow!("mono_sqlcache must return Some"))?; // extract the mono file tuple
         assert_eq!(decls.len(), 1, "decl count must be preserved");
         match &decls[0].node {
             Decl::Val(_, _, _, e, _) => {
@@ -3289,10 +3606,12 @@ db = "sqlite"
             }
             other => panic!("expected Val, got {:?}", other),
         }
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn elaborate_empty_file_returns_some() {
+    fn elaborate_empty_file_returns_some() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let mut errors = ErrorReporter::new();
         let settings = Settings::default();
         let result = elaborate(Default::default(), &settings, &mut errors);
@@ -3305,34 +3624,42 @@ db = "sqlite"
             !errors.has_errors(),
             "elaborate should not produce errors on an empty file"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn explify_empty_file() {
+    fn explify_empty_file() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let mut errors = ErrorReporter::new();
         let result = explify(Default::default(), &mut errors);
-        assert!(result.is_some());
-        assert!(result.unwrap().is_empty());
+        let result_val = result.ok_or_else(|| anyhow!("result must be Some"))?; // extract the Some value
+        assert!(result_val.is_empty());
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn corify_empty_file_returns_some() {
+    fn corify_empty_file_returns_some() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let mut errors = ErrorReporter::new();
         let mut settings = Settings::new();
         let result = corify(Default::default(), &mut settings, &mut errors);
-        assert!(result.is_some());
-        assert!(result.unwrap().is_empty());
+        let result_val = result.ok_or_else(|| anyhow!("result must be Some"))?; // extract the Some value
+        assert!(result_val.is_empty());
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn core_untangle_passes_through_empty_file() {
+    fn core_untangle_passes_through_empty_file() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // Catches mutant: core_untangle panics or returns garbage on empty input.
         let result = core_untangle(Default::default());
         assert!(result.is_empty(), "untangle of empty file must be empty");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn core_untangle_preserves_non_empty_file() {
+    fn core_untangle_preserves_non_empty_file() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // Catches mutant: replace core_untangle return with Default::default().
         // With non-empty input, untangle must return non-empty (pass-through for non-ValRec).
         let file: crate::core::File = vec![crate::error_types::Located::dummy(
@@ -3344,20 +3671,24 @@ db = "sqlite"
             "untangle must preserve non-empty file (catches replace with Default::default())"
         );
         assert_eq!(result.len(), 1);
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn core_reduce_local_passes_through_empty_file() {
+    fn core_reduce_local_passes_through_empty_file() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // Catches mutant: core_reduce_local returns garbage or panics on empty input.
         let result = core_reduce_local(Default::default());
         assert!(
             result.is_empty(),
             "reduce_local of empty file must be empty"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn core_reduce_local_preserves_database_decl() {
+    fn core_reduce_local_preserves_database_decl() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // Catches mutant: replace core_reduce_local return with Default::default().
         let file: crate::core::File = vec![crate::error_types::Located::dummy(
             crate::core::Declaration::Database("d".into()),
@@ -3367,17 +3698,21 @@ db = "sqlite"
             !result.is_empty(),
             "reduce_local must preserve Database decl"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn core_shake_passes_through_empty_file() {
+    fn core_shake_passes_through_empty_file() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // Catches mutant: core_shake panics or returns garbage on empty input.
         let result = core_shake(Default::default());
         assert!(result.is_empty(), "shake of empty file must be empty");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn core_shake_preserves_retained_declaration() {
+    fn core_shake_preserves_retained_declaration() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // Catches mutant: replace core_shake return with Default::default().
         // Database is always retained by shake; result must be non-empty.
         let file: crate::core::File = vec![crate::error_types::Located::dummy(
@@ -3389,16 +3724,20 @@ db = "sqlite"
             "shake must retain Database decl (catches replace with Default::default())"
         );
         assert_eq!(result.len(), 1);
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn core_reduce_passes_through_empty_file() {
+    fn core_reduce_passes_through_empty_file() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let result = core_reduce(vec![], &Settings::default());
         assert!(result.is_empty(), "reduce of empty file must be empty");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn core_reduce_preserves_non_empty_file() {
+    fn core_reduce_preserves_non_empty_file() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let file: crate::core::File = vec![crate::error_types::Located::dummy(
             crate::core::Declaration::Database("d".into()),
         )];
@@ -3407,16 +3746,20 @@ db = "sqlite"
             !result.is_empty(),
             "core_reduce must preserve decls (catches replace with Default::default())"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn core_especialize_passes_through_empty_file() {
+    fn core_especialize_passes_through_empty_file() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let result = core_especialize(Default::default());
         assert!(result.is_empty(), "especialize of empty file must be empty");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn core_especialize_preserves_non_empty_file() {
+    fn core_especialize_preserves_non_empty_file() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let file: crate::core::File = vec![crate::error_types::Located::dummy(
             crate::core::Declaration::Database("d".into()),
         )];
@@ -3425,16 +3768,20 @@ db = "sqlite"
             !result.is_empty(),
             "core_especialize must preserve decls (catches replace with Default::default())"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn core_unpoly_passes_through_empty_file() {
+    fn core_unpoly_passes_through_empty_file() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let result = core_unpoly(Default::default());
         assert!(result.is_empty(), "unpoly of empty file must be empty");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn core_unpoly_preserves_non_empty_file() {
+    fn core_unpoly_preserves_non_empty_file() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let file: crate::core::File = vec![crate::error_types::Located::dummy(
             crate::core::Declaration::Database("d".into()),
         )];
@@ -3443,16 +3790,20 @@ db = "sqlite"
             !result.is_empty(),
             "core_unpoly must preserve decls (catches replace with Default::default())"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn core_specialize_passes_through_empty_file() {
+    fn core_specialize_passes_through_empty_file() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let result = core_specialize(Default::default());
         assert!(result.is_empty(), "specialize of empty file must be empty");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn core_specialize_preserves_non_empty_file() {
+    fn core_specialize_preserves_non_empty_file() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let file: crate::core::File = vec![crate::error_types::Located::dummy(
             crate::core::Declaration::Database("d".into()),
         )];
@@ -3461,36 +3812,36 @@ db = "sqlite"
             !result.is_empty(),
             "core_specialize must preserve decls (catches replace with Default::default())"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn core_rpcify_passes_through_empty_file() {
+    fn core_rpcify_passes_through_empty_file() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // Catches mutant: core_rpcify panics or returns None on empty input.
         let mut errors = ErrorReporter::new();
         let settings = Settings::default();
         let result = core_rpcify(Default::default(), &settings, &mut errors);
-        assert!(result.is_some(), "rpcify of empty file must succeed");
-        assert!(
-            result.unwrap().is_empty(),
-            "rpcify of empty file must be empty"
-        );
+        let rpcify_file = result.ok_or_else(|| anyhow!("rpcify of empty file must return Some"))?; // extract the rpcified file
+        assert!(rpcify_file.is_empty(), "rpcify of empty file must be empty");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn core_tag_passes_through_empty_file() {
+    fn core_tag_passes_through_empty_file() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // Catches mutant: core_tag panics or returns None on empty input.
         let mut errors = ErrorReporter::new();
         let settings = Settings::default();
         let result = core_tag(Default::default(), &settings, &mut errors);
-        assert!(result.is_some(), "tag of empty file must succeed");
-        assert!(
-            result.unwrap().is_empty(),
-            "tag of empty file must be empty"
-        );
+        let tagged_file = result.ok_or_else(|| anyhow!("tag of empty file must return Some"))?; // extract the tagged file
+        assert!(tagged_file.is_empty(), "tag of empty file must be empty");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn core_tag_preserves_non_empty_file() {
+    fn core_tag_preserves_non_empty_file() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // Catches mutant: replace core_tag -> Option<core::File> with Some(Default::default()).
         let file: crate::core::File = vec![crate::error_types::Located::dummy(
             crate::core::Declaration::Database("db".into()),
@@ -3498,25 +3849,28 @@ db = "sqlite"
         let mut errors = ErrorReporter::new();
         let settings = Settings::default();
         let result = core_tag(file, &settings, &mut errors);
-        assert!(result.is_some(), "tag of non-empty file must succeed");
-        let tagged = result.unwrap();
+        let tagged = result.ok_or_else(|| anyhow!("tag of non-empty file must return Some"))?; // extract the tagged file
         assert!(
             !tagged.is_empty(),
             "core_tag must preserve decls (not return Default::default())"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn core_effectize_passes_through_empty_file() {
+    fn core_effectize_passes_through_empty_file() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // Catches mutant: core_effectize panics or returns garbage on empty input.
         let settings = Settings::default();
         let result = core_effectize(Default::default(), &settings);
 
         assert!(result.is_empty(), "effectize of empty file must be empty");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn core_effectize_preserves_non_empty_file() {
+    fn core_effectize_preserves_non_empty_file() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let file: crate::core::File = vec![crate::error_types::Located::dummy(
             crate::core::Declaration::Database("d".into()),
         )];
@@ -3526,10 +3880,12 @@ db = "sqlite"
             !result.is_empty(),
             "core_effectize must preserve decls (catches replace with Default::default())"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn check_marshal_passes_through_empty_file() {
+    fn check_marshal_passes_through_empty_file() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let mut errors = ErrorReporter::new();
         let settings = Settings::default();
         check_marshal(&Default::default(), &settings, &mut errors);
@@ -3537,19 +3893,23 @@ db = "sqlite"
             !errors.has_errors(),
             "marshal check of empty file must produce no errors"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn mono_script_check_passes_through_empty_file() {
+    fn mono_script_check_passes_through_empty_file() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let settings = Settings::default();
         let mut errors = ErrorReporter::new();
         let result = mono_script_check(Default::default(), &settings, &mut errors);
         assert!(result.0.is_empty());
         assert!(!errors.has_errors());
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn mono_script_check_preserves_non_empty_file() {
+    fn mono_script_check_preserves_non_empty_file() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let file = minimal_mono_file();
         let settings = Settings::default();
         let mut errors = ErrorReporter::new();
@@ -3558,27 +3918,33 @@ db = "sqlite"
             !result.0.is_empty(),
             "mono_script_check must preserve decls (catches replace with Default::default())"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn mono_path_check_no_errors_on_empty_file() {
+    fn mono_path_check_no_errors_on_empty_file() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let mut errors = ErrorReporter::new();
         mono_path_check(&Default::default(), &mut errors);
         assert!(!errors.has_errors());
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn mono_side_check_passes_through_empty_file() {
+    fn mono_side_check_passes_through_empty_file() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let settings = Settings::default();
         let mut errors = ErrorReporter::new();
         let (file, env_vars) = mono_side_check(Default::default(), &settings, &mut errors);
         assert!(file.0.is_empty());
         assert!(env_vars.is_empty());
         assert!(!errors.has_errors());
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn mono_side_check_preserves_non_empty_file() {
+    fn mono_side_check_preserves_non_empty_file() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let file = minimal_mono_file();
         let settings = Settings::default();
         let mut errors = ErrorReporter::new();
@@ -3587,67 +3953,83 @@ db = "sqlite"
             !result.0.is_empty(),
             "mono_side_check must preserve decls (catches replace with Default::default())"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn mono_sig_check_passes_through_empty_file() {
+    fn mono_sig_check_passes_through_empty_file() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let result = mono_sig_check(Default::default());
         assert!(result.0.is_empty());
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn mono_sig_check_preserves_non_empty_file() {
+    fn mono_sig_check_preserves_non_empty_file() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let file = minimal_mono_file();
         let result = mono_sig_check(file);
         assert!(
             !result.0.is_empty(),
             "mono_sig_check must preserve decls (catches replace with Default::default())"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn mono_dbmode_check_passes_through_empty_file() {
+    fn mono_dbmode_check_passes_through_empty_file() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let result = mono_dbmode_check(Default::default());
         assert!(result.0.is_empty());
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn mono_dbmode_check_preserves_non_empty_file() {
+    fn mono_dbmode_check_preserves_non_empty_file() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let file = minimal_mono_file();
         let result = mono_dbmode_check(file);
         assert!(
             !result.0.is_empty(),
             "mono_dbmode_check must preserve decls (catches replace with Default::default())"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn check_termination_noop() {
+    fn check_termination_noop() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let mut errors = ErrorReporter::new();
         check_termination(&Default::default(), &mut errors);
         assert!(!errors.has_errors());
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn cjr_check_nest_empty_file() {
+    fn cjr_check_nest_empty_file() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // Catches mutant: cjr_check_nest panics or drops decls on empty input.
         let result = cjr_check_nest(Default::default());
         assert!(result.0.is_empty());
         assert!(result.1.is_empty());
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn cjr_check_nest_preserves_non_empty_file() {
+    fn cjr_check_nest_preserves_non_empty_file() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let cjr_file = minimal_cjr_file();
         let result = cjr_check_nest(cjr_file);
         assert!(
             !result.0.is_empty(),
             "cjr_check_nest must preserve decls (catches replace with Default::default())"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn cjr_prepare_empty_file() {
+    fn cjr_prepare_empty_file() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let settings = Settings::default();
         let result = cjr_prepare(Default::default(), &settings);
         // prepare always prepends DPreparedStatements
@@ -3656,83 +4038,96 @@ db = "sqlite"
             &result.0[0].node,
             crate::c_like_representation::Decl::PreparedStatements(v) if v.is_empty()
         ));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn monoize_empty_file() {
+    fn monoize_empty_file() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let mut errors = ErrorReporter::new();
         let settings = Settings::default();
         let result = monoize(Default::default(), &settings, &mut errors);
-        assert!(result.is_some());
-        assert!(result.unwrap().0.is_empty());
+        let mono_file = result.ok_or_else(|| anyhow!("result must be Some"))?; // extract the mono file from the Option
+        assert!(mono_file.0.is_empty());
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn monoize_preserves_non_empty_file() {
+    fn monoize_preserves_non_empty_file() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let mut errors = ErrorReporter::new();
         let settings = Settings::default();
         let core_file: crate::core::File = vec![crate::error_types::Located::dummy(
             crate::core::Declaration::Database("db".into()),
         )];
         let result = monoize(core_file, &settings, &mut errors);
-        assert!(
-            result.is_some(),
-            "monoize must return Some (catches replace with None)"
-        );
-        let mono = result.unwrap();
+        let mono = result
+            .ok_or_else(|| anyhow!("monoize must return Some (catches replace with None)"))?; // extract the monoized file
         assert!(
             !mono.0.is_empty(),
             "monoize must produce non-empty mono (catches Some(Default::default()))"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn mono_untangle_passes_through_empty_file() {
+    fn mono_untangle_passes_through_empty_file() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let result = mono_untangle(Default::default());
         assert!(result.0.is_empty(), "untangle of empty file must be empty");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn mono_untangle_preserves_non_empty_file() {
+    fn mono_untangle_preserves_non_empty_file() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let file = minimal_mono_file();
         let result = mono_untangle(file);
         assert!(
             !result.0.is_empty(),
             "mono_untangle must preserve decls (catches replace with Default::default())"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn mono_fuse_passes_through_empty_file() {
+    fn mono_fuse_passes_through_empty_file() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let result = mono_fuse(Default::default());
         assert!(
             result.0.is_empty(),
             "fuse of empty file should produce no decls"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn mono_fuse_preserves_non_empty_file() {
+    fn mono_fuse_preserves_non_empty_file() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let file = minimal_mono_file();
         let result = mono_fuse(file);
         assert!(
             !result.0.is_empty(),
             "mono_fuse must preserve decls (catches replace with Default::default())"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn mono_reduce_passes_through_empty_file() {
+    fn mono_reduce_passes_through_empty_file() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let settings = Settings::default();
         let result = mono_reduce(Default::default(), &settings);
         assert!(
             result.0.is_empty(),
             "mono_reduce of empty file must produce no decls"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn mono_reduce_preserves_non_empty_file() {
+    fn mono_reduce_preserves_non_empty_file() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let file = minimal_mono_file();
         let settings = Settings::default();
         let result = mono_reduce(file, &settings);
@@ -3740,10 +4135,12 @@ db = "sqlite"
             !result.0.is_empty(),
             "mono_reduce must preserve decls (catches replace with Default::default())"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn mono_opt_passes_through_empty_file() {
+    fn mono_opt_passes_through_empty_file() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let settings = Settings::default();
         let mut errors = ErrorReporter::new();
         let result = mono_opt(Default::default(), &settings, &mut errors);
@@ -3751,10 +4148,12 @@ db = "sqlite"
             result.0.is_empty(),
             "mono_opt of empty file must produce no decls"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn mono_opt_preserves_non_empty_file() {
+    fn mono_opt_preserves_non_empty_file() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let file = minimal_mono_file();
         let settings = Settings::default();
         let mut errors = ErrorReporter::new();
@@ -3763,39 +4162,47 @@ db = "sqlite"
             !result.0.is_empty(),
             "mono_opt must preserve decls (catches replace with Default::default())"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn mono_shake_passes_through_empty_file() {
+    fn mono_shake_passes_through_empty_file() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let result = mono_shake(Default::default());
         assert!(
             result.0.is_empty(),
             "mono_shake of empty file must be empty"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn mono_shake_preserves_non_empty_file() {
+    fn mono_shake_preserves_non_empty_file() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let file = minimal_mono_file();
         let result = mono_shake(file);
         assert!(
             !result.0.is_empty(),
             "mono_shake must retain Database (catches replace with Default::default())"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn mono_inline_passes_through_empty_file() {
+    fn mono_inline_passes_through_empty_file() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let settings = Settings::default();
         let result = mono_inline(Default::default(), &settings);
         assert!(
             result.0.is_empty(),
             "mono_inline of empty file must produce no decls"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn mono_inline_preserves_non_empty_file() {
+    fn mono_inline_preserves_non_empty_file() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let file = minimal_mono_file();
         let settings = Settings::default();
         let result = mono_inline(file, &settings);
@@ -3803,58 +4210,68 @@ db = "sqlite"
             !result.0.is_empty(),
             "mono_inline must preserve decls (catches replace with Default::default())"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn mono_name_js_passthrough() {
+    fn mono_name_js_passthrough() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let result = mono_name_js(Default::default());
         assert!(result.0.is_empty());
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn mono_name_js_preserves_non_empty_file() {
+    fn mono_name_js_preserves_non_empty_file() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let file = minimal_mono_file();
         let result = mono_name_js(file);
         assert!(
             !result.0.is_empty(),
             "mono_name_js must preserve decls (catches replace with Default::default())"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn mono_iflow_passthrough() {
+    fn mono_iflow_passthrough() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let mut errors = ErrorReporter::new();
         let settings = Settings::default();
         let result = mono_iflow(Default::default(), &settings, &mut errors);
         assert!(result.is_some());
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn mono_iflow_preserves_non_empty_file() {
+    fn mono_iflow_preserves_non_empty_file() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let file = minimal_mono_file();
         let mut errors = ErrorReporter::new();
         let settings = Settings::default();
         let result = mono_iflow(file, &settings, &mut errors);
+        let iflow_file = result
+            .ok_or_else(|| anyhow!("mono_iflow must return Some (catches replace with None)"))?; // extract the iflow-processed file
         assert!(
-            result.is_some(),
-            "mono_iflow must return Some (catches replace with None)"
-        );
-        assert!(
-            !result.unwrap().0.is_empty(),
+            !iflow_file.0.is_empty(),
             "mono_iflow must preserve decls (catches Some(Default::default()))"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn mono_sqlcache_passthrough() {
+    fn mono_sqlcache_passthrough() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let mut errors = ErrorReporter::new();
         let settings = Settings::default();
         let result = mono_sqlcache(Default::default(), &settings, &mut errors);
         assert!(result.is_some());
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn mono_sqlcache_preserves_non_empty_file() {
+    fn mono_sqlcache_preserves_non_empty_file() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let file = minimal_mono_file();
         let mut errors = ErrorReporter::new();
         let settings = Settings::default();
@@ -3863,40 +4280,44 @@ db = "sqlite"
             result.is_some(),
             "mono_sqlcache must return Some (catches replace with None)"
         );
+        let sqlcache_file = result
+            .ok_or_else(|| anyhow!("mono_sqlcache must return Some (catches replace with None)"))?; // extract the sqlcache-processed file
         assert!(
-            !result.unwrap().0.is_empty(),
+            !sqlcache_file.0.is_empty(),
             "mono_sqlcache must preserve decls (catches Some(Default::default()))"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn cjrize_empty_file() {
+    fn cjrize_empty_file() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let mut errors = ErrorReporter::new();
         let result = cjrize(Default::default(), &mut errors);
-        assert!(result.is_some());
-        let (decls, ps) = result.unwrap();
+        let (decls, ps) = result.ok_or_else(|| anyhow!("cjrize must return Some"))?; // extract the CJR file tuple
         assert!(decls.is_empty());
         assert!(ps.is_empty());
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn cjrize_preserves_non_empty_file() {
+    fn cjrize_preserves_non_empty_file() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let file = minimal_mono_file();
         let mut errors = ErrorReporter::new();
         let result = cjrize(file, &mut errors);
-        assert!(
-            result.is_some(),
-            "cjrize must return Some (catches replace with None)"
-        );
-        let (decls, _) = result.unwrap();
+        let (decls, _) =
+            result.ok_or_else(|| anyhow!("cjrize must return Some (catches replace with None)"))?; // extract the CJR file tuple
         assert!(
             !decls.is_empty(),
             "cjrize must produce decls (catches Some(Default::default()))"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn cjr_print_empty_file_generates_header() {
+    fn cjr_print_empty_file_generates_header() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let settings = Settings::default();
         let result = cjr_print(&Default::default(), &settings);
         assert!(
@@ -3909,10 +4330,12 @@ db = "sqlite"
             "cjr_print of empty file must produce uw_app struct, got:\n{}",
             result
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn cjr_print_non_empty_file_produces_more_than_empty() {
+    fn cjr_print_non_empty_file_produces_more_than_empty() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // Kills: cjr_print mutants that return same output for non-empty CJR file.
         let settings = Settings::default();
         let empty_out = cjr_print(&Default::default(), &settings);
@@ -3926,18 +4349,22 @@ db = "sqlite"
             !non_empty_out.is_empty() && !non_empty_out.contains("xyzzy"),
             "cjr_print must not return placeholder (catches replace with xyzzy mutant)"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn js_compile_empty_file_returns_none() {
+    fn js_compile_empty_file_returns_none() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let mut errors = ErrorReporter::new();
         let settings = Settings::default();
         let result = js_compile(&Default::default(), &settings, &mut errors);
         assert!(result.is_none());
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn js_compile_collects_javascript_decls() {
+    fn js_compile_collects_javascript_decls() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let mut errors = ErrorReporter::new();
         let settings = Settings::default();
         let file: crate::monomorphized::File = (
@@ -3951,18 +4378,24 @@ db = "sqlite"
             result.is_some(),
             "js_compile must return Some when file has JavaScript decl (catches replace with None)"
         );
-        assert!(result.unwrap().contains("alert(1)"));
+        let js_code = result
+            .ok_or_else(|| anyhow!("js_compile must return Some for file with JavaScript decl"))?; // extract the compiled JS code
+        assert!(js_code.contains("alert(1)"));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn sql_generate_empty_file() {
+    fn sql_generate_empty_file() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let settings = Settings::default();
         let result = sql_generate(&Default::default(), &settings);
         assert!(result.is_empty());
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn sql_generate_produces_sql_for_table() {
+    fn sql_generate_produces_sql_for_table() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let settings = Settings {
             db_backend: Some(ProjectDb::postgres()),
             ..Default::default()
@@ -3986,11 +4419,13 @@ db = "sqlite"
             "sql_generate must produce SQL for Table (catches replace with String::new()): {}",
             result
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn cc_and_link_returns_result() {
-        let dir = tempfile::tempdir().unwrap();
+    fn cc_and_link_returns_result() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
+        let dir = tempfile::tempdir()?; // create temporary directory for test fixtures
         let out = dir.path().join("a.out");
         // Without the urweb runtime installed, linking will fail (Err), but it should not panic.
         let result = cc_and_link(
@@ -4001,11 +4436,13 @@ db = "sqlite"
         );
         // Either Ok (if cc is available and links) or Err (no urweb runtime) — not a panic.
         let _ = result;
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn cc_and_link_rejects_invalid_c() {
-        let dir = tempfile::tempdir().unwrap();
+    fn cc_and_link_rejects_invalid_c() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
+        let dir = tempfile::tempdir()?; // create temporary directory for test fixtures
         let out = dir.path().join("a.out");
         let result = cc_and_link("not valid C {", &out, &Job::default(), &Settings::default());
         assert!(
@@ -4020,12 +4457,14 @@ db = "sqlite"
             "invalid C must fail at compile or time out (never silent link): {}",
             err_msg
         );
+        Ok(())
     }
 
     #[test]
-    fn run_compile_invokes_apply_boot_settings() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("boot.urp"), "m\n").unwrap();
+    fn run_compile_invokes_apply_boot_settings() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
+        let dir = tempfile::tempdir()?; // create temporary directory for test fixtures
+        std::fs::write(dir.path().join("boot.urp"), "m\n")?;
         APPLY_BOOT_SETTINGS_CALLS.store(0, Ordering::SeqCst);
         let proj = dir.path().join("boot");
         let _ = run_compile(&proj, &mut Settings::default());
@@ -4033,10 +4472,12 @@ db = "sqlite"
             APPLY_BOOT_SETTINGS_CALLS.load(Ordering::SeqCst) >= 1,
             "apply_boot_settings must run (catches replace with () mutant)"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn resolve_urp_project_path_appends_urp_suffix() {
+    fn resolve_urp_project_path_appends_urp_suffix() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         assert_eq!(
             resolve_urp_project_path(Path::new("/tmp/w/widget.ur")),
             PathBuf::from("/tmp/w/widget.urp")
@@ -4045,10 +4486,12 @@ db = "sqlite"
             resolve_urp_project_path(Path::new("/tmp/w/widget.urp")),
             PathBuf::from("/tmp/w/widget.urp")
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn dbms_link_library_flag_sqlite_is_sqlite3() {
+    fn dbms_link_library_flag_sqlite_is_sqlite3() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         assert_eq!(
             dbms_link_library_flag(&settings_with_db(ProjectDb::sqlite())),
             "-lsqlite3"
@@ -4074,10 +4517,12 @@ db = "sqlite"
             dbms_link_library_flag(&settings_with_db(ProjectDb::Tigerbeetle)),
             "-ltb_client"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn mono_filecache_invokes_instrument() {
+    fn mono_filecache_invokes_instrument() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         MONO_FILECACHE_CALLS.store(0, Ordering::SeqCst);
         let settings = Settings {
             file_cache: Some("/tmp/urweb_fc_test".into()),
@@ -4092,44 +4537,49 @@ db = "sqlite"
         let out = mono_filecache(file.clone(), &settings);
         assert_eq!(MONO_FILECACHE_CALLS.load(Ordering::SeqCst), 1);
         assert_eq!(out.0.len(), file.0.len());
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn css_summarize_invokes_core_summarize() {
+    fn css_summarize_invokes_core_summarize() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         CSS_SUMMARIZE_CALLS.store(0, Ordering::SeqCst);
         let file: crate::core::File = vec![];
         let _ = css_summarize(&file);
         assert_eq!(CSS_SUMMARIZE_CALLS.load(Ordering::SeqCst), 1);
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn parse_sources_ffi_module_span_names_urs_file() {
-        let dir = tempfile::tempdir().unwrap();
+    fn parse_sources_ffi_module_span_names_urs_file() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
+        let dir = tempfile::tempdir()?; // create temporary directory for test fixtures
         let urp_path = dir.path().join("app.urp");
         std::fs::write(
             &urp_path,
             "ffi extmod\ndatabase dbname=test\nsql out.sql\n\nx\n",
-        )
-        .unwrap();
-        std::fs::write(dir.path().join("extmod.urs"), "val f : int").unwrap();
-        std::fs::write(dir.path().join("x.ur"), "val x = 1").unwrap();
-        let job = parse_urp(&urp_path).unwrap();
+        )?;
+        std::fs::write(dir.path().join("extmod.urs"), "val f : int")?;
+        std::fs::write(dir.path().join("x.ur"), "val x = 1")?;
+        let job = parse_urp(&urp_path)?; // parse the test .urp project file
         let mut errors = ErrorReporter::new();
         let settings = Settings::new();
         let source_file =
             with_parse_test_cwd(dir.path(), || parse_sources(&job, &settings, &mut errors))
-                .expect("parse_sources");
+                .ok_or_else(|| anyhow!("parse_sources returned None unexpectedly"))?; // extract the source file from the Option
         let ffi_decl = source_file.iter().find(|d| {
             matches!(
                 &d.node,
                 crate::source::Decl::FfiStr(name, _, _) if name == "Extmod"
             )
         });
-        let ffi_decl = ffi_decl.expect("FFI module decl");
+        let ffi_decl =
+            ffi_decl.ok_or_else(|| anyhow!("FFI module decl missing from parse_sources output"))?; // find the Extmod FFI declaration
         assert!(
             ffi_decl.span.file.ends_with("extmod.urs"),
             "FFI span.file must be the .urs path (catches delete field file in ffi span): {}",
             ffi_decl.span.file
         );
+        Ok(()) // return success to the test harness
     }
 }

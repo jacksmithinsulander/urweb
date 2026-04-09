@@ -10416,6 +10416,174 @@ pub fn elab_file(
     }
 }
 
+/// Frozen post-boot elaboration state used to elaborate user modules without re-processing
+/// `Basis` and `Top` on every call.
+#[derive(Debug, Clone)]
+pub struct BootElaborationSnapshot {
+    pub basis_structure_id: usize,
+    pub basis_signature: elab::LocatedSignature,
+    pub top_structure_id: usize,
+    pub top_signature: elab::LocatedSignature,
+    pub environment: Env,
+    pub disjointness_environment: disjoint::DisjointEnv,
+}
+
+fn auto_open_basis_and_top(
+    elaboration_context: &mut ElabCtx,
+    elaboration_environment: &mut Env,
+    disjointness_environment: &mut disjoint::DisjointEnv,
+    all_decls: &mut Vec<elab::LocatedDeclaration>,
+    decl: &source::LocDecl,
+) {
+    match &decl.node {
+        crate::source::Decl::FfiStr(structure_name, _, _) if structure_name == "Basis" => {
+            let auto_open_span = decl.span.clone();
+            let (open_declarations, opened_env, opened_disjointness) = elab_open(
+                elaboration_context,
+                elaboration_environment,
+                disjointness_environment,
+                &["Basis".to_string()],
+                &auto_open_span,
+            );
+            *elaboration_environment = opened_env;
+            *disjointness_environment = opened_disjointness;
+            all_decls.extend(open_declarations);
+        }
+        crate::source::Decl::Str(structure_name, _, _, _, _) if structure_name == "Top" => {
+            let auto_open_span = decl.span.clone();
+            let (open_declarations, opened_env, opened_disjointness) = elab_open(
+                elaboration_context,
+                elaboration_environment,
+                disjointness_environment,
+                &["Top".to_string()],
+                &auto_open_span,
+            );
+            *elaboration_environment = opened_env;
+            *disjointness_environment = opened_disjointness;
+            all_decls.extend(open_declarations);
+        }
+        _ => {}
+    }
+}
+
+/// Elaborate a boot-only source file and freeze the resulting `Basis` / `Top` environment.
+///
+/// # Arguments
+///
+/// * `file` — Parsed boot declarations from [`crate::compiler::parse_basis_sources`].
+/// * `errors` — Receives elaboration errors.
+///
+/// # Returns
+///
+/// [`BootElaborationSnapshot`] when `Basis` and `Top` elaborate successfully, or `None` on error.
+pub fn elab_boot_file_to_snapshot(
+    file: &crate::source::File,
+    errors: &mut ErrorReporter,
+) -> Option<BootElaborationSnapshot> {
+    let mut elaboration_context = ElabCtx::new();
+    let mut elaboration_environment = Env::empty();
+    let mut disjointness_environment = disjoint::empty_env();
+    let mut all_decls: Vec<elab::LocatedDeclaration> = Vec::new();
+
+    for decl in file {
+        let (ds, new_env, new_denv) = elab_decl(
+            &mut elaboration_context,
+            &elaboration_environment,
+            &disjointness_environment,
+            decl,
+        );
+        elaboration_environment = new_env;
+        disjointness_environment = new_denv;
+        solve_constraints(&mut elaboration_context, &elaboration_environment);
+        all_decls.extend(ds);
+        auto_open_basis_and_top(
+            &mut elaboration_context,
+            &mut elaboration_environment,
+            &mut disjointness_environment,
+            &mut all_decls,
+            decl,
+        );
+    }
+
+    for (span, payload) in elaboration_context.errors {
+        errors.report_type_at(span, payload);
+    }
+    if errors.has_hard_errors() {
+        return None;
+    }
+
+    let (basis_structure_id, basis_signature) = elaboration_environment
+        .lookup_str("Basis")
+        .map(|(id, signature)| (*id, hnorm_sgn(&elaboration_environment, signature)))?;
+    let (top_structure_id, top_signature) = elaboration_environment
+        .lookup_str("Top")
+        .map(|(id, signature)| (*id, hnorm_sgn(&elaboration_environment, signature)))?;
+
+    Some(BootElaborationSnapshot {
+        basis_structure_id,
+        basis_signature,
+        top_structure_id,
+        top_signature,
+        environment: elaboration_environment,
+        disjointness_environment,
+    })
+}
+
+fn seed_env_from_boot_snapshot(snapshot: &BootElaborationSnapshot) -> Env {
+    snapshot.environment.clone()
+}
+
+/// Elaborate a user source file against a frozen boot snapshot.
+///
+/// # Arguments
+///
+/// * `snapshot` — Result of [`elab_boot_file_to_snapshot`].
+/// * `file` — User declarations only (without boot declarations).
+/// * `errors` — Receives elaboration errors.
+///
+/// # Returns
+///
+/// Elaborated user declarations or `None` when elaboration reports hard errors.
+pub fn elab_file_from_boot_snapshot(
+    snapshot: &BootElaborationSnapshot,
+    file: crate::source::File,
+    errors: &mut ErrorReporter,
+) -> Option<crate::elaborated::File> {
+    let mut elaboration_context = ElabCtx::new();
+    let mut elaboration_environment = seed_env_from_boot_snapshot(snapshot);
+    let mut disjointness_environment = snapshot.disjointness_environment.clone();
+    let mut all_decls: Vec<elab::LocatedDeclaration> = Vec::new();
+
+    for decl in &file {
+        let (ds, new_env, new_denv) = elab_decl(
+            &mut elaboration_context,
+            &elaboration_environment,
+            &disjointness_environment,
+            decl,
+        );
+        elaboration_environment = new_env;
+        disjointness_environment = new_denv;
+        solve_constraints(&mut elaboration_context, &elaboration_environment);
+        all_decls.extend(ds);
+        auto_open_basis_and_top(
+            &mut elaboration_context,
+            &mut elaboration_environment,
+            &mut disjointness_environment,
+            &mut all_decls,
+            decl,
+        );
+    }
+
+    for (span, payload) in elaboration_context.errors {
+        errors.report_type_at(span, payload);
+    }
+    if errors.has_hard_errors() {
+        None
+    } else {
+        Some(all_decls)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Elaboration regression tests
 // ---------------------------------------------------------------------------

@@ -1201,7 +1201,11 @@ fn explicit_corify_minimal_file_returns_non_empty_core() {
         result.is_some(),
         "corify must return Some for minimal explicit file (catches replace with None)"
     );
-    let core_file = result.unwrap();
+    // extract the core file from the result; is_some() was asserted above
+    let core_file = match result {
+        Some(v) => v,
+        None => panic!("corify returned None for minimal explicit file"),
+    };
     assert!(
         !core_file.is_empty(),
         "corify must produce at least one Core decl (catches replace with Default::default())"
@@ -1230,7 +1234,11 @@ fn explicit_corify_val_produces_core_val() {
     let mut errors = ur::error_types::ErrorReporter::new();
     let result = compiler::corify(file, &mut settings, &mut errors);
     assert!(result.is_some());
-    let core_file = result.unwrap();
+    // extract the core file from the result; is_some() was asserted above
+    let core_file = match result {
+        Some(v) => v,
+        None => panic!("corify returned None"),
+    };
     assert!(
         core_file
             .iter()
@@ -1254,7 +1262,11 @@ fn explicit_corify_datatype_produces_core_datatype() {
     let mut errors = ur::error_types::ErrorReporter::new();
     let result = compiler::corify(file, &mut settings, &mut errors);
     assert!(result.is_some());
-    let core_file = result.unwrap();
+    // extract the core file from the result; is_some() was asserted above
+    let core_file = match result {
+        Some(v) => v,
+        None => panic!("corify returned None"),
+    };
     assert!(
         core_file
             .iter()
@@ -1303,7 +1315,11 @@ fn explicit_corify_sequence_produces_core_sequence() {
     let mut errors = ur::error_types::ErrorReporter::new();
     let result = compiler::corify(file, &mut settings, &mut errors);
     assert!(result.is_some());
-    let core_file = result.unwrap();
+    // extract the core file from the result; is_some() was asserted above
+    let core_file = match result {
+        Some(v) => v,
+        None => panic!("corify returned None"),
+    };
     assert!(core_file
         .iter()
         .any(|d| matches!(&d.node, ur::core::Declaration::Sequence(_, _, _))));
@@ -1318,7 +1334,11 @@ fn explicit_corify_cookie_produces_core_cookie() {
     let mut errors = ur::error_types::ErrorReporter::new();
     let result = compiler::corify(file, &mut settings, &mut errors);
     assert!(result.is_some());
-    let core_file = result.unwrap();
+    // extract the core file from the result; is_some() was asserted above
+    let core_file = match result {
+        Some(v) => v,
+        None => panic!("corify returned None"),
+    };
     assert!(core_file
         .iter()
         .any(|d| matches!(&d.node, ur::core::Declaration::Cookie(_, _, _, _))));
@@ -1332,7 +1352,11 @@ fn explicit_corify_style_produces_core_style() {
     let mut errors = ur::error_types::ErrorReporter::new();
     let result = compiler::corify(file, &mut settings, &mut errors);
     assert!(result.is_some());
-    let core_file = result.unwrap();
+    // extract the core file from the result; is_some() was asserted above
+    let core_file = match result {
+        Some(v) => v,
+        None => panic!("corify returned None"),
+    };
     assert!(core_file
         .iter()
         .any(|d| matches!(&d.node, ur::core::Declaration::Style(_, _, _))));
@@ -1353,7 +1377,11 @@ fn explicit_corify_constructor_produces_core_constructor() {
     let mut errors = ur::error_types::ErrorReporter::new();
     let result = compiler::corify(file, &mut settings, &mut errors);
     assert!(result.is_some());
-    let core_file = result.unwrap();
+    // extract the core file from the result; is_some() was asserted above
+    let core_file = match result {
+        Some(v) => v,
+        None => panic!("corify returned None"),
+    };
     assert!(core_file
         .iter()
         .any(|d| matches!(&d.node, ur::core::Declaration::Constructor(_, _, _, _))));
@@ -1440,7 +1468,11 @@ fn explicit_corify_index_produces_core_index() {
     let mut errors = ur::error_types::ErrorReporter::new();
     let result = compiler::corify(file, &mut settings, &mut errors);
     assert!(result.is_some());
-    let core_file = result.unwrap();
+    // extract the core file from the result; is_some() was asserted above
+    let core_file = match result {
+        Some(v) => v,
+        None => panic!("corify returned None"),
+    };
     assert!(core_file
         .iter()
         .any(|d| matches!(&d.node, ur::core::Declaration::Index(_, _))));
@@ -1456,7 +1488,11 @@ fn explicit_corify_task_produces_core_task() {
     let mut errors = ur::error_types::ErrorReporter::new();
     let result = compiler::corify(file, &mut settings, &mut errors);
     assert!(result.is_some());
-    let core_file = result.unwrap();
+    // extract the core file from the result; is_some() was asserted above
+    let core_file = match result {
+        Some(v) => v,
+        None => panic!("corify returned None"),
+    };
     assert!(core_file
         .iter()
         .any(|d| matches!(&d.node, ur::core::Declaration::Task(_, _))));
@@ -1472,7 +1508,11 @@ fn explicit_corify_policy_produces_core_policy() {
     let mut errors = ur::error_types::ErrorReporter::new();
     let result = compiler::corify(file, &mut settings, &mut errors);
     assert!(result.is_some());
-    let core_file = result.unwrap();
+    // extract the core file from the result; is_some() was asserted above
+    let core_file = match result {
+        Some(v) => v,
+        None => panic!("corify returned None"),
+    };
     assert!(core_file
         .iter()
         .any(|d| matches!(&d.node, ur::core::Declaration::Policy(_))));

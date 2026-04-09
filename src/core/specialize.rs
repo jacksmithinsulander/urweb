@@ -1222,7 +1222,11 @@ mod tests {
         );
         let result = find_app(&inner, vec![]);
         assert!(result.is_some());
-        let (n, args) = result.unwrap();
+        // Unwrap the find_app result; panic with a message if it is None.
+        let (n, args) = match result {
+            Some(v) => v,
+            None => panic!("find_app returned None for App(Named(5), Unit)"),
+        };
         assert_eq!(n, 5);
         assert_eq!(args.len(), 1);
     }
@@ -1241,7 +1245,11 @@ mod tests {
         );
         let result = find_app(&inner, vec![]);
         assert!(result.is_some());
-        let (n, args) = result.unwrap();
+        // Unwrap the find_app result; panic with a message if it is None.
+        let (n, args) = match result {
+            Some(v) => v,
+            None => panic!("find_app returned None for nested App(App(Named(7), ...))"),
+        };
         assert_eq!(n, 7);
         assert_eq!(args.len(), 2);
     }

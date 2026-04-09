@@ -75,6 +75,25 @@ fn get_cached_basis_sources() -> Option<&'static SourceFile> {
         .as_ref() // Borrow the stored Option<SourceFile> as Option<&SourceFile>.
 }
 
+/// Frozen `Basis` / `Top` elaboration snapshot shared across corpus tests.
+///
+/// This avoids re-elaborating the full boot library on every `try_elaborate_single_module*`
+/// invocation while still rebuilding a fresh user-module environment per test.
+static CACHED_BOOT_ELABORATION_SNAPSHOT: OnceLock<Option<compiler::BootElaborationSnapshot>> =
+    OnceLock::new();
+
+/// Return the cached boot elaboration snapshot, or `None` when the Basis is absent or boot
+/// elaboration itself fails.
+fn get_cached_boot_elaboration_snapshot() -> Option<&'static compiler::BootElaborationSnapshot> {
+    CACHED_BOOT_ELABORATION_SNAPSHOT
+        .get_or_init(|| {
+            let cached_boot = get_cached_basis_sources()?;
+            let mut errors = ErrorReporter::new_silent();
+            compiler::elaborate_boot_snapshot(cached_boot, &mut errors)
+        })
+        .as_ref()
+}
+
 /// Run `body` on a fresh OS thread with [`ELABORATION_TEST_STACK_BYTES`] and propagate its result.
 ///
 /// # Errors
@@ -101,12 +120,12 @@ fn try_elaborate_named_module(module_name: &str, ur_src: &str) -> Result<(), Str
     let module_name_owned = module_name.to_string(); // Clone for the spawned thread's closure.
     let implementation_text = ur_src.to_string(); // Clone for the spawned thread's closure.
     run_with_elaboration_stack(move || {
-        let cached_boot = get_cached_basis_sources()
+        let boot_snapshot = get_cached_boot_elaboration_snapshot()
             .ok_or_else(|| "corpus boot root not found (lib/ur/basis.urs missing)".to_string())?; // Fail fast when Basis is absent.
         let settings = Settings::new(); // Default settings; Basis is already in cached_boot.
         let mut errors = ErrorReporter::new_silent(); // Silent reporter: errors are returned as Err strings.
-        compiler::elaborate_module_on_cached_boot(
-            cached_boot,          // Pre-parsed Basis+Top — no re-parsing or disk I/O.
+        compiler::elaborate_module_on_cached_boot_snapshot(
+            boot_snapshot,        // Pre-elaborated Basis+Top — no repeated boot elaboration.
             &module_name_owned,   // Caller-supplied module name.
             &implementation_text, // Implementation source text.
             None,                 // No explicit signature.
@@ -210,23 +229,22 @@ fn try_elaborate_project(
 
 /// Elaborate one synthetic anonymous module using cached Basis sources (larger stack supplied by caller).
 ///
-/// Uses [`get_cached_basis_sources`] to avoid re-parsing Basis/Top from disk, and
-/// [`compiler::elaborate_module_on_cached_boot`] to build the combined source file in memory.
-/// No temp directory, disk I/O, or global lock is used.
+/// Uses the cached boot elaboration snapshot so user modules only pay for their own declarations,
+/// not a fresh `Basis` / `Top` elaboration on every invocation.
 ///
 /// # Errors
 ///
 /// Missing Basis, parse failure, elaboration failure, or reported hard errors as `String`.
 fn try_elaborate_single_module_on_thread(ur_src: &str) -> Result<(), String> {
-    let cached_boot = get_cached_basis_sources()
+    let boot_snapshot = get_cached_boot_elaboration_snapshot()
         .ok_or_else(|| "corpus boot root not found (lib/ur/basis.urs missing)".to_string())?; // Fail fast when Basis is absent.
-    let settings = Settings::new(); // Default settings; Basis is already in cached_boot, boot_linking not needed.
+    let settings = Settings::new();
     let mut errors = ErrorReporter::new_silent(); // Silent reporter: errors are returned as Err strings.
-    compiler::elaborate_module_on_cached_boot(
-        cached_boot, // Pre-parsed Basis+Top — no re-parsing or disk I/O.
-        "CoreMod",   // Synthetic module name for anonymous single-module tests.
-        ur_src,      // Implementation source text.
-        None,        // No explicit signature; elaborator infers the interface.
+    compiler::elaborate_module_on_cached_boot_snapshot(
+        boot_snapshot, // Pre-elaborated Basis+Top — no repeated boot elaboration.
+        "CoreMod",
+        ur_src,
+        None,
         &settings,
         &mut errors,
     )
@@ -386,8 +404,8 @@ fn collect_sql_field_refs_in_structure(
 
 /// Elaborate one synthetic named module/signature pair using cached Basis sources (larger stack supplied by caller).
 ///
-/// Uses [`get_cached_basis_sources`] and [`compiler::elaborate_module_on_cached_boot`] to avoid
-/// re-parsing Basis/Top on every invocation. No temp directory, disk I/O, or global lock is used.
+/// Uses the cached boot elaboration snapshot so impl/signature pairs only elaborate their own
+/// module contents.
 ///
 /// # Errors
 ///
@@ -397,15 +415,15 @@ fn try_elaborate_named_module_pair_on_thread(
     ur_src: &str,
     urs_src: &str,
 ) -> Result<(), String> {
-    let cached_boot = get_cached_basis_sources()
+    let boot_snapshot = get_cached_boot_elaboration_snapshot()
         .ok_or_else(|| "corpus boot root not found (lib/ur/basis.urs missing)".to_string())?; // Fail fast when Basis is absent.
-    let settings = Settings::new(); // Default settings; Basis is already in cached_boot.
+    let settings = Settings::new();
     let mut errors = ErrorReporter::new_silent(); // Silent reporter: errors are returned as Err strings.
-    compiler::elaborate_module_on_cached_boot(
-        cached_boot,   // Pre-parsed Basis+Top — no re-parsing or disk I/O.
-        module_name,   // Caller-supplied module name.
-        ur_src,        // Implementation source text.
-        Some(urs_src), // Signature source text — present for impl/sig pair tests.
+    compiler::elaborate_module_on_cached_boot_snapshot(
+        boot_snapshot,
+        module_name,
+        ur_src,
+        Some(urs_src),
         &settings,
         &mut errors,
     )

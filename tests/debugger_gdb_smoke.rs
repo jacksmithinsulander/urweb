@@ -111,8 +111,16 @@ fn dap_initialize_and_launch_smoke() {
         .spawn()
         .expect("spawn ur-debugger");
 
-    let mut sin = child.stdin.take().unwrap();
-    let mut sout = BufReader::new(child.stdout.take().unwrap());
+    // take stdin from the child process; None means the child was not started with Stdio::piped()
+    let mut sin = match child.stdin.take() {
+        Some(v) => v,
+        None => panic!("child stdin was not piped"),
+    };
+    // take stdout from the child process; None means the child was not started with Stdio::piped()
+    let mut sout = BufReader::new(match child.stdout.take() {
+        Some(v) => v,
+        None => panic!("child stdout was not piped"),
+    });
 
     let init = serde_json::json!({
         "seq": 1,
@@ -126,30 +134,67 @@ fn dap_initialize_and_launch_smoke() {
             "columnsStartAt1": true,
         }
     });
-    framing_write(&mut sin, &init).unwrap();
-    let _ = framing_read(&mut sout).unwrap(); // initialize response
-    let _ = framing_read(&mut sout).unwrap(); // initialized event
+    // send the initialize request to the DAP adapter
+    match framing_write(&mut sin, &init) {
+        Ok(()) => {}
+        Err(e) => panic!("framing_write for initialize failed: {e}"),
+    }
+    // read the initialize response from the DAP adapter
+    match framing_read(&mut sout) {
+        Ok(_) => {}
+        Err(e) => panic!("framing_read for initialize response failed: {e}"),
+    }
+    // read the initialized event that the adapter sends after initialize
+    match framing_read(&mut sout) {
+        Ok(_) => {}
+        Err(e) => panic!("framing_read for initialized event failed: {e}"),
+    }
 
     let launch = serde_json::json!({
         "seq": 2,
         "type": "request",
         "command": "launch",
         "arguments": {
-            "program": exe.to_str().unwrap(),
+            // convert executable path to UTF-8 string; non-UTF-8 paths are a test environment error
+            "program": match exe.to_str() {
+                Some(s) => s,
+                None => panic!("exe path is not valid UTF-8"),
+            },
             "gdbPath": "gdb",
         }
     });
-    framing_write(&mut sin, &launch).unwrap();
-    let _ = framing_read(&mut sout).unwrap();
+    // send the launch request to the DAP adapter
+    match framing_write(&mut sin, &launch) {
+        Ok(()) => {}
+        Err(e) => panic!("framing_write for launch failed: {e}"),
+    }
+    // read the launch response from the DAP adapter
+    match framing_read(&mut sout) {
+        Ok(_) => {}
+        Err(e) => panic!("framing_read for launch response failed: {e}"),
+    }
 
     let cfg_done = serde_json::json!({
         "seq": 3,
         "type": "request",
         "command": "configurationDone",
     });
-    framing_write(&mut sin, &cfg_done).unwrap();
-    let _ = framing_read(&mut sout).unwrap();
-    let ev = framing_read(&mut sout).unwrap().expect("stopped event");
+    // send the configurationDone request to the DAP adapter
+    match framing_write(&mut sin, &cfg_done) {
+        Ok(()) => {}
+        Err(e) => panic!("framing_write for configurationDone failed: {e}"),
+    }
+    // read the configurationDone response from the DAP adapter
+    match framing_read(&mut sout) {
+        Ok(_) => {}
+        Err(e) => panic!("framing_read for configurationDone response failed: {e}"),
+    }
+    // read the stopped event; the adapter must send it after configurationDone
+    let ev_option = match framing_read(&mut sout) {
+        Ok(v) => v,
+        Err(e) => panic!("framing_read for stopped event failed: {e}"),
+    };
+    let ev = ev_option.expect("stopped event");
     assert_eq!(ev.get("type").and_then(|t| t.as_str()), Some("event"));
     assert_eq!(ev.get("event").and_then(|t| t.as_str()), Some("stopped"));
 
@@ -158,6 +203,10 @@ fn dap_initialize_and_launch_smoke() {
         "type": "request",
         "command": "disconnect",
     });
-    framing_write(&mut sin, &disc).unwrap();
+    // send the disconnect request to cleanly shut down the DAP session
+    match framing_write(&mut sin, &disc) {
+        Ok(()) => {}
+        Err(e) => panic!("framing_write for disconnect failed: {e}"),
+    }
     let _ = child.wait();
 }

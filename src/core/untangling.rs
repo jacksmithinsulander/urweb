@@ -689,9 +689,24 @@ mod tests {
         // Node 1 (most dependent: calls 2, which calls 3) must come first;
         // node 3 (leaf, called by 2) must come last.
         // This "dependents first" ordering mirrors the SML `List.rev !sccsAcc`.
-        let flat: Vec<usize> = sccs.iter().map(|s| *s.iter().next().unwrap()).collect();
-        let pos1 = flat.iter().position(|&x| x == 1).unwrap();
-        let pos3 = flat.iter().position(|&x| x == 3).unwrap();
+        // Extract the single element from each singleton SCC; panic if any SCC is empty.
+        let flat: Vec<usize> = sccs
+            .iter()
+            .map(|s| match s.iter().next() {
+                Some(v) => *v,
+                None => panic!("SCC is unexpectedly empty"),
+            })
+            .collect();
+        // Find position of node 1 in the flattened order; panic if absent.
+        let pos1 = match flat.iter().position(|&x| x == 1) {
+            Some(p) => p,
+            None => panic!("node 1 not found in flat SCC order"),
+        };
+        // Find position of node 3 in the flattened order; panic if absent.
+        let pos3 = match flat.iter().position(|&x| x == 3) {
+            Some(p) => p,
+            None => panic!("node 3 not found in flat SCC order"),
+        };
         assert!(
             pos1 < pos3,
             "node 1 (dependent) must precede node 3 (no deps) in dependents-first order: got {flat:?}"

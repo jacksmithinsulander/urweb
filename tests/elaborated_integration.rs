@@ -500,7 +500,12 @@ fn module_database_insert_ffistr_then_lookup() {
     db.insert(decl, tm, false);
     let found = db.lookup("ModA", tm);
     assert!(found.is_some());
-    assert!(matches!(&found.unwrap().node, Declaration::FfiStr(x, n, _) if x == "ModA" && *n == 1));
+    // extract the declaration from found; is_some() was asserted above
+    let found_decl = match found {
+        Some(v) => v,
+        None => panic!("lookup returned None for ModA"),
+    };
+    assert!(matches!(&found_decl.node, Declaration::FfiStr(x, n, _) if x == "ModA" && *n == 1));
 }
 
 #[test]
@@ -580,7 +585,11 @@ fn module_database_lookup_mod_and_deps_including_errored() {
     db.insert(decl, UNIX_EPOCH, true);
     let result = db.lookup_mod_and_deps_including_errored("X");
     assert!(result.is_some());
-    let (main_decl, _dep_decls) = result.unwrap();
+    // extract main decl and deps from result; is_some() was asserted above
+    let (main_decl, _dep_decls) = match result {
+        Some(v) => v,
+        None => panic!("lookup_mod_and_deps_including_errored returned None for X"),
+    };
     assert!(matches!(&main_decl.node, Declaration::FfiStr(x, _, _) if x == "X"));
 }
 

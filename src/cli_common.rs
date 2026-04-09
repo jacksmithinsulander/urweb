@@ -1082,13 +1082,33 @@ k = "hello""#;
     #[test]
     fn file_exists_detects_present_and_absent() {
         let _guard = lock_for_compile(&TEST_CWD_LOCK, "cli_common file_exists test");
-        let dir = tempfile::tempdir().unwrap();
-        let cwd = std::env::current_dir().unwrap();
-        std::env::set_current_dir(dir.path()).unwrap();
-        std::fs::write("exists.txt", "").unwrap();
+        // create a temporary directory for the test; failure means the OS cannot create temp dirs
+        let dir = match tempfile::tempdir() {
+            Ok(v) => v,
+            Err(e) => panic!("tempdir() failed: {e}"),
+        };
+        // capture the current working directory so it can be restored after the test
+        let cwd = match std::env::current_dir() {
+            Ok(v) => v,
+            Err(e) => panic!("current_dir() failed: {e}"),
+        };
+        // change into the temporary directory for the duration of the test
+        match std::env::set_current_dir(dir.path()) {
+            Ok(()) => {}
+            Err(e) => panic!("set_current_dir to temp dir failed: {e}"),
+        }
+        // create a file that file_exists() should detect as present
+        match std::fs::write("exists.txt", "") {
+            Ok(()) => {}
+            Err(e) => panic!("fs::write exists.txt failed: {e}"),
+        }
         assert!(file_exists("exists.txt"));
         assert!(!file_exists("nonexistent.txt"));
-        std::env::set_current_dir(&cwd).unwrap();
+        // restore the original working directory after the test completes
+        match std::env::set_current_dir(&cwd) {
+            Ok(()) => {}
+            Err(e) => panic!("set_current_dir to original cwd failed: {e}"),
+        }
     }
 
     #[test]
@@ -1101,7 +1121,11 @@ k = "hello""#;
     fn toml_unclosed_quote_preserves_raw() {
         let content = "[x]\nk = \"hello\n";
         let entries = parse_toml(content);
-        let v = toml_get(&entries, "x.k").unwrap();
+        // look up key "x.k" in the parsed TOML; must be present since we wrote it
+        let v = match toml_get(&entries, "x.k") {
+            Some(v) => v,
+            None => panic!("toml_get(\"x.k\") returned None"),
+        };
         assert!(v.contains("hello"), "unclosed quote should not strip");
     }
 
@@ -1135,49 +1159,98 @@ k = "hello""#;
     #[test]
     fn load_ur_manifest_cwd_ok_and_entry() {
         let _guard = lock_for_compile(&TEST_CWD_LOCK, "cli_common manifest load");
-        let dir = tempfile::tempdir().unwrap();
-        let cwd = std::env::current_dir().unwrap();
-        std::env::set_current_dir(dir.path()).unwrap();
-        std::fs::write(
+        // create a temporary directory for the manifest test
+        let dir = match tempfile::tempdir() {
+            Ok(v) => v,
+            Err(e) => panic!("tempdir() failed: {e}"),
+        };
+        // save the current working directory so it can be restored after the test
+        let cwd = match std::env::current_dir() {
+            Ok(v) => v,
+            Err(e) => panic!("current_dir() failed: {e}"),
+        };
+        // switch into the temp dir so load_ur_manifest_cwd picks up the test manifest
+        match std::env::set_current_dir(dir.path()) {
+            Ok(()) => {}
+            Err(e) => panic!("set_current_dir to temp dir failed: {e}"),
+        }
+        // write a valid manifest with a non-empty entry field
+        match std::fs::write(
             UR_MANIFEST_FILE,
             r#"[package]
 kind = "app"
 [build]
 entry = "demo"
 "#,
-        )
-        .unwrap();
-        let cfg = load_ur_manifest_cwd().unwrap();
+        ) {
+            Ok(()) => {}
+            Err(e) => panic!("fs::write manifest (with entry) failed: {e}"),
+        }
+        // parse the manifest; must succeed for a valid TOML file
+        let cfg = match load_ur_manifest_cwd() {
+            Ok(v) => v,
+            Err(e) => panic!("load_ur_manifest_cwd() failed: {e}"),
+        };
         assert_eq!(cfg.build.entry, "demo");
         assert!(require_manifest_entry(&cfg).is_ok());
-        std::fs::write(
+        // overwrite with an empty entry to test the require_manifest_entry error path
+        match std::fs::write(
             UR_MANIFEST_FILE,
             r#"[package]
 kind = "app"
 [build]
 entry = ""
 "#,
-        )
-        .unwrap();
-        let cfg_empty = load_ur_manifest_cwd().unwrap();
+        ) {
+            Ok(()) => {}
+            Err(e) => panic!("fs::write manifest (empty entry) failed: {e}"),
+        }
+        // parse the manifest with empty entry; must succeed since the TOML is still valid
+        let cfg_empty = match load_ur_manifest_cwd() {
+            Ok(v) => v,
+            Err(e) => panic!("load_ur_manifest_cwd() with empty entry failed: {e}"),
+        };
         assert!(require_manifest_entry(&cfg_empty).is_err());
-        std::env::set_current_dir(&cwd).unwrap();
+        // restore the original working directory
+        match std::env::set_current_dir(&cwd) {
+            Ok(()) => {}
+            Err(e) => panic!("set_current_dir to original cwd failed: {e}"),
+        }
     }
 
     #[test]
     fn ensure_ur_toml_present_for_install_checks_file() {
         let _guard = lock_for_compile(&TEST_CWD_LOCK, "cli_common install manifest");
-        let dir = tempfile::tempdir().unwrap();
-        let cwd = std::env::current_dir().unwrap();
-        std::env::set_current_dir(dir.path()).unwrap();
+        // create a temporary directory for the install-manifest check test
+        let dir = match tempfile::tempdir() {
+            Ok(v) => v,
+            Err(e) => panic!("tempdir() failed: {e}"),
+        };
+        // save the current working directory so it can be restored after the test
+        let cwd = match std::env::current_dir() {
+            Ok(v) => v,
+            Err(e) => panic!("current_dir() failed: {e}"),
+        };
+        // change into the temp dir; no manifest file exists yet
+        match std::env::set_current_dir(dir.path()) {
+            Ok(()) => {}
+            Err(e) => panic!("set_current_dir to temp dir failed: {e}"),
+        }
         assert!(super::ensure_ur_toml_present_for_install().is_err());
-        std::fs::write(
+        // write a minimal valid manifest so the install check should now succeed
+        match std::fs::write(
             UR_MANIFEST_FILE,
             "[package]\nkind=\"app\"\n[build]\nentry=\"x\"\n",
-        )
-        .unwrap();
+        ) {
+            Ok(()) => {}
+            Err(e) => panic!("fs::write manifest failed: {e}"),
+        }
         assert!(super::ensure_ur_toml_present_for_install().is_ok());
-        std::env::set_current_dir(&cwd).unwrap();
+        // restore the original working directory
+        match std::env::set_current_dir(&cwd) {
+            Ok(()) => {}
+            Err(e) => panic!("set_current_dir to original cwd failed: {e}"),
+        }
     }
 
     #[test]

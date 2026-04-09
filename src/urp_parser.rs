@@ -698,62 +698,72 @@ fn merge_library(job: &mut Job, lib: Job) {
 mod tests {
     use super::*;
     use crate::settings::PathKind;
+    use anyhow::anyhow; // for creating inline anyhow errors from Option in tests
     use std::fs;
     use tempfile::tempdir;
 
-    fn write_urp(dir: &Path, name: &str, contents: &str) -> PathBuf {
-        let path = dir.join(name);
-        fs::write(&path, contents).unwrap();
-        path
+    /// Write a named fixture file into `dir` with `contents`.
+    /// Returns the path to the new file, or propagates any I/O error.
+    fn write_urp(dir: &Path, name: &str, contents: &str) -> anyhow::Result<PathBuf> {
+        let path = dir.join(name); // build full path inside the temp directory
+        fs::write(&path, contents)?; // write fixture content, propagating any I/O failure
+        Ok(path) // return the path to the successfully written fixture
     }
 
     #[test]
-    fn parse_simple_sources_only() {
-        let dir = tempdir().unwrap();
-        let urp = write_urp(dir.path(), "app.urp", "foo\nbar\n");
-        let job = parse_urp(&urp).unwrap();
+    fn parse_simple_sources_only() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
+        let dir = tempdir()?; // create a temporary directory for test fixture files
+        let urp = write_urp(dir.path(), "app.urp", "foo\nbar\n")?;
+        let job = parse_urp(&urp)?; // parse the test .urp project file
         assert_eq!(job.sources.len(), 2);
         assert!(job.sources[0].ends_with("foo"));
         assert!(job.sources[1].ends_with("bar"));
         assert_eq!(job.prefix, "/");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn parse_directives_then_sources() {
-        let dir = tempdir().unwrap();
+    fn parse_directives_then_sources() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
+        let dir = tempdir()?; // create a temporary directory for test fixture files
         let urp = write_urp(
             dir.path(),
             "app.urp",
             "database postgres://localhost/mydb\ndebug\n\nmod1\nmod2\n",
-        );
-        let job = parse_urp(&urp).unwrap();
+        )?;
+        let job = parse_urp(&urp)?; // parse the test .urp project file
         assert_eq!(job.database.as_deref(), Some("postgres://localhost/mydb"));
         assert!(job.debug);
         assert_eq!(job.sources.len(), 2);
         assert!(job.sources[0].ends_with("mod1"));
         assert!(job.sources[1].ends_with("mod2"));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn parse_comments_stripped() {
-        let dir = tempdir().unwrap();
+    fn parse_comments_stripped() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
+        let dir = tempdir()?; // create a temporary directory for test fixture files
         let urp = write_urp(
             dir.path(),
             "app.urp",
             "# this is a comment\n\n# another\nmod1\n",
-        );
-        let job = parse_urp(&urp).unwrap();
+        )?;
+        let job = parse_urp(&urp)?; // parse the test .urp project file
         assert_eq!(job.sources.len(), 1);
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn parse_comment_line_not_treated_as_directive_content() {
+    fn parse_comment_line_not_treated_as_directive_content() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // Catches mutant: replace match guard raw[..pos].chars().all(|c| c.is_whitespace()) with false.
         // When guard is false, "# c" would produce line="" instead of continue, and we'd set in_sources.
         // Then "database x" would be pushed as a source, not parsed as directive.
-        let dir = tempdir().unwrap();
-        let urp = write_urp(dir.path(), "app.urp", "# comment\ndatabase mydb\n\nmod1\n");
-        let job = parse_urp(&urp).unwrap();
+        let dir = tempdir()?; // create a temporary directory for test fixture files
+        let urp = write_urp(dir.path(), "app.urp", "# comment\ndatabase mydb\n\nmod1\n")?;
+        let job = parse_urp(&urp)?; // parse the test .urp project file
         assert_eq!(
             job.database.as_deref(),
             Some("mydb"),
@@ -764,83 +774,97 @@ mod tests {
             !job.sources[0].contains("database"),
             "database must not be pushed as source"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn parse_prefix_directive() {
-        let dir = tempdir().unwrap();
-        let urp = write_urp(dir.path(), "app.urp", "prefix /myapp\n\nmod1\n");
-        let job = parse_urp(&urp).unwrap();
+    fn parse_prefix_directive() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
+        let dir = tempdir()?; // create a temporary directory for test fixture files
+        let urp = write_urp(dir.path(), "app.urp", "prefix /myapp\n\nmod1\n")?;
+        let job = parse_urp(&urp)?; // parse the test .urp project file
         assert_eq!(job.prefix, "/myapp");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn parse_timeout() {
-        let dir = tempdir().unwrap();
-        let urp = write_urp(dir.path(), "app.urp", "timeout 30\n\nmod1\n");
-        let job = parse_urp(&urp).unwrap();
+    fn parse_timeout() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
+        let dir = tempdir()?; // create a temporary directory for test fixture files
+        let urp = write_urp(dir.path(), "app.urp", "timeout 30\n\nmod1\n")?;
+        let job = parse_urp(&urp)?; // parse the test .urp project file
         assert_eq!(job.timeout, 30);
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn parse_rewrite_three_tokens() {
-        let dir = tempdir().unwrap();
-        let urp = write_urp(dir.path(), "app.urp", "rewrite all * /\n\nmod1\n");
-        let job = parse_urp(&urp).unwrap();
+    fn parse_rewrite_three_tokens() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
+        let dir = tempdir()?; // create a temporary directory for test fixture files
+        let urp = write_urp(dir.path(), "app.urp", "rewrite all * /\n\nmod1\n")?;
+        let job = parse_urp(&urp)?; // parse the test .urp project file
         assert_eq!(job.rewrites.len(), 1);
         assert_eq!(job.rewrites[0].pkind, PathKind::Any);
         assert_eq!(job.rewrites[0].kind, PatternKind::Prefix);
         assert_eq!(job.rewrites[0].from, "");
         assert_eq!(job.rewrites[0].to, "/");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn parse_allow_deny() {
-        let dir = tempdir().unwrap();
+    fn parse_allow_deny() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
+        let dir = tempdir()?; // create a temporary directory for test fixture files
         let urp = write_urp(
             dir.path(),
             "app.urp",
             "allow url /public*\ndeny url /admin*\n\nmod1\n",
-        );
-        let job = parse_urp(&urp).unwrap();
+        )?;
+        let job = parse_urp(&urp)?; // parse the test .urp project file
         assert_eq!(job.filter_url.len(), 2);
         assert_eq!(job.filter_url[0].action, Action::Allow);
         assert_eq!(job.filter_url[0].kind, PatternKind::Prefix);
         assert_eq!(job.filter_url[0].pattern, "/public");
         assert_eq!(job.filter_url[1].action, Action::Deny);
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn parse_ffi_directive() {
-        let dir = tempdir().unwrap();
+    fn parse_ffi_directive() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
+        let dir = tempdir()?; // create a temporary directory for test fixture files
         let urp = write_urp(
             dir.path(),
             "app.urp",
             "effectful Mod.func\nclientOnly Mod.render\n\nmod1\n",
-        );
-        let job = parse_urp(&urp).unwrap();
+        )?;
+        let job = parse_urp(&urp)?; // parse the test .urp project file
         assert_eq!(job.effectful, vec![("Mod".into(), "func".into())]);
         assert_eq!(job.client_only, vec![("Mod".into(), "render".into())]);
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn parse_ffi_directive_rejects_empty_module() {
+    fn parse_ffi_directive_rejects_empty_module() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // Catches mutant: replace || with && in parse_ffi (parts[0].is_empty check).
-        let dir = tempdir().unwrap();
-        let urp = write_urp(dir.path(), "app.urp", "effectful .func\n\nmod1\n");
+        let dir = tempdir()?; // create a temporary directory for test fixture files
+        let urp = write_urp(dir.path(), "app.urp", "effectful .func\n\nmod1\n")?;
         let result = parse_urp(&urp);
         assert!(
             result.is_err(),
             "effectful .func must fail (empty module) - catches parse_ffi || mutant"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn parse_ffi_resolve_path_absolute() {
+    fn parse_ffi_resolve_path_absolute() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // Catches mutant: replace || with && in resolve_path - /alone should pass through.
-        let dir = tempdir().unwrap();
-        let urp = write_urp(dir.path(), "app.urp", "ffi /absolute/path\n\nmod1\n");
-        let job = parse_urp(&urp).unwrap();
+        let dir = tempdir()?; // create a temporary directory for test fixture files
+        let urp = write_urp(dir.path(), "app.urp", "ffi /absolute/path\n\nmod1\n")?;
+        let job = parse_urp(&urp)?; // parse the test .urp project file
         assert_eq!(
             job.ffi.len(),
             1,
@@ -850,90 +874,106 @@ mod tests {
             job.ffi[0], "/absolute/path",
             "resolve_path must pass through absolute path (catches || -> && mutant)"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn parse_ffi_resolve_path_hyphen() {
+    fn parse_ffi_resolve_path_hyphen() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // Catches mutant: replace || with && in resolve_path - path starting with - must pass through.
         // With &&, both / and - would be required, so "-L/usr/lib" would be joined with dir.
-        let dir = tempdir().unwrap();
-        let urp = write_urp(dir.path(), "app.urp", "ffi -L/usr/lib\n\nmod1\n");
-        let job = parse_urp(&urp).unwrap();
+        let dir = tempdir()?; // create a temporary directory for test fixture files
+        let urp = write_urp(dir.path(), "app.urp", "ffi -L/usr/lib\n\nmod1\n")?;
+        let job = parse_urp(&urp)?; // parse the test .urp project file
         assert_eq!(job.ffi.len(), 1);
         assert_eq!(
             job.ffi[0], "-L/usr/lib",
             "resolve_path must pass through hyphen-prefixed path (catches || -> && mutant)"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn parse_path_directive() {
+    fn parse_path_directive() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // Catches mutant: delete match arm "path".
-        let dir = tempdir().unwrap();
-        let urp = write_urp(dir.path(), "app.urp", "path FOO=/some/path\n\nmod1\n");
-        let job = parse_urp(&urp).unwrap();
+        let dir = tempdir()?; // create a temporary directory for test fixture files
+        let urp = write_urp(dir.path(), "app.urp", "path FOO=/some/path\n\nmod1\n")?;
+        let job = parse_urp(&urp)?; // parse the test .urp project file
         assert!(
             job.seen_directives.contains(&"path".to_string()),
             "path directive must be recorded (catches delete arm path)"
         );
         assert_eq!(job.sources.len(), 1);
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn parse_rewrite_two_tokens_with_hyphen() {
+    fn parse_rewrite_two_tokens_with_hyphen() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // Catches mutant: delete match arm [pkind, from, "[-]"].
-        let dir = tempdir().unwrap();
-        let urp = write_urp(dir.path(), "app.urp", "rewrite url /prefix [-]\n\nmod1\n");
-        let job = parse_urp(&urp).unwrap();
+        let dir = tempdir()?; // create a temporary directory for test fixture files
+        let urp = write_urp(dir.path(), "app.urp", "rewrite url /prefix [-]\n\nmod1\n")?;
+        let job = parse_urp(&urp)?; // parse the test .urp project file
         assert_eq!(job.rewrites.len(), 1);
         assert!(
             job.rewrites[0].hyphenate,
             "[-] must set hyphenate (catches delete arm)"
         );
         assert_eq!(job.rewrites[0].to, "");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn parse_on_error() {
-        let dir = tempdir().unwrap();
-        let urp = write_urp(dir.path(), "app.urp", "onError Mod.Sub.handler\n\nmod1\n");
-        let job = parse_urp(&urp).unwrap();
-        let (m1, ms, x) = job.on_error.unwrap();
+    fn parse_on_error() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
+        let dir = tempdir()?; // create a temporary directory for test fixture files
+        let urp = write_urp(dir.path(), "app.urp", "onError Mod.Sub.handler\n\nmod1\n")?;
+        let job = parse_urp(&urp)?; // parse the test .urp project file
+        let (m1, ms, x) = job
+            .on_error
+            .ok_or_else(|| anyhow!("on_error should be Some after parsing onError directive"))?; // extract the three-part onError tuple
         assert_eq!(m1, "Mod");
         assert_eq!(ms, vec!["Sub".to_string()]);
         assert_eq!(x, "handler");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn parse_exe_resolves_path() {
-        let dir = tempdir().unwrap();
-        let urp = write_urp(dir.path(), "app.urp", "exe myapp\n\nmod1\n");
-        let job = parse_urp(&urp).unwrap();
+    fn parse_exe_resolves_path() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
+        let dir = tempdir()?; // create a temporary directory for test fixture files
+        let urp = write_urp(dir.path(), "app.urp", "exe myapp\n\nmod1\n")?;
+        let job = parse_urp(&urp)?; // parse the test .urp project file
         assert!(
             job.exe.ends_with("myapp"),
             "exe must be resolved via resolve_path, got: {}",
             job.exe
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn parse_jsfunc_uses_parse_ffi_map() {
-        let dir = tempdir().unwrap();
+    fn parse_jsfunc_uses_parse_ffi_map() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
+        let dir = tempdir()?; // create a temporary directory for test fixture files
         let urp = write_urp(
             dir.path(),
             "app.urp",
             "jsFunc Mod.render=renderJs\n\nmod1\n",
-        );
-        let job = parse_urp(&urp).unwrap();
+        )?;
+        let job = parse_urp(&urp)?; // parse the test .urp project file
         assert_eq!(job.js_funcs.len(), 1);
         assert_eq!(job.js_funcs[0].0 .0, "Mod");
         assert_eq!(job.js_funcs[0].0 .1, "render");
         assert_eq!(job.js_funcs[0].1, "renderJs");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn parse_rewrite_path_kinds() {
-        let dir = tempdir().unwrap();
+    fn parse_rewrite_path_kinds() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
+        let dir = tempdir()?; // create a temporary directory for test fixture files
         for (pkind_str, expected) in [
             ("url", PathKind::Url),
             ("table", PathKind::Table),
@@ -944,407 +984,501 @@ mod tests {
             ("style", PathKind::Style),
         ] {
             let content = format!("rewrite {} * /\n\nmod1\n", pkind_str);
-            let urp = write_urp(dir.path(), "app.urp", &content);
-            let job = parse_urp(&urp).unwrap();
+            let urp = write_urp(dir.path(), "app.urp", &content)?;
+            let job = parse_urp(&urp)?; // parse the test .urp project file
             assert_eq!(
                 job.rewrites[0].pkind, expected,
                 "path kind {} must parse to {:?}",
                 pkind_str, expected
             );
         }
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn parse_dbms_directive() {
-        let dir = tempdir().unwrap();
-        let urp = write_urp(dir.path(), "app.urp", "dbms postgres\n\nmod1\n");
-        let job = parse_urp(&urp).unwrap();
+    fn parse_dbms_directive() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
+        let dir = tempdir()?; // create a temporary directory for test fixture files
+        let urp = write_urp(dir.path(), "app.urp", "dbms postgres\n\nmod1\n")?;
+        let job = parse_urp(&urp)?; // parse the test .urp project file
         assert_eq!(job.dbms.as_deref(), Some("postgres"));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn parse_sql_directive() {
-        let dir = tempdir().unwrap();
-        let urp = write_urp(dir.path(), "app.urp", "sql schema.sql\n\nmod1\n");
-        let job = parse_urp(&urp).unwrap();
-        assert!(job.sql.as_ref().unwrap().ends_with("schema.sql"));
+    fn parse_sql_directive() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
+        let dir = tempdir()?; // create a temporary directory for test fixture files
+        let urp = write_urp(dir.path(), "app.urp", "sql schema.sql\n\nmod1\n")?;
+        let job = parse_urp(&urp)?; // parse the test .urp project file
+        assert!(job
+            .sql
+            .as_ref()
+            .ok_or_else(|| anyhow!("sql should be Some after parsing sql directive"))?
+            .ends_with("schema.sql")); // verify the sql path ends with schema.sql
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn parse_endpoints_directive() {
-        let dir = tempdir().unwrap();
-        let urp = write_urp(dir.path(), "app.urp", "endpoints eps.txt\n\nmod1\n");
-        let job = parse_urp(&urp).unwrap();
-        assert!(job.endpoints.as_ref().unwrap().ends_with("eps.txt"));
+    fn parse_endpoints_directive() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
+        let dir = tempdir()?; // create a temporary directory for test fixture files
+        let urp = write_urp(dir.path(), "app.urp", "endpoints eps.txt\n\nmod1\n")?;
+        let job = parse_urp(&urp)?; // parse the test .urp project file
+        assert!(job
+            .endpoints
+            .as_ref()
+            .ok_or_else(|| anyhow!("endpoints should be Some after parsing endpoints directive"))?
+            .ends_with("eps.txt")); // verify the endpoints path ends with eps.txt
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn parse_ffi_rejects_bad_format() {
-        let dir = tempdir().unwrap();
-        let urp = write_urp(dir.path(), "app.urp", "effectful BadFormat\n\nmod1\n");
+    fn parse_ffi_rejects_bad_format() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
+        let dir = tempdir()?; // create a temporary directory for test fixture files
+        let urp = write_urp(dir.path(), "app.urp", "effectful BadFormat\n\nmod1\n")?;
         let res = parse_urp(&urp);
         assert!(res.is_err(), "effectful BadFormat must fail parse_ffi");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn parse_comment_line_requires_whitespace_before_hash() {
-        let dir = tempdir().unwrap();
-        let urp = write_urp(dir.path(), "app.urp", "prefix /x\n# comment\n\nmod1\n");
-        let job = parse_urp(&urp).unwrap();
+    fn parse_comment_line_requires_whitespace_before_hash() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
+        let dir = tempdir()?; // create a temporary directory for test fixture files
+        let urp = write_urp(dir.path(), "app.urp", "prefix /x\n# comment\n\nmod1\n")?;
+        let job = parse_urp(&urp)?; // parse the test .urp project file
         assert_eq!(job.prefix, "/x");
         assert_eq!(job.sources.len(), 1);
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn parse_profile_directive() {
-        let dir = tempdir().unwrap();
-        let urp = write_urp(dir.path(), "app.urp", "profile\n\nmod1\n");
-        let job = parse_urp(&urp).unwrap();
+    fn parse_profile_directive() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
+        let dir = tempdir()?; // create a temporary directory for test fixture files
+        let urp = write_urp(dir.path(), "app.urp", "profile\n\nmod1\n")?;
+        let job = parse_urp(&urp)?; // parse the test .urp project file
         assert!(job.profile);
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn parse_link_directive() {
-        let dir = tempdir().unwrap();
-        let urp = write_urp(dir.path(), "app.urp", "link libfoo\n\nmod1\n");
-        let job = parse_urp(&urp).unwrap();
+    fn parse_link_directive() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
+        let dir = tempdir()?; // create a temporary directory for test fixture files
+        let urp = write_urp(dir.path(), "app.urp", "link libfoo\n\nmod1\n")?;
+        let job = parse_urp(&urp)?; // parse the test .urp project file
         assert_eq!(job.link.len(), 1);
         assert!(job.link[0].contains("libfoo"));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn parse_linker_directive() {
-        let dir = tempdir().unwrap();
-        let urp = write_urp(dir.path(), "app.urp", "linker ld\n\nmod1\n");
-        let job = parse_urp(&urp).unwrap();
+    fn parse_linker_directive() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
+        let dir = tempdir()?; // create a temporary directory for test fixture files
+        let urp = write_urp(dir.path(), "app.urp", "linker ld\n\nmod1\n")?;
+        let job = parse_urp(&urp)?; // parse the test .urp project file
         assert_eq!(job.linker.as_deref(), Some("ld"));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn parse_include_directive() {
-        let dir = tempdir().unwrap();
+    fn parse_include_directive() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
+        let dir = tempdir()?; // create a temporary directory for test fixture files
         let subdir = dir.path().join("inc");
-        std::fs::create_dir_all(&subdir).unwrap();
-        let urp = write_urp(dir.path(), "app.urp", "include inc\n\nmod1\n");
-        let job = parse_urp(&urp).unwrap();
+        std::fs::create_dir_all(&subdir)?; // create include subdirectory for the test fixture
+        let urp = write_urp(dir.path(), "app.urp", "include inc\n\nmod1\n")?;
+        let job = parse_urp(&urp)?; // parse the test .urp project file
         assert!(!job.headers.is_empty(), "include must use resolve_path_abs");
         assert!(
             job.headers[0].contains("inc"),
             "header path must contain inc, got: {}",
             job.headers[0]
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn parse_script_directive() {
-        let dir = tempdir().unwrap();
-        let urp = write_urp(dir.path(), "app.urp", "script foo.js\n\nmod1\n");
-        let job = parse_urp(&urp).unwrap();
+    fn parse_script_directive() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
+        let dir = tempdir()?; // create a temporary directory for test fixture files
+        let urp = write_urp(dir.path(), "app.urp", "script foo.js\n\nmod1\n")?;
+        let job = parse_urp(&urp)?; // parse the test .urp project file
         assert_eq!(job.scripts, vec!["foo.js"]);
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn parse_client_to_server_directive() {
-        let dir = tempdir().unwrap();
-        let urp = write_urp(dir.path(), "app.urp", "clientToServer Mod.fn\n\nmod1\n");
-        let job = parse_urp(&urp).unwrap();
+    fn parse_client_to_server_directive() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
+        let dir = tempdir()?; // create a temporary directory for test fixture files
+        let urp = write_urp(dir.path(), "app.urp", "clientToServer Mod.fn\n\nmod1\n")?;
+        let job = parse_urp(&urp)?; // parse the test .urp project file
         assert_eq!(job.client_to_server.len(), 1);
         assert_eq!(job.client_to_server[0].0, "Mod");
         assert_eq!(job.client_to_server[0].1, "fn");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn parse_benign_effectful_directive() {
-        let dir = tempdir().unwrap();
-        let urp = write_urp(dir.path(), "app.urp", "benignEffectful Mod.fn\n\nmod1\n");
-        let job = parse_urp(&urp).unwrap();
+    fn parse_benign_effectful_directive() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
+        let dir = tempdir()?; // create a temporary directory for test fixture files
+        let urp = write_urp(dir.path(), "app.urp", "benignEffectful Mod.fn\n\nmod1\n")?;
+        let job = parse_urp(&urp)?; // parse the test .urp project file
         assert_eq!(job.benign_effectful.len(), 1);
         assert_eq!(job.benign_effectful[0].0, "Mod");
         assert_eq!(job.benign_effectful[0].1, "fn");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn parse_server_only_directive() {
-        let dir = tempdir().unwrap();
-        let urp = write_urp(dir.path(), "app.urp", "serverOnly Mod.fn\n\nmod1\n");
-        let job = parse_urp(&urp).unwrap();
+    fn parse_server_only_directive() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
+        let dir = tempdir()?; // create a temporary directory for test fixture files
+        let urp = write_urp(dir.path(), "app.urp", "serverOnly Mod.fn\n\nmod1\n")?;
+        let job = parse_urp(&urp)?; // parse the test .urp project file
         assert_eq!(job.server_only.len(), 1);
         assert_eq!(job.server_only[0].0, "Mod");
         assert_eq!(job.server_only[0].1, "fn");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn parse_js_module_directive() {
-        let dir = tempdir().unwrap();
-        let urp = write_urp(dir.path(), "app.urp", "jsModule m\n\nmod1\n");
-        let job = parse_urp(&urp).unwrap();
+    fn parse_js_module_directive() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
+        let dir = tempdir()?; // create a temporary directory for test fixture files
+        let urp = write_urp(dir.path(), "app.urp", "jsModule m\n\nmod1\n")?;
+        let job = parse_urp(&urp)?; // parse the test .urp project file
         assert_eq!(job.js_module.as_deref(), Some("m"));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn parse_safe_get_default_directive() {
-        let dir = tempdir().unwrap();
-        let urp = write_urp(dir.path(), "app.urp", "safeGetDefault\n\nmod1\n");
-        let job = parse_urp(&urp).unwrap();
+    fn parse_safe_get_default_directive() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
+        let dir = tempdir()?; // create a temporary directory for test fixture files
+        let urp = write_urp(dir.path(), "app.urp", "safeGetDefault\n\nmod1\n")?;
+        let job = parse_urp(&urp)?; // parse the test .urp project file
         assert!(job.safe_get_default);
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn parse_safe_get_directive() {
-        let dir = tempdir().unwrap();
-        let urp = write_urp(dir.path(), "app.urp", "safeGet path\n\nmod1\n");
-        let job = parse_urp(&urp).unwrap();
+    fn parse_safe_get_directive() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
+        let dir = tempdir()?; // create a temporary directory for test fixture files
+        let urp = write_urp(dir.path(), "app.urp", "safeGet path\n\nmod1\n")?;
+        let job = parse_urp(&urp)?; // parse the test .urp project file
         assert_eq!(job.safe_gets, vec!["path"]);
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn parse_sigfile_directive() {
-        let dir = tempdir().unwrap();
-        let urp = write_urp(dir.path(), "app.urp", "sigfile s.urs\n\nmod1\n");
-        let job = parse_urp(&urp).unwrap();
+    fn parse_sigfile_directive() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
+        let dir = tempdir()?; // create a temporary directory for test fixture files
+        let urp = write_urp(dir.path(), "app.urp", "sigfile s.urs\n\nmod1\n")?;
+        let job = parse_urp(&urp)?; // parse the test .urp project file
         assert_eq!(job.sig_file.as_deref(), Some("s.urs"));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn parse_filecache_directive() {
-        let dir = tempdir().unwrap();
-        let urp = write_urp(dir.path(), "app.urp", "filecache c\n\nmod1\n");
-        let job = parse_urp(&urp).unwrap();
+    fn parse_filecache_directive() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
+        let dir = tempdir()?; // create a temporary directory for test fixture files
+        let urp = write_urp(dir.path(), "app.urp", "filecache c\n\nmod1\n")?;
+        let job = parse_urp(&urp)?; // parse the test .urp project file
         assert_eq!(job.file_cache.as_deref(), Some("c"));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn parse_min_heap_directive() {
-        let dir = tempdir().unwrap();
-        let urp = write_urp(dir.path(), "app.urp", "minHeap 64\n\nmod1\n");
-        let job = parse_urp(&urp).unwrap();
+    fn parse_min_heap_directive() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
+        let dir = tempdir()?; // create a temporary directory for test fixture files
+        let urp = write_urp(dir.path(), "app.urp", "minHeap 64\n\nmod1\n")?;
+        let job = parse_urp(&urp)?; // parse the test .urp project file
         assert_eq!(job.min_heap, 64);
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn parse_mime_types_directive() {
-        let dir = tempdir().unwrap();
-        let urp = write_urp(dir.path(), "app.urp", "mimeTypes mime.types\n\nmod1\n");
-        let job = parse_urp(&urp).unwrap();
+    fn parse_mime_types_directive() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
+        let dir = tempdir()?; // create a temporary directory for test fixture files
+        let urp = write_urp(dir.path(), "app.urp", "mimeTypes mime.types\n\nmod1\n")?;
+        let job = parse_urp(&urp)?; // parse the test .urp project file
         assert!(job.mime_types.is_some());
-        assert!(job.mime_types.as_ref().unwrap().contains("mime.types"));
+        assert!(job
+            .mime_types
+            .as_ref()
+            .ok_or_else(|| anyhow!("mime_types should be Some after parsing mimeTypes directive"))?
+            .contains("mime.types")); // verify the mime_types path contains mime.types
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn parse_filter_mime() {
-        let dir = tempdir().unwrap();
+    fn parse_filter_mime() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
+        let dir = tempdir()?; // create a temporary directory for test fixture files
         let urp = write_urp(
             dir.path(),
             "app.urp",
             "allow mime text/plain\ndeny mime application/json\n\nmod1\n",
-        );
-        let job = parse_urp(&urp).unwrap();
+        )?;
+        let job = parse_urp(&urp)?; // parse the test .urp project file
         assert_eq!(job.filter_mime.len(), 2);
         assert_eq!(job.filter_mime[0].pattern, "text/plain");
         assert_eq!(job.filter_mime[1].pattern, "application/json");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn parse_filter_request_header() {
-        let dir = tempdir().unwrap();
+    fn parse_filter_request_header() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
+        let dir = tempdir()?; // create a temporary directory for test fixture files
         let urp = write_urp(
             dir.path(),
             "app.urp",
             "allow requestHeader X-Custom\n\nmod1\n",
-        );
-        let job = parse_urp(&urp).unwrap();
+        )?;
+        let job = parse_urp(&urp)?; // parse the test .urp project file
         assert_eq!(job.filter_request.len(), 1);
         assert_eq!(job.filter_request[0].pattern, "X-Custom");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn parse_filter_response_header() {
-        let dir = tempdir().unwrap();
+    fn parse_filter_response_header() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
+        let dir = tempdir()?; // create a temporary directory for test fixture files
         let urp = write_urp(
             dir.path(),
             "app.urp",
             "allow responseHeader Content-Type\n\nmod1\n",
-        );
-        let job = parse_urp(&urp).unwrap();
+        )?;
+        let job = parse_urp(&urp)?; // parse the test .urp project file
         assert_eq!(job.filter_response.len(), 1);
         assert_eq!(job.filter_response[0].pattern, "Content-Type");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn parse_filter_env() {
-        let dir = tempdir().unwrap();
-        let urp = write_urp(dir.path(), "app.urp", "allow env VAR_NAME\n\nmod1\n");
-        let job = parse_urp(&urp).unwrap();
+    fn parse_filter_env() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
+        let dir = tempdir()?; // create a temporary directory for test fixture files
+        let urp = write_urp(dir.path(), "app.urp", "allow env VAR_NAME\n\nmod1\n")?;
+        let job = parse_urp(&urp)?; // parse the test .urp project file
         assert_eq!(job.filter_env.len(), 1);
         assert_eq!(job.filter_env[0].pattern, "VAR_NAME");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn parse_filter_meta() {
-        let dir = tempdir().unwrap();
-        let urp = write_urp(dir.path(), "app.urp", "allow meta name\n\nmod1\n");
-        let job = parse_urp(&urp).unwrap();
+    fn parse_filter_meta() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
+        let dir = tempdir()?; // create a temporary directory for test fixture files
+        let urp = write_urp(dir.path(), "app.urp", "allow meta name\n\nmod1\n")?;
+        let job = parse_urp(&urp)?; // parse the test .urp project file
         assert_eq!(job.filter_meta.len(), 1);
         assert_eq!(job.filter_meta[0].pattern, "name");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn parse_path_directive_no_error() {
-        let dir = tempdir().unwrap();
-        let urp = write_urp(dir.path(), "app.urp", "path FOO=/some/path\n\nmod1\n");
-        let job = parse_urp(&urp).unwrap();
+    fn parse_path_directive_no_error() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
+        let dir = tempdir()?; // create a temporary directory for test fixture files
+        let urp = write_urp(dir.path(), "app.urp", "path FOO=/some/path\n\nmod1\n")?;
+        let job = parse_urp(&urp)?; // parse the test .urp project file
         assert!(job.seen_directives.contains(&"path".to_string()));
         assert_eq!(job.sources.len(), 1);
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn parse_comment_whitespace_only_before_hash_strips_line() {
-        let dir = tempdir().unwrap();
-        let urp = write_urp(dir.path(), "app.urp", "   # comment\n\nmod1\n");
-        let job = parse_urp(&urp).unwrap();
+    fn parse_comment_whitespace_only_before_hash_strips_line() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
+        let dir = tempdir()?; // create a temporary directory for test fixture files
+        let urp = write_urp(dir.path(), "app.urp", "   # comment\n\nmod1\n")?;
+        let job = parse_urp(&urp)?; // parse the test .urp project file
         assert_eq!(job.sources.len(), 1);
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn parse_comment_non_whitespace_before_hash_adds_prefix_as_source() {
+    fn parse_comment_non_whitespace_before_hash_adds_prefix_as_source() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // Catches mutant: replace guard raw[..pos].chars().all(whitespace) with true.
         // With correct code, "x # inline" keeps "x" as content; with mutant we'd skip the line.
-        let dir = tempdir().unwrap();
-        let urp = write_urp(dir.path(), "app.urp", "x # inline\n\nmod1\n");
-        let job = parse_urp(&urp).unwrap();
+        let dir = tempdir()?; // create a temporary directory for test fixture files
+        let urp = write_urp(dir.path(), "app.urp", "x # inline\n\nmod1\n")?;
+        let job = parse_urp(&urp)?; // parse the test .urp project file
         assert_eq!(
             job.sources.len(),
             2,
             "must keep prefix before # (catches guard-with-true mutant)"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn parse_comment_non_whitespace_before_hash_keeps_prefix() {
-        let dir = tempdir().unwrap();
-        let urp = write_urp(dir.path(), "app.urp", "x # inline\n\nmod1\n");
-        let job = parse_urp(&urp).unwrap();
+    fn parse_comment_non_whitespace_before_hash_keeps_prefix() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
+        let dir = tempdir()?; // create a temporary directory for test fixture files
+        let urp = write_urp(dir.path(), "app.urp", "x # inline\n\nmod1\n")?;
+        let job = parse_urp(&urp)?; // parse the test .urp project file
         assert_eq!(job.sources.len(), 2);
         assert!(job.sources[0].ends_with('x') || job.sources[1].ends_with('x'));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn parse_rewrite_four_tokens_with_hyphen() {
-        let dir = tempdir().unwrap();
-        let urp = write_urp(dir.path(), "app.urp", "rewrite url /old /new [-]\n\nmod1\n");
-        let job = parse_urp(&urp).unwrap();
+    fn parse_rewrite_four_tokens_with_hyphen() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
+        let dir = tempdir()?; // create a temporary directory for test fixture files
+        let urp = write_urp(dir.path(), "app.urp", "rewrite url /old /new [-]\n\nmod1\n")?;
+        let job = parse_urp(&urp)?; // parse the test .urp project file
         assert_eq!(job.rewrites.len(), 1);
         assert_eq!(job.rewrites[0].to, "/new");
         assert!(job.rewrites[0].hyphenate);
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn parse_rewrite_three_tokens_no_hyphen() {
-        let dir = tempdir().unwrap();
-        let urp = write_urp(dir.path(), "app.urp", "rewrite url /old /new\n\nmod1\n");
-        let job = parse_urp(&urp).unwrap();
+    fn parse_rewrite_three_tokens_no_hyphen() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
+        let dir = tempdir()?; // create a temporary directory for test fixture files
+        let urp = write_urp(dir.path(), "app.urp", "rewrite url /old /new\n\nmod1\n")?;
+        let job = parse_urp(&urp)?; // parse the test .urp project file
         assert_eq!(job.rewrites.len(), 1);
         assert_eq!(job.rewrites[0].to, "/new");
         assert!(!job.rewrites[0].hyphenate);
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn parse_rewrite_two_tokens() {
-        let dir = tempdir().unwrap();
-        let urp = write_urp(dir.path(), "app.urp", "rewrite url /prefix\n\nmod1\n");
-        let job = parse_urp(&urp).unwrap();
+    fn parse_rewrite_two_tokens() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
+        let dir = tempdir()?; // create a temporary directory for test fixture files
+        let urp = write_urp(dir.path(), "app.urp", "rewrite url /prefix\n\nmod1\n")?;
+        let job = parse_urp(&urp)?; // parse the test .urp project file
         assert_eq!(job.rewrites.len(), 1);
         assert_eq!(job.rewrites[0].from, "/prefix");
         assert_eq!(job.rewrites[0].to, "");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn parse_library_merge() {
-        let dir = tempdir().unwrap();
+    fn parse_library_merge() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
+        let dir = tempdir()?; // create a temporary directory for test fixture files
         let lib_urp = dir.path().join("lib.urp");
-        std::fs::write(&lib_urp, "profile\n\nlibmod\n").unwrap();
-        let app_urp = write_urp(dir.path(), "app.urp", "library lib.urp\n\nappmod\n");
-        let job = parse_urp(&app_urp).unwrap();
+        std::fs::write(&lib_urp, "profile\n\nlibmod\n")?; // write library fixture with profile directive
+        let app_urp = write_urp(dir.path(), "app.urp", "library lib.urp\n\nappmod\n")?;
+        let job = parse_urp(&app_urp)?; // parse the application .urp project file
         assert!(
             job.profile,
             "library directive must be processed and profile merged from lib.urp"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn parse_library_merge_safe_get_default_or() {
+    fn parse_library_merge_safe_get_default_or() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // Catches mutant: replace || with && in merge_library (job.safe_get_default || lib.safe_get_default).
         // App has no safeGetDefault, lib has safeGetDefault -> merged job must have safe_get_default.
-        let dir = tempdir().unwrap();
+        let dir = tempdir()?; // create a temporary directory for test fixture files
         let lib_urp = dir.path().join("lib.urp");
-        std::fs::write(&lib_urp, "safeGetDefault\n\nlibmod\n").unwrap();
-        let app_urp = write_urp(dir.path(), "app.urp", "library lib.urp\n\nappmod\n");
-        let job = parse_urp(&app_urp).unwrap();
+        std::fs::write(&lib_urp, "safeGetDefault\n\nlibmod\n")?; // write library fixture with safeGetDefault directive
+        let app_urp = write_urp(dir.path(), "app.urp", "library lib.urp\n\nappmod\n")?;
+        let job = parse_urp(&app_urp)?; // parse the application .urp project file
         assert!(
             job.safe_get_default,
             "merge_library must OR safe_get_default (catches line 477 || -> && mutant)"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn parse_library_merge_debug_or() {
+    fn parse_library_merge_debug_or() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // Catches mutant: replace || with && in merge_library (job.debug || lib.debug).
         // App has no debug, lib has debug -> merged job must have debug.
-        let dir = tempdir().unwrap();
+        let dir = tempdir()?; // create a temporary directory for test fixture files
         let lib_urp = dir.path().join("lib.urp");
-        std::fs::write(&lib_urp, "debug\n\nlibmod\n").unwrap();
-        let app_urp = write_urp(dir.path(), "app.urp", "library lib.urp\n\nappmod\n");
-        let job = parse_urp(&app_urp).unwrap();
+        std::fs::write(&lib_urp, "debug\n\nlibmod\n")?; // write library fixture with debug directive
+        let app_urp = write_urp(dir.path(), "app.urp", "library lib.urp\n\nappmod\n")?;
+        let job = parse_urp(&app_urp)?; // parse the application .urp project file
         assert!(
             job.debug,
             "merge_library must OR debug (catches || -> && mutant)"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn parse_on_error_three_parts() {
+    fn parse_on_error_three_parts() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // Catches mutant: replace < with == in onError (parts.len() < 2).
         // "Mod.Sub.handler" has 3 parts; with == 2 we'd wrongly bail.
-        let dir = tempdir().unwrap();
-        let urp = write_urp(dir.path(), "app.urp", "onError Mod.Sub.handler\n\nmod1\n");
-        let job = parse_urp(&urp).unwrap();
+        let dir = tempdir()?; // create a temporary directory for test fixture files
+        let urp = write_urp(dir.path(), "app.urp", "onError Mod.Sub.handler\n\nmod1\n")?;
+        let job = parse_urp(&urp)?; // parse the test .urp project file
         assert!(
             job.on_error.is_some(),
             "onError Mod.Sub.handler must parse (catches < -> == mutant)"
         );
-        let (m1, mid, last) = job.on_error.as_ref().unwrap();
+        let (m1, mid, last) = job
+            .on_error
+            .as_ref()
+            .ok_or_else(|| anyhow!("on_error should be Some after parsing onError directive"))?; // extract the three-part onError tuple by reference
         assert_eq!(m1, "Mod");
         assert_eq!(mid, &["Sub".to_string()]);
         assert_eq!(last, "handler");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn parse_on_error_two_parts() {
+    fn parse_on_error_two_parts() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // Catches mutant: replace < with <= in onError (parts.len() < 2).
         // "Mod.handler" has 2 parts; with <= 2 we'd wrongly bail.
-        let dir = tempdir().unwrap();
-        let urp = write_urp(dir.path(), "app.urp", "onError Mod.handler\n\nmod1\n");
-        let job = parse_urp(&urp).unwrap();
+        let dir = tempdir()?; // create a temporary directory for test fixture files
+        let urp = write_urp(dir.path(), "app.urp", "onError Mod.handler\n\nmod1\n")?;
+        let job = parse_urp(&urp)?; // parse the test .urp project file
         assert!(
             job.on_error.is_some(),
             "onError Mod.handler must parse (catches < -> <= mutant)"
         );
-        let (m1, mid, last) = job.on_error.as_ref().unwrap();
+        let (m1, mid, last) = job
+            .on_error
+            .as_ref()
+            .ok_or_else(|| anyhow!("on_error should be Some after parsing onError directive"))?; // extract the three-part onError tuple by reference
         assert_eq!(m1, "Mod");
         assert!(mid.is_empty());
         assert_eq!(last, "handler");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn parse_path_then_database() {
+    fn parse_path_then_database() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // Catches mutant: delete match arm "path". Path arm must consume directive.
-        let dir = tempdir().unwrap();
+        let dir = tempdir()?; // create a temporary directory for test fixture files
         let urp = write_urp(
             dir.path(),
             "app.urp",
             "path FOO=/some/path\ndatabase mydb\n\nmod1\n",
-        );
-        let job = parse_urp(&urp).unwrap();
+        )?;
+        let job = parse_urp(&urp)?; // parse the test .urp project file
         assert!(
             job.seen_directives.contains(&"path".to_string()),
             "path directive must be recorded (catches delete path arm)"
@@ -1355,139 +1489,164 @@ mod tests {
             "path then database must both parse (catches delete path arm)"
         );
         assert_eq!(job.sources.len(), 1);
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn parse_limit_directive_no_error() {
+    fn parse_limit_directive_no_error() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // Catches mutant: delete match arm for html5|limit|etc.
-        let dir = tempdir().unwrap();
-        let urp = write_urp(dir.path(), "app.urp", "limit Class 5\n\nmod1\n");
-        let job = parse_urp(&urp).unwrap();
+        let dir = tempdir()?; // create a temporary directory for test fixture files
+        let urp = write_urp(dir.path(), "app.urp", "limit Class 5\n\nmod1\n")?;
+        let job = parse_urp(&urp)?; // parse the test .urp project file
         assert!(
             job.seen_directives.contains(&"limit".to_string()),
             "limit directive must be recorded (catches delete match arm)"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn parse_html5_directive_no_error() {
-        let dir = tempdir().unwrap();
-        let urp = write_urp(dir.path(), "app.urp", "html5\n\nmod1\n");
-        let job = parse_urp(&urp).unwrap();
+    fn parse_html5_directive_no_error() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
+        let dir = tempdir()?; // create a temporary directory for test fixture files
+        let urp = write_urp(dir.path(), "app.urp", "html5\n\nmod1\n")?;
+        let job = parse_urp(&urp)?; // parse the test .urp project file
         assert!(
             job.seen_directives.contains(&"html5".to_string()),
             "html5 directive must be recorded (catches delete match arm)"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn parse_xhtml_directive_no_error() {
+    fn parse_xhtml_directive_no_error() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // Catches mutant: delete match arm html5|xhtml|...
-        let dir = tempdir().unwrap();
-        let urp = write_urp(dir.path(), "app.urp", "xhtml\n\nmod1\n");
-        let job = parse_urp(&urp).unwrap();
+        let dir = tempdir()?; // create a temporary directory for test fixture files
+        let urp = write_urp(dir.path(), "app.urp", "xhtml\n\nmod1\n")?;
+        let job = parse_urp(&urp)?; // parse the test .urp project file
         assert!(
             job.seen_directives.contains(&"xhtml".to_string()),
             "xhtml directive must be recorded (catches delete match arm)"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn parse_no_mangle_sql_directive_no_error() {
+    fn parse_no_mangle_sql_directive_no_error() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // Catches mutant: delete match arm noMangleSql in settings-only arm.
-        let dir = tempdir().unwrap();
-        let urp = write_urp(dir.path(), "app.urp", "noMangleSql\n\nmod1\n");
-        let job = parse_urp(&urp).unwrap();
+        let dir = tempdir()?; // create a temporary directory for test fixture files
+        let urp = write_urp(dir.path(), "app.urp", "noMangleSql\n\nmod1\n")?;
+        let job = parse_urp(&urp)?; // parse the test .urp project file
         assert!(
             job.seen_directives.contains(&"noMangleSql".to_string()),
             "noMangleSql directive must be recorded (catches delete match arm)"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn parse_file_directive_no_error() {
+    fn parse_file_directive_no_error() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // Catches mutant: delete match arm file in settings-only arm.
-        let dir = tempdir().unwrap();
-        let urp = write_urp(dir.path(), "app.urp", "file index.html\n\nmod1\n");
-        let job = parse_urp(&urp).unwrap();
+        let dir = tempdir()?; // create a temporary directory for test fixture files
+        let urp = write_urp(dir.path(), "app.urp", "file index.html\n\nmod1\n")?;
+        let job = parse_urp(&urp)?; // parse the test .urp project file
         assert!(
             job.seen_directives.contains(&"file".to_string()),
             "file directive must be recorded (catches delete match arm)"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn parse_library_merge_dedup_sources() {
+    fn parse_library_merge_dedup_sources() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // Catches mutant: replace seen.insert with wrong logic in merge_library.
         // When app and lib share a source, it must appear once.
-        let dir = tempdir().unwrap();
+        let dir = tempdir()?; // create a temporary directory for test fixture files
         let lib_urp = dir.path().join("lib.urp");
-        std::fs::write(&lib_urp, "\nshared\nlibonly\n").unwrap();
+        std::fs::write(&lib_urp, "\nshared\nlibonly\n")?; // write library fixture for dedup test
         let app_urp = write_urp(
             dir.path(),
             "app.urp",
             "library lib.urp\n\nshared\napponly\n",
-        );
-        let job = parse_urp(&app_urp).unwrap();
+        )?;
+        let job = parse_urp(&app_urp)?; // parse the application .urp project file
         let shared_count = job.sources.iter().filter(|s| s.ends_with("shared")).count();
         assert!(
             shared_count == 1,
             "shared must appear exactly once (catches merge_library dedup mutant), got {}",
             shared_count
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn parse_timeout_non_numeric_errors() {
-        let dir = tempdir().unwrap();
-        let urp = write_urp(dir.path(), "app.urp", "timeout not_a_number\n\nmod1\n");
+    fn parse_timeout_non_numeric_errors() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
+        let dir = tempdir()?; // create a temporary directory for test fixture files
+        let urp = write_urp(dir.path(), "app.urp", "timeout not_a_number\n\nmod1\n")?;
         assert!(parse_urp(&urp).is_err(), "invalid timeout must be rejected");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn parse_minheap_non_numeric_errors() {
-        let dir = tempdir().unwrap();
-        let urp = write_urp(dir.path(), "app.urp", "minHeap xy\n\nmod1\n");
+    fn parse_minheap_non_numeric_errors() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
+        let dir = tempdir()?; // create a temporary directory for test fixture files
+        let urp = write_urp(dir.path(), "app.urp", "minHeap xy\n\nmod1\n")?;
         assert!(parse_urp(&urp).is_err(), "invalid minHeap must be rejected");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn parse_allow_wrong_token_count_errors() {
-        let dir = tempdir().unwrap();
-        let urp = write_urp(dir.path(), "app.urp", "allow url\n\nmod1\n");
+    fn parse_allow_wrong_token_count_errors() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
+        let dir = tempdir()?; // create a temporary directory for test fixture files
+        let urp = write_urp(dir.path(), "app.urp", "allow url\n\nmod1\n")?;
         assert!(parse_urp(&urp).is_err(), "allow requires kind + pattern");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn parse_rewrite_unknown_path_kind_errors() {
-        let dir = tempdir().unwrap();
-        let urp = write_urp(dir.path(), "app.urp", "rewrite nosuchkind * /\n\nmod1\n");
+    fn parse_rewrite_unknown_path_kind_errors() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
+        let dir = tempdir()?; // create a temporary directory for test fixture files
+        let urp = write_urp(dir.path(), "app.urp", "rewrite nosuchkind * /\n\nmod1\n")?;
         assert!(
             parse_urp(&urp).is_err(),
             "unknown rewrite path kind must be rejected"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn parse_source_line_preserves_utf8_module_name() {
-        let dir = tempdir().unwrap();
-        let urp = write_urp(dir.path(), "app.urp", "\nテスト\n");
-        let job = parse_urp(&urp).unwrap();
+    fn parse_source_line_preserves_utf8_module_name() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
+        let dir = tempdir()?; // create a temporary directory for test fixture files
+        let urp = write_urp(dir.path(), "app.urp", "\nテスト\n")?;
+        let job = parse_urp(&urp)?; // parse the test .urp project file
         assert_eq!(job.sources.len(), 1);
         assert!(
             job.sources[0].contains("テスト"),
             "UTF-8 module name must be preserved in path: {:?}",
             job.sources[0]
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn parse_deny_unknown_filter_kind_errors() {
-        let dir = tempdir().unwrap();
-        let urp = write_urp(dir.path(), "app.urp", "deny nosuch thing\n\nmod1\n");
+    fn parse_deny_unknown_filter_kind_errors() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
+        let dir = tempdir()?; // create a temporary directory for test fixture files
+        let urp = write_urp(dir.path(), "app.urp", "deny nosuch thing\n\nmod1\n")?;
         assert!(
             parse_urp(&urp).is_err(),
             "unknown filter kind must be rejected"
         );
+        Ok(()) // return success to the test harness
     }
 }

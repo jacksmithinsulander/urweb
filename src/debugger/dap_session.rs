@@ -1591,34 +1591,33 @@ fn build_stack_scope_variables(pl: &str, thread: u64, frame: u32, srv: &mut Serv
     };
     let end = rest.find(']').unwrap_or(rest.len());
     let slice = &rest[..end.min(rest.len())];
-    let mut idx = 0usize;
-    let mut outer_steps = 0usize;
-    while let Some(pos) = slice[idx..].find("{name=\"") {
-        outer_steps = outer_steps.saturating_add(1);
-        if outer_steps > MI_STACK_VARS_PARSE_MAX_OUTER_STEPS {
-            break;
-        }
-        let brace_start = idx + pos;
-        let inner = &slice[brace_start..];
+    // Use match_indices to drive iteration as a for loop; the iterator is bounded by the string
+    // length so it cannot run forever. take() adds an explicit step cap as a second safety layer.
+    for (brace_start, _) in slice
+        .match_indices("{name=\"")
+        .take(MI_STACK_VARS_PARSE_MAX_OUTER_STEPS)
+    {
+        let inner = &slice[brace_start..]; // sub-slice beginning at this variable's opening brace
         let Some(close_rel) = brace_close_from_open(inner) else {
-            break;
+            break; // malformed MI output: no closing brace found; stop processing
         };
-        let blob = &inner[..=close_rel];
+        let blob = &inner[..=close_rel]; // the complete variable blob delimited by braces
         if let Some(name) = mi_get_str(blob, "name") {
-            let val = mi_get_str(blob, "value").unwrap_or("");
-            let ty = mi_get_str(blob, "type").unwrap_or("");
+            let val = mi_get_str(blob, "value").unwrap_or(""); // value field or empty when absent
+            let ty = mi_get_str(blob, "type").unwrap_or(""); // type field or empty when absent
             let numchild = mi_get_str(blob, "numchild")
                 .and_then(|s| s.parse::<u32>().ok())
-                .unwrap_or(0);
-            let dynamic = mi_get_str(blob, "dynamic") == Some("1");
+                .unwrap_or(0); // number of children; 0 when absent or non-numeric
+            let dynamic = mi_get_str(blob, "dynamic") == Some("1"); // true when GDB marks this dynamic
             let vref = if (numchild > 0 || dynamic) && !name.is_empty() {
+                // allocate a DAP variablesReference so the client can expand children later
                 srv.alloc_var_ref(VarRefKind::PendingLocal {
                     thread,
                     frame,
                     expr: name.to_string(),
                 })
             } else {
-                0
+                0 // zero means non-expandable in the DAP protocol
             };
             out.push(json!({
                 "name": name,
@@ -1627,7 +1626,6 @@ fn build_stack_scope_variables(pl: &str, thread: u64, frame: u32, srv: &mut Serv
                 "variablesReference": vref,
             }));
         }
-        idx = brace_start + close_rel + 1;
     }
     out
 }
