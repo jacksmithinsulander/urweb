@@ -1,7 +1,6 @@
 //! Integration tests for the Explicit Env module.
 //! Catches mutants in lift_kind_in_kind, lift_con_in_con, Env methods.
 
-use anyhow::Context as _;
 use ur::error_types::Located;
 use ur::explicit::environment::{
     lift_con_in_con, lift_kind_in_con, lift_kind_in_kind, Env, EnvError,

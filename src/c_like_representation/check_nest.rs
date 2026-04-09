@@ -312,9 +312,9 @@ pub fn annotate(file: File) -> File {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use anyhow::anyhow; // anyhow!() macro for error construction in tests
     use crate::c_like_representation::{PreparedQuery, QueryMeta, Typ};
     use crate::error_types::Located;
+    use anyhow::anyhow; // anyhow!() macro for error construction in tests
 
     fn dummy_typ() -> crate::c_like_representation::LocTyp {
         Located::dummy(Typ::Record(0))

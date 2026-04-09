@@ -1089,9 +1089,8 @@ pub fn unpoly(file: File) -> File {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use anyhow::Context as _; // .context() on Option in tests
     use crate::error_types::Located;
-    use anyhow::Context as _;
+    use anyhow::Context as _; // .context() on Option in tests
 
     fn mk_con(c: Constructor) -> LocatedConstructor {
         Located::dummy(c)

@@ -4,7 +4,7 @@
 
 mod common;
 
-use anyhow::{anyhow, Context as _};
+use anyhow::Context as _; // .with_context() on Result in tests
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};

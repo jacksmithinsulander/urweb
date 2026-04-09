@@ -829,10 +829,9 @@ pub fn has_sass_or_sassc() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use anyhow::Context as _; // .with_context() on Result in tests
     use crate::compiler_diagnostics::{lock_for_compile, TEST_CWD_LOCK};
     use crate::diagnostics::DiagnosticLocale;
-    use anyhow::Context as _;
+    use anyhow::Context as _; // .with_context() on Result in tests
 
     #[test]
     fn validate_name_empty() -> anyhow::Result<()> {

@@ -250,9 +250,8 @@ pub fn fuse(file: File) -> File {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use anyhow::Context as _; // .with_context() on Result in tests
-    use anyhow::Context as _;
     use crate::error_types::Located;
+    use anyhow::Context as _; // .with_context() on Result in tests
 
     fn dummy<T>(node: T) -> Located<T> {
         Located::dummy(node)

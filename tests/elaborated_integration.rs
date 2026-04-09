@@ -3,7 +3,6 @@
 //! Catches mutants in elaborated::utilities::classify_datatype (Enum, Option, Default logic),
 //! type_operations::cons_eq_simple, kind::exists, con::exists, file::max_name.
 
-use anyhow::{anyhow, Context as _};
 use ur::datatype_kind::DatatypeKind;
 use ur::elaborated::type_operations::cons_eq_simple;
 use ur::elaborated::utilities::{classify_datatype, con, file, kind};

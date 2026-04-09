@@ -795,12 +795,11 @@ pub fn tag(file: File, error_reporter: &mut impl FnMut(&Span, DiagnosticPayload)
 #[cfg(test)]
 mod tests {
     use super::*;
-    use anyhow::Context as _; // .with_context() on Option in tests
     use crate::core::{Constructor, Declaration, Expression};
     use crate::error_types::Located;
     use crate::export::{Effect, ExportKind};
     use crate::primitives::Prim;
-    use anyhow::Context as _;
+    use anyhow::Context as _; // .with_context() on Option in tests
 
     #[test]
     fn union_find_equate_merge() -> anyhow::Result<()> {

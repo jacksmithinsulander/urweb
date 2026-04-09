@@ -4049,22 +4049,19 @@ fn unify_rows(
         let left_assignable = !occurs_cunif(&left_row_tail_cell, &left_solution);
         // Only assign the synthesized solution when it does not create a cycle on the right.
         let right_assignable = !occurs_cunif(&right_row_tail_cell, &right_solution);
-        match (left_assignable, right_assignable) {
+        if let (true, true) = (left_assignable, right_assignable) {
             // The shared-tail reduction succeeded for both sides.
-            (true, true) => {
-                *crate::compiler_diagnostics::lock_for_compile(
-                    left_row_tail_cell.as_ref(),
-                    "elaboration unification cell shared-tail left",
-                ) = elab::CUnif::Known(Box::new(left_solution));
-                *crate::compiler_diagnostics::lock_for_compile(
-                    right_row_tail_cell.as_ref(),
-                    "elaboration unification cell shared-tail right",
-                ) = elab::CUnif::Known(Box::new(right_solution));
-                return Ok(());
-            }
-            // Fall through to the rest of the row-unification logic when either side cycles.
-            _ => {}
+            *crate::compiler_diagnostics::lock_for_compile(
+                left_row_tail_cell.as_ref(),
+                "elaboration unification cell shared-tail left",
+            ) = elab::CUnif::Known(Box::new(left_solution)); // assign synthesized solution for the left side
+            *crate::compiler_diagnostics::lock_for_compile(
+                right_row_tail_cell.as_ref(),
+                "elaboration unification cell shared-tail right",
+            ) = elab::CUnif::Known(Box::new(right_solution)); // assign synthesized solution for the right side
+            return Ok(()); // both sides unified successfully
         }
+        // Fall through to the rest of the row-unification logic when either side cycles.
     }
 
     // Mirror the SML `isGuessable` shortcut:
@@ -9781,7 +9778,8 @@ fn resolve_class(
         let class_n = hnorm_con(class.clone());
         // Try closed rules first
         for (quantifier_kinds, hyps, head, witness) in &rules.closed_rules {
-            match try_resolve_class_rule(
+            if let Some(resolved) = try_resolve_class_rule(
+                // try each closed rule in turn
                 elaboration_environment,
                 &class_n,
                 span,
@@ -9790,13 +9788,13 @@ fn resolve_class(
                 head,
                 witness,
             ) {
-                Some(resolved) => return Some(resolved),
-                None => {}
+                return Some(resolved); // return immediately on first match
             }
         }
         // Then open rules
         for (quantifier_kinds, hyps, head, witness) in &rules.open_rules {
-            match try_resolve_class_rule(
+            if let Some(resolved) = try_resolve_class_rule(
+                // try each open rule in turn
                 elaboration_environment,
                 &class_n,
                 span,
@@ -9805,8 +9803,7 @@ fn resolve_class(
                 head,
                 witness,
             ) {
-                Some(resolved) => return Some(resolved),
-                None => {}
+                return Some(resolved); // return immediately on first match
             }
         }
     }
@@ -10064,8 +10061,8 @@ fn snapshot_constructor_unifiers(
 
 fn snapshot_kind_unifiers(
     kind: &elab::LocatedKind,
-    constructor_snapshots: &mut Vec<(elab::CUnifRef, elab::CUnif)>,
-    seen_constructor_unifs: &mut HashSet<usize>,
+    _constructor_snapshots: &mut Vec<(elab::CUnifRef, elab::CUnif)>, // passed to recursive calls only
+    _seen_constructor_unifs: &mut HashSet<usize>, // passed to recursive calls only
     kind_snapshots: &mut Vec<(elab::KUnifRef, elab::KUnif)>,
     seen_kind_unifs: &mut HashSet<usize>,
     remaining_budget: &mut usize,
@@ -10079,16 +10076,16 @@ fn snapshot_kind_unifiers(
         elab::Kind::Arrow(left, right) => {
             snapshot_kind_unifiers(
                 left,
-                constructor_snapshots,
-                seen_constructor_unifs,
+                _constructor_snapshots,
+                _seen_constructor_unifs,
                 kind_snapshots,
                 seen_kind_unifs,
                 remaining_budget,
             );
             snapshot_kind_unifiers(
                 right,
-                constructor_snapshots,
-                seen_constructor_unifs,
+                _constructor_snapshots,
+                _seen_constructor_unifs,
                 kind_snapshots,
                 seen_kind_unifs,
                 remaining_budget,
@@ -10097,8 +10094,8 @@ fn snapshot_kind_unifiers(
         elab::Kind::Record(inner) | elab::Kind::Fun(_, inner) => {
             snapshot_kind_unifiers(
                 inner,
-                constructor_snapshots,
-                seen_constructor_unifs,
+                _constructor_snapshots,
+                _seen_constructor_unifs,
                 kind_snapshots,
                 seen_kind_unifs,
                 remaining_budget,
@@ -10108,8 +10105,8 @@ fn snapshot_kind_unifiers(
             for item in items {
                 snapshot_kind_unifiers(
                     item,
-                    constructor_snapshots,
-                    seen_constructor_unifs,
+                    _constructor_snapshots,
+                    _seen_constructor_unifs,
                     kind_snapshots,
                     seen_kind_unifs,
                     remaining_budget,
@@ -10315,13 +10312,13 @@ fn resolve_folder_module(elaboration_environment: &Env) -> Option<FolderModuleRe
             structure_id: *structure_id,
             path: Vec::new(),
         }),
-        None => match elaboration_environment.lookup_str("Top") {
-            Some((top_id, _)) => Some(FolderModuleRef {
+        None => elaboration_environment
+            .lookup_str("Top")
+            .map(|(top_id, _)| FolderModuleRef {
+                // map Option to FolderModuleRef via Top fallback
                 structure_id: *top_id,
                 path: vec!["Folder".to_string()],
             }),
-            None => None,
-        },
     }
 }
 
@@ -12140,7 +12137,7 @@ mod tests {
                         &mut elaboration_context,
                         &elaboration_environment,
                         &disjointness_environment,
-                        &[structure_name.clone()],
+                        std::slice::from_ref(structure_name), // avoid clone; from_ref creates a single-element slice
                         &decl.span,
                     );
                     elaboration_environment = opened_env;

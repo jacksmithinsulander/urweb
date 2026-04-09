@@ -1,0 +1,2285 @@
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/form.ur
+
+Type mismatch: incompatible types: {Type, A : #0} ++ {Type, B : #0} ++ {Type, C : #0} ++ ?_shared_row_tail ++ ?useInner vs ?use1 ++ {Type, C : #9}
+
+    --> /Users/jacksmith/prog/urweb/demo/form.ur:14:0-16:4
+
+
+-- TYPE ----------- /Users/jacksmith/prog/urweb/demo/nested.ur
+
+Type mismatch: incompatible types: ?useOuter ++ ?useInner vs ?use1 ++ {Type, Forename : #2, EnterSurname : #9}
+
+    --> /Users/jacksmith/prog/urweb/demo/nested.ur:16:0-18:4
+
+
+-- TYPE ----------- /Users/jacksmith/prog/urweb/demo/nested.ur
+
+Type mismatch: incompatible types: ?useOuter ++ ?useInner vs ?use1 ++ {Type, Surname : #2}
+
+    --> /Users/jacksmith/prog/urweb/demo/nested.ur:33:0-35:12
+
+
+-- TYPE ----------- /Users/jacksmith/prog/urweb/demo/cookie.ur
+
+Type mismatch: incompatible types: { {?_, A : #2, B : #1, C : #0} } vs #170 (?t)
+
+    --> /Users/jacksmith/prog/urweb/demo/cookie.ur:4:14-4:15
+
+
+-- TYPE ----------- /Users/jacksmith/prog/urweb/demo/cookie.ur
+
+Type mismatch: incompatible types: { {?_, A : #2, B : #1, C : #0} } vs #170 (?t)
+
+    --> /Users/jacksmith/prog/urweb/demo/cookie.ur:10:14-10:15
+
+
+-- TYPE ----------- /Users/jacksmith/prog/urweb/demo/cookie.ur
+
+Type mismatch: incompatible types: { {?_, A : #2, B : #1, C : #0} } vs #170 (?t)
+
+    --> /Users/jacksmith/prog/urweb/demo/cookie.ur:16:16-16:17
+
+
+-- TYPE ----------- /Users/jacksmith/prog/urweb/demo/cookie.ur
+
+Type mismatch: incompatible types: { {?_, A : #2, B : #1, C : #0} } vs #170 (?t)
+
+    --> /Users/jacksmith/prog/urweb/demo/cookie.ur:20:20-20:21
+
+
+-- TYPE -------------- /Users/jacksmith/prog/urweb/demo/url.ur
+
+Type mismatch: incompatible types: {Type, Link : #113 (#420 ({(), Html : ()}) ({Type}) ({Type})), Href : #410, Target : #2, Rel : #2, Download : #2, Data : #467, Id : #456, Title : #2, Role : #2, Align : #2, Onblur : #113 ({ {Type} }), Onfocus : #113 ({ {Type} }), Onclick : { {Type, ScreenX : #0, ScreenY : #0, ClientX : #0, ClientY : #0, OffsetX : #0, OffsetY : #0, CtrlKey : #9, ShiftKey : #9, AltKey : #9, MetaKey : #9, Button : #474} } -> #113 ({ {Type} }), Oncontextmenu : { {Type, ScreenX : #0, ScreenY : #0, ClientX : #0, ClientY : #0, OffsetX : #0, OffsetY : #0, CtrlKey : #9, ShiftKey : #9, AltKey : #9, MetaKey : #9, Button : #474} } -> #113 ({ {Type} }), Ondblclick : { {Type, ScreenX : #0, ScreenY : #0, ClientX : #0, ClientY : #0, OffsetX : #0, OffsetY : #0, CtrlKey : #9, ShiftKey : #9, AltKey : #9, MetaKey : #9, Button : #474} } -> #113 ({ {Type} }), Onmousedown : { {Type, ScreenX : #0, ScreenY : #0, ClientX : #0, ClientY : #0, OffsetX : #0, OffsetY : #0, CtrlKey : #9, ShiftKey : #9, AltKey : #9, MetaKey : #9, Button : #474} } -> #113 ({ {Type} }), Onmouseenter : { {Type, ScreenX : #0, ScreenY : #0, ClientX : #0, ClientY : #0, OffsetX : #0, OffsetY : #0, CtrlKey : #9, ShiftKey : #9, AltKey : #9, MetaKey : #9, Button : #474} } -> #113 ({ {Type} }), Onmouseleave : { {Type, ScreenX : #0, ScreenY : #0, ClientX : #0, ClientY : #0, OffsetX : #0, OffsetY : #0, CtrlKey : #9, ShiftKey : #9, AltKey : #9, MetaKey : #9, Button : #474} } -> #113 ({ {Type} }), Onmousemove : { {Type, ScreenX : #0, ScreenY : #0, ClientX : #0, ClientY : #0, OffsetX : #0, OffsetY : #0, CtrlKey : #9, ShiftKey : #9, AltKey : #9, MetaKey : #9, Button : #474} } -> #113 ({ {Type} }), Onmouseout : { {Type, ScreenX : #0, ScreenY : #0, ClientX : #0, ClientY : #0, OffsetX : #0, OffsetY : #0, CtrlKey : #9, ShiftKey : #9, AltKey : #9, MetaKey : #9, Button : #474} } -> #113 ({ {Type} }), Onmouseover : { {Type, ScreenX : #0, ScreenY : #0, ClientX : #0, ClientY : #0, OffsetX : #0, OffsetY : #0, CtrlKey : #9, ShiftKey : #9, AltKey : #9, MetaKey : #9, Button : #474} } -> #113 ({ {Type} }), Onmouseup : { {Type, ScreenX : #0, ScreenY : #0, ClientX : #0, ClientY : #0, OffsetX : #0, OffsetY : #0, CtrlKey : #9, ShiftKey : #9, AltKey : #9, MetaKey : #9, Button : #474} } -> #113 ({ {Type} }), Onkeydown : { {Type, KeyCode : #0, CtrlKey : #9, ShiftKey : #9, AltKey : #9, MetaKey : #9} } -> #113 ({ {Type} }), Onkeypress : { {Type, KeyCode : #0, CtrlKey : #9, ShiftKey : #9, AltKey : #9, MetaKey : #9} } -> #113 ({ {Type} }), Onkeyup : { {Type, KeyCode : #0, CtrlKey : #9, ShiftKey : #9, AltKey : #9, MetaKey : #9} } -> #113 ({ {Type} }), Onresize : #113 ({ {Type} }), Onscroll : #113 ({ {Type} })} vs {Type, Href : #2} ++ ?attrsAbsent
+
+    --> /Users/jacksmith/prog/urweb/demo/url.ur:8:2-8:75
+
+
+-- TYPE -------------- /Users/jacksmith/prog/urweb/demo/url.ur
+
+Unresolved disjointness constraint
+
+    --> /Users/jacksmith/prog/urweb/demo/url.ur:8:2-8:4
+
+
+-- TYPE -------------- /Users/jacksmith/prog/urweb/demo/css.ur
+
+Type mismatch: incompatible types: {Type, Data : #467, Id : #456, Rel : #2, Title : #2, Typ : #2, Href : #410, Media : #2, Integrity : #2, Crossorigin : #2, Sizes : #2} vs {Type, Rel : #2, Type : #2, Href : #2} ++ ?attrsAbsent
+
+    --> /Users/jacksmith/prog/urweb/demo/css.ur:5:4-5:0
+
+
+-- TYPE -------------- /Users/jacksmith/prog/urweb/demo/css.ur
+
+Type mismatch: incompatible types: () vs #404
+
+    --> /Users/jacksmith/prog/urweb/demo/css.ur:9:16-9:21
+
+
+-- TYPE --------- /Users/jacksmith/prog/urweb/demo/subforms.ur
+
+Unresolved disjointness constraint
+
+    --> /Users/jacksmith/prog/urweb/demo/subforms.ur:7:16-7:19
+
+
+-- TYPE --------- /Users/jacksmith/prog/urweb/demo/subforms.ur
+
+Unresolved disjointness constraint
+
+    --> /Users/jacksmith/prog/urweb/demo/subforms.ur:21:10-24:0
+
+
+-- TYPE --------- /Users/jacksmith/prog/urweb/demo/subforms.ur
+
+Unresolved disjointness constraint
+
+    --> /Users/jacksmith/prog/urweb/demo/subforms.ur:22:12-22:19
+
+
+-- TYPE --------- /Users/jacksmith/prog/urweb/demo/subforms.ur
+
+Unresolved disjointness constraint
+
+    --> /Users/jacksmith/prog/urweb/demo/subforms.ur:23:12-23:15
+
+
+-- TYPE --------- /Users/jacksmith/prog/urweb/demo/subforms.ur
+
+Unresolved disjointness constraint
+
+    --> /Users/jacksmith/prog/urweb/demo/subforms.ur:23:23-23:31
+
+
+-- TYPE --------- /Users/jacksmith/prog/urweb/demo/subforms.ur
+
+Type mismatch: incompatible types: { {Type} } vs #420 ({(), Subform : ()} ++ ?ctx) ({Type, Entry : { ?bind }}) ({Type})
+
+    --> /Users/jacksmith/prog/urweb/demo/subforms.ur:30:4-32:0
+
+
+-- TYPE --------- /Users/jacksmith/prog/urweb/demo/subforms.ur
+
+Application to non-function type
+
+    --> /Users/jacksmith/prog/urweb/demo/subforms.ur:30:4-32:0
+
+
+-- TYPE --------- /Users/jacksmith/prog/urweb/demo/subforms.ur
+
+Type mismatch: incompatible types: {Type, Lines : #15 ({ {Type, Num : #0} ++ {Type, Text : #0} ++ ?_shared_row_tail })} ++ ?_rest ++ ?useInner vs ?use1 ++ ?bind1
+
+    --> /Users/jacksmith/prog/urweb/demo/subforms.ur:32:0-34:2
+
+
+-- TYPE --------- /Users/jacksmith/prog/urweb/demo/subforms.ur
+
+Unresolved disjointness constraint
+
+    --> /Users/jacksmith/prog/urweb/demo/subforms.ur:30:4-30:13
+
+
+-- TYPE --------- /Users/jacksmith/prog/urweb/demo/subforms.ur
+
+Unresolved disjointness constraint
+
+    --> /Users/jacksmith/prog/urweb/demo/subforms.ur:30:4-30:21
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/list.ur
+
+Type mismatch: incompatible types: #866 vs #15
+
+    --> /Users/jacksmith/prog/urweb/demo/list.ur:18:56-18:64
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/list.ur
+
+Type mismatch: incompatible types: #866 vs #15
+
+    --> /Users/jacksmith/prog/urweb/demo/list.ur:15:8-19:13
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/list.ur
+
+Type mismatch: incompatible types: #866 vs #861
+
+    --> /Users/jacksmith/prog/urweb/demo/list.ur:0:0-0:0
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/list.ur
+
+Type mismatch: incompatible types: #866 vs #861
+
+    --> /Users/jacksmith/prog/urweb/demo/list.ur:0:0-0:0
+
+
+-- TYPE ---------- /Users/jacksmith/prog/urweb/demo/listFun.ur
+
+Type mismatch: incompatible types: mod881:t vs #878
+
+    --> /Users/jacksmith/prog/urweb/demo/listFun.ur:11:55-11:56
+
+
+-- TYPE ---------- /Users/jacksmith/prog/urweb/demo/listFun.ur
+
+Type mismatch: incompatible types: mod881:t vs #878
+
+    --> /Users/jacksmith/prog/urweb/demo/listFun.ur:18:52-18:59
+
+
+-- TYPE ---------- /Users/jacksmith/prog/urweb/demo/listFun.ur
+
+Type mismatch: incompatible types: mod881:t vs #878
+
+    --> /Users/jacksmith/prog/urweb/demo/listFun.ur:13:14-30:0
+
+
+-- TYPE --------- /Users/jacksmith/prog/urweb/demo/listShop.ur
+
+Type mismatch: incompatible types: #0 vs #2
+
+    --> /Users/jacksmith/prog/urweb/demo/listShop.ur:14:15-14:0
+
+
+-- TYPE --------- /Users/jacksmith/prog/urweb/demo/listShop.ur
+
+Type mismatch: incompatible types: #0 vs #2
+
+    --> /Users/jacksmith/prog/urweb/demo/listShop.ur:14:15-14:0
+
+
+-- TYPE -------------- /Users/jacksmith/prog/urweb/demo/sql.ur
+
+Type mismatch: incompatible types: ?useOuter ++ ?useInner vs ?use1 ++ {Type, D : #9}
+
+    --> /Users/jacksmith/prog/urweb/demo/sql.ur:23:0-25:8
+
+
+-- TYPE -------------- /Users/jacksmith/prog/urweb/demo/sql.ur
+
+Type mismatch: incompatible types: { {?_, A : #0, B : #1, C : #2, D : #9} } vs #201 (?fields) (?uniques)
+
+    --> /Users/jacksmith/prog/urweb/demo/sql.ur:30:37-30:139
+
+
+-- TYPE -------------- /Users/jacksmith/prog/urweb/demo/sql.ur
+
+Type mismatch: incompatible types: { {?_, A : #0, B : #1, C : #2, D : #9} } vs #201 (?fields) (?uniques)
+
+    --> /Users/jacksmith/prog/urweb/demo/sql.ur:39:37-39:80
+
+
+-- TYPE -------------- /Users/jacksmith/prog/urweb/demo/sql.ur
+
+Unresolved typeclass constraint: #203 (?t) (?fs)
+
+    --> /Users/jacksmith/prog/urweb/demo/sql.ur:5:48-5:65
+
+
+-- TYPE ----------- /Users/jacksmith/prog/urweb/demo/refFun.ur
+
+Type mismatch: incompatible types: #0 vs #401
+
+    --> /Users/jacksmith/prog/urweb/demo/refFun.ur:13:22-13:23
+
+
+-- TYPE ----------- /Users/jacksmith/prog/urweb/demo/refFun.ur
+
+Type mismatch: incompatible types: { {?_, Id : #0, Data : mod919:data} } vs #201 (?fields) (?uniques)
+
+    --> /Users/jacksmith/prog/urweb/demo/refFun.ur:14:41-14:90
+
+
+-- TYPE ----------- /Users/jacksmith/prog/urweb/demo/refFun.ur
+
+Unresolved typeclass constraint: #203 (?t) (?fs)
+
+    --> /Users/jacksmith/prog/urweb/demo/refFun.ur:18:54-18:95
+
+
+-- TYPE ----------- /Users/jacksmith/prog/urweb/demo/refFun.ur
+
+Type mismatch: incompatible types: { {?_, Id : #0, Data : mod919:data} } vs #201 ({{ Type }, Data : ?_mv} ++ ?unchanged) (?uniques)
+
+    --> /Users/jacksmith/prog/urweb/demo/refFun.ur:24:41-24:85
+
+
+-- TYPE ----------- /Users/jacksmith/prog/urweb/demo/refFun.ur
+
+Type mismatch: incompatible types: { {?_, Id : #0, Data : mod919:data} } vs #201 (?fields) (?uniques)
+
+    --> /Users/jacksmith/prog/urweb/demo/refFun.ur:27:41-27:73
+
+
+-- TYPE ----------- /Users/jacksmith/prog/urweb/demo/refFun.ur
+
+Type mismatch: incompatible types: #9 vs mod910:data
+
+    --> /Users/jacksmith/prog/urweb/demo/refFun.ur:0:0-0:0
+
+
+-- TYPE ----------- /Users/jacksmith/prog/urweb/demo/refFun.ur
+
+Type mismatch: incompatible types: #9 vs #0
+
+    --> /Users/jacksmith/prog/urweb/demo/refFun.ur:0:0-0:0
+
+
+-- TYPE ----------- /Users/jacksmith/prog/urweb/demo/refFun.ur
+
+Type mismatch: incompatible types: #9 vs #0
+
+    --> /Users/jacksmith/prog/urweb/demo/refFun.ur:0:0-0:0
+
+
+-- TYPE ----------- /Users/jacksmith/prog/urweb/demo/refFun.ur
+
+Type mismatch: incompatible types: #9 vs #0
+
+    --> /Users/jacksmith/prog/urweb/demo/refFun.ur:0:0-0:0
+
+
+-- TYPE -------------- /Users/jacksmith/prog/urweb/demo/ref.ur
+
+Signature missing value `inj`
+
+    --> /Users/jacksmith/prog/urweb/demo/ref.ur:1:15-3:0
+
+
+-- TYPE -------------- /Users/jacksmith/prog/urweb/demo/ref.ur
+
+Signature missing value `inj`
+
+    --> /Users/jacksmith/prog/urweb/demo/ref.ur:5:15-7:0
+
+
+-- TYPE -------------- /Users/jacksmith/prog/urweb/demo/ref.ur
+
+Type mismatch: incompatible types: #0 vs #9
+
+    --> /Users/jacksmith/prog/urweb/demo/ref.ur:10:17-10:18
+
+
+-- TYPE -------------- /Users/jacksmith/prog/urweb/demo/ref.ur
+
+Type mismatch: incompatible types: #0 vs #9
+
+    --> /Users/jacksmith/prog/urweb/demo/ref.ur:11:18-11:19
+
+
+-- TYPE -------------- /Users/jacksmith/prog/urweb/demo/ref.ur
+
+Type mismatch: incompatible types: #2 vs #9
+
+    --> /Users/jacksmith/prog/urweb/demo/ref.ur:12:17-12:21
+
+
+-- TYPE -------------- /Users/jacksmith/prog/urweb/demo/ref.ur
+
+Type mismatch: incompatible types: #0 vs #9
+
+    --> /Users/jacksmith/prog/urweb/demo/ref.ur:14:13-14:16
+
+
+-- TYPE -------------- /Users/jacksmith/prog/urweb/demo/ref.ur
+
+Type mismatch: incompatible types: #0 vs #9
+
+    --> /Users/jacksmith/prog/urweb/demo/ref.ur:14:17-14:19
+
+
+-- TYPE -------------- /Users/jacksmith/prog/urweb/demo/ref.ur
+
+Type mismatch: incompatible types: #0 vs #9
+
+    --> /Users/jacksmith/prog/urweb/demo/ref.ur:16:18-16:20
+
+
+-- TYPE -------------- /Users/jacksmith/prog/urweb/demo/ref.ur
+
+Type mismatch: incompatible types: #0 vs #9
+
+    --> /Users/jacksmith/prog/urweb/demo/ref.ur:17:19-17:22
+
+
+-- TYPE -------------- /Users/jacksmith/prog/urweb/demo/ref.ur
+
+Type mismatch: incompatible types: #0 vs #9
+
+    --> /Users/jacksmith/prog/urweb/demo/ref.ur:18:18-18:20
+
+
+-- TYPE -------------- /Users/jacksmith/prog/urweb/demo/ref.ur
+
+Type mismatch: incompatible types: #0 vs #9
+
+    --> /Users/jacksmith/prog/urweb/demo/ref.ur:20:14-20:16
+
+
+-- TYPE -------------- /Users/jacksmith/prog/urweb/demo/ref.ur
+
+Type mismatch: incompatible types: #0 vs #9
+
+    --> /Users/jacksmith/prog/urweb/demo/ref.ur:21:14-21:17
+
+
+-- TYPE -------------- /Users/jacksmith/prog/urweb/demo/ref.ur
+
+Type mismatch: incompatible types: #0 vs #9
+
+    --> /Users/jacksmith/prog/urweb/demo/ref.ur:22:14-22:16
+
+
+-- TYPE ---------- /Users/jacksmith/prog/urweb/demo/treeFun.ur
+
+Unresolved typeclass constraint: #203 (?t) (?fs)
+
+    --> /Users/jacksmith/prog/urweb/demo/treeFun.ur:20:53-20:116
+
+
+-- TYPE ---------- /Users/jacksmith/prog/urweb/demo/treeFun.ur
+
+Type mismatch: incompatible types: mod956:key vs #950
+
+    --> /Users/jacksmith/prog/urweb/demo/treeFun.ur:31:20-31:0
+
+
+-- TYPE ---------- /Users/jacksmith/prog/urweb/demo/treeFun.ur
+
+Signature missing type `id`
+
+    --> /Users/jacksmith/prog/urweb/demo/treeFun.ur:0:0-0:0
+
+
+-- TYPE ---------- /Users/jacksmith/prog/urweb/demo/treeFun.ur
+
+Signature missing type `parent`
+
+    --> /Users/jacksmith/prog/urweb/demo/treeFun.ur:0:0-0:0
+
+
+-- TYPE ---------- /Users/jacksmith/prog/urweb/demo/treeFun.ur
+
+Type mismatch: incompatible types: {Type, #951 : #950, #952 : #12 #950} ++ #953 vs {Type, #946 : mod945:key, #947 : #12 (mod945:key)} ++ mod945:cols
+
+    --> /Users/jacksmith/prog/urweb/demo/treeFun.ur:0:0-0:0
+
+
+-- TYPE ---------- /Users/jacksmith/prog/urweb/demo/treeFun.ur
+
+Unresolved disjointness constraint
+
+    --> /Users/jacksmith/prog/urweb/demo/treeFun.ur:0:0-0:0
+
+
+-- TYPE ---------- /Users/jacksmith/prog/urweb/demo/treeFun.ur
+
+Unresolved disjointness constraint
+
+    --> /Users/jacksmith/prog/urweb/demo/treeFun.ur:0:0-0:0
+
+
+-- TYPE ---------- /Users/jacksmith/prog/urweb/demo/treeFun.ur
+
+Unresolved disjointness constraint
+
+    --> /Users/jacksmith/prog/urweb/demo/treeFun.ur:0:0-0:0
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/tree.ur
+
+Signature missing type `key`
+
+    --> /Users/jacksmith/prog/urweb/demo/tree.ur:6:5-10:0
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/tree.ur
+
+Signature missing type `cols`
+
+    --> /Users/jacksmith/prog/urweb/demo/tree.ur:6:5-10:0
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/tree.ur
+
+Signature missing value `key_inj`
+
+    --> /Users/jacksmith/prog/urweb/demo/tree.ur:6:5-10:0
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/tree.ur
+
+Type mismatch: incompatible types: { {Type, Id : #0, Parent : #12 #0, Nam : #2} } vs {Type, Id : #950, Parent : #12 #950} ++ #953
+
+    --> /Users/jacksmith/prog/urweb/demo/tree.ur:6:5-10:0
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/tree.ur
+
+Unresolved disjointness constraint
+
+    --> /Users/jacksmith/prog/urweb/demo/tree.ur:6:5-10:0
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/tree.ur
+
+Unresolved disjointness constraint
+
+    --> /Users/jacksmith/prog/urweb/demo/tree.ur:6:5-10:0
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/tree.ur
+
+Unresolved disjointness constraint
+
+    --> /Users/jacksmith/prog/urweb/demo/tree.ur:6:5-10:0
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/tree.ur
+
+Type mismatch: incompatible types: ?useOuter ++ ?useInner vs ?use1 ++ {Type, Nam : #2}
+
+    --> /Users/jacksmith/prog/urweb/demo/tree.ur:16:31-17:2
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/tree.ur
+
+Type mismatch: incompatible types: {Type, Id : ?_} ++ {Type, Nam : ?t} ++ ?_shared_row_tail vs {Type, #951 : #950, #952 : #12 #950} ++ #953
+
+    --> /Users/jacksmith/prog/urweb/demo/tree.ur:21:16-21:19
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/tree.ur
+
+Type mismatch: incompatible types: ?useOuter ++ ?useInner vs ?use1 ++ {Type, Nam : #2}
+
+    --> /Users/jacksmith/prog/urweb/demo/tree.ur:26:46-27:6
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/tree.ur
+
+Type mismatch: incompatible types: #0 vs #401
+
+    --> /Users/jacksmith/prog/urweb/demo/tree.ur:31:18-31:19
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/tree.ur
+
+Type mismatch: incompatible types: { {?_, Id : #0, Parent : #12 #0, Nam : #2} } vs #201 (?fields) (?uniques)
+
+    --> /Users/jacksmith/prog/urweb/demo/tree.ur:32:37-32:109
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/tree.ur
+
+Type mismatch: incompatible types: { {?_, Id : #0, Parent : #12 #0, Nam : #2} } vs #201 (?fields) (?uniques)
+
+    --> /Users/jacksmith/prog/urweb/demo/tree.ur:36:37-36:70
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/tree.ur
+
+Unresolved disjointness constraint
+
+    --> /Users/jacksmith/prog/urweb/demo/tree.ur:13:23-13:0
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/tree.ur
+
+Unresolved disjointness constraint
+
+    --> /Users/jacksmith/prog/urweb/demo/tree.ur:13:29-13:36
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/tree.ur
+
+Unresolved disjointness constraint
+
+    --> /Users/jacksmith/prog/urweb/demo/tree.ur:15:2-17:0
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/tree.ur
+
+Unresolved disjointness constraint
+
+    --> /Users/jacksmith/prog/urweb/demo/tree.ur:16:15-16:23
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/tree.ur
+
+Unresolved disjointness constraint
+
+    --> /Users/jacksmith/prog/urweb/demo/tree.ur:16:32-16:39
+
+
+-- TYPE -------- /Users/jacksmith/prog/urweb/demo/constraints.ur
+
+Type mismatch: incompatible types: ?useOuter ++ ?useInner vs ?use1 ++ {Type, Parent : #2}
+
+    --> /Users/jacksmith/prog/urweb/demo/constraints.ur:26:0-28:8
+
+
+-- TYPE -------- /Users/jacksmith/prog/urweb/demo/constraints.ur
+
+Type mismatch: incompatible types: { {?_, Id : #0, Nam : #2, Parent : #12 #0} } vs #201 (?fields) (?uniques)
+
+    --> /Users/jacksmith/prog/urweb/demo/constraints.ur:33:37-33:254
+
+
+-- TYPE -------- /Users/jacksmith/prog/urweb/demo/constraints.ur
+
+Unresolved typeclass constraint: #203 (?t) (?fs)
+
+    --> /Users/jacksmith/prog/urweb/demo/constraints.ur:8:48-8:65
+
+
+-- TYPE ------------ /Users/jacksmith/prog/urweb/demo/outer.ur
+
+Type mismatch: incompatible types: #262 (?free) ({{ Type }, T : ?fs}) vs { map({ (Type * Type) }, Type) (r : { (Type * Type) } -> { map((Type * Type), Type) (p : (Type * Type) -> #268 ('0.1) ('0.2)) '0 }) (?tabs2) }
+
+    --> /Users/jacksmith/prog/urweb/demo/outer.ur:9:47-9:137
+
+
+-- TYPE ------------ /Users/jacksmith/prog/urweb/demo/outer.ur
+
+Type mismatch: incompatible types: #246 ({{ Type }, T : {Type, Id : ?arg2} ++ ?otherFields} ++ {Type, U : {Type, Link : ?arg2} ++ ?otherFields} ++ ?_shared_row_tail) (?agg) vs #262
+
+    --> /Users/jacksmith/prog/urweb/demo/outer.ur:9:47-9:137
+
+
+-- TYPE ------------ /Users/jacksmith/prog/urweb/demo/outer.ur
+
+Type mismatch: incompatible types: {Type, Distinct : #9, From : #246 (?free ++ {{ Type }, U : ?fs} ++ map({ (Type * Type) }, { Type }) (map((Type * Type), Type) (p : (Type * Type) -> '0.1)) (?tabs2)) ({{ Type }}) ({Type}) #9 -> #262 (?free) ({{ Type }, U : ?fs} ++ map({ (Type * Type) }, { Type }) (map((Type * Type), Type) (p : (Type * Type) -> '0.2)) (?tabs2)), Where : #246 (?tables) (?agg) (?exps) #9, GroupBy : #258 (?_) (?_), Having : #246 (?tables) (?agg) (?exps) #9, SelectFields : #258 ({{ Type }, T : {?_, Id : ?_, B : ?_} ++ ?_, U : {?_, Id : ?_, C : ?_, D : ?_} ++ ?_}) ({{ Type }, T : {?_, Id : ?_, B : ?_}, U : {?_, Id : ?_, C : ?_, D : ?_}}), SelectExps : { {Type} }} vs {Type, Distinct : #9, From : #262 (?free) (?tables), Where : #246 (?free ++ ?tables) (?afree) ({Type}) #9, GroupBy : #258 (?tables) (?grouped), Having : #246 (?free ++ ?grouped) (?afree ++ ?tables) ({Type}) #9, SelectFields : #258 (?grouped) (?selectedFields), SelectExps : { map(Type, Type) (#274 (?free ++ ?grouped) (?afree ++ ?tables) ({Type})) (?selectedExps) }}
+
+    --> /Users/jacksmith/prog/urweb/demo/outer.ur:9:47-9:137
+
+
+-- TYPE ------------ /Users/jacksmith/prog/urweb/demo/outer.ur
+
+Type mismatch: incompatible types: ?exps ++ map({ Type }, Type) (fields : { Type } -> { '0 }) (?tables) vs {Type, T : ?_field} ++ ?_rest
+
+    --> /Users/jacksmith/prog/urweb/demo/outer.ur:11:26-11:27
+
+
+-- TYPE ------------ /Users/jacksmith/prog/urweb/demo/outer.ur
+
+Type mismatch: incompatible types: ?exps ++ map({ Type }, Type) (fields : { Type } -> { '0 }) (?tables) vs {Type, T : ?_field} ++ ?_rest
+
+    --> /Users/jacksmith/prog/urweb/demo/outer.ur:12:26-12:27
+
+
+-- TYPE ------------ /Users/jacksmith/prog/urweb/demo/outer.ur
+
+Type mismatch: incompatible types: ?exps ++ map({ Type }, Type) (fields : { Type } -> { '0 }) (?tables) vs {Type, U : ?_field} ++ ?_rest
+
+    --> /Users/jacksmith/prog/urweb/demo/outer.ur:13:26-13:27
+
+
+-- TYPE ------------ /Users/jacksmith/prog/urweb/demo/outer.ur
+
+Type mismatch: incompatible types: ?exps ++ map({ Type }, Type) (fields : { Type } -> { '0 }) (?tables) vs {Type, U : ?_field} ++ ?_rest
+
+    --> /Users/jacksmith/prog/urweb/demo/outer.ur:14:26-14:27
+
+
+-- TYPE ------------ /Users/jacksmith/prog/urweb/demo/outer.ur
+
+Type mismatch: incompatible types: ?exps ++ map({ Type }, Type) (fields : { Type } -> { '0 }) (?tables) vs {Type, U : ?_field} ++ ?_rest
+
+    --> /Users/jacksmith/prog/urweb/demo/outer.ur:15:26-15:27
+
+
+-- TYPE ------------ /Users/jacksmith/prog/urweb/demo/outer.ur
+
+Type mismatch: incompatible types: ?useOuter ++ ?useInner vs ?use1 ++ {Type, B : #2}
+
+    --> /Users/jacksmith/prog/urweb/demo/outer.ur:20:0-21:31
+
+
+-- TYPE ------------ /Users/jacksmith/prog/urweb/demo/outer.ur
+
+Type mismatch: incompatible types: ?useOuter ++ ?useInner vs ?use1 ++ {Type, D : #2}
+
+    --> /Users/jacksmith/prog/urweb/demo/outer.ur:24:31-25:6
+
+
+-- TYPE ------------ /Users/jacksmith/prog/urweb/demo/outer.ur
+
+Type mismatch: incompatible types: { {?_, Id : #0, B : #2} } vs #201 (?fields) (?uniques)
+
+    --> /Users/jacksmith/prog/urweb/demo/outer.ur:29:37-29:97
+
+
+-- TYPE ------------ /Users/jacksmith/prog/urweb/demo/outer.ur
+
+Type mismatch: incompatible types: { {?_, Id : #0, Link : #0, C : #2, D : #12 #1} } vs #201 (?fields) (?uniques)
+
+    --> /Users/jacksmith/prog/urweb/demo/outer.ur:33:37-33:147
+
+
+-- TYPE ------------ /Users/jacksmith/prog/urweb/demo/outer.ur
+
+Unresolved typeclass constraint: #203 (?t) (?fs)
+
+    --> /Users/jacksmith/prog/urweb/demo/outer.ur:9:47-9:137
+
+
+-- TYPE ------------ /Users/jacksmith/prog/urweb/demo/outer.ur
+
+Unresolved typeclass constraint: #203 (?t) (?fs)
+
+    --> /Users/jacksmith/prog/urweb/demo/outer.ur:9:47-9:137
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/view.ur
+
+Unresolved typeclass constraint: #203 (?t) (?fs)
+
+    --> /Users/jacksmith/prog/urweb/demo/view.ur:2:38-2:0
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/view.ur
+
+Type mismatch: incompatible types: ?useOuter ++ ?useInner vs ?use1 ++ {Type, A : #2}
+
+    --> /Users/jacksmith/prog/urweb/demo/view.ur:20:34-20:57
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/view.ur
+
+Type mismatch: incompatible types: { {?_, A : #0} } vs #201 (?fields) (?uniques)
+
+    --> /Users/jacksmith/prog/urweb/demo/view.ur:24:37-24:83
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/view.ur
+
+Unresolved typeclass constraint: #203 (?u) ({?_, A : #0})
+
+    --> /Users/jacksmith/prog/urweb/demo/view.ur:13:13-13:17
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/view.ur
+
+Unresolved typeclass constraint: #203 (?u) ({?_, A : #0})
+
+    --> /Users/jacksmith/prog/urweb/demo/view.ur:14:13-14:17
+
+
+-- TYPE -------- /Users/jacksmith/prog/urweb/demo/cookieSec.ur
+
+Type mismatch: incompatible types: #2 vs #170 (?t)
+
+    --> /Users/jacksmith/prog/urweb/demo/cookieSec.ur:7:23-7:31
+
+
+-- TYPE -------- /Users/jacksmith/prog/urweb/demo/cookieSec.ur
+
+Type mismatch: incompatible types: ?useOuter ++ ?useInner vs ?use1 ++ {Type, User : #2}
+
+    --> /Users/jacksmith/prog/urweb/demo/cookieSec.ur:21:29-21:52
+
+
+-- TYPE -------- /Users/jacksmith/prog/urweb/demo/cookieSec.ur
+
+Type mismatch: incompatible types: #2 vs #170 (?t)
+
+    --> /Users/jacksmith/prog/urweb/demo/cookieSec.ur:28:14-28:22
+
+
+-- TYPE -------- /Users/jacksmith/prog/urweb/demo/cookieSec.ur
+
+Type mismatch: incompatible types: #2 vs #170 (?t)
+
+    --> /Users/jacksmith/prog/urweb/demo/cookieSec.ur:32:23-32:31
+
+
+-- TYPE -------- /Users/jacksmith/prog/urweb/demo/cookieSec.ur
+
+Type mismatch: incompatible types: { {?_, User : #2, When : #4} } vs #201 (?fields) (?uniques)
+
+    --> /Users/jacksmith/prog/urweb/demo/cookieSec.ur:36:41-36:86
+
+
+-- TYPE -------- /Users/jacksmith/prog/urweb/demo/cookieSec.ur
+
+Type mismatch: incompatible types: { {?_, User : #2, When : #4} } vs #201 (?fields) (?uniques)
+
+    --> /Users/jacksmith/prog/urweb/demo/cookieSec.ur:37:41-37:114
+
+
+-- TYPE -------- /Users/jacksmith/prog/urweb/demo/cookieSec.ur
+
+Unresolved typeclass constraint: #203 (?t) (?fs)
+
+    --> /Users/jacksmith/prog/urweb/demo/cookieSec.ur:9:48-9:73
+
+
+-- TYPE -------------- /Users/jacksmith/prog/urweb/demo/sum.ur
+
+Type mismatch: constructor unification recursion limit exceeded
+
+    --> /Users/jacksmith/prog/urweb/demo/sum.ur:7:8-7:10
+
+
+-- TYPE -------------- /Users/jacksmith/prog/urweb/demo/sum.ur
+
+Type mismatch: constructor unification recursion limit exceeded
+
+    --> /Users/jacksmith/prog/urweb/demo/sum.ur:8:8-8:22
+
+
+-- TYPE -------------- /Users/jacksmith/prog/urweb/demo/sum.ur
+
+Type mismatch: constructor unification recursion limit exceeded
+
+    --> /Users/jacksmith/prog/urweb/demo/sum.ur:9:8-9:29
+
+
+-- TYPE -------------- /Users/jacksmith/prog/urweb/demo/sum.ur
+
+Unresolved typeclass constraint: #90 (?t)
+
+    --> /Users/jacksmith/prog/urweb/demo/sum.ur:7:2-7:12
+
+
+-- TYPE -------------- /Users/jacksmith/prog/urweb/demo/sum.ur
+
+Unresolved typeclass constraint: #90 (?t)
+
+    --> /Users/jacksmith/prog/urweb/demo/sum.ur:8:2-8:24
+
+
+-- TYPE -------------- /Users/jacksmith/prog/urweb/demo/sum.ur
+
+Unresolved typeclass constraint: #90 (?t)
+
+    --> /Users/jacksmith/prog/urweb/demo/sum.ur:9:2-9:0
+
+
+-- TYPE ------------ /Users/jacksmith/prog/urweb/demo/tcSum.ur
+
+Type mismatch: constructor unification recursion limit exceeded
+
+    --> /Users/jacksmith/prog/urweb/demo/tcSum.ur:7:8-7:22
+
+
+-- TYPE ------------ /Users/jacksmith/prog/urweb/demo/tcSum.ur
+
+Type mismatch: constructor unification recursion limit exceeded
+
+    --> /Users/jacksmith/prog/urweb/demo/tcSum.ur:8:8-8:35
+
+
+-- TYPE ------------ /Users/jacksmith/prog/urweb/demo/tcSum.ur
+
+Unresolved typeclass constraint: #90 (?t)
+
+    --> /Users/jacksmith/prog/urweb/demo/tcSum.ur:7:2-7:24
+
+
+-- TYPE ------------ /Users/jacksmith/prog/urweb/demo/tcSum.ur
+
+Unresolved typeclass constraint: #90 (?t)
+
+    --> /Users/jacksmith/prog/urweb/demo/tcSum.ur:8:2-8:0
+
+
+-- TYPE --------- /Users/jacksmith/prog/urweb/demo/metaform.ur
+
+Type mismatch: incompatible types: map((), Type) (_ : () -> #2) #1020 vs ?_mr1
+
+    --> /Users/jacksmith/prog/urweb/demo/metaform.ur:23:0-25:6
+
+
+-- TYPE -------- /Users/jacksmith/prog/urweb/demo/metaform1.ur
+
+Signature missing type `fs`
+
+    --> /Users/jacksmith/prog/urweb/demo/metaform1.ur:1:5-3:0
+
+
+-- TYPE -------- /Users/jacksmith/prog/urweb/demo/metaform1.ur
+
+Signature missing value `fl`
+
+    --> /Users/jacksmith/prog/urweb/demo/metaform1.ur:1:5-3:0
+
+
+-- TYPE -------- /Users/jacksmith/prog/urweb/demo/metaform1.ur
+
+Type mismatch: incompatible types: #1020 vs {{ () }, A : (), B : (), C : ()}
+
+    --> /Users/jacksmith/prog/urweb/demo/metaform1.ur:1:5-3:0
+
+
+-- TYPE -------- /Users/jacksmith/prog/urweb/demo/metaform1.ur
+
+Signature missing value `main`
+
+    --> /Users/jacksmith/prog/urweb/demo/metaform1.ur:0:0-0:0
+
+
+-- TYPE -------- /Users/jacksmith/prog/urweb/demo/metaform2.ur
+
+Signature missing type `fs`
+
+    --> /Users/jacksmith/prog/urweb/demo/metaform2.ur:1:15-3:0
+
+
+-- TYPE -------- /Users/jacksmith/prog/urweb/demo/metaform2.ur
+
+Signature missing value `fl`
+
+    --> /Users/jacksmith/prog/urweb/demo/metaform2.ur:1:15-3:0
+
+
+-- TYPE -------- /Users/jacksmith/prog/urweb/demo/metaform2.ur
+
+Type mismatch: incompatible types: #1020 vs {{ () }, X : (), Y : ()}
+
+    --> /Users/jacksmith/prog/urweb/demo/metaform2.ur:1:15-3:0
+
+
+-- TYPE ------------ /Users/jacksmith/prog/urweb/demo/crud.urs
+
+Kind mismatch: incompatible kinds: Type -> Type vs Type
+
+    --> /Users/jacksmith/prog/urweb/demo/crud.urs:8:46-8:0
+
+
+-- TYPE ------------ /Users/jacksmith/prog/urweb/demo/crud.urs
+
+Kind mismatch: incompatible kinds: Type -> Type vs Type
+
+    --> /Users/jacksmith/prog/urweb/demo/crud.urs:10:20-10:0
+
+
+-- TYPE ------------ /Users/jacksmith/prog/urweb/demo/crud.urs
+
+Kind mismatch: incompatible kinds: Type -> Type vs Type
+
+    --> /Users/jacksmith/prog/urweb/demo/crud.urs:11:22-11:0
+
+
+-- TYPE ------------ /Users/jacksmith/prog/urweb/demo/crud.urs
+
+Kind mismatch: incompatible kinds: Type -> Type vs Type
+
+    --> /Users/jacksmith/prog/urweb/demo/crud.urs:12:23-12:0
+
+
+-- TYPE ------------ /Users/jacksmith/prog/urweb/demo/crud.urs
+
+Kind mismatch: incompatible kinds: Type -> Type vs Type
+
+    --> /Users/jacksmith/prog/urweb/demo/crud.urs:13:21-13:0
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/crud.ur
+
+Kind mismatch: incompatible kinds: Type -> Type vs Type
+
+    --> /Users/jacksmith/prog/urweb/demo/crud.ur:8:27-8:0
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/crud.ur
+
+Type mismatch: incompatible types: { {Type, Name : ?name, Show : ?t -> #420 (?ctx) (?use) ({Type}), Widget : nm : Name -> #420 ({(), Form : ()} ++ ?ctx) (?useInner) ({Type, '0 : #2}), WidgetPopulated : nm : Name -> ?t -> #420 ({(), Form : ()} ++ ?ctx) (?useInner) ({Type, '0 : #2}), Parse : #2 -> ?t, Inject : ?_} } vs widget : Type -> { {Type, Name : #2, Show : ('1 * #2) -> #420 ({(), Dyn : (), MakeForm : (), Body : ()}) ({Type}) ({Type}), Widget : nm : Name -> #420 ({(), Dyn : (), Body : (), Form : ()}) ({Type}) ({Type, '0 : '1}), WidgetPopulated : nm : Name -> ('2 * #2) -> #420 ({(), Dyn : (), Body : (), Form : ()}) ({Type}) ({Type, '0 : '1}), Parse : '0 -> ('1 * #2), Inject : #302 (('1 * #2))} }
+
+    --> /Users/jacksmith/prog/urweb/demo/crud.ur:0:0-0:0
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/crud.ur
+
+Unresolved disjointness constraint
+
+    --> /Users/jacksmith/prog/urweb/demo/crud.ur:14:38-14:46
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/crud.ur
+
+Unresolved disjointness constraint
+
+    --> /Users/jacksmith/prog/urweb/demo/crud.ur:16:31-16:39
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/crud.ur
+
+Unresolved disjointness constraint
+
+    --> /Users/jacksmith/prog/urweb/demo/crud.ur:26:50-26:59
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/crud.ur
+
+Unresolved disjointness constraint
+
+    --> /Users/jacksmith/prog/urweb/demo/crud.ur:28:43-28:52
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/crud.ur
+
+Kind mismatch: incompatible kinds: Type -> Type vs Type
+
+    --> /Users/jacksmith/prog/urweb/demo/crud.ur:53:42-53:49
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/crud.ur
+
+Type mismatch: incompatible types: widget : Type -> { {Type, Name : #2, Show : '2 -> #420 ({(), Dyn : (), MakeForm : (), Body : ()}) ({Type}) ({Type}), Widget : nm : Name -> #420 ({(), Dyn : (), Body : (), Form : ()}) ({Type}) ({Type, '0 : '1}), WidgetPopulated : nm : Name -> '3 -> #420 ({(), Dyn : (), Body : (), Form : ()}) ({Type}) ({Type, '0 : '1}), Parse : '0 -> '2, Inject : #302 '2} } vs { {Type, Show : ?_field} ++ ?_rest }
+
+    --> /Users/jacksmith/prog/urweb/demo/crud.ur:55:36-55:39
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/crud.ur
+
+Type mismatch: incompatible types: mod1063:cols vs #1058
+
+    --> /Users/jacksmith/prog/urweb/demo/crud.ur:57:34-57:47
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/crud.ur
+
+Kind mismatch: incompatible kinds: Type -> Type vs Type
+
+    --> /Users/jacksmith/prog/urweb/demo/crud.ur:68:22-68:29
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/crud.ur
+
+Type mismatch: incompatible types: widget : Type -> { {Type, Name : #2, Show : '2 -> #420 ({(), Dyn : (), MakeForm : (), Body : ()}) ({Type}) ({Type}), Widget : nm : Name -> #420 ({(), Dyn : (), Body : (), Form : ()}) ({Type}) ({Type, '0 : '1}), WidgetPopulated : nm : Name -> '3 -> #420 ({(), Dyn : (), Body : (), Form : ()}) ({Type}) ({Type, '0 : '1}), Parse : '0 -> '2, Inject : #302 '2} } vs { {Type, Name : ?_field} ++ ?_rest }
+
+    --> /Users/jacksmith/prog/urweb/demo/crud.ur:70:29-70:32
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/crud.ur
+
+Kind mismatch: incompatible kinds: Type -> Type vs Type
+
+    --> /Users/jacksmith/prog/urweb/demo/crud.ur:80:21-80:28
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/crud.ur
+
+Type mismatch: incompatible types: widget : Type -> { {Type, Name : #2, Show : '2 -> #420 ({(), Dyn : (), MakeForm : (), Body : ()}) ({Type}) ({Type}), Widget : nm : Name -> #420 ({(), Dyn : (), Body : (), Form : ()}) ({Type}) ({Type, '0 : '1}), WidgetPopulated : nm : Name -> '3 -> #420 ({(), Dyn : (), Body : (), Form : ()}) ({Type}) ({Type, '0 : '1}), Parse : '0 -> '2, Inject : #302 '2} } vs { {Type, Name : ?_field} ++ ?_rest }
+
+    --> /Users/jacksmith/prog/urweb/demo/crud.ur:82:28-82:31
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/crud.ur
+
+Type mismatch: incompatible types: widget : Type -> { {Type, Name : #2, Show : '2 -> #420 ({(), Dyn : (), MakeForm : (), Body : ()}) ({Type}) ({Type}), Widget : nm : Name -> #420 ({(), Dyn : (), Body : (), Form : ()}) ({Type}) ({Type, '0 : '1}), WidgetPopulated : nm : Name -> '3 -> #420 ({(), Dyn : (), Body : (), Form : ()}) ({Type}) ({Type, '0 : '1}), Parse : '0 -> '2, Inject : #302 '2} } vs { {Type, Widget : ?_field} ++ ?_rest }
+
+    --> /Users/jacksmith/prog/urweb/demo/crud.ur:82:40-82:43
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/crud.ur
+
+Constructor application to non-TCFun type
+
+    --> /Users/jacksmith/prog/urweb/demo/crud.ur:82:40-82:50
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/crud.ur
+
+Type mismatch: incompatible types: ?bind1 ++ map(?k1, ?k2) (t : (?K1 * ?K2) -> '0.2) '0 vs {?k2, '2 : '1.2} ++ map(?k1, ?k2) (t : (?K1 * ?K2) -> '0.2) '0
+
+    --> /Users/jacksmith/prog/urweb/demo/crud.ur:81:89-84:20
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/crud.ur
+
+Type mismatch: incompatible types: #1058 vs ?_mr1 ++ ?_mr2
+
+    --> /Users/jacksmith/prog/urweb/demo/crud.ur:86:0-89:10
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/crud.ur
+
+Type mismatch: incompatible types: #0 vs #401
+
+    --> /Users/jacksmith/prog/urweb/demo/crud.ur:93:22-93:25
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/crud.ur
+
+Type mismatch: incompatible types: {Type, Id : #0} ++ map((Type * Type), Type) (t : (Type * Type) -> '0.1) #1058 vs #201 (?fields) (?uniques)
+
+    --> /Users/jacksmith/prog/urweb/demo/crud.ur:94:20-94:0
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/crud.ur
+
+Kind mismatch: incompatible kinds: Type -> Type vs Type
+
+    --> /Users/jacksmith/prog/urweb/demo/crud.ur:95:36-95:43
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/crud.ur
+
+Type mismatch: incompatible types: widget : Type -> { {Type, Name : #2, Show : '2 -> #420 ({(), Dyn : (), MakeForm : (), Body : ()}) ({Type}) ({Type}), Widget : nm : Name -> #420 ({(), Dyn : (), Body : (), Form : ()}) ({Type}) ({Type, '0 : '1}), WidgetPopulated : nm : Name -> '3 -> #420 ({(), Dyn : (), Body : (), Form : ()}) ({Type}) ({Type, '0 : '1}), Parse : '0 -> '2, Inject : #302 '2} } vs { {Type, Inject : ?_field} ++ ?_rest }
+
+    --> /Users/jacksmith/prog/urweb/demo/crud.ur:98:68-98:71
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/crud.ur
+
+Type mismatch: incompatible types: widget : Type -> { {Type, Name : #2, Show : '2 -> #420 ({(), Dyn : (), MakeForm : (), Body : ()}) ({Type}) ({Type}), Widget : nm : Name -> #420 ({(), Dyn : (), Body : (), Form : ()}) ({Type}) ({Type, '0 : '1}), WidgetPopulated : nm : Name -> '3 -> #420 ({(), Dyn : (), Body : (), Form : ()}) ({Type}) ({Type, '0 : '1}), Parse : '0 -> '2, Inject : #302 '2} } vs { {Type, Parse : ?_field} ++ ?_rest }
+
+    --> /Users/jacksmith/prog/urweb/demo/crud.ur:98:80-98:83
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/crud.ur
+
+Type mismatch: incompatible types: mod1063:cols vs #1058
+
+    --> /Users/jacksmith/prog/urweb/demo/crud.ur:99:30-99:36
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/crud.ur
+
+Type mismatch: incompatible types: map(?k1, ?k2) (t : ?t -> #246 ({?_}) ({?_}) ({?_}) ('0.1)) #1058 vs ?_mr1
+
+    --> /Users/jacksmith/prog/urweb/demo/crud.ur:95:20-100:74
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/crud.ur
+
+Kind mismatch: incompatible kinds: Type -> Type vs Type
+
+    --> /Users/jacksmith/prog/urweb/demo/crud.ur:112:44-112:51
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/crud.ur
+
+Type mismatch: incompatible types: widget : Type -> { {Type, Name : #2, Show : '2 -> #420 ({(), Dyn : (), MakeForm : (), Body : ()}) ({Type}) ({Type}), Widget : nm : Name -> #420 ({(), Dyn : (), Body : (), Form : ()}) ({Type}) ({Type, '0 : '1}), WidgetPopulated : nm : Name -> '3 -> #420 ({(), Dyn : (), Body : (), Form : ()}) ({Type}) ({Type, '0 : '1}), Parse : '0 -> '2, Inject : #302 '2} } vs { {Type, Inject : ?_field} ++ ?_rest }
+
+    --> /Users/jacksmith/prog/urweb/demo/crud.ur:116:71-116:74
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/crud.ur
+
+Type mismatch: incompatible types: widget : Type -> { {Type, Name : #2, Show : '2 -> #420 ({(), Dyn : (), MakeForm : (), Body : ()}) ({Type}) ({Type}), Widget : nm : Name -> #420 ({(), Dyn : (), Body : (), Form : ()}) ({Type}) ({Type, '0 : '1}), WidgetPopulated : nm : Name -> '3 -> #420 ({(), Dyn : (), Body : (), Form : ()}) ({Type}) ({Type, '0 : '1}), Parse : '0 -> '2, Inject : #302 '2} } vs { {Type, Parse : ?_field} ++ ?_rest }
+
+    --> /Users/jacksmith/prog/urweb/demo/crud.ur:116:83-116:86
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/crud.ur
+
+Type mismatch: incompatible types: mod1063:cols vs #1058
+
+    --> /Users/jacksmith/prog/urweb/demo/crud.ur:117:38-117:44
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/crud.ur
+
+Type mismatch: incompatible types: t : ?t -> #246 ({?_, T : {?_, Id : #0} ++ map(?k1, ?k2) (t : (?K1 * ?K2) -> '0.1) (mod1063:cols)}) ({?_}) ({?_}) ('0.1) vs #246 ({{ Type }, T : map(?k1, ?k2) (t : (?K1 * ?K2) -> '0.1) (mod1063:cols) ++ ?unchanged}) ({{ Type }}) ({Type})
+
+    --> /Users/jacksmith/prog/urweb/demo/crud.ur:112:28-117:0
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/crud.ur
+
+Type mismatch: incompatible types: {Type, Id : #0} ++ map((Type * Type), Type) (t : (Type * Type) -> '0.1) #1058 vs #201 (map(?k1, ?k2) (t : (?K1 * ?K2) -> '0.1) (mod1063:cols) ++ ?unchanged) (?uniques)
+
+    --> /Users/jacksmith/prog/urweb/demo/crud.ur:118:28-118:31
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/crud.ur
+
+Type mismatch: incompatible types: {{ Type }, T : {Type, Id : #0} ++ ?otherFields} ++ ?otherTabs vs {{ Type }, T : map(?k1, ?k2) (t : (?K1 * ?K2) -> '0.1) (mod1063:cols) ++ ?unchanged}
+
+    --> /Users/jacksmith/prog/urweb/demo/crud.ur:118:32-118:83
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/crud.ur
+
+Unresolved typeclass constraint: #203 (?t) (?fs)
+
+    --> /Users/jacksmith/prog/urweb/demo/crud.ur:49:52-49:76
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/crud.ur
+
+Unresolved disjointness constraint
+
+    --> /Users/jacksmith/prog/urweb/demo/crud.ur:111:21-111:0
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/crud.ur
+
+Type mismatch: incompatible types: {Type, Distinct : #9, From : #262 (?free) ({{ Type }, Tab : ?fs}), Where : #246 ({{ Type }, Tab : {Type, Id : #0} ++ ?otherFields} ++ ?otherTabs) (?agg) (?exps) #9, GroupBy : #258 (?_) (?_), Having : #246 (?tables) (?agg) (?exps) #9, SelectFields : #258 ({{ Type }, Tab : map(?k1, ?k2) (t : (?K1 * ?K2) -> '0.1) (mod1063:cols) ++ ?_}) ({{ Type }, Tab : map(?k1, ?k2) (t : (?K1 * ?K2) -> '0.1) (mod1063:cols)}), SelectExps : { {Type} }} vs {Type, Distinct : #9, From : #262 (?free) (?tables), Where : #246 (?free ++ ?tables) (?afree) ({Type}) #9, GroupBy : #258 (?tables) (?grouped), Having : #246 (?free ++ ?grouped) (?afree ++ ?tables) ({Type}) #9, SelectFields : #258 (?grouped) (?selectedFields), SelectExps : { map(Type, Type) (#274 (?free ++ ?grouped) (?afree ++ ?tables) ({Type})) (?selectedExps) }}
+
+    --> /Users/jacksmith/prog/urweb/demo/crud.ur:126:60-126:122
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/crud.ur
+
+Unbound type constructor `option`
+
+    --> /Users/jacksmith/prog/urweb/demo/crud.ur:127:24-127:36
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/crud.ur
+
+Constructor application to non-arrow kind
+
+    --> /Users/jacksmith/prog/urweb/demo/crud.ur:127:23-127:63
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/crud.ur
+
+Kind mismatch: incompatible kinds: Type -> Type vs Type
+
+    --> /Users/jacksmith/prog/urweb/demo/crud.ur:130:32-130:39
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/crud.ur
+
+Type mismatch: incompatible types: widget : Type -> { {Type, Name : #2, Show : '2 -> #420 ({(), Dyn : (), MakeForm : (), Body : ()}) ({Type}) ({Type}), Widget : nm : Name -> #420 ({(), Dyn : (), Body : (), Form : ()}) ({Type}) ({Type, '0 : '1}), WidgetPopulated : nm : Name -> '3 -> #420 ({(), Dyn : (), Body : (), Form : ()}) ({Type}) ({Type, '0 : '1}), Parse : '0 -> '2, Inject : #302 '2} } vs { {Type, Name : ?_field} ++ ?_rest }
+
+    --> /Users/jacksmith/prog/urweb/demo/crud.ur:134:36-134:39
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/crud.ur
+
+Type mismatch: incompatible types: widget : Type -> { {Type, Name : #2, Show : '2 -> #420 ({(), Dyn : (), MakeForm : (), Body : ()}) ({Type}) ({Type}), Widget : nm : Name -> #420 ({(), Dyn : (), Body : (), Form : ()}) ({Type}) ({Type, '0 : '1}), WidgetPopulated : nm : Name -> '3 -> #420 ({(), Dyn : (), Body : (), Form : ()}) ({Type}) ({Type, '0 : '1}), Parse : '0 -> '2, Inject : #302 '2} } vs { {Type, WidgetPopulated : ?_field} ++ ?_rest }
+
+    --> /Users/jacksmith/prog/urweb/demo/crud.ur:134:48-134:51
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/crud.ur
+
+Constructor application to non-TCFun type
+
+    --> /Users/jacksmith/prog/urweb/demo/crud.ur:134:48-134:67
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/crud.ur
+
+Application to non-function type
+
+    --> /Users/jacksmith/prog/urweb/demo/crud.ur:134:48-134:72
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/crud.ur
+
+Type mismatch: incompatible types: ?bind1 ++ map(?k1, ?k2) (t : (?K1 * ?K2) -> '0.2) '0 vs {?k2, '2 : '1.2} ++ map(?k1, ?k2) (t : (?K1 * ?K2) -> '0.2) '0
+
+    --> /Users/jacksmith/prog/urweb/demo/crud.ur:133:22-136:28
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/crud.ur
+
+Type mismatch: incompatible types: map(?k1, ?k2) (t : (?K1 * ?K2) -> '0.2) (mod1063:cols) vs ?_mr1
+
+    --> /Users/jacksmith/prog/urweb/demo/crud.ur:138:0-141:14
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/crud.ur
+
+Type mismatch: incompatible types: {Type, Id : #0} ++ map((Type * Type), Type) (t : (Type * Type) -> '0.1) #1058 vs #201 (?fields) (?uniques)
+
+    --> /Users/jacksmith/prog/urweb/demo/crud.ur:147:49-147:84
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/crud.ur
+
+Unresolved typeclass constraint: #203 (?t) (?fs)
+
+    --> /Users/jacksmith/prog/urweb/demo/crud.ur:126:60-126:122
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/crud.ur
+
+Type mismatch: incompatible types: {Type, Name : #2, Show : (#0 * #2) -> #420 ({(), Dyn : (), MakeForm : (), Body : ()}) ({Type}) ({Type}), Widget : nm : Name -> #420 ({(), Dyn : (), Body : (), Form : ()}) ({Type}) ({Type, '0 : '1}), WidgetPopulated : nm : Name -> (#0 * #2) -> #420 ({(), Dyn : (), Body : (), Form : ()}) ({Type}) ({Type, '0 : '1}), Parse : '0 -> (#0 * #2), Inject : #302 ((#0 * #2))} vs {Type, Name : #2, Show : (#1 * #2) -> #420 ({(), Dyn : (), MakeForm : (), Body : ()}) ({Type}) ({Type}), Widget : nm : Name -> #420 ({(), Dyn : (), Body : (), Form : ()}) ({Type}) ({Type, '0 : '1}), WidgetPopulated : nm : Name -> (#1 * #2) -> #420 ({(), Dyn : (), Body : (), Form : ()}) ({Type}) ({Type, '0 : '1}), Parse : '0 -> (#1 * #2), Inject : #302 ((#1 * #2))}
+
+    --> /Users/jacksmith/prog/urweb/demo/crud.ur:0:0-0:0
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/crud.ur
+
+Type mismatch: incompatible types: {Type, Name : #2, Show : (#0 * #2) -> #420 ({(), Dyn : (), MakeForm : (), Body : ()}) ({Type}) ({Type}), Widget : nm : Name -> #420 ({(), Dyn : (), Body : (), Form : ()}) ({Type}) ({Type, '0 : '1}), WidgetPopulated : nm : Name -> (#0 * #2) -> #420 ({(), Dyn : (), Body : (), Form : ()}) ({Type}) ({Type, '0 : '1}), Parse : '0 -> (#0 * #2), Inject : #302 ((#0 * #2))} vs {Type, Name : #2, Show : (#2 * #2) -> #420 ({(), Dyn : (), MakeForm : (), Body : ()}) ({Type}) ({Type}), Widget : nm : Name -> #420 ({(), Dyn : (), Body : (), Form : ()}) ({Type}) ({Type, '0 : '1}), WidgetPopulated : nm : Name -> (#2 * #2) -> #420 ({(), Dyn : (), Body : (), Form : ()}) ({Type}) ({Type, '0 : '1}), Parse : '0 -> (#2 * #2), Inject : #302 ((#2 * #2))}
+
+    --> /Users/jacksmith/prog/urweb/demo/crud.ur:0:0-0:0
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/crud.ur
+
+Type mismatch: incompatible types: { {Type, Name : #2, Show : #0 -> #420 (?ctx) (?use) ({Type}), Widget : nm : Name -> #420 ({(), Form : ()} ++ ?ctx) (?useInner) ({Type, '0 : #9}), WidgetPopulated : nm : Name -> #9 -> #420 ({(), Form : ()} ++ ?ctx) (?useInner) ({Type, '0 : #9}), Parse : ?x -> ?x, Inject : ?_} } vs widget : Type -> { {Type, Name : #2, Show : (#9 * #9) -> #420 ({(), Dyn : (), MakeForm : (), Body : ()}) ({Type}) ({Type}), Widget : nm : Name -> #420 ({(), Dyn : (), Body : (), Form : ()}) ({Type}) ({Type, '0 : '1}), WidgetPopulated : nm : Name -> (#9 * #9) -> #420 ({(), Dyn : (), Body : (), Form : ()}) ({Type}) ({Type, '0 : '1}), Parse : '0 -> (#9 * #9), Inject : #302 ((#9 * #9))} }
+
+    --> /Users/jacksmith/prog/urweb/demo/crud.ur:0:0-0:0
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/crud.ur
+
+Unresolved disjointness constraint
+
+    --> /Users/jacksmith/prog/urweb/demo/crud.ur:0:0-0:0
+
+
+-- TYPE ------------ /Users/jacksmith/prog/urweb/demo/crud1.ur
+
+Signature missing type `cols`
+
+    --> /Users/jacksmith/prog/urweb/demo/crud1.ur:4:5-13:0
+
+
+-- TYPE ------------ /Users/jacksmith/prog/urweb/demo/crud1.ur
+
+Signature missing value `fl`
+
+    --> /Users/jacksmith/prog/urweb/demo/crud1.ur:4:5-13:0
+
+
+-- TYPE ------------ /Users/jacksmith/prog/urweb/demo/crud1.ur
+
+Type mismatch: incompatible types: { {Type, Id : #0, A : #0, B : #2, C : #1, D : #9} } vs {Type, Id : #0} ++ map((Type * Type), Type) (t : (Type * Type) -> '0.1) #1058
+
+    --> /Users/jacksmith/prog/urweb/demo/crud1.ur:4:5-13:0
+
+
+-- TYPE ------------ /Users/jacksmith/prog/urweb/demo/crud1.ur
+
+Type mismatch: incompatible types: { {Type, A : widget : Type -> { {Type, Name : #2, Show : (#0 * #2) -> #420 ({(), Dyn : (), MakeForm : (), Body : ()}) ({Type}) ({Type}), Widget : nm : Name -> #420 ({(), Dyn : (), Body : (), Form : ()}) ({Type}) ({Type, '0 : '1}), WidgetPopulated : nm : Name -> (#0 * #2) -> #420 ({(), Dyn : (), Body : (), Form : ()}) ({Type}) ({Type, '0 : '1}), Parse : '0 -> (#0 * #2), Inject : #302 ((#0 * #2))} }, B : widget : Type -> { {Type, Name : #2, Show : (#0 * #2) -> #420 ({(), Dyn : (), MakeForm : (), Body : ()}) ({Type}) ({Type}), Widget : nm : Name -> #420 ({(), Dyn : (), Body : (), Form : ()}) ({Type}) ({Type, '0 : '1}), WidgetPopulated : nm : Name -> (#0 * #2) -> #420 ({(), Dyn : (), Body : (), Form : ()}) ({Type}) ({Type, '0 : '1}), Parse : '0 -> (#0 * #2), Inject : #302 ((#0 * #2))} }, C : widget : Type -> { {Type, Name : #2, Show : (#0 * #2) -> #420 ({(), Dyn : (), MakeForm : (), Body : ()}) ({Type}) ({Type}), Widget : nm : Name -> #420 ({(), Dyn : (), Body : (), Form : ()}) ({Type}) ({Type, '0 : '1}), WidgetPopulated : nm : Name -> (#0 * #2) -> #420 ({(), Dyn : (), Body : (), Form : ()}) ({Type}) ({Type, '0 : '1}), Parse : '0 -> (#0 * #2), Inject : #302 ((#0 * #2))} }, D : { {Type, Name : #2, Show : #0 -> #420 (?ctx) (?use) ({Type}), Widget : nm : Name -> #420 ({(), Form : ()} ++ ?ctx) (?useInner) ({Type, '0 : #9}), WidgetPopulated : nm : Name -> #9 -> #420 ({(), Form : ()} ++ ?ctx) (?useInner) ({Type, '0 : #9}), Parse : ?x -> ?x, Inject : ?_} }} } vs #1052 #1058
+
+    --> /Users/jacksmith/prog/urweb/demo/crud1.ur:4:5-13:0
+
+
+-- TYPE ------------ /Users/jacksmith/prog/urweb/demo/crud1.ur
+
+Unresolved disjointness constraint
+
+    --> /Users/jacksmith/prog/urweb/demo/crud1.ur:4:5-13:0
+
+
+-- TYPE ------------ /Users/jacksmith/prog/urweb/demo/crud2.ur
+
+Unresolved disjointness constraint
+
+    --> /Users/jacksmith/prog/urweb/demo/crud2.ur:16:42-16:49
+
+
+-- TYPE ------------ /Users/jacksmith/prog/urweb/demo/crud2.ur
+
+Unresolved disjointness constraint
+
+    --> /Users/jacksmith/prog/urweb/demo/crud2.ur:22:42-22:49
+
+
+-- TYPE ------------ /Users/jacksmith/prog/urweb/demo/crud2.ur
+
+Signature missing type `cols`
+
+    --> /Users/jacksmith/prog/urweb/demo/crud2.ur:4:5-35:0
+
+
+-- TYPE ------------ /Users/jacksmith/prog/urweb/demo/crud2.ur
+
+Signature missing value `fl`
+
+    --> /Users/jacksmith/prog/urweb/demo/crud2.ur:4:5-35:0
+
+
+-- TYPE ------------ /Users/jacksmith/prog/urweb/demo/crud2.ur
+
+Type mismatch: incompatible types: { {Type, Id : #0, Name : #2, Ready : #9} } vs {Type, Id : #0} ++ map((Type * Type), Type) (t : (Type * Type) -> '0.1) #1058
+
+    --> /Users/jacksmith/prog/urweb/demo/crud2.ur:4:5-35:0
+
+
+-- TYPE ------------ /Users/jacksmith/prog/urweb/demo/crud2.ur
+
+Type mismatch: incompatible types: { {Type, Name : widget : Type -> { {Type, Name : #2, Show : (#0 * #2) -> #420 ({(), Dyn : (), MakeForm : (), Body : ()}) ({Type}) ({Type}), Widget : nm : Name -> #420 ({(), Dyn : (), Body : (), Form : ()}) ({Type}) ({Type, '0 : '1}), WidgetPopulated : nm : Name -> (#0 * #2) -> #420 ({(), Dyn : (), Body : (), Form : ()}) ({Type}) ({Type, '0 : '1}), Parse : '0 -> (#0 * #2), Inject : #302 ((#0 * #2))} }, Ready : { {Type, Name : #2, Show : #9 -> #420 (?ctx) (?use) ({Type}), Widget : nm : Name -> #420 ({(), Form : ()} ++ ?ctx) (?use1) ({Type, '0 : #2}), WidgetPopulated : nm : Name -> #9 -> #420 ({(), Form : ()} ++ ?ctx) (?use1) ({Type, '0 : #2}), Parse : #2 -> #9, Inject : ?_} }} } vs #1052 #1058
+
+    --> /Users/jacksmith/prog/urweb/demo/crud2.ur:4:5-35:0
+
+
+-- TYPE ------------ /Users/jacksmith/prog/urweb/demo/crud2.ur
+
+Unresolved disjointness constraint
+
+    --> /Users/jacksmith/prog/urweb/demo/crud2.ur:4:5-35:0
+
+
+-- TYPE ------------ /Users/jacksmith/prog/urweb/demo/crud3.ur
+
+Type mismatch: incompatible types: { {Type} } vs #420 ({(), Form : ()} ++ ?ctx) ({Type}) (?bind)
+
+    --> /Users/jacksmith/prog/urweb/demo/crud3.ur:12:41-15:0
+
+
+-- TYPE ------------ /Users/jacksmith/prog/urweb/demo/crud3.ur
+
+Application to non-function type
+
+    --> /Users/jacksmith/prog/urweb/demo/crud3.ur:12:41-15:0
+
+
+-- TYPE ------------ /Users/jacksmith/prog/urweb/demo/crud3.ur
+
+Type mismatch: incompatible types: { {Type} } vs #420 ({(), Form : ()} ++ ?ctx) ({Type}) (?bind)
+
+    --> /Users/jacksmith/prog/urweb/demo/crud3.ur:18:41-21:0
+
+
+-- TYPE ------------ /Users/jacksmith/prog/urweb/demo/crud3.ur
+
+Application to non-function type
+
+    --> /Users/jacksmith/prog/urweb/demo/crud3.ur:18:41-21:0
+
+
+-- TYPE ------------ /Users/jacksmith/prog/urweb/demo/crud3.ur
+
+Unresolved disjointness constraint
+
+    --> /Users/jacksmith/prog/urweb/demo/crud3.ur:12:41-12:49
+
+
+-- TYPE ------------ /Users/jacksmith/prog/urweb/demo/crud3.ur
+
+Unresolved disjointness constraint
+
+    --> /Users/jacksmith/prog/urweb/demo/crud3.ur:12:41-12:53
+
+
+-- TYPE ------------ /Users/jacksmith/prog/urweb/demo/crud3.ur
+
+Unresolved disjointness constraint
+
+    --> /Users/jacksmith/prog/urweb/demo/crud3.ur:18:41-18:49
+
+
+-- TYPE ------------ /Users/jacksmith/prog/urweb/demo/crud3.ur
+
+Unresolved disjointness constraint
+
+    --> /Users/jacksmith/prog/urweb/demo/crud3.ur:18:41-18:53
+
+
+-- TYPE ------------ /Users/jacksmith/prog/urweb/demo/crud3.ur
+
+Signature missing type `cols`
+
+    --> /Users/jacksmith/prog/urweb/demo/crud3.ur:4:5-27:0
+
+
+-- TYPE ------------ /Users/jacksmith/prog/urweb/demo/crud3.ur
+
+Signature missing value `fl`
+
+    --> /Users/jacksmith/prog/urweb/demo/crud3.ur:4:5-27:0
+
+
+-- TYPE ------------ /Users/jacksmith/prog/urweb/demo/crud3.ur
+
+Type mismatch: incompatible types: { {Type, Id : #0, Text : #2} } vs {Type, Id : #0} ++ map((Type * Type), Type) (t : (Type * Type) -> '0.1) #1058
+
+    --> /Users/jacksmith/prog/urweb/demo/crud3.ur:4:5-27:0
+
+
+-- TYPE ------------ /Users/jacksmith/prog/urweb/demo/crud3.ur
+
+Type mismatch: incompatible types: { {Type, Text : { {Type, Name : #2, Show : #0 -> #420 (?ctx) (?use) ({Type}), Widget : nm : Name -> #420 (?ctx) (?use1) (?bind2), WidgetPopulated : nm : Name -> ?s -> #420 (?ctx) (?use1) (?bind2), Parse : { {Type, A : #2, B : #2} } -> #2, Inject : ?_} }} } vs #1052 #1058
+
+    --> /Users/jacksmith/prog/urweb/demo/crud3.ur:4:5-27:0
+
+
+-- TYPE ------------ /Users/jacksmith/prog/urweb/demo/crud3.ur
+
+Unresolved disjointness constraint
+
+    --> /Users/jacksmith/prog/urweb/demo/crud3.ur:4:5-27:0
+
+
+-- TYPE --------- /Users/jacksmith/prog/urweb/demo/listEdit.ur
+
+Type mismatch: incompatible types: #2 vs #0
+
+    --> /Users/jacksmith/prog/urweb/demo/listEdit.ur:17:32-17:34
+
+
+-- TYPE --------- /Users/jacksmith/prog/urweb/demo/listEdit.ur
+
+Type mismatch: incompatible types: ?useOuter ++ ?useInner vs ?useOuter ++ ?useInner
+
+    --> /Users/jacksmith/prog/urweb/demo/listEdit.ur:17:0-21:6
+
+
+-- TYPE --------- /Users/jacksmith/prog/urweb/demo/listEdit.ur
+
+Unresolved disjointness constraint
+
+    --> /Users/jacksmith/prog/urweb/demo/listEdit.ur:17:8-17:12
+
+
+-- TYPE --------- /Users/jacksmith/prog/urweb/demo/listEdit.ur
+
+Unresolved disjointness constraint
+
+    --> /Users/jacksmith/prog/urweb/demo/listEdit.ur:18:8-18:15
+
+
+-- TYPE --------- /Users/jacksmith/prog/urweb/demo/listEdit.ur
+
+Unresolved disjointness constraint
+
+    --> /Users/jacksmith/prog/urweb/demo/listEdit.ur:19:8-19:17
+
+
+-- TYPE --------- /Users/jacksmith/prog/urweb/demo/listEdit.ur
+
+Unresolved disjointness constraint
+
+    --> /Users/jacksmith/prog/urweb/demo/listEdit.ur:19:32-19:35
+
+
+-- TYPE --------- /Users/jacksmith/prog/urweb/demo/listEdit.ur
+
+Unresolved disjointness constraint
+
+    --> /Users/jacksmith/prog/urweb/demo/listEdit.ur:20:8-20:12
+
+
+-- TYPE --------- /Users/jacksmith/prog/urweb/demo/listEdit.ur
+
+Type mismatch: incompatible types: { {Type, Data : #115 #2, NewData : #115 #2, Tail : #115 (#15 (?_))} } vs (?_ * #15 (?_))
+
+    --> /Users/jacksmith/prog/urweb/demo/listEdit.ur:37:32-37:0
+
+
+-- TYPE --------- /Users/jacksmith/prog/urweb/demo/listEdit.ur
+
+Type mismatch: incompatible types: #15 (?_) vs #1099
+
+    --> /Users/jacksmith/prog/urweb/demo/listEdit.ur:47:28-47:32
+
+
+-- TYPE -------- /Users/jacksmith/prog/urweb/demo/increment.ur
+
+Type mismatch: incompatible types: #0 vs #401
+
+    --> /Users/jacksmith/prog/urweb/demo/increment.ur:3:27-3:0
+
+
+-- TYPE ------------ /Users/jacksmith/prog/urweb/demo/noisy.ur
+
+Type mismatch: incompatible types: { {?_, Id : #0, A : #2} } vs #201 (?fields) (?uniques)
+
+    --> /Users/jacksmith/prog/urweb/demo/noisy.ur:7:37-7:83
+
+
+-- TYPE ------------ /Users/jacksmith/prog/urweb/demo/noisy.ur
+
+Type mismatch: incompatible types: { {?_, Id : #0, A : #2} } vs #201 (?fields) (?uniques)
+
+    --> /Users/jacksmith/prog/urweb/demo/noisy.ur:10:37-10:72
+
+
+-- TYPE ------------ /Users/jacksmith/prog/urweb/demo/noisy.ur
+
+Unresolved typeclass constraint: #203 (?t) (?fs)
+
+    --> /Users/jacksmith/prog/urweb/demo/noisy.ur:13:51-13:90
+
+
+-- TYPE ------------ /Users/jacksmith/prog/urweb/demo/noisy.ur
+
+Type mismatch: incompatible types: #15 vs #1114
+
+    --> /Users/jacksmith/prog/urweb/demo/noisy.ur:35:73-35:108
+
+
+-- TYPE ------------ /Users/jacksmith/prog/urweb/demo/noisy.ur
+
+Type mismatch: incompatible types: #2 vs #9
+
+    --> /Users/jacksmith/prog/urweb/demo/noisy.ur:37:99-37:100
+
+
+-- TYPE ------------ /Users/jacksmith/prog/urweb/demo/batch.ur
+
+Unresolved typeclass constraint: #203 (?t) (?fs)
+
+    --> /Users/jacksmith/prog/urweb/demo/batch.ur:7:39-7:56
+
+
+-- TYPE ------------ /Users/jacksmith/prog/urweb/demo/batch.ur
+
+Type mismatch: incompatible types: { {?_, Id : #0, A : #2} } vs #201 (?fields) (?uniques)
+
+    --> /Users/jacksmith/prog/urweb/demo/batch.ur:15:41-15:87
+
+
+-- TYPE ------------ /Users/jacksmith/prog/urweb/demo/batch.ur
+
+Type mismatch: incompatible types: { {?_, Id : #0, A : #2} } vs #201 (?fields) (?uniques)
+
+    --> /Users/jacksmith/prog/urweb/demo/batch.ur:19:37-19:72
+
+
+-- TYPE ------------ /Users/jacksmith/prog/urweb/demo/batch.ur
+
+Unresolved disjointness constraint
+
+    --> /Users/jacksmith/prog/urweb/demo/batch.ur:27:16-27:19
+
+
+-- TYPE ------------ /Users/jacksmith/prog/urweb/demo/batch.ur
+
+Unresolved disjointness constraint
+
+    --> /Users/jacksmith/prog/urweb/demo/batch.ur:27:20-27:23
+
+
+-- TYPE ------------ /Users/jacksmith/prog/urweb/demo/batch.ur
+
+Unresolved disjointness constraint
+
+    --> /Users/jacksmith/prog/urweb/demo/batch.ur:27:36-27:39
+
+
+-- TYPE ------------ /Users/jacksmith/prog/urweb/demo/batch.ur
+
+Unresolved disjointness constraint
+
+    --> /Users/jacksmith/prog/urweb/demo/batch.ur:28:61-28:64
+
+
+-- TYPE ------------ /Users/jacksmith/prog/urweb/demo/batch.ur
+
+Unresolved disjointness constraint
+
+    --> /Users/jacksmith/prog/urweb/demo/batch.ur:28:65-28:72
+
+
+-- TYPE ------------ /Users/jacksmith/prog/urweb/demo/batch.ur
+
+Unresolved disjointness constraint
+
+    --> /Users/jacksmith/prog/urweb/demo/batch.ur:35:56-35:62
+
+
+-- TYPE ------------ /Users/jacksmith/prog/urweb/demo/batch.ur
+
+Unresolved disjointness constraint
+
+    --> /Users/jacksmith/prog/urweb/demo/batch.ur:36:10-36:13
+
+
+-- TYPE ------------ /Users/jacksmith/prog/urweb/demo/batch.ur
+
+Unresolved disjointness constraint
+
+    --> /Users/jacksmith/prog/urweb/demo/batch.ur:36:15-36:18
+
+
+-- TYPE ------------ /Users/jacksmith/prog/urweb/demo/batch.ur
+
+Unresolved disjointness constraint
+
+    --> /Users/jacksmith/prog/urweb/demo/batch.ur:36:27-36:30
+
+
+-- TYPE ------------ /Users/jacksmith/prog/urweb/demo/batch.ur
+
+Unresolved disjointness constraint
+
+    --> /Users/jacksmith/prog/urweb/demo/batch.ur:35:13-35:17
+
+
+-- TYPE ------------ /Users/jacksmith/prog/urweb/demo/batch.ur
+
+Type mismatch: incompatible types: #15 vs #1126
+
+    --> /Users/jacksmith/prog/urweb/demo/batch.ur:59:25-59:27
+
+
+-- TYPE ------------ /Users/jacksmith/prog/urweb/demo/batch.ur
+
+Type mismatch: incompatible types: #15 vs #1126
+
+    --> /Users/jacksmith/prog/urweb/demo/batch.ur:65:21-65:24
+
+
+-- TYPE ------------ /Users/jacksmith/prog/urweb/demo/batch.ur
+
+Type mismatch: incompatible types: #15 vs #1126
+
+    --> /Users/jacksmith/prog/urweb/demo/batch.ur:79:22-79:29
+
+
+-- TYPE ------------ /Users/jacksmith/prog/urweb/demo/batch.ur
+
+Type mismatch: incompatible types: {(), Body : ()} ++ {Type, Dyn : ()} ++ ?_shared_row_tail vs {(), Dyn : ()} ++ {Type, Body : ()} ++ ?_shared_row_tail
+
+    --> /Users/jacksmith/prog/urweb/demo/batch.ur:65:0-81:8
+
+
+-- TYPE -------- /Users/jacksmith/prog/urweb/demo/batchFun.urs
+
+Kind mismatch: incompatible kinds: Type -> Type vs Type
+
+    --> /Users/jacksmith/prog/urweb/demo/batchFun.urs:9:46-9:0
+
+
+-- TYPE -------- /Users/jacksmith/prog/urweb/demo/batchFun.urs
+
+Kind mismatch: incompatible kinds: Type -> Type vs Type
+
+    --> /Users/jacksmith/prog/urweb/demo/batchFun.urs:11:20-11:0
+
+
+-- TYPE -------- /Users/jacksmith/prog/urweb/demo/batchFun.urs
+
+Kind mismatch: incompatible kinds: Type -> Type vs Type
+
+    --> /Users/jacksmith/prog/urweb/demo/batchFun.urs:12:22-12:0
+
+
+-- TYPE -------- /Users/jacksmith/prog/urweb/demo/batchFun.urs
+
+Kind mismatch: incompatible kinds: Type -> Type vs Type
+
+    --> /Users/jacksmith/prog/urweb/demo/batchFun.urs:13:23-13:0
+
+
+-- TYPE --------- /Users/jacksmith/prog/urweb/demo/batchFun.ur
+
+Kind mismatch: incompatible kinds: Type -> Type vs Type
+
+    --> /Users/jacksmith/prog/urweb/demo/batchFun.ur:9:27-9:0
+
+
+-- TYPE --------- /Users/jacksmith/prog/urweb/demo/batchFun.ur
+
+Type mismatch: incompatible types: { {Type, Nam : ?name, Show : ?t -> #420 (?ctx) (?use) ({Type}), Inject : ?_, NewState : #113 (#115 #2), Widget : #115 #2 -> #420 ({(), Body : ()} ++ ?ctx) (?useInner) ({Type}), ReadState : #115 #2 -> #113 (?t2)} } vs state : Type -> { {Type, Nam : #2, Show : ('1 * #115 #2) -> #420 ({(), Dyn : (), MakeForm : (), Body : ()}) ({Type}) ({Type}), Inject : #302 (('1 * #115 #2)), NewState : #113 '0, Widget : '0 -> #420 ({(), Dyn : (), MakeForm : (), Body : ()}) ({Type}) ({Type}), ReadState : '0 -> #113 (('1 * #115 #2))} }
+
+    --> /Users/jacksmith/prog/urweb/demo/batchFun.ur:0:0-0:0
+
+
+-- TYPE --------- /Users/jacksmith/prog/urweb/demo/batchFun.ur
+
+Unresolved disjointness constraint
+
+    --> /Users/jacksmith/prog/urweb/demo/batchFun.ur:18:27-18:36
+
+
+-- TYPE --------- /Users/jacksmith/prog/urweb/demo/batchFun.ur
+
+Unresolved typeclass constraint: #203 (?t) (?fs)
+
+    --> /Users/jacksmith/prog/urweb/demo/batchFun.ur:42:43-42:60
+
+
+-- TYPE --------- /Users/jacksmith/prog/urweb/demo/batchFun.ur
+
+Type mismatch: incompatible types: {Type, Id : #0} ++ map((Type * Type), Type) (t : (Type * Type) -> '0.1) #1156 vs #201 (?fields) (?uniques)
+
+    --> /Users/jacksmith/prog/urweb/demo/batchFun.ur:47:20-47:0
+
+
+-- TYPE --------- /Users/jacksmith/prog/urweb/demo/batchFun.ur
+
+Kind mismatch: incompatible kinds: Type -> Type vs Type
+
+    --> /Users/jacksmith/prog/urweb/demo/batchFun.ur:48:36-48:43
+
+
+-- TYPE --------- /Users/jacksmith/prog/urweb/demo/batchFun.ur
+
+Type mismatch: incompatible types: state : Type -> { {Type, Nam : #2, Show : '2 -> #420 ({(), Dyn : (), MakeForm : (), Body : ()}) ({Type}) ({Type}), Inject : #302 '2, NewState : #113 '0, Widget : '0 -> #420 ({(), Dyn : (), MakeForm : (), Body : ()}) ({Type}) ({Type}), ReadState : '0 -> #113 '2} } vs { {Type, Inject : ?_field} ++ ?_rest }
+
+    --> /Users/jacksmith/prog/urweb/demo/batchFun.ur:51:51-51:54
+
+
+-- TYPE --------- /Users/jacksmith/prog/urweb/demo/batchFun.ur
+
+Type mismatch: incompatible types: map(?k1, ?k2) (t : ?t -> #246 ({?_}) ({?_}) ({?_}) ('0.1)) #1156 vs ?_mr1
+
+    --> /Users/jacksmith/prog/urweb/demo/batchFun.ur:48:20-53:77
+
+
+-- TYPE --------- /Users/jacksmith/prog/urweb/demo/batchFun.ur
+
+Type mismatch: incompatible types: {Type, Id : #0} ++ map((Type * Type), Type) (t : (Type * Type) -> '0.1) #1156 vs #201 (?fields) (?uniques)
+
+    --> /Users/jacksmith/prog/urweb/demo/batchFun.ur:63:41-63:76
+
+
+-- TYPE --------- /Users/jacksmith/prog/urweb/demo/batchFun.ur
+
+Kind mismatch: incompatible kinds: Type -> Type vs Type
+
+    --> /Users/jacksmith/prog/urweb/demo/batchFun.ur:73:31-73:38
+
+
+-- TYPE --------- /Users/jacksmith/prog/urweb/demo/batchFun.ur
+
+Type mismatch: incompatible types: state : Type -> { {Type, Nam : #2, Show : '2 -> #420 ({(), Dyn : (), MakeForm : (), Body : ()}) ({Type}) ({Type}), Inject : #302 '2, NewState : #113 '0, Widget : '0 -> #420 ({(), Dyn : (), MakeForm : (), Body : ()}) ({Type}) ({Type}), ReadState : '0 -> #113 '2} } vs { {Type, Show : ?_field} ++ ?_rest }
+
+    --> /Users/jacksmith/prog/urweb/demo/batchFun.ur:75:38-75:39
+
+
+-- TYPE --------- /Users/jacksmith/prog/urweb/demo/batchFun.ur
+
+Type mismatch: constructor references a variable out of scope for the unification variable (TooDeep)
+
+    --> /Users/jacksmith/prog/urweb/demo/batchFun.ur:75:28-75:58
+
+
+-- TYPE --------- /Users/jacksmith/prog/urweb/demo/batchFun.ur
+
+Unresolved disjointness constraint
+
+    --> /Users/jacksmith/prog/urweb/demo/batchFun.ur:71:20-71:23
+
+
+-- TYPE --------- /Users/jacksmith/prog/urweb/demo/batchFun.ur
+
+Unresolved disjointness constraint
+
+    --> /Users/jacksmith/prog/urweb/demo/batchFun.ur:72:22-72:25
+
+
+-- TYPE --------- /Users/jacksmith/prog/urweb/demo/batchFun.ur
+
+Unresolved disjointness constraint
+
+    --> /Users/jacksmith/prog/urweb/demo/batchFun.ur:75:33-75:36
+
+
+-- TYPE --------- /Users/jacksmith/prog/urweb/demo/batchFun.ur
+
+Unresolved disjointness constraint
+
+    --> /Users/jacksmith/prog/urweb/demo/batchFun.ur:78:32-78:35
+
+
+-- TYPE --------- /Users/jacksmith/prog/urweb/demo/batchFun.ur
+
+Unresolved disjointness constraint
+
+    --> /Users/jacksmith/prog/urweb/demo/batchFun.ur:78:36-78:43
+
+
+-- TYPE --------- /Users/jacksmith/prog/urweb/demo/batchFun.ur
+
+Kind mismatch: incompatible kinds: Type -> Type vs Type
+
+    --> /Users/jacksmith/prog/urweb/demo/batchFun.ur:88:24-88:31
+
+
+-- TYPE --------- /Users/jacksmith/prog/urweb/demo/batchFun.ur
+
+Type mismatch: incompatible types: state : Type -> { {Type, Nam : #2, Show : '2 -> #420 ({(), Dyn : (), MakeForm : (), Body : ()}) ({Type}) ({Type}), Inject : #302 '2, NewState : #113 '0, Widget : '0 -> #420 ({(), Dyn : (), MakeForm : (), Body : ()}) ({Type}) ({Type}), ReadState : '0 -> #113 '2} } vs { {Type, Nam : ?_field} ++ ?_rest }
+
+    --> /Users/jacksmith/prog/urweb/demo/batchFun.ur:90:33-90:34
+
+
+-- TYPE --------- /Users/jacksmith/prog/urweb/demo/batchFun.ur
+
+Kind mismatch: incompatible kinds: Type -> Type vs Type
+
+    --> /Users/jacksmith/prog/urweb/demo/batchFun.ur:102:24-102:31
+
+
+-- TYPE --------- /Users/jacksmith/prog/urweb/demo/batchFun.ur
+
+Type mismatch: incompatible types: state : Type -> { {Type, Nam : #2, Show : '2 -> #420 ({(), Dyn : (), MakeForm : (), Body : ()}) ({Type}) ({Type}), Inject : #302 '2, NewState : #113 '0, Widget : '0 -> #420 ({(), Dyn : (), MakeForm : (), Body : ()}) ({Type}) ({Type}), ReadState : '0 -> #113 '2} } vs { {Type, NewState : ?_field} ++ ?_rest }
+
+    --> /Users/jacksmith/prog/urweb/demo/batchFun.ur:104:26-104:27
+
+
+-- TYPE --------- /Users/jacksmith/prog/urweb/demo/batchFun.ur
+
+Kind mismatch: incompatible kinds: Type -> Type vs Type
+
+    --> /Users/jacksmith/prog/urweb/demo/batchFun.ur:113:31-113:38
+
+
+-- TYPE --------- /Users/jacksmith/prog/urweb/demo/batchFun.ur
+
+Type mismatch: incompatible types: state : Type -> { {Type, Nam : #2, Show : '2 -> #420 ({(), Dyn : (), MakeForm : (), Body : ()}) ({Type}) ({Type}), Inject : #302 '2, NewState : #113 '0, Widget : '0 -> #420 ({(), Dyn : (), MakeForm : (), Body : ()}) ({Type}) ({Type}), ReadState : '0 -> #113 '2} } vs { {Type, ReadState : ?_field} ++ ?_rest }
+
+    --> /Users/jacksmith/prog/urweb/demo/batchFun.ur:115:32-115:33
+
+
+-- TYPE --------- /Users/jacksmith/prog/urweb/demo/batchFun.ur
+
+Type mismatch: incompatible types: #15 vs #1163
+
+    --> /Users/jacksmith/prog/urweb/demo/batchFun.ur:127:29-127:31
+
+
+-- TYPE --------- /Users/jacksmith/prog/urweb/demo/batchFun.ur
+
+Type mismatch: incompatible types: #15 vs #1163
+
+    --> /Users/jacksmith/prog/urweb/demo/batchFun.ur:133:25-133:28
+
+
+-- TYPE --------- /Users/jacksmith/prog/urweb/demo/batchFun.ur
+
+Kind mismatch: incompatible kinds: Type -> Type vs Type
+
+    --> /Users/jacksmith/prog/urweb/demo/batchFun.ur:142:25-142:32
+
+
+-- TYPE --------- /Users/jacksmith/prog/urweb/demo/batchFun.ur
+
+Type mismatch: incompatible types: state : Type -> { {Type, Nam : #2, Show : '2 -> #420 ({(), Dyn : (), MakeForm : (), Body : ()}) ({Type}) ({Type}), Inject : #302 '2, NewState : #113 '0, Widget : '0 -> #420 ({(), Dyn : (), MakeForm : (), Body : ()}) ({Type}) ({Type}), ReadState : '0 -> #113 '2} } vs { {Type, Nam : ?_field} ++ ?_rest }
+
+    --> /Users/jacksmith/prog/urweb/demo/batchFun.ur:144:38-144:39
+
+
+-- TYPE --------- /Users/jacksmith/prog/urweb/demo/batchFun.ur
+
+Type mismatch: incompatible types: state : Type -> { {Type, Nam : #2, Show : '2 -> #420 ({(), Dyn : (), MakeForm : (), Body : ()}) ({Type}) ({Type}), Inject : #302 '2, NewState : #113 '0, Widget : '0 -> #420 ({(), Dyn : (), MakeForm : (), Body : ()}) ({Type}) ({Type}), ReadState : '0 -> #113 '2} } vs { {Type, Widget : ?_field} ++ ?_rest }
+
+    --> /Users/jacksmith/prog/urweb/demo/batchFun.ur:144:57-144:58
+
+
+-- TYPE --------- /Users/jacksmith/prog/urweb/demo/batchFun.ur
+
+Type mismatch: constructor references a variable out of scope for the unification variable (TooDeep)
+
+    --> /Users/jacksmith/prog/urweb/demo/batchFun.ur:144:22-144:85
+
+
+-- TYPE --------- /Users/jacksmith/prog/urweb/demo/batchFun.ur
+
+Type mismatch: incompatible types: #15 vs #1163
+
+    --> /Users/jacksmith/prog/urweb/demo/batchFun.ur:150:26-150:33
+
+
+-- TYPE --------- /Users/jacksmith/prog/urweb/demo/batchFun.ur
+
+Unresolved disjointness constraint
+
+    --> /Users/jacksmith/prog/urweb/demo/batchFun.ur:144:27-144:30
+
+
+-- TYPE --------- /Users/jacksmith/prog/urweb/demo/batchFun.ur
+
+Unresolved disjointness constraint
+
+    --> /Users/jacksmith/prog/urweb/demo/batchFun.ur:144:32-144:35
+
+
+-- TYPE --------- /Users/jacksmith/prog/urweb/demo/batchFun.ur
+
+Unresolved disjointness constraint
+
+    --> /Users/jacksmith/prog/urweb/demo/batchFun.ur:144:52-144:55
+
+
+-- TYPE --------- /Users/jacksmith/prog/urweb/demo/batchFun.ur
+
+Type mismatch: incompatible types: {Type, Nam : #2, Show : (#0 * #115 #2) -> #420 ({(), Dyn : (), MakeForm : (), Body : ()}) ({Type}) ({Type}), Inject : #302 ((#0 * #115 #2)), NewState : #113 '0, Widget : '0 -> #420 ({(), Dyn : (), MakeForm : (), Body : ()}) ({Type}) ({Type}), ReadState : '0 -> #113 ((#0 * #115 #2))} vs {Type, Nam : #2, Show : (#1 * #115 #2) -> #420 ({(), Dyn : (), MakeForm : (), Body : ()}) ({Type}) ({Type}), Inject : #302 ((#1 * #115 #2)), NewState : #113 '0, Widget : '0 -> #420 ({(), Dyn : (), MakeForm : (), Body : ()}) ({Type}) ({Type}), ReadState : '0 -> #113 ((#1 * #115 #2))}
+
+    --> /Users/jacksmith/prog/urweb/demo/batchFun.ur:0:0-0:0
+
+
+-- TYPE --------- /Users/jacksmith/prog/urweb/demo/batchFun.ur
+
+Type mismatch: incompatible types: {Type, Nam : #2, Show : (#0 * #115 #2) -> #420 ({(), Dyn : (), MakeForm : (), Body : ()}) ({Type}) ({Type}), Inject : #302 ((#0 * #115 #2)), NewState : #113 '0, Widget : '0 -> #420 ({(), Dyn : (), MakeForm : (), Body : ()}) ({Type}) ({Type}), ReadState : '0 -> #113 ((#0 * #115 #2))} vs {Type, Nam : #2, Show : (#2 * #115 #2) -> #420 ({(), Dyn : (), MakeForm : (), Body : ()}) ({Type}) ({Type}), Inject : #302 ((#2 * #115 #2)), NewState : #113 '0, Widget : '0 -> #420 ({(), Dyn : (), MakeForm : (), Body : ()}) ({Type}) ({Type}), ReadState : '0 -> #113 ((#2 * #115 #2))}
+
+    --> /Users/jacksmith/prog/urweb/demo/batchFun.ur:0:0-0:0
+
+
+-- TYPE --------- /Users/jacksmith/prog/urweb/demo/batchFun.ur
+
+Unresolved disjointness constraint
+
+    --> /Users/jacksmith/prog/urweb/demo/batchFun.ur:0:0-0:0
+
+
+-- TYPE ----------- /Users/jacksmith/prog/urweb/demo/batchG.ur
+
+Signature missing type `cols`
+
+    --> /Users/jacksmith/prog/urweb/demo/batchG.ur:4:5-9:0
+
+
+-- TYPE ----------- /Users/jacksmith/prog/urweb/demo/batchG.ur
+
+Signature missing value `fl`
+
+    --> /Users/jacksmith/prog/urweb/demo/batchG.ur:4:5-9:0
+
+
+-- TYPE ----------- /Users/jacksmith/prog/urweb/demo/batchG.ur
+
+Type mismatch: incompatible types: { {Type, Id : #0, A : #2, B : #1} } vs {Type, Id : #0} ++ map((Type * Type), Type) (t : (Type * Type) -> '0.1) #1156
+
+    --> /Users/jacksmith/prog/urweb/demo/batchG.ur:4:5-9:0
+
+
+-- TYPE ----------- /Users/jacksmith/prog/urweb/demo/batchG.ur
+
+Type mismatch: incompatible types: { {Type, A : state : Type -> { {Type, Nam : #2, Show : (#0 * #115 #2) -> #420 ({(), Dyn : (), MakeForm : (), Body : ()}) ({Type}) ({Type}), Inject : #302 ((#0 * #115 #2)), NewState : #113 '0, Widget : '0 -> #420 ({(), Dyn : (), MakeForm : (), Body : ()}) ({Type}) ({Type}), ReadState : '0 -> #113 ((#0 * #115 #2))} }, B : state : Type -> { {Type, Nam : #2, Show : (#0 * #115 #2) -> #420 ({(), Dyn : (), MakeForm : (), Body : ()}) ({Type}) ({Type}), Inject : #302 ((#0 * #115 #2)), NewState : #113 '0, Widget : '0 -> #420 ({(), Dyn : (), MakeForm : (), Body : ()}) ({Type}) ({Type}), ReadState : '0 -> #113 ((#0 * #115 #2))} }} } vs #1151 #1156
+
+    --> /Users/jacksmith/prog/urweb/demo/batchG.ur:4:5-9:0
+
+
+-- TYPE ----------- /Users/jacksmith/prog/urweb/demo/batchG.ur
+
+Unresolved disjointness constraint
+
+    --> /Users/jacksmith/prog/urweb/demo/batchG.ur:4:5-9:0
+
+
+-- TYPE ----------- /Users/jacksmith/prog/urweb/demo/batchG.ur
+
+Signature missing value `main`
+
+    --> /Users/jacksmith/prog/urweb/demo/batchG.ur:0:0-0:0
+
+
+-- TYPE ----------- /Users/jacksmith/prog/urweb/demo/buffer.ur
+
+Type mismatch: incompatible types: {(), Body : ()} ++ {Type, Dyn : ()} ++ ?_shared_row_tail vs {(), Dyn : ()} ++ {Type, Body : ()} ++ ?_shared_row_tail
+
+    --> /Users/jacksmith/prog/urweb/demo/buffer.ur:10:0-17:0
+
+
+-- TYPE ----------- /Users/jacksmith/prog/urweb/demo/buffer.ur
+
+Unresolved disjointness constraint
+
+    --> /Users/jacksmith/prog/urweb/demo/buffer.ur:13:52-13:55
+
+
+-- TYPE ----------- /Users/jacksmith/prog/urweb/demo/buffer.ur
+
+Unresolved disjointness constraint
+
+    --> /Users/jacksmith/prog/urweb/demo/buffer.ur:13:57-13:61
+
+
+-- TYPE -------- /Users/jacksmith/prog/urweb/demo/roundTrip.ur
+
+Unresolved typeclass constraint: #203 (?t) (?fs)
+
+    --> /Users/jacksmith/prog/urweb/demo/roundTrip.ur:6:45-6:115
+
+
+-- TYPE -------- /Users/jacksmith/prog/urweb/demo/roundTrip.ur
+
+Type mismatch: incompatible types: { {?_, Client : #199, Channel : #195 ((#2 * #0 * #1))} } vs #201 (?fields) (?uniques)
+
+    --> /Users/jacksmith/prog/urweb/demo/roundTrip.ur:12:37-12:101
+
+
+-- TYPE -------- /Users/jacksmith/prog/urweb/demo/broadcast.ur
+
+Type mismatch: incompatible types: #0 vs #401
+
+    --> /Users/jacksmith/prog/urweb/demo/broadcast.ur:10:25-10:0
+
+
+-- TYPE -------- /Users/jacksmith/prog/urweb/demo/broadcast.ur
+
+Type mismatch: incompatible types: { {?_, Id : #0, Client : #199, Channel : #195 (mod1215:t)} } vs #201 (?fields) (?uniques)
+
+    --> /Users/jacksmith/prog/urweb/demo/broadcast.ur:18:45-18:115
+
+
+-- TYPE -------- /Users/jacksmith/prog/urweb/demo/broadcast.ur
+
+Unresolved typeclass constraint: #203 (?t) (?fs)
+
+    --> /Users/jacksmith/prog/urweb/demo/broadcast.ur:14:55-14:123
+
+
+-- TYPE -------- /Users/jacksmith/prog/urweb/demo/broadcast.ur
+
+Unresolved typeclass constraint: #203 (?t) (?fs)
+
+    --> /Users/jacksmith/prog/urweb/demo/broadcast.ur:23:44-23:89
+
+
+-- TYPE -------- /Users/jacksmith/prog/urweb/demo/broadcast.ur
+
+Unresolved typeclass constraint: #203 (?t) (?fs)
+
+    --> /Users/jacksmith/prog/urweb/demo/broadcast.ur:27:49-27:107
+
+
+-- TYPE -------- /Users/jacksmith/prog/urweb/demo/broadcast.ur
+
+Type mismatch: incompatible types: #9 vs #0
+
+    --> /Users/jacksmith/prog/urweb/demo/broadcast.ur:0:0-0:0
+
+
+-- TYPE -------- /Users/jacksmith/prog/urweb/demo/broadcast.ur
+
+Type mismatch: incompatible types: #9 vs #0
+
+    --> /Users/jacksmith/prog/urweb/demo/broadcast.ur:0:0-0:0
+
+
+-- TYPE -------- /Users/jacksmith/prog/urweb/demo/broadcast.ur
+
+Type mismatch: incompatible types: #9 vs #0
+
+    --> /Users/jacksmith/prog/urweb/demo/broadcast.ur:0:0-0:0
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/chat.ur
+
+Unresolved typeclass constraint: #203 (?t) (?fs)
+
+    --> /Users/jacksmith/prog/urweb/demo/chat.ur:10:45-10:96
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/chat.ur
+
+Unresolved typeclass constraint: #203 (?t) (?fs)
+
+    --> /Users/jacksmith/prog/urweb/demo/chat.ur:28:53-28:95
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/chat.ur
+
+Type mismatch: incompatible types: { {?_, Id : #0, Title : #2, Room : #0} } vs #201 (?fields) (?uniques)
+
+    --> /Users/jacksmith/prog/urweb/demo/chat.ur:65:37-65:70
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/chat.ur
+
+Type mismatch: incompatible types: #0 vs #401
+
+    --> /Users/jacksmith/prog/urweb/demo/chat.ur:71:26-71:27
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/chat.ur
+
+Type mismatch: incompatible types: { {?_, Id : #0, Title : #2, Room : #0} } vs #201 (?fields) (?uniques)
+
+    --> /Users/jacksmith/prog/urweb/demo/chat.ur:73:45-73:117
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/chat.ur
+
+Unresolved typeclass constraint: #203 (?t) (?fs)
+
+    --> /Users/jacksmith/prog/urweb/demo/chat.ur:53:41-53:58
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/chat.ur
+
+Unresolved disjointness constraint
+
+    --> /Users/jacksmith/prog/urweb/demo/chat.ur:56:20-56:23
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/chat.ur
+
+Unresolved disjointness constraint
+
+    --> /Users/jacksmith/prog/urweb/demo/chat.ur:57:10-57:13
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/chat.ur
+
+Unresolved disjointness constraint
+
+    --> /Users/jacksmith/prog/urweb/demo/chat.ur:58:10-58:13
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/chat.ur
+
+Unresolved disjointness constraint
+
+    --> /Users/jacksmith/prog/urweb/demo/chat.ur:59:10-59:13
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/chat.ur
+
+Unresolved disjointness constraint
+
+    --> /Users/jacksmith/prog/urweb/demo/chat.ur:60:10-60:13
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/chat.ur
+
+Unresolved disjointness constraint
+
+    --> /Users/jacksmith/prog/urweb/demo/chat.ur:60:14-60:71
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/chat.ur
+
+Unresolved disjointness constraint
+
+    --> /Users/jacksmith/prog/urweb/demo/chat.ur:60:20-60:27
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/chat.ur
+
+Unresolved disjointness constraint
+
+    --> /Users/jacksmith/prog/urweb/demo/chat.ur:61:10-61:13
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/chat.ur
+
+Unresolved disjointness constraint
+
+    --> /Users/jacksmith/prog/urweb/demo/chat.ur:61:14-61:74
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/chat.ur
+
+Unresolved disjointness constraint
+
+    --> /Users/jacksmith/prog/urweb/demo/chat.ur:61:20-61:27
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/chat.ur
+
+Type mismatch: incompatible types: {Type, Title : #9} ++ ?_rest ++ ?useInner vs ?use1 ++ {Type, Title : #2}
+
+    --> /Users/jacksmith/prog/urweb/demo/chat.ur:88:37-90:10
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/demo.ur
+
+Unbound variable `main`
+
+    --> /Users/jacksmith/prog/urweb/demo/demo.ur:23:16-23:30
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/demo.ur
+
+Application to non-function type
+
+    --> /Users/jacksmith/prog/urweb/demo/demo.ur:23:16-23:30
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/demo.ur
+
+Unbound variable `main`
+
+    --> /Users/jacksmith/prog/urweb/demo/demo.ur:25:16-25:26
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/demo.ur
+
+Application to non-function type
+
+    --> /Users/jacksmith/prog/urweb/demo/demo.ur:25:16-25:26
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/demo.ur
+
+Unbound variable `main`
+
+    --> /Users/jacksmith/prog/urweb/demo/demo.ur:26:16-26:26
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/demo.ur
+
+Application to non-function type
+
+    --> /Users/jacksmith/prog/urweb/demo/demo.ur:26:16-26:26
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/demo.ur
+
+Unbound variable `main`
+
+    --> /Users/jacksmith/prog/urweb/demo/demo.ur:27:16-27:26
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/demo.ur
+
+Application to non-function type
+
+    --> /Users/jacksmith/prog/urweb/demo/demo.ur:27:16-27:26
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/demo.ur
+
+Unbound variable `main`
+
+    --> /Users/jacksmith/prog/urweb/demo/demo.ur:34:16-34:27
+
+
+-- TYPE ------------- /Users/jacksmith/prog/urweb/demo/demo.ur
+
+Application to non-function type
+
+    --> /Users/jacksmith/prog/urweb/demo/demo.ur:34:16-34:27
+
+
+The compiler stopped: the elaboration phase produced no output.
+
+There may be an earlier diagnostic — scroll up — or this may be an internal bug with a small repro.

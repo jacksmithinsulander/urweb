@@ -1902,10 +1902,9 @@ pub fn reduce(file: File, settings: &Settings) -> File {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use anyhow::Context as _; // .with_context() on Option in tests
     use crate::error_types::Located;
     use crate::settings::Settings;
-    use anyhow::Context as _;
+    use anyhow::Context as _; // .with_context() on Option in tests
 
     fn dummy() -> Span {
         Span::dummy()

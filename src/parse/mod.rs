@@ -217,7 +217,7 @@ fn repair_misparsed_lambda_annotation_expression(expression: &mut crate::source:
     }
 
     fn repair_single_branch_lambda_annotation_case(
-        branches: &mut Vec<(crate::source::LocPat, crate::source::LocExp)>,
+        branches: &mut [(crate::source::LocPat, crate::source::LocExp)],
     ) {
         if branches.len() != 1 {
             return;
@@ -262,9 +262,14 @@ fn repair_misparsed_lambda_annotation_expression(expression: &mut crate::source:
         let initial_len = branches.len();
         for _ in 0..initial_len {
             let mut repair_index: Option<usize> = None;
-            for index in 0..branches.len().saturating_sub(1) {
-                if branch_expression_accepts_nested_case_branches(&branches[index].1) {
-                    repair_index = Some(index);
+            for (index, (_, branch_expression)) in branches
+                .iter()
+                .enumerate()
+                .take(branches.len().saturating_sub(1))
+            {
+                // check each branch except the last for nested case acceptance
+                if branch_expression_accepts_nested_case_branches(branch_expression) {
+                    repair_index = Some(index); // record the last matching index
                 }
             }
             let Some(index) = repair_index else {
@@ -2546,7 +2551,6 @@ pub fn parse_urs(
 mod tests {
     use super::*;
     use anyhow::Context as _; // .with_context() on Result/Option in tests
-    use anyhow::Context as _;
 
     #[test]
     fn preprocess_urs_low_fuel_appends_remainder_without_panic() -> anyhow::Result<()> {
@@ -3628,7 +3632,7 @@ con folder = K ==> fn r :: {K} =>
     #[cfg(generated_parser)]
     fn parse_parenthesized_sql_table_param_stays_annotated_lambda() -> anyhow::Result<()> {
         // test returns Result to allow ? propagation
-        let source_text = concat!("fun nonempty [fs] [us] (t : sql_table fs us) = t\n",);
+        let source_text = "fun nonempty [fs] [us] (t : sql_table fs us) = t\n"; // literal string; concat! with one arg is unnecessary
         let mut errors = ErrorReporter::new_silent();
         let parsed = parse_ur(
             "nonempty_sql_table_param.ur",

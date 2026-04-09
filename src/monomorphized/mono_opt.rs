@@ -1777,10 +1777,9 @@ pub fn optimize(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use anyhow::Context as _; // .with_context() on Option/Result in tests
-    use anyhow::Context as _;
     use crate::error_types::Located;
     use crate::settings::Settings;
+    use anyhow::Context as _; // .with_context() on Option/Result in tests
 
     fn dummy<T>(node: T) -> Located<T> {
         Located::dummy(node)

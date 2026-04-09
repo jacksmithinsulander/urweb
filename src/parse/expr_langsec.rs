@@ -570,9 +570,8 @@ fn parse_test_primary(cur: &mut TokenCursor<'_>) -> Result<LocExp, ExprRecognize
 #[cfg(test)]
 mod tests {
     use super::*;
-    use anyhow::Context as _; // .with_context() on Result in tests
     use crate::parse::lexical_analyzer::{tokenize_xml_aware, Token};
-    use anyhow::Context as _;
+    use anyhow::Context as _; // .with_context() on Result in tests
 
     fn lex_all(src: &str) -> Vec<(usize, Token, usize)> {
         match tokenize_xml_aware(src) {

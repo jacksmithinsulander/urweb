@@ -1650,7 +1650,7 @@ fn kinds_eq_simple(left_kind: &LocatedKind, right_kind: &LocatedKind) -> bool {
             kinds_eq_simple(left_body.as_ref(), right_body.as_ref())
         }
         (Kind::Unif(_, _, left_cell), Kind::Unif(_, _, right_cell)) => {
-            Arc::ptr_eq(&left_cell, &right_cell)
+            Arc::ptr_eq(left_cell, right_cell) // compare Arc pointer identity without redundant references
         }
         (Kind::Error, Kind::Error) => true,
         _ => false,
@@ -1742,9 +1742,9 @@ fn cons_eq_simple_normed(left: &LocatedConstructor, right: &LocatedConstructor) 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use anyhow::anyhow; // anyhow!() macro for error construction in tests
     use crate::elaborated::{Constructor, Explicitness, Kind};
     use crate::error_types::Located;
+    use anyhow::anyhow; // anyhow!() macro for error construction in tests
     use std::sync::{Arc, Mutex};
 
     fn dummy<T>(node: T) -> Located<T> {

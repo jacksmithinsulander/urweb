@@ -463,10 +463,9 @@ pub fn prepare(file: File, settings: &Settings) -> File {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use anyhow::Context as _; // .context()/.with_context() on Option and Result in tests
     use crate::c_like_representation::File;
     use crate::settings::Settings;
-    use anyhow::Context as _;
+    use anyhow::Context as _; // .context()/.with_context() on Option and Result in tests
 
     fn empty_file() -> File {
         (vec![], vec![])

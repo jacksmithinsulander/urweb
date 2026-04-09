@@ -242,7 +242,6 @@ pub fn relative_file_key_for_uri(workspace_root: Option<&Path>, uri: &Uri) -> Op
 mod tests {
     use super::*;
     use anyhow::Context as _; // .with_context() on Result in tests
-    use anyhow::Context as _;
 
     #[test]
     fn relative_file_key_none_without_workspace() -> anyhow::Result<()> {

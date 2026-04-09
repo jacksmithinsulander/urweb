@@ -1,6 +1,5 @@
 //! Integration tests for the Explicit module.
 
-use anyhow::{anyhow, Context as _};
 use ur::compiler;
 use ur::datatype_kind::DatatypeKind;
 use ur::error_types::Located;

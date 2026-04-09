@@ -1728,7 +1728,6 @@ pub fn tokenize_xml_aware(src: &str) -> Result<Vec<(usize, Token, usize)>, LexEr
 mod tests {
     use super::*;
     use anyhow::Context as _; // .with_context() on Result in tests
-    use anyhow::Context as _;
 
     fn lex_all(input: &str) -> Vec<Token> {
         Token::lexer(input)

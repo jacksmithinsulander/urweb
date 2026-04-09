@@ -1765,7 +1765,6 @@ fn run_dap_loop(srv: &mut Server, stdin: &mut impl std::io::BufRead) -> Result<(
 mod tests {
     use super::*;
     use anyhow::Context as _; // .context() on Option in tests
-    use anyhow::Context as _;
     use std::collections::HashSet;
 
     #[test]

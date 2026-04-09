@@ -2555,9 +2555,8 @@ pub fn monoize(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use anyhow::Context as _; // .with_context() on Result in tests
-    use anyhow::Context as _;
     use crate::core::Constructor as CC;
+    use anyhow::Context as _; // .with_context() on Result in tests
 
     fn loc() -> Span {
         Span::dummy()
