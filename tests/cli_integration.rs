@@ -112,7 +112,11 @@ fn cli_fmt_check_in_project_returns_code() {
     // fmt -check in project dir runs; exit code reflects check result (0=ok, 1=would reformat/error)
     let dir = common::tempdir("cli_fmt_check_in_project_returns_code tempdir");
     let root = dir.path();
-    write_project_file(root, "ur.toml", "[package]\nname=\"x\"\n[build]\nentry=\"x\"\n");
+    write_project_file(
+        root,
+        "ur.toml",
+        "[package]\nname=\"x\"\n[build]\nentry=\"x\"\n",
+    );
     write_project_file(root, "x.urp", "x.ur");
     write_project_file(root, "x.ur", "val x = 1");
     let out = ur_output_in(root, &["fmt", "-check"], "run ur fmt -check in project");
@@ -273,7 +277,11 @@ fn cli_fmt_help_returns_zero() {
 fn cli_fmt_with_unknown_flag_in_project_treats_as_warning_not_file() {
     let dir = common::tempdir("cli_fmt_with_unknown_flag_in_project tempdir");
     let root = dir.path();
-    write_project_file(root, "ur.toml", "[package]\nname=\"x\"\n[build]\nentry=\"x\"\n");
+    write_project_file(
+        root,
+        "ur.toml",
+        "[package]\nname=\"x\"\n[build]\nentry=\"x\"\n",
+    );
     write_project_file(root, "x.urp", "x.ur");
     write_project_file(root, "x.ur", "val x = 1");
     let out = ur_output_in(
@@ -375,7 +383,11 @@ fn cli_build_with_scss_fails_when_sass_exits_nonzero() {
     common::create_dir_all(&bin_dir, "create fake failing sass bin directory");
     let sass_path = bin_dir.join("sass");
     #[cfg(unix)]
-    common::write_file(&sass_path, "#!/bin/sh\nexit 1\n", "write failing fake sass script");
+    common::write_file(
+        &sass_path,
+        "#!/bin/sh\nexit 1\n",
+        "write failing fake sass script",
+    );
     #[cfg(unix)]
     mark_executable(&sass_path, "mark failing fake sass executable");
     write_project_file(
@@ -419,7 +431,11 @@ fn cli_build_with_scss_fails_when_sass_exits_nonzero() {
 fn cli_install_from_project_dir_does_not_say_toml_not_found() {
     let dir = common::tempdir("cli_install_from_project_dir_does_not_say_toml_not_found tempdir");
     let root = dir.path();
-    write_project_file(root, "ur.toml", "[package]\nname=\"x\"\n[build]\nentry=\"x\"\n");
+    write_project_file(
+        root,
+        "ur.toml",
+        "[package]\nname=\"x\"\n[build]\nentry=\"x\"\n",
+    );
     let out = ur_output_in(
         root,
         &["install", "nonexistent/nonexistent"],
@@ -449,7 +465,11 @@ fn cli_fmt_accepts_ur_file_explicit() {
     // Catches delete ! at line 641: !f.ends_with(".ur") - mutant would reject .ur files
     let dir = common::tempdir("cli_fmt_accepts_ur_file_explicit tempdir");
     let root = dir.path();
-    write_project_file(root, "ur.toml", "[package]\nname=\"x\"\n[build]\nentry=\"x\"\n");
+    write_project_file(
+        root,
+        "ur.toml",
+        "[package]\nname=\"x\"\n[build]\nentry=\"x\"\n",
+    );
     write_project_file(root, "x.ur", "val x = 1");
     let out = ur_output_in(root, &["fmt", "x.ur"], "run ur fmt x.ur");
     let stderr = String::from_utf8_lossy(&out.stderr);
@@ -465,7 +485,11 @@ fn cli_fmt_accepts_urs_file_explicit() {
     // Catches delete ! at line 641: !f.ends_with(".urs") - mutant would reject .urs files
     let dir = common::tempdir("cli_fmt_accepts_urs_file_explicit tempdir");
     let root = dir.path();
-    write_project_file(root, "ur.toml", "[package]\nname=\"x\"\n[build]\nentry=\"x\"\n");
+    write_project_file(
+        root,
+        "ur.toml",
+        "[package]\nname=\"x\"\n[build]\nentry=\"x\"\n",
+    );
     write_project_file(root, "x.urs", "val x : int");
     let out = ur_output_in(root, &["fmt", "x.urs"], "run ur fmt x.urs");
     let stderr = String::from_utf8_lossy(&out.stderr);
@@ -480,7 +504,11 @@ fn cli_fmt_accepts_urs_file_explicit() {
 fn cli_fmt_project_mode_succeeds_when_toml_exists() {
     let dir = common::tempdir("cli_fmt_project_mode_succeeds_when_toml_exists tempdir");
     let root = dir.path();
-    write_project_file(root, "ur.toml", "[package]\nname=\"x\"\n[build]\nentry=\"x\"\n");
+    write_project_file(
+        root,
+        "ur.toml",
+        "[package]\nname=\"x\"\n[build]\nentry=\"x\"\n",
+    );
     write_project_file(root, "x.urp", "x.ur");
     write_project_file(root, "x.ur", "val x = 1");
     let out = ur_output_in(root, &["fmt"], "run ur fmt in project mode");
@@ -615,7 +643,11 @@ fn cli_fmt_check_exits_nonzero_when_file_would_change() {
     // fmt -check should return non-zero if formatting would change file
     let dir = common::tempdir("cli_fmt_check_exits_nonzero_when_file_would_change tempdir");
     let root = dir.path();
-    write_project_file(root, "ur.toml", "[package]\nname=\"x\"\n[build]\nentry=\"x\"\n");
+    write_project_file(
+        root,
+        "ur.toml",
+        "[package]\nname=\"x\"\n[build]\nentry=\"x\"\n",
+    );
     write_project_file(root, "x.urp", "x.ur");
     write_project_file(root, "x.ur", "val x=1");
     let out = ur_output_in(

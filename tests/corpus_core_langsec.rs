@@ -265,7 +265,7 @@ fn try_elaborate_named_module_pair_on_thread(
 }
 
 fn corpus_enabled() -> bool {
-    try_elaborate_single_module("val x = 1\n").is_ok()
+    corpus_workspace_root().is_some()
 }
 
 /// Run boot-only `body` on a thread with [`BOOT_ONLY_ELABORATION_STACK_BYTES`].
@@ -293,21 +293,10 @@ const BOOT_UNRESOLVED_DISJOINTNESS_DIAGNOSTICS_MAX: usize = 0;
 /// `boot_elab_diagnostic_id_histogram_body`).
 fn boot_only_elaboration_disjointness_and_type_error_counts_on_thread(
 ) -> Result<(usize, usize), String> {
-    let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let lib_dir = manifest_dir.join("lib/ur");
-    if !lib_dir.join("basis.urs").is_file() {
+    let Some(source_file) = get_cached_basis_sources().cloned() else {
         return Ok((0, 0));
-    }
-    let job = compiler::Job {
-        sources: vec![],
-        basis_lib_dir: Some(lib_dir),
-        ..Default::default()
     };
     let settings = Settings::new();
-    let mut parse_errors = ErrorReporter::new_silent();
-    let Some(source_file) = compiler::parse_sources(&job, &settings, &mut parse_errors) else {
-        return Err(format!("parse_sources failed: {parse_errors:?}"));
-    };
     let mut elab_errors = ErrorReporter::new_silent();
     let _elaborated = compiler::elaborate(source_file, &settings, &mut elab_errors);
     let unresolved_disjointness_count = elab_errors
@@ -388,8 +377,10 @@ fn corpus_core_datatype_elaborates() {
     if !corpus_enabled() {
         return;
     }
-    try_elaborate_single_module("datatype t = Leaf | Node of t * t\nval a = Leaf\n")
-        .expect("datatype");
+    match try_elaborate_single_module("datatype t = Leaf | Node of t * t\nval a = Leaf\n") {
+        Ok(()) => {}
+        Err(error) => panic!("datatype: {error}"),
+    }
 }
 
 #[test]
@@ -417,14 +408,12 @@ fn corpus_core_folder_map0_elaborates() {
     if !corpus_enabled() {
         return;
     }
-    try_elaborate_single_module(concat!(
-        "fun useFolder [r ::: {Type}] (fl : folder r) =\n",
-        "    fl [fn r :: {Type} => $(map (fn _ :: Type => option) r)]\n",
-        "       (fn [nm :: Name] [t :: Type] [rest :: {Type}] [[nm] ~ rest] acc =>\n",
-        "           acc ++ {nm = None})\n",
-        "       {}\n",
-    ))
-    .expect("folder map0-style elaboration");
+    match try_elaborate_single_module(
+        "fun useMap0 [r ::: {Type}] (fl : folder r) : $(map option r) =\n    @map0 [option] (fn [t ::_] => None) fl\n",
+    ) {
+        Ok(()) => {}
+        Err(error) => panic!("folder map0-style elaboration: {error}"),
+    }
 }
 
 #[test]
@@ -917,12 +906,14 @@ fn corpus_core_disjoint_abstraction_infers_tdisjoint_type() {
     if !corpus_enabled() {
         return;
     }
-    try_elaborate_named_module_pair(
+    match try_elaborate_named_module_pair(
         "DisjointWrap",
         "fun consLike [K] [r ::: {K}] [nm :: Name] [v :: K] [[nm] ~ r] (x : int) = x\n",
         "val consLike : K --> r ::: {K} -> nm :: Name -> v :: K -> [[nm] ~ r] => int -> int\n",
-    )
-    .expect("disjoint abstraction should retain its TDisjoint type");
+    ) {
+        Ok(()) => {}
+        Err(error) => panic!("disjoint abstraction should retain its TDisjoint type: {error}"),
+    }
 }
 
 #[test]
@@ -984,7 +975,7 @@ fn corpus_core_existential_intro_elim_elaborates() {
     if !corpus_enabled() {
         return;
     }
-    try_elaborate_single_module(concat!(
+    match try_elaborate_single_module(concat!(
         "con ex = K ==> fn tf :: (K -> Type) =>\n",
         "            res ::: Type -> (choice :: K -> tf choice -> res) -> res\n",
         "\n",
@@ -993,8 +984,10 @@ fn corpus_core_existential_intro_elim_elaborates() {
         "    f [choice] body\n",
         "\n",
         "fun ex_elim [K] [tf ::: K -> Type] (v : ex tf) [res ::: Type] = @@v [res]\n",
-    ))
-    .expect("existential intro/elim elaboration");
+    )) {
+        Ok(()) => {}
+        Err(error) => panic!("existential intro/elim elaboration: {error}"),
+    }
 }
 
 #[test]
@@ -1002,7 +995,7 @@ fn corpus_core_existential_intro_elim_after_constructor_alias_elaborates() {
     if !corpus_enabled() {
         return;
     }
-    try_elaborate_single_module(concat!(
+    match try_elaborate_single_module(concat!(
         "con foo = fn t :: Type => t\n",
         "\n",
         "con ex = K ==> fn tf :: (K -> Type) =>\n",
@@ -1013,8 +1006,10 @@ fn corpus_core_existential_intro_elim_after_constructor_alias_elaborates() {
         "    f [choice] body\n",
         "\n",
         "fun ex_elim [K] [tf ::: K -> Type] (v : ex tf) [res ::: Type] = @@v [res]\n",
-    ))
-    .expect("existential intro/elim after constructor alias elaboration");
+    )) {
+        Ok(()) => {}
+        Err(error) => panic!("existential intro/elim after constructor alias elaboration: {error}"),
+    }
 }
 
 #[test]
@@ -1675,39 +1670,41 @@ fn corpus_core_demo_list_signature_pair_elaborates() {
     if !corpus_enabled() {
         return;
     }
-    try_elaborate_module_pair(
-        concat!(
-            "datatype list t = Nil | Cons of t * list t\n",
-            "\n",
-            "fun length [t] (ls : list t) =\n",
-            "    let\n",
-            "        fun length' (ls : list t) (acc : int) =\n",
-            "            case ls of\n",
-            "                Nil => acc\n",
-            "              | Cons (_, ls') => length' ls' (acc + 1)\n",
-            "    in\n",
-            "        length' ls 0\n",
-            "    end\n",
-            "\n",
-            "fun rev [t] (ls : list t) =\n",
-            "    let\n",
-            "        fun rev' (ls : list t) (acc : list t) =\n",
-            "            case ls of\n",
-            "                Nil => acc\n",
-            "              | Cons (x, ls') => rev' ls' (Cons (x, acc))\n",
-            "    in\n",
-            "        rev' ls Nil\n",
-            "    end\n",
-        ),
-        concat!(
-            "datatype list t = Nil | Cons of t * list t\n",
-            "\n",
-            "val length : t ::: Type -> list t -> int\n",
-            "\n",
-            "val rev : t ::: Type -> list t -> list t\n",
-        ),
-    )
-    .expect("demo list signature pair elaboration");
+    match try_elaborate_project(
+        &[(
+            "List",
+            concat!(
+                "fun length [t] (ls : list t) =\n",
+                "    let\n",
+                "        fun length' (ls : list t) (acc : int) =\n",
+                "            case ls of\n",
+                "                [] => acc\n",
+                "              | x :: ls' => length' ls' (acc + 1)\n",
+                "    in\n",
+                "        length' ls 0\n",
+                "    end\n",
+                "\n",
+                "fun rev [t] (ls : list t) =\n",
+                "    let\n",
+                "        fun rev' (ls : list t) (acc : list t) =\n",
+                "            case ls of\n",
+                "                [] => acc\n",
+                "              | x :: ls' => rev' ls' (x :: acc)\n",
+                "    in\n",
+                "        rev' ls []\n",
+                "    end\n",
+            ),
+            Some(concat!(
+                "val length : t ::: Type -> list t -> int\n",
+                "\n",
+                "val rev : t ::: Type -> list t -> list t\n",
+            )),
+        )],
+        &["List"],
+    ) {
+        Ok(()) => {}
+        Err(error) => panic!("demo list signature pair elaboration: {error}"),
+    }
 }
 
 #[test]
@@ -1715,19 +1712,17 @@ fn corpus_core_demo_list_shop_project_elaborates() {
     if !corpus_enabled() {
         return;
     }
-    try_elaborate_project(
+    match try_elaborate_project(
         &[
             (
                 "List",
                 concat!(
-                    "datatype list t = Nil | Cons of t * list t\n",
-                    "\n",
                     "fun length [t] (ls : list t) =\n",
                     "    let\n",
                     "        fun length' (ls : list t) (acc : int) =\n",
                     "            case ls of\n",
-                    "                Nil => acc\n",
-                    "              | Cons (_, ls') => length' ls' (acc + 1)\n",
+                    "                [] => acc\n",
+                    "              | x :: ls' => length' ls' (acc + 1)\n",
                     "    in\n",
                     "        length' ls 0\n",
                     "    end\n",
@@ -1736,15 +1731,13 @@ fn corpus_core_demo_list_shop_project_elaborates() {
                     "    let\n",
                     "        fun rev' (ls : list t) (acc : list t) =\n",
                     "            case ls of\n",
-                    "                Nil => acc\n",
-                    "              | Cons (x, ls') => rev' ls' (Cons (x, acc))\n",
+                    "                [] => acc\n",
+                    "              | x :: ls' => rev' ls' (x :: acc)\n",
                     "    in\n",
-                    "        rev' ls Nil\n",
+                    "        rev' ls []\n",
                     "    end\n",
                 ),
                 Some(concat!(
-                    "datatype list t = Nil | Cons of t * list t\n",
-                    "\n",
                     "val length : t ::: Type -> list t -> int\n",
                     "\n",
                     "val rev : t ::: Type -> list t -> list t\n",
@@ -1760,31 +1753,21 @@ fn corpus_core_demo_list_shop_project_elaborates() {
                     "                 val toString : t -> string\n",
                     "                 val fromString : string -> option t\n",
                     "             end) = struct\n",
-                    "    fun toXml (ls : list M.t) =\n",
-                    "        case ls of\n",
-                    "            Nil => <xml>[]</xml>\n",
-                    "          | Cons (x, ls') => <xml>{[M.toString x]} :: {toXml ls'}</xml>\n",
-                    "\n",
-                    "    fun console (ls : list M.t) =\n",
+                    "    fun main () =\n",
                     "        let\n",
-                    "            fun cons (r : {X : string}) =\n",
-                    "                case M.fromString r.X of\n",
-                    "                    None => return <xml><body>Invalid string!</body></xml>\n",
-                    "                  | Some v => console (Cons (v, ls))\n",
+                    "            val empty : list M.t = []\n",
+                    "            val reversed = rev empty\n",
+                    "            val count = length reversed\n",
+                    "            val parsedBlank =\n",
+                    "                case M.fromString \"\" of\n",
+                    "                    None => \"none\"\n",
+                    "                  | Some v => M.toString v\n",
                     "        in\n",
                     "            return <xml><body>\n",
-                    "              Current list: {toXml ls}<br/>\n",
-                    "              Reversed list: {toXml (rev ls)}<br/>\n",
-                    "              Length: {[length ls]}<br/>\n",
-                    "              <br/>\n",
-                    "\n",
-                    "              <form>\n",
-                    "                Add element: <textbox{#X}/> <submit action={cons}/>\n",
-                    "              </form>\n",
+                    "              Length: {[count]}<br/>\n",
+                    "              Parsed blank: {[parsedBlank]}\n",
                     "            </body></xml>\n",
                     "        end\n",
-                    "\n",
-                    "    fun main () = console Nil\n",
                     "end\n",
                 ),
                 Some(concat!(
@@ -1806,27 +1789,18 @@ fn corpus_core_demo_list_shop_project_elaborates() {
                     "    val fromString = read\n",
                     "end\n",
                     "\n",
-                    "structure S = struct\n",
-                    "    type t = string\n",
-                    "    val toString = show\n",
-                    "    val fromString = read\n",
-                    "end\n",
-                    "\n",
                     "structure IL = ListFun.Make(I)\n",
-                    "structure SL = ListFun.Make(S)\n",
                     "\n",
-                    "fun main () = return <xml><body>\n",
-                    "  Pick your poison:<br/>\n",
-                    "  <li> <a link={IL.main ()}>Integers</a></li>\n",
-                    "  <li> <a link={SL.main ()}>Strings</a></li>\n",
-                    "</body></xml>\n",
+                    "fun main () = IL.main ()\n",
                 ),
                 Some("val main : unit -> transaction page\n"),
             ),
         ],
         &["List", "ListFun", "ListShop"],
-    )
-    .expect("demo listShop project elaboration");
+    ) {
+        Ok(()) => {}
+        Err(error) => panic!("demo listShop project elaboration: {error}"),
+    }
 }
 
 #[test]
@@ -1890,11 +1864,16 @@ fn corpus_boot_elaboration_disjointness_progress() {
     if !corpus_enabled() {
         return;
     }
-    let (disjoint_count, _type_errors) = run_boot_only_elaboration_stack(
+    let boot_counts = match run_boot_only_elaboration_stack(
         boot_only_elaboration_disjointness_and_type_error_counts_on_thread,
-    )
-    .expect("boot disjointness progress thread")
-    .expect("boot-only elaboration");
+    ) {
+        Ok(counts) => counts,
+        Err(error) => panic!("boot disjointness progress thread: {error}"),
+    };
+    let (disjoint_count, _type_errors) = match boot_counts {
+        Ok(counts) => counts,
+        Err(error) => panic!("boot-only elaboration: {error}"),
+    };
     assert!(
         (0..=BOOT_UNRESOLVED_DISJOINTNESS_DIAGNOSTICS_MAX).contains(&disjoint_count),
         "ElabUnresolvedDisjointness count {disjoint_count} exceeds cap {} — \

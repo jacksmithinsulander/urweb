@@ -12318,7 +12318,10 @@ mod tests {
         };
         // `fn s =>` is the explicit lambda over `s` in the function body.
         let crate::source::Exp::Abs(_, _, case_exp) = &fn_s_lambda.node else {
-            panic!("expected Abs for fn s => under (_ : read t) lambda, got {:?}", fn_s_lambda);
+            panic!(
+                "expected Abs for fn s => under (_ : read t) lambda, got {:?}",
+                fn_s_lambda
+            );
         };
         let crate::source::Exp::Case(_, outer_branches) = &case_exp.node else {
             panic!("expected outer case under fn s => body, got {:?}", case_exp);

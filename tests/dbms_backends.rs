@@ -55,7 +55,11 @@ fn compile_to_outputs_tigerbeetle_emits_transfer_submit() {
         "dbms tigerbeetle\ndatabase 127.0.0.1:3000\n\nm\n",
         "write tigerbeetle app.urp",
     );
-    common::write_file(&dir_path.join("m.ur"), "val x = 1", "write tigerbeetle m.ur");
+    common::write_file(
+        &dir_path.join("m.ur"),
+        "val x = 1",
+        "write tigerbeetle m.ur",
+    );
     let urp = dir_path.join("app.urp");
     let (c, _) = common::require_ok(
         common::compile_to_outputs_bounded(urp, |_| {}),
@@ -77,7 +81,11 @@ fn compile_to_outputs_rejects_unknown_dbms_name() {
         "dbms oracle\ndatabase x\n\nm\n",
         "write unknown dbms app.urp",
     );
-    common::write_file(&dir_path.join("m.ur"), "val x = 1", "write unknown dbms m.ur");
+    common::write_file(
+        &dir_path.join("m.ur"),
+        "val x = 1",
+        "write unknown dbms m.ur",
+    );
     let urp = dir_path.join("app.urp");
 
     let err = common::require_err(
