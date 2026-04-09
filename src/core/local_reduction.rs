@@ -15,9 +15,10 @@
 //!
 //! Mirrors `reduce_local.sml`.
 
-#![allow(dead_code)]
-
+use crate::compiler_diagnostics::report_core_recovery;
 use crate::core::*;
+use crate::diagnostics::{DiagnosticId, DiagnosticLocale, DiagnosticPayload};
+use crate::error_types::ErrorReporter;
 use crate::primitives::Prim;
 
 // ---------------------------------------------------------------------------
@@ -885,6 +886,52 @@ fn simplify_pat(env: &[EnvItem], p: LocatedPattern) -> LocatedPattern {
     Located { node, span }
 }
 
+/// Re-simplifies every `case` arm under synthetic binder environments and rebuilds the whole `case`.
+///
+/// # Arguments
+///
+/// * `environment` — Outer binding stack for pattern and body simplification.
+/// * `arms` — Patterns and bodies before per-arm simplification.
+/// * `discriminant_simplified` — Already simplified scrutinee.
+/// * `case_meta_simplified` — Resulting type metadata for the `case`.
+/// * `case_span` — Span to attach to the rebuilt expression.
+/// * `errors` — Optional diagnostic sink for recoverable internal failures in nested simplification.
+///
+/// # Returns
+///
+/// A located `Expression::Case` whose arms were passed through [`simplify_exp`].
+fn rebuild_case_after_simplifying_arms(
+    environment: &[EnvItem],
+    arms: Vec<(LocatedPattern, LocatedExpression)>,
+    discriminant_simplified: LocatedExpression,
+    case_meta_simplified: CaseMeta,
+    case_span: crate::error_types::Span,
+    errors: &mut Option<&mut ErrorReporter>,
+) -> LocatedExpression {
+    let arms_simplified: Vec<(LocatedPattern, LocatedExpression)> = arms
+        .into_iter()
+        .map(|(pattern, arm_body)| {
+            let binder_count = pat_binds_n(&pattern);
+            let pattern_simplified = simplify_pat(environment, pattern);
+            let mut arm_environment: Environment =
+                (0..binder_count).map(|_| EnvItem::Unknown).collect();
+            arm_environment.extend_from_slice(environment);
+            (
+                pattern_simplified,
+                simplify_exp(&arm_environment, arm_body, errors),
+            )
+        })
+        .collect();
+    Located {
+        node: Expression::Case(
+            Box::new(discriminant_simplified),
+            arms_simplified,
+            case_meta_simplified,
+        ),
+        span: case_span,
+    }
+}
+
 /// Simplifies an expression in the given environment (beta and lookup of Known).
 ///
 /// # Arguments
@@ -898,6 +945,7 @@ fn simplify_pat(env: &[EnvItem], p: LocatedPattern) -> LocatedPattern {
 pub(crate) fn simplify_exp(
     environment: &[EnvItem],
     expression: LocatedExpression,
+    errors: &mut Option<&mut ErrorReporter>,
 ) -> LocatedExpression {
     let span = expression.span.clone();
     let mk = |node| Located {
@@ -916,6 +964,7 @@ pub(crate) fn simplify_exp(
             0,
             0,
             &span,
+            errors,
         ),
         Expression::Named(name_id) => mk(Expression::Named(name_id)),
         Expression::Constructor(
@@ -931,7 +980,8 @@ pub(crate) fn simplify_exp(
                 .map(&shift_constructor)
                 .collect(),
             optional_argument.map(|argument_expression| {
-                Box::new(simplify_exp(environment, *argument_expression))
+                // Reborrow errors so the outer binding is not consumed by the closure.
+                Box::new(simplify_exp(environment, *argument_expression, errors))
             }),
         )),
         Expression::Ffi(module_name, symbol_name) => mk(Expression::Ffi(module_name, symbol_name)),
@@ -942,20 +992,23 @@ pub(crate) fn simplify_exp(
                 .into_iter()
                 .map(|(argument_expression, argument_constructor)| {
                     (
-                        simplify_exp(environment, argument_expression),
+                        // Reborrow errors inside the iterator closure to avoid a move.
+                        simplify_exp(environment, argument_expression, errors),
                         shift_constructor(argument_constructor),
                     )
                 })
                 .collect(),
         )),
         Expression::App(function_expression, argument_expression) => {
-            let simplified_function = simplify_exp(environment, *function_expression);
-            let simplified_argument = simplify_exp(environment, *argument_expression);
+            // Reborrow for the first call, leaving errors usable for subsequent calls.
+            let simplified_function = simplify_exp(environment, *function_expression, errors);
+            let simplified_argument = simplify_exp(environment, *argument_expression, errors);
             match simplified_function.node {
                 Expression::Abs(_, _, _, body) => {
                     let extended_environment =
                         prepend(EnvItem::Known(simplified_argument), &de_known(environment));
-                    simplify_exp(&extended_environment, *body)
+                    // Reborrow errors for the beta-reduction body call.
+                    simplify_exp(&extended_environment, *body, errors)
                 }
                 other => mk(Expression::App(
                     Box::new(Located {
@@ -972,11 +1025,13 @@ pub(crate) fn simplify_exp(
                 variable_name,
                 shift_constructor(domain_type),
                 shift_constructor(range_type),
-                Box::new(simplify_exp(&extended_environment, *body)),
+                // Reborrow errors for the body simplification.
+                Box::new(simplify_exp(&extended_environment, *body, errors)),
             ))
         }
         Expression::CApp(expression_function, type_argument) => {
-            let simplified_function = simplify_exp(environment, *expression_function);
+            // Reborrow for the function so errors is still available for the body.
+            let simplified_function = simplify_exp(environment, *expression_function, errors);
             let simplified_type_argument = shift_constructor(type_argument);
             match simplified_function.node {
                 Expression::CAbs(_, _, body) => {
@@ -984,7 +1039,8 @@ pub(crate) fn simplify_exp(
                         EnvItem::KnownC(simplified_type_argument),
                         &de_known(environment),
                     );
-                    simplify_exp(&extended_environment, *body)
+                    // Reborrow errors for the beta-reduction body call.
+                    simplify_exp(&extended_environment, *body, errors)
                 }
                 other => mk(Expression::CApp(
                     Box::new(Located {
@@ -1000,16 +1056,19 @@ pub(crate) fn simplify_exp(
             mk(Expression::CAbs(
                 variable_name,
                 kind,
-                Box::new(simplify_exp(&extended_environment, *body)),
+                // Reborrow errors for the body.
+                Box::new(simplify_exp(&extended_environment, *body, errors)),
             ))
         }
         Expression::KApp(expression_function, kind_argument) => mk(Expression::KApp(
-            Box::new(simplify_exp(environment, *expression_function)),
+            // Reborrow errors for the single recursive call.
+            Box::new(simplify_exp(environment, *expression_function, errors)),
             kind_argument,
         )),
         Expression::KAbs(variable_name, body) => mk(Expression::KAbs(
             variable_name,
-            Box::new(simplify_exp(environment, *body)),
+            // Reborrow errors for the body.
+            Box::new(simplify_exp(environment, *body, errors)),
         )),
         Expression::Record(fields) => mk(Expression::Record(
             fields
@@ -1017,14 +1076,16 @@ pub(crate) fn simplify_exp(
                 .map(|(name_constructor, value_expression, type_constructor)| {
                     (
                         shift_constructor(name_constructor),
-                        simplify_exp(environment, value_expression),
+                        // Reborrow errors inside the closure so it is not moved.
+                        simplify_exp(environment, value_expression, errors),
                         shift_constructor(type_constructor),
                     )
                 })
                 .collect(),
         )),
         Expression::Field(record_expression, field_constructor, field_meta) => {
-            let simplified_record = simplify_exp(environment, *record_expression);
+            // Reborrow errors; no further calls in this arm need errors.
+            let simplified_record = simplify_exp(environment, *record_expression, errors);
             let simplified_field_constructor = shift_constructor(field_constructor);
             let simplified_meta = FieldMeta {
                 field: shift_constructor(field_meta.field),
@@ -1058,13 +1119,13 @@ pub(crate) fn simplify_exp(
             right_expression,
             right_constructor,
         ) => mk(Expression::Concat(
-            Box::new(simplify_exp(environment, *left_expression)),
+            Box::new(simplify_exp(environment, *left_expression, errors)),
             shift_constructor(left_constructor),
-            Box::new(simplify_exp(environment, *right_expression)),
+            Box::new(simplify_exp(environment, *right_expression, errors)),
             shift_constructor(right_constructor),
         )),
         Expression::Cut(record_expression, cut_constructor, cut_meta) => mk(Expression::Cut(
-            Box::new(simplify_exp(environment, *record_expression)),
+            Box::new(simplify_exp(environment, *record_expression, errors)),
             shift_constructor(cut_constructor),
             FieldMeta {
                 field: shift_constructor(cut_meta.field),
@@ -1073,7 +1134,7 @@ pub(crate) fn simplify_exp(
         )),
         Expression::CutMulti(record_expression, field_constructor, rest_meta) => {
             mk(Expression::CutMulti(
-                Box::new(simplify_exp(environment, *record_expression)),
+                Box::new(simplify_exp(environment, *record_expression, errors)),
                 shift_constructor(field_constructor),
                 RestMeta {
                     rest: shift_constructor(rest_meta.rest),
@@ -1086,7 +1147,7 @@ pub(crate) fn simplify_exp(
                 result: shift_constructor(case_meta.result),
             };
             let discriminant_simplified =
-                simplify_exp(environment, *discriminant_expression.clone());
+                simplify_exp(environment, *discriminant_expression.clone(), errors);
 
             // Try static case elimination
             let mut chosen_arm: Option<LocatedExpression> = None;
@@ -1100,60 +1161,58 @@ pub(crate) fn simplify_exp(
                         break 'search;
                     }
                     MatchResult::Yes(arm_environment) => {
-                        chosen_arm = Some(simplify_exp(&arm_environment, arm_body.clone()));
+                        chosen_arm = Some(simplify_exp(&arm_environment, arm_body.clone(), errors));
                         definitely_decided = true;
                         break 'search;
                     }
                 }
             }
 
-            let build_full_case =
-                |arms: Vec<(LocatedPattern, LocatedExpression)>| -> LocatedExpression {
-                    let arms_simplified: Vec<(LocatedPattern, LocatedExpression)> = arms
-                        .into_iter()
-                        .map(|(pattern, arm_body)| {
-                            let binder_count = pat_binds_n(&pattern);
-                            let pattern_simplified = simplify_pat(environment, pattern);
-                            let mut arm_environment: Environment =
-                                (0..binder_count).map(|_| EnvItem::Unknown).collect();
-                            arm_environment.extend_from_slice(environment);
-                            (pattern_simplified, simplify_exp(&arm_environment, arm_body))
-                        })
-                        .collect();
-                    mk(Expression::Case(
-                        Box::new(discriminant_simplified.clone()),
-                        arms_simplified,
-                        case_meta_simplified.clone(),
-                    ))
-                };
-
             if definitely_decided {
                 match chosen_arm {
                     Some(arm) => arm,
                     None => {
-                        eprintln!(
-                            "{}",
-                            crate::compiler_diagnostics::internal_compiler_error(
-                                "local_reduction::simplify_exp",
-                                "static case elimination decided a branch but the arm expression is missing",
-                            )
+                        let detail_span = discriminant_simplified.span.clone();
+                        report_core_recovery(
+                            errors,
+                            detail_span,
+                            DiagnosticPayload::new(
+                                DiagnosticId::CoreLocalReductionStaticCaseArmMissing,
+                                vec![format!("{}", expression.span)],
+                            ),
+                            DiagnosticLocale::En,
                         );
-                        build_full_case(arms)
+                        rebuild_case_after_simplifying_arms(
+                            environment,
+                            arms,
+                            discriminant_simplified,
+                            case_meta_simplified,
+                            span.clone(),
+                            errors,
+                        )
                     }
                 }
             } else {
-                build_full_case(arms)
+                rebuild_case_after_simplifying_arms(
+                    environment,
+                    arms,
+                    discriminant_simplified,
+                    case_meta_simplified,
+                    span.clone(),
+                    errors,
+                )
             }
         }
         Expression::Write(inner_expression) => mk(Expression::Write(Box::new(simplify_exp(
             environment,
             *inner_expression,
+            errors,
         )))),
         Expression::Closure(closure_id, captured_expressions) => mk(Expression::Closure(
             closure_id,
             captured_expressions
                 .into_iter()
-                .map(|captured_expression| simplify_exp(environment, captured_expression))
+                .map(|captured_expression| simplify_exp(environment, captured_expression, errors))
                 .collect(),
         )),
         Expression::Let(variable_name, type_annotation, first_expression, second_expression) => {
@@ -1161,8 +1220,12 @@ pub(crate) fn simplify_exp(
             mk(Expression::Let(
                 variable_name,
                 shift_constructor(type_annotation),
-                Box::new(simplify_exp(environment, *first_expression)),
-                Box::new(simplify_exp(&extended_environment, *second_expression)),
+                Box::new(simplify_exp(environment, *first_expression, errors)),
+                Box::new(simplify_exp(
+                    &extended_environment,
+                    *second_expression,
+                    errors,
+                )),
             ))
         }
         Expression::ServerCall(server_call_id, arguments, result_type, format_mode) => {
@@ -1170,7 +1233,9 @@ pub(crate) fn simplify_exp(
                 server_call_id,
                 arguments
                     .into_iter()
-                    .map(|argument_expression| simplify_exp(environment, argument_expression))
+                    .map(|argument_expression| {
+                        simplify_exp(environment, argument_expression, errors)
+                    })
                     .collect(),
                 shift_constructor(result_type),
                 format_mode,
@@ -1194,6 +1259,7 @@ fn find_exp(
     lift_c: usize,
     lift_e: usize,
     span: &crate::error_types::Span,
+    errors: &mut Option<&mut ErrorReporter>,
 ) -> LocatedExpression {
     match env.first() {
         None => Located {
@@ -1211,9 +1277,14 @@ fn find_exp(
                     lift_c + lc,
                     lift_e + le,
                     span,
+                    errors,
                 ),
-                EnvItem::UnknownC => find_exp(rest, n_orig, n_rem, nudge, lift_c + 1, lift_e, span),
-                EnvItem::KnownC(_) => find_exp(rest, n_orig, n_rem, nudge, lift_c, lift_e, span),
+                EnvItem::UnknownC => {
+                    find_exp(rest, n_orig, n_rem, nudge, lift_c + 1, lift_e, span, errors)
+                }
+                EnvItem::KnownC(_) => {
+                    find_exp(rest, n_orig, n_rem, nudge, lift_c, lift_e, span, errors)
+                }
                 EnvItem::Unknown => {
                     if n_rem == 0 {
                         Located {
@@ -1221,15 +1292,33 @@ fn find_exp(
                             span: span.clone(),
                         }
                     } else {
-                        find_exp(rest, n_orig, n_rem - 1, nudge, lift_c, lift_e + 1, span)
+                        find_exp(
+                            rest,
+                            n_orig,
+                            n_rem - 1,
+                            nudge,
+                            lift_c,
+                            lift_e + 1,
+                            span,
+                            errors,
+                        )
                     }
                 }
                 EnvItem::Known(e) => {
                     if n_rem == 0 {
                         let env2 = prepend(EnvItem::Lift(lift_c, lift_e), rest);
-                        simplify_exp(&env2, e.clone())
+                        simplify_exp(&env2, e.clone(), errors)
                     } else {
-                        find_exp(rest, n_orig, n_rem - 1, nudge - 1, lift_c, lift_e, span)
+                        find_exp(
+                            rest,
+                            n_orig,
+                            n_rem - 1,
+                            nudge - 1,
+                            lift_c,
+                            lift_e,
+                            span,
+                            errors,
+                        )
                     }
                 }
             }
@@ -1394,25 +1483,35 @@ fn prepend(item: EnvItem, rest: &[EnvItem]) -> Environment {
 // Top-level entry points
 // ---------------------------------------------------------------------------
 
-/// Algebraically simplify all expressions in a Core file.
+/// Algebraically simplify all expressions in a Core file (no diagnostic reporter).
 pub fn reduce(file: File) -> File {
+    let mut no_errors = None;
+    reduce_with_errors(file, &mut no_errors)
+}
+
+/// Algebraically simplify all expressions in a Core file, routing recoverable internal notes through `errors` when present.
+pub fn reduce_with_errors(file: File, errors: &mut Option<&mut ErrorReporter>) -> File {
     file.into_iter()
         .map(|d| {
             let span = d.span.clone();
             let node = match d.node {
                 Declaration::Val(x, n, t, e, s) => {
-                    Declaration::Val(x, n, t, simplify_exp(&[] as &[EnvItem], e), s)
+                    Declaration::Val(x, n, t, simplify_exp(&[] as &[EnvItem], e, errors), s)
                 }
                 Declaration::ValRec(vis) => Declaration::ValRec(
                     vis.into_iter()
-                        .map(|(x, n, t, e, s)| (x, n, t, simplify_exp(&[] as &[EnvItem], e), s))
+                        .map(|(x, n, t, e, s)| {
+                            (x, n, t, simplify_exp(&[] as &[EnvItem], e, errors), s)
+                        })
                         .collect(),
                 ),
                 Declaration::Task(e1, e2) => Declaration::Task(
-                    simplify_exp(&[] as &[EnvItem], e1),
-                    simplify_exp(&[] as &[EnvItem], e2),
+                    simplify_exp(&[] as &[EnvItem], e1, errors),
+                    simplify_exp(&[] as &[EnvItem], e2, errors),
                 ),
-                Declaration::Policy(e) => Declaration::Policy(simplify_exp(&[] as &[EnvItem], e)),
+                Declaration::Policy(e) => {
+                    Declaration::Policy(simplify_exp(&[] as &[EnvItem], e, errors))
+                }
                 other => other,
             };
             Located { node, span }
@@ -1430,7 +1529,16 @@ pub fn reduce(file: File) -> File {
 ///
 /// The simplified expression (local beta/eta and algebraic simplification only).
 pub fn reduce_exp(expression: LocatedExpression) -> LocatedExpression {
-    simplify_exp(&[] as &[EnvItem], expression)
+    let mut no_errors = None;
+    reduce_exp_with_errors(expression, &mut no_errors)
+}
+
+/// Like [`reduce_exp`] but threads an optional [`ErrorReporter`] for recoverable internal diagnostics.
+pub fn reduce_exp_with_errors(
+    expression: LocatedExpression,
+    errors: &mut Option<&mut ErrorReporter>,
+) -> LocatedExpression {
+    simplify_exp(&[] as &[EnvItem], expression, errors)
 }
 
 /// Simplifies a single constructor with an empty environment (no global definitions unfolded).

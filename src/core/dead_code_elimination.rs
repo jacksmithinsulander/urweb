@@ -20,8 +20,6 @@
 //!
 //! Mirrors `shake.sml`.
 
-#![allow(dead_code)]
-
 use std::collections::{BTreeSet, HashMap};
 
 use crate::core::{

@@ -6,12 +6,11 @@
 //!
 //! Mirrors `tag.sml`.
 
-#![allow(dead_code, unused_variables)]
-
 use std::collections::HashMap;
 
 use crate::core::environment::Env;
 use crate::core::*;
+use crate::diagnostics::{DiagnosticId, DiagnosticPayload};
 use crate::error_types::Span;
 use crate::export::{Effect, ExportKind};
 
@@ -30,11 +29,17 @@ impl UnionFind {
         }
     }
 
+    /// Follow `parent` links to a root. Bounded by `|parent| + 1` so a cyclic or corrupted map
+    /// cannot loop forever (Power-of-Ten / defensive guard on compiler state).
     pub(crate) fn representative(&self, mut node: usize) -> usize {
-        while let Some(&parent) = self.parent.get(&node) {
+        let hop_limit = self.parent.len().saturating_add(1);
+        for _ in 0..hop_limit {
+            let Some(&parent) = self.parent.get(&node) else {
+                return node;
+            };
             node = parent;
         }
-        node
+        panic!("UnionFind::representative exceeded hop limit (cycle or inconsistent map)");
     }
 
     pub(crate) fn equate(&mut self, node_one: usize, node_two: usize) {
@@ -65,35 +70,58 @@ struct State {
 // ---------------------------------------------------------------------------
 
 /// Unravels nested `EApp` applications, collecting the head name and arguments.
+///
+/// Iterative so pathological `App` towers do not blow the Rust stack; depth capped at [`MAX_UNRAVEL_APP_DEPTH`].
+const MAX_UNRAVEL_APP_DEPTH: usize = 65_536;
+
 pub(crate) fn unravel_app(
     expression: &LocatedExpression,
 ) -> Option<(usize, Vec<LocatedExpression>)> {
-    fn inner(expression: &LocatedExpression, args: &mut Vec<LocatedExpression>) -> Option<usize> {
-        match &expression.node {
-            Expression::Named(name_id) => Some(*name_id),
+    let mut args = Vec::new();
+    let mut cur = expression;
+    // One iteration peels at most one `App`; cap peels, then require a [`Expression::Named`] head.
+    for _ in 0..MAX_UNRAVEL_APP_DEPTH {
+        match &cur.node {
+            Expression::Named(name_id) => return Some((*name_id, args)),
             Expression::App(function, argument) => {
                 args.insert(0, *argument.clone());
-                inner(function, args)
+                cur = function;
             }
-            _ => None,
+            _ => return None,
         }
     }
-    let mut args = Vec::new();
-    inner(expression, &mut args).map(|name_id| (name_id, args))
+    match &cur.node {
+        Expression::Named(name_id) => Some((*name_id, args)),
+        _ => None,
+    }
 }
 
 /// Emits an error for a duplicate URL prefix.
-fn report_dup_url(span: &Span, prefix_message: &str, error_reporter: &mut impl FnMut(&Span, &str)) {
-    error_reporter(span, &format!("Duplicate URL prefix {}", prefix_message));
+fn _report_dup_url(
+    span: &Span,
+    prefix_message: &str,
+    error_reporter: &mut impl FnMut(&Span, DiagnosticPayload),
+) {
+    error_reporter(
+        span,
+        DiagnosticPayload::new(
+            DiagnosticId::ExportDuplicateUrlPrefix,
+            vec![prefix_message.to_string()],
+        ),
+    );
 }
 
 /// Emits an error for conflicting export kinds.
-fn report_both(span: &Span, function_name: &str, error_reporter: &mut impl FnMut(&Span, &str)) {
+fn _report_both(
+    span: &Span,
+    function_name: &str,
+    error_reporter: &mut impl FnMut(&Span, DiagnosticPayload),
+) {
     error_reporter(
         span,
-        &format!(
-            "Function {} needed for multiple modes (link, form, RPC handler).",
-            function_name
+        DiagnosticPayload::new(
+            DiagnosticId::ExportFunctionMultipleModes,
+            vec![function_name.to_string()],
         ),
     );
 }
@@ -106,14 +134,20 @@ fn tag_it(
     state: &mut State,
     source_names: &HashMap<usize, String>,
     uf: &UnionFind,
-    env: &Env,
-    error_reporter: &mut impl FnMut(&Span, &str),
+    _env: &Env,
+    error_reporter: &mut impl FnMut(&Span, DiagnosticPayload),
 ) -> LocatedExpression {
     let span = e.span.clone();
 
     match unravel_app(&e) {
         None => {
-            error_reporter(&span, &format!("Invalid {} expression", new_attr));
+            error_reporter(
+                &span,
+                DiagnosticPayload::new(
+                    DiagnosticId::ExportInvalidTagExpression,
+                    vec![new_attr.to_string()],
+                ),
+            );
             e
         }
         Some((f_raw, args)) => {
@@ -140,14 +174,20 @@ fn tag_it(
                 }
                 Some((ek2, f2)) => {
                     if *f2 != f {
-                        error_reporter(&span, &format!("Duplicate URL prefix {}", src_name));
+                        error_reporter(
+                            &span,
+                            DiagnosticPayload::new(
+                                DiagnosticId::ExportDuplicateUrlPrefix,
+                                vec![src_name.clone()],
+                            ),
+                        );
                     }
                     if export_kind_discriminant(&ek) != export_kind_discriminant(ek2) {
                         error_reporter(
                             &span,
-                            &format!(
-                                "Function {} needed for multiple modes (link, form, RPC handler).",
-                                src_name
+                            DiagnosticPayload::new(
+                                DiagnosticId::ExportFunctionMultipleModes,
+                                vec![src_name.clone()],
                             ),
                         );
                     }
@@ -181,7 +221,7 @@ fn rewrite_exp(
     source_names: &HashMap<usize, String>,
     uf: &UnionFind,
     env: &Env,
-    error_reporter: &mut impl FnMut(&Span, &str),
+    error_reporter: &mut impl FnMut(&Span, DiagnosticPayload),
 ) -> LocatedExpression {
     let span = e.span.clone();
     match e.node {
@@ -550,7 +590,7 @@ fn make_wrapper(
         );
         let (abs, _, _) = args.iter().rev().enumerate().fold(
             (body, 0usize, wrap_t),
-            |(inner, k, rest_t), (i, arg_t)| {
+            |(inner, k, rest_t), (_i, arg_t)| {
                 let fn_t = Located::new(
                     Constructor::TFun(Box::new(arg_t.clone()), Box::new(rest_t.clone())),
                     span.clone(),
@@ -589,7 +629,7 @@ fn make_wrapper(
 // ---------------------------------------------------------------------------
 
 /// Rewrite URL links and form actions as closures, generate wrapper functions.
-pub fn tag(file: File, error_reporter: &mut impl FnMut(&Span, &str)) -> File {
+pub fn tag(file: File, error_reporter: &mut impl FnMut(&Span, DiagnosticPayload)) -> File {
     // Build source-name lookup map from Val declarations
     let mut source_names: HashMap<usize, String> = HashMap::new();
     for d in &file {
@@ -626,11 +666,14 @@ pub fn tag(file: File, error_reporter: &mut impl FnMut(&Span, &str)) -> File {
                 let src_name = source_names.get(n).cloned().unwrap_or_default();
                 match state.by_tag.get(&src_name) {
                     None => d,
-                    Some((ek2, n2)) => {
+                    Some((ek2, _n2)) => {
                         if export_kind_discriminant(ek) != export_kind_discriminant(ek2) {
                             error_reporter(
                                 &span,
-                                &format!("Function {} needed for multiple modes", src_name),
+                                DiagnosticPayload::new(
+                                    DiagnosticId::ExportFunctionMultipleModesShort,
+                                    vec![src_name.clone()],
+                                ),
                             );
                         }
                         // Remove duplicate export
@@ -693,7 +736,7 @@ pub fn tag(file: File, error_reporter: &mut impl FnMut(&Span, &str)) -> File {
         // Collect new val declarations from new tags
         let mut new_val_decls: Vec<LocatedDeclaration> = Vec::new();
         let mut new_export_decls: Vec<LocatedDeclaration> = Vec::new();
-        for (ek, f, cn) in new_tags {
+        for (_ek, f, cn) in new_tags {
             if let Some((f_name, f_type)) = env
                 .lookup_e_named(f)
                 .ok()

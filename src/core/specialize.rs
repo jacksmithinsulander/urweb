@@ -16,8 +16,6 @@
 //!    constructor expressions and patterns), then prepend any newly generated
 //!    `DDatatype` specialization decls.
 
-#![allow(dead_code)]
-
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -1163,10 +1161,6 @@ mod tests {
 
     fn dummy<T>(node: T) -> Located<T> {
         Located::dummy(node)
-    }
-
-    fn dummy_kind() -> LocatedKind {
-        dummy(Kind::Type)
     }
 
     /// Build a simple monomorphic datatype (no params).

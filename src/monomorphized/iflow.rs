@@ -32,6 +32,7 @@
 
 use std::collections::BTreeSet;
 
+use crate::diagnostics::{DiagnosticId, DiagnosticPayload};
 use crate::error_types::{CompileError, ErrorReporter, Span};
 use crate::monomorphized::{Decl, Exp, File, LocDecl, LocExp, Pat, Policy};
 use crate::primitives::Prim;
@@ -620,9 +621,11 @@ impl IflowState {
                 }
             }
         }
-        errors.report(CompileError::at(
+        errors.report(CompileError::type_at_with_hint(
             span.clone(),
-            "The information flow policy may be violated here.".to_string(),
+            DiagnosticPayload::new(DiagnosticId::InformationFlowPolicyViolation, vec![]),
+            DiagnosticId::HintInformationFlowPolicyViolation,
+            vec![],
         ));
     }
 
@@ -648,9 +651,14 @@ impl IflowState {
                 return;
             }
         }
-        errors.report(CompileError::at(
+        errors.report(CompileError::type_at_with_hint(
             span.clone(),
-            format!("The database {} policy may be violated here.", action),
+            DiagnosticPayload::new(
+                DiagnosticId::DatabasePolicyMayViolate,
+                vec![action.to_string()],
+            ),
+            DiagnosticId::HintDatabasePolicyMayViolate,
+            vec![],
         ));
     }
 
@@ -750,68 +758,543 @@ fn is_writer(name: &str) -> bool {
 // Expression evaluator
 // ---------------------------------------------------------------------------
 
-/// Evaluate a Mono expression to a symbolic atom, driving side-effects
-/// (send/insert/delete/update checks) via `state`.
-///
-/// The continuation `k` receives the atom for the expression.  This mirrors
-/// the SML CPS-style `evalExp`.
+/// Continuation after a subexpression evaluates to an [`Atom`]: explicit enum
+/// (no `dyn` trait objects) so the pass stays statically dispatched.
+#[derive(Clone)]
+enum Kont {
+    /// Top-level or diverging subexpression: drop the atom.
+    End,
+    /// After `Con` inner: wrap with unary constructor `name`.
+    Con1 {
+        name: String,
+        rest: Box<Kont>,
+    },
+    /// After `Some` inner.
+    Some1 {
+        rest: Box<Kont>,
+    },
+    /// After each Basis writer argument: send atom, then evaluate the next arg or finish with `Recd []`.
+    WriterRest {
+        args: Vec<LocExp>,
+        just_finished_index: usize,
+        span: Span,
+        rest: Box<Kont>,
+    },
+    /// Collect evaluated FFI (`Other`) arguments left-to-right.
+    CollectFfi {
+        args: Vec<LocExp>,
+        acc: Vec<Atom>,
+        func_name: String,
+        rest: Box<Kont>,
+    },
+    /// After `App` onto `Ffi`: send the argument, then continue with `Recd []`.
+    AppFfiSendArg {
+        outer_span: Span,
+        rest: Box<Kont>,
+    },
+    /// Unary primitive / `Other` wrapper.
+    UnopWrap {
+        op: String,
+        rest: Box<Kont>,
+    },
+    /// Binary: after left subexpression.
+    BinopLeft {
+        op: String,
+        e2: LocExp,
+        env: Vec<Atom>,
+        rest: Box<Kont>,
+    },
+    /// Binary: after right subexpression.
+    BinopRight {
+        op: String,
+        a1: Atom,
+        rest: Box<Kont>,
+    },
+    /// Record fields left-to-right.
+    RecordRest {
+        fields: Vec<(String, LocExp)>,
+        field_index: usize,
+        acc: Vec<(String, Atom)>,
+        rest: Box<Kont>,
+    },
+    /// After record subexpression: project field.
+    FieldProj {
+        field: String,
+        rest: Box<Kont>,
+    },
+    /// String concat: after first operand.
+    StrcatLeft {
+        e2: LocExp,
+        env: Vec<Atom>,
+        rest: Box<Kont>,
+    },
+    StrcatRight {
+        a1: Atom,
+        rest: Box<Kont>,
+    },
+    /// After `Write` subexpression: send then continue.
+    WriteThen {
+        span: Span,
+        rest: Box<Kont>,
+    },
+    /// After `Seq` first expression.
+    SeqSecond {
+        e2: LocExp,
+        env: Vec<Atom>,
+        rest: Box<Kont>,
+    },
+    /// After `Let` binding expression.
+    LetBody {
+        e2: LocExp,
+        base_env: Vec<Atom>,
+        rest: Box<Kont>,
+    },
+    /// Closure environment atoms.
+    ClosureRest {
+        captured: Vec<LocExp>,
+        acc: Vec<Atom>,
+        closure_id: usize,
+        rest: Box<Kont>,
+    },
+    /// After SQL `query` initial expression.
+    QueryAfterInit {
+        outer_span: Span,
+        tables: Vec<String>,
+        body: LocExp,
+        base_env: Vec<Atom>,
+        rest: Box<Kont>,
+    },
+    /// After `Case` discriminant: run each arm (mirrors the former CPS structure).
+    CaseDisc {
+        arms: Vec<(super::LocPat, LocExp)>,
+        outer_span: Span,
+        rest: Box<Kont>,
+    },
+    /// After `Dml` subexpression.
+    DmlThen {
+        rest: Box<Kont>,
+    },
+    /// After `Nextval` subexpression.
+    NextvalThen {
+        rest: Box<Kont>,
+    },
+    /// After `Setval` first subexpression.
+    SetvalFirst {
+        e2: LocExp,
+        env: Vec<Atom>,
+        rest: Box<Kont>,
+    },
+    SetvalSecond {
+        rest: Box<Kont>,
+    },
+    /// `Error e`: send only.
+    ErrorSendOnly {
+        span: Span,
+    },
+    /// After blob half of `ReturnBlob`: send blob, then evaluate mime type.
+    ReturnBlobThenMime {
+        mime_type: LocExp,
+        span: Span,
+    },
+    /// Send mime atom, then continue `rest`.
+    MimeSendOnly {
+        span: Span,
+        rest: Box<Kont>,
+    },
+    /// `Redirect`: send only.
+    RedirectSendOnly {
+        span: Span,
+    },
+}
+
+/// Resume evaluation with the atom yielded from the most recently finished subexpression.
+fn resume_with_atom(
+    env: &[Atom],
+    state: &mut IflowState,
+    errors: &mut ErrorReporter,
+    atom: Atom,
+    kont: Kont,
+) {
+    match kont {
+        Kont::End => {}
+        Kont::Con1 { name, rest } => {
+            resume_with_atom(
+                env,
+                state,
+                errors,
+                Atom::Func(Func::DtCon1(name), vec![atom]),
+                *rest,
+            );
+        }
+        Kont::Some1 { rest } => {
+            resume_with_atom(
+                env,
+                state,
+                errors,
+                Atom::Func(Func::DtCon1("Some".to_string()), vec![atom]),
+                *rest,
+            );
+        }
+        Kont::WriterRest {
+            args,
+            just_finished_index,
+            span,
+            rest,
+        } => {
+            state.send(&atom, &span, errors);
+            let next_i = just_finished_index + 1;
+            if next_i >= args.len() {
+                resume_with_atom(env, state, errors, Atom::Recd(vec![]), *rest);
+            } else {
+                let next_writer_arg = args[next_i].clone();
+                eval_exp(
+                    env,
+                    state,
+                    &next_writer_arg,
+                    errors,
+                    Kont::WriterRest {
+                        args,
+                        just_finished_index: next_i,
+                        span,
+                        rest,
+                    },
+                );
+            }
+        }
+        Kont::CollectFfi {
+            mut acc,
+            args,
+            func_name,
+            rest,
+        } => {
+            acc.push(atom);
+            if acc.len() >= args.len() {
+                resume_with_atom(
+                    env,
+                    state,
+                    errors,
+                    Atom::Func(Func::Other(func_name), acc),
+                    *rest,
+                );
+            } else {
+                let next_i = acc.len();
+                let next_ffi_arg = args[next_i].clone();
+                eval_exp(
+                    env,
+                    state,
+                    &next_ffi_arg,
+                    errors,
+                    Kont::CollectFfi {
+                        args,
+                        acc,
+                        func_name,
+                        rest,
+                    },
+                );
+            }
+        }
+        Kont::AppFfiSendArg { outer_span, rest } => {
+            state.send(&atom, &outer_span, errors);
+            resume_with_atom(env, state, errors, Atom::Recd(vec![]), *rest);
+        }
+        Kont::UnopWrap { op, rest } => {
+            resume_with_atom(
+                env,
+                state,
+                errors,
+                Atom::Func(Func::Other(op), vec![atom]),
+                *rest,
+            );
+        }
+        Kont::BinopLeft {
+            op,
+            e2,
+            env: saved_env,
+            rest,
+        } => {
+            eval_exp(
+                &saved_env,
+                state,
+                &e2,
+                errors,
+                Kont::BinopRight { op, a1: atom, rest },
+            );
+        }
+        Kont::BinopRight { op, a1, rest } => {
+            resume_with_atom(
+                env,
+                state,
+                errors,
+                Atom::Func(Func::Other(op), vec![a1, atom]),
+                *rest,
+            );
+        }
+        Kont::RecordRest {
+            fields,
+            field_index,
+            mut acc,
+            rest,
+        } => {
+            let (field_name, _) = &fields[field_index];
+            acc.push((field_name.clone(), atom));
+            let next_i = field_index + 1;
+            if next_i >= fields.len() {
+                resume_with_atom(env, state, errors, Atom::Recd(acc), *rest);
+            } else {
+                let next_record_exp = fields[next_i].1.clone();
+                eval_exp(
+                    env,
+                    state,
+                    &next_record_exp,
+                    errors,
+                    Kont::RecordRest {
+                        fields,
+                        field_index: next_i,
+                        acc,
+                        rest,
+                    },
+                );
+            }
+        }
+        Kont::FieldProj { field, rest } => {
+            resume_with_atom(env, state, errors, Atom::Proj(Box::new(atom), field), *rest);
+        }
+        Kont::StrcatLeft {
+            e2,
+            env: saved_env,
+            rest,
+        } => {
+            eval_exp(
+                &saved_env,
+                state,
+                &e2,
+                errors,
+                Kont::StrcatRight { a1: atom, rest },
+            );
+        }
+        Kont::StrcatRight { a1, rest } => {
+            resume_with_atom(
+                env,
+                state,
+                errors,
+                Atom::Func(Func::Other("cat".to_string()), vec![a1, atom]),
+                *rest,
+            );
+        }
+        Kont::WriteThen { span, rest } => {
+            state.send(&atom, &span, errors);
+            resume_with_atom(env, state, errors, Atom::Recd(vec![]), *rest);
+        }
+        Kont::SeqSecond {
+            e2,
+            env: saved_env,
+            rest,
+        } => {
+            eval_exp(&saved_env, state, &e2, errors, *rest);
+        }
+        Kont::LetBody {
+            e2,
+            mut base_env,
+            rest,
+        } => {
+            base_env.push(atom);
+            eval_exp(&base_env, state, &e2, errors, *rest);
+        }
+        Kont::ClosureRest {
+            captured,
+            mut acc,
+            closure_id,
+            rest,
+        } => {
+            acc.push(atom);
+            if acc.len() >= captured.len() {
+                let name = format!("Cl{}", closure_id);
+                resume_with_atom(
+                    env,
+                    state,
+                    errors,
+                    Atom::Func(Func::Other(name), acc),
+                    *rest,
+                );
+            } else {
+                let idx = acc.len();
+                let next_captured_exp = captured[idx].clone();
+                eval_exp(
+                    env,
+                    state,
+                    &next_captured_exp,
+                    errors,
+                    Kont::ClosureRest {
+                        captured,
+                        acc,
+                        closure_id,
+                        rest,
+                    },
+                );
+            }
+        }
+        Kont::QueryAfterInit {
+            outer_span,
+            tables,
+            body,
+            base_env,
+            rest,
+        } => {
+            let init_atom = atom;
+            let r = state.fresh_var();
+            let acc = state.fresh_var();
+            let mut query_atoms: Vec<CondAtom> = Vec::new();
+            let mut row_vars: Vec<Atom> = Vec::new();
+            for tab in &tables {
+                let row_var = state.fresh_var();
+                query_atoms.push(CondAtom::AReln(
+                    Reln::Sql(tab.clone()),
+                    vec![row_var.clone()],
+                ));
+                row_vars.push(row_var);
+            }
+            state.assert_atoms(&query_atoms);
+            for row_var in &row_vars {
+                state.send(row_var, &outer_span, errors);
+            }
+            state.assert_atoms(&[CondAtom::AReln(Reln::Eq, vec![r.clone(), init_atom])]);
+            let mut body_env = base_env;
+            body_env.push(r);
+            body_env.push(acc);
+            eval_exp(&body_env, state, &body, errors, *rest);
+        }
+        Kont::CaseDisc {
+            arms,
+            outer_span,
+            rest,
+        } => {
+            let discriminant_atom = atom;
+            for (arm_pat, arm_body) in arms {
+                let saved = state.stash();
+                let mut arm_env = env.to_vec();
+                eval_pat(
+                    &mut arm_env,
+                    state,
+                    discriminant_atom.clone(),
+                    &arm_pat.node,
+                );
+                eval_exp(&arm_env, state, &arm_body, errors, (*rest).clone());
+                state.reinstate(saved);
+            }
+            let _ = outer_span;
+        }
+        Kont::DmlThen { rest } => {
+            resume_with_atom(env, state, errors, Atom::Recd(vec![]), *rest);
+        }
+        Kont::NextvalThen { rest } => {
+            let nv = state.fresh_var();
+            if let Atom::Const(Prim::String(_, s)) = &atom {
+                let seq_name = s
+                    .strip_prefix("uw_")
+                    .map(|t| t.to_string())
+                    .unwrap_or_else(|| s.clone());
+                state.assert_atoms(&[CondAtom::AReln(Reln::Sql(seq_name), vec![nv.clone()])]);
+            }
+            resume_with_atom(env, state, errors, nv, *rest);
+        }
+        Kont::SetvalFirst {
+            e2,
+            env: saved_env,
+            rest,
+        } => {
+            eval_exp(&saved_env, state, &e2, errors, Kont::SetvalSecond { rest });
+        }
+        Kont::SetvalSecond { rest } => {
+            resume_with_atom(env, state, errors, Atom::Recd(vec![]), *rest);
+        }
+        Kont::ErrorSendOnly { span } => {
+            state.send(&atom, &span, errors);
+        }
+        Kont::ReturnBlobThenMime { mime_type, span } => {
+            state.send(&atom, &span, errors);
+            eval_exp(
+                env,
+                state,
+                &mime_type,
+                errors,
+                Kont::MimeSendOnly {
+                    span,
+                    rest: Box::new(Kont::End),
+                },
+            );
+        }
+        Kont::MimeSendOnly { span, rest } => {
+            state.send(&atom, &span, errors);
+            resume_with_atom(env, state, errors, Atom::Recd(vec![]), *rest);
+        }
+        Kont::RedirectSendOnly { span } => {
+            state.send(&atom, &span, errors);
+        }
+    }
+}
+
+/// Evaluate a Mono expression to completion under continuation `kont`.
 fn eval_exp(
     env: &[Atom],
     state: &mut IflowState,
     e: &LocExp,
     errors: &mut ErrorReporter,
-    k: &mut dyn FnMut(&mut IflowState, &mut ErrorReporter, Atom),
+    kont: Kont,
 ) {
     let span = &e.span;
 
-    macro_rules! default {
+    macro_rules! eval_default {
         () => {{
-            let v = state.fresh_var();
-            k(state, errors, v);
+            let placeholder_var = state.fresh_var();
+            resume_with_atom(env, state, errors, placeholder_var, kont);
         }};
     }
 
     match &e.node {
-        Exp::Prim(p) => k(state, errors, Atom::Const(p.clone())),
+        Exp::Prim(p) => resume_with_atom(env, state, errors, Atom::Const(p.clone()), kont),
 
         Exp::Rel(n) => {
-            let a = env
+            let rel_atom = env
                 .get(env.len().saturating_sub(1 + n))
                 .cloned()
                 .unwrap_or_else(|| state.fresh_var());
-            k(state, errors, a);
+            resume_with_atom(env, state, errors, rel_atom, kont);
         }
 
-        Exp::Named(_) => default!(),
+        Exp::Named(_) => eval_default!(),
 
         Exp::Con(_, pc, None) => {
-            let name = pat_con_name(pc);
-            k(state, errors, Atom::Func(Func::DtCon0(name), vec![]));
+            let con_name = pat_con_name(pc);
+            resume_with_atom(
+                env,
+                state,
+                errors,
+                Atom::Func(Func::DtCon0(con_name), vec![]),
+                kont,
+            );
         }
 
         Exp::Con(_, pc, Some(inner)) => {
-            let name = pat_con_name(pc);
-            let name2 = name.clone();
+            let con_name = pat_con_name(pc);
             eval_exp(
                 env,
                 state,
                 inner,
                 errors,
-                &mut |state, errors, inner_atom| {
-                    k(
-                        state,
-                        errors,
-                        Atom::Func(Func::DtCon1(name2.clone()), vec![inner_atom]),
-                    );
+                Kont::Con1 {
+                    name: con_name,
+                    rest: Box::new(kont),
                 },
             );
         }
 
         Exp::None(_) => {
-            k(
+            resume_with_atom(
+                env,
                 state,
                 errors,
                 Atom::Func(Func::DtCon0("None".to_string()), vec![]),
+                kont,
             );
         }
 
@@ -821,380 +1304,367 @@ fn eval_exp(
                 state,
                 inner,
                 errors,
-                &mut |state, errors, inner_atom| {
-                    k(
-                        state,
-                        errors,
-                        Atom::Func(Func::DtCon1("Some".to_string()), vec![inner_atom]),
-                    );
+                Kont::Some1 {
+                    rest: Box::new(kont),
                 },
             );
         }
 
-        Exp::Ffi(_, _) => default!(),
+        Exp::Ffi(_, _) => eval_default!(),
 
         Exp::FfiApp(module, name, args) => {
             if module == "Basis" && is_writer(name) {
-                // Writer: send each arg, then continue with Recd []
-                let args: Vec<LocExp> = args.iter().map(|(a, _)| a.clone()).collect();
-                let span = span.clone();
-                fn send_args(
-                    env: &[Atom],
-                    state: &mut IflowState,
-                    errors: &mut ErrorReporter,
-                    args: &[LocExp],
-                    span: &Span,
-                    k: &mut dyn FnMut(&mut IflowState, &mut ErrorReporter, Atom),
-                ) {
-                    if args.is_empty() {
-                        k(state, errors, Atom::Recd(vec![]));
-                        return;
-                    }
-                    let head = &args[0];
-                    let tail = &args[1..];
-                    let span2 = span.clone();
-                    eval_exp(env, state, head, errors, &mut |state, errors, a| {
-                        state.send(&a, &span2, errors);
-                        send_args(env, state, errors, tail, &span2, k);
-                    });
+                let writer_args: Vec<LocExp> = args.iter().map(|(a, _)| a.clone()).collect();
+                let outer_span = span.clone();
+                if writer_args.is_empty() {
+                    resume_with_atom(env, state, errors, Atom::Recd(vec![]), kont);
+                } else {
+                    let head_writer_arg = writer_args[0].clone();
+                    eval_exp(
+                        env,
+                        state,
+                        &head_writer_arg,
+                        errors,
+                        Kont::WriterRest {
+                            args: writer_args,
+                            just_finished_index: 0,
+                            span: outer_span,
+                            rest: Box::new(kont),
+                        },
+                    );
                 }
-                send_args(env, state, errors, &args, &span, k);
                 return;
             }
-            // Non-writer FfiApp: build Func(Other("m.f"), args)
             let full_name = format!("{}.{}", module, name);
-            let args: Vec<LocExp> = args.iter().map(|(a, _)| a.clone()).collect();
-            fn collect_args(
-                env: &[Atom],
-                state: &mut IflowState,
-                errors: &mut ErrorReporter,
-                remaining: &[LocExp],
-                acc: Vec<Atom>,
-                func_name: String,
-                k: &mut dyn FnMut(&mut IflowState, &mut ErrorReporter, Atom),
-            ) {
-                if remaining.is_empty() {
-                    k(state, errors, Atom::Func(Func::Other(func_name), acc));
-                    return;
-                }
-                let head = &remaining[0];
-                let tail = &remaining[1..];
-                let func_name2 = func_name.clone();
-                eval_exp(env, state, head, errors, &mut |state, errors, a| {
-                    let mut acc2 = acc.clone();
-                    acc2.push(a);
-                    collect_args(env, state, errors, tail, acc2, func_name2.clone(), k);
-                });
-            }
-            collect_args(env, state, errors, &args, vec![], full_name, k);
-        }
-
-        Exp::App(f_exp, arg_exp) => {
-            // Try to handle known patterns, otherwise default
-            // We don't implement the full rfun system here; default for now.
-            match &f_exp.node {
-                Exp::Ffi(_, _) => {
-                    // EApp((EFfi(m,s), _), e) treated as single-arg FfiApp
-                    let arg = arg_exp.clone();
-                    let span2 = span.clone();
-                    eval_exp(env, state, &arg, errors, &mut |state, errors, a| {
-                        state.send(&a, &span2, errors);
-                        k(state, errors, Atom::Recd(vec![]));
-                    });
-                }
-                Exp::Error(_, _) => {
-                    eval_exp(env, state, f_exp, errors, k);
-                }
-                _ => default!(),
+            let ffi_args: Vec<LocExp> = args.iter().map(|(a, _)| a.clone()).collect();
+            if ffi_args.is_empty() {
+                resume_with_atom(
+                    env,
+                    state,
+                    errors,
+                    Atom::Func(Func::Other(full_name), vec![]),
+                    kont,
+                );
+            } else {
+                let head_ffi_arg = ffi_args[0].clone();
+                eval_exp(
+                    env,
+                    state,
+                    &head_ffi_arg,
+                    errors,
+                    Kont::CollectFfi {
+                        args: ffi_args,
+                        acc: vec![],
+                        func_name: full_name,
+                        rest: Box::new(kont),
+                    },
+                );
             }
         }
 
-        Exp::Abs(_, _, _, _) => default!(),
+        Exp::App(f_exp, arg_exp) => match &f_exp.node {
+            Exp::Ffi(_, _) => {
+                let arg = arg_exp.clone();
+                let outer_span = span.clone();
+                eval_exp(
+                    env,
+                    state,
+                    &arg,
+                    errors,
+                    Kont::AppFfiSendArg {
+                        outer_span,
+                        rest: Box::new(kont),
+                    },
+                );
+            }
+            Exp::Error(_, _) => {
+                eval_exp(env, state, f_exp, errors, kont);
+            }
+            _ => eval_default!(),
+        },
+
+        Exp::Abs(_, _, _, _) => eval_default!(),
 
         Exp::Unop(s, e1) => {
-            let s = s.clone();
-            eval_exp(env, state, e1, errors, &mut |state, errors, a| {
-                k(state, errors, Atom::Func(Func::Other(s.clone()), vec![a]));
-            });
+            let op_label = s.clone();
+            eval_exp(
+                env,
+                state,
+                e1,
+                errors,
+                Kont::UnopWrap {
+                    op: op_label,
+                    rest: Box::new(kont),
+                },
+            );
         }
 
         Exp::Binop(_, s, e1, e2) => {
-            let s = s.clone();
-            eval_exp(env, state, e1, errors, &mut |state, errors, a1| {
-                let a1 = a1.clone();
-                let s2 = s.clone();
-                eval_exp(env, state, e2, errors, &mut |state, errors, a2| {
-                    k(
-                        state,
-                        errors,
-                        Atom::Func(Func::Other(s2.clone()), vec![a1.clone(), a2]),
-                    );
-                });
-            });
+            let op_label = s.clone();
+            eval_exp(
+                env,
+                state,
+                e1,
+                errors,
+                Kont::BinopLeft {
+                    op: op_label,
+                    e2: (**e2).clone(),
+                    env: env.to_vec(),
+                    rest: Box::new(kont),
+                },
+            );
         }
 
-        Exp::Record(fields) => {
-            let fields: Vec<(String, LocExp)> = fields
+        Exp::Record(record_fields) => {
+            let fields: Vec<(String, LocExp)> = record_fields
                 .iter()
-                .map(|(name, exp, _)| (name.clone(), exp.clone()))
+                .map(|(field_name, exp, _)| (field_name.clone(), exp.clone()))
                 .collect();
-            fn build_record(
-                env: &[Atom],
-                state: &mut IflowState,
-                errors: &mut ErrorReporter,
-                remaining: &[(String, LocExp)],
-                acc: Vec<(String, Atom)>,
-                k: &mut dyn FnMut(&mut IflowState, &mut ErrorReporter, Atom),
-            ) {
-                if remaining.is_empty() {
-                    k(state, errors, Atom::Recd(acc));
-                    return;
-                }
-                let (name, exp) = &remaining[0];
-                let rest = &remaining[1..];
-                let name2 = name.clone();
-                eval_exp(env, state, exp, errors, &mut |state, errors, a| {
-                    let mut acc2 = acc.clone();
-                    acc2.push((name2.clone(), a));
-                    build_record(env, state, errors, rest, acc2, k);
-                });
+            if fields.is_empty() {
+                resume_with_atom(env, state, errors, Atom::Recd(vec![]), kont);
+            } else {
+                let first_record_exp = fields[0].1.clone();
+                eval_exp(
+                    env,
+                    state,
+                    &first_record_exp,
+                    errors,
+                    Kont::RecordRest {
+                        fields,
+                        field_index: 0,
+                        acc: vec![],
+                        rest: Box::new(kont),
+                    },
+                );
             }
-            build_record(env, state, errors, &fields, vec![], k);
         }
 
         Exp::Field(record_exp, field_name) => {
-            let field_name = field_name.clone();
-            eval_exp(env, state, record_exp, errors, &mut |state, errors, a| {
-                k(state, errors, Atom::Proj(Box::new(a), field_name.clone()));
-            });
+            let field_name_clone = field_name.clone();
+            eval_exp(
+                env,
+                state,
+                record_exp,
+                errors,
+                Kont::FieldProj {
+                    field: field_name_clone,
+                    rest: Box::new(kont),
+                },
+            );
         }
 
         Exp::Case(disc_exp, arms, _) => {
-            let span2 = span.clone();
+            let outer_span = span.clone();
             eval_exp(
                 env,
                 state,
                 disc_exp,
                 errors,
-                &mut |state, errors, disc_atom| {
-                    // Add path atom for the discriminant
-                    // Process each arm with a saved/restored state
-                    for (pat, body) in arms {
-                        let saved = state.stash();
-                        let mut arm_env = env.to_vec();
-                        eval_pat(&mut arm_env, state, disc_atom.clone(), &pat.node);
-                        eval_exp(&arm_env, state, body, errors, k);
-                        state.reinstate(saved);
-                    }
-                    // If we fell through all arms, call k with a fresh var
-                    // (This is approximate; the SML uses proper CPS)
-                    let _ = span2;
+                Kont::CaseDisc {
+                    arms: arms.clone(),
+                    outer_span,
+                    rest: Box::new(kont),
                 },
             );
         }
 
         Exp::Strcat(e1, e2) => {
-            eval_exp(env, state, e1, errors, &mut |state, errors, a1| {
-                let a1 = a1.clone();
-                eval_exp(env, state, e2, errors, &mut |state, errors, a2| {
-                    k(
-                        state,
-                        errors,
-                        Atom::Func(Func::Other("cat".to_string()), vec![a1.clone(), a2]),
-                    );
-                });
-            });
+            eval_exp(
+                env,
+                state,
+                e1,
+                errors,
+                Kont::StrcatLeft {
+                    e2: (**e2).clone(),
+                    env: env.to_vec(),
+                    rest: Box::new(kont),
+                },
+            );
         }
 
         Exp::Error(e1, _) => {
-            let span2 = span.clone();
-            eval_exp(env, state, e1, errors, &mut |state, errors, a| {
-                state.send(&a, &span2, errors);
-                // No continuation (error diverges)
-            });
+            let outer_span = span.clone();
+            eval_exp(
+                env,
+                state,
+                e1,
+                errors,
+                Kont::ErrorSendOnly { span: outer_span },
+            );
         }
 
         Exp::ReturnBlob {
             blob, mime_type, ..
         } => {
-            let span2 = span.clone();
-            let mime_type = mime_type.clone();
+            let outer_span = span.clone();
+            let mime_loc = (**mime_type).clone();
             if let Some(b) = blob {
-                let b = b.clone();
-                eval_exp(env, state, &b, errors, &mut |state, errors, blob_atom| {
-                    state.send(&blob_atom, &span2, errors);
-                    eval_exp(
-                        env,
-                        state,
-                        &mime_type,
-                        errors,
-                        &mut |state, errors, mime_atom| {
-                            state.send(&mime_atom, &span2, errors);
-                        },
-                    );
-                });
+                let blob_exp = (**b).clone();
+                eval_exp(
+                    env,
+                    state,
+                    &blob_exp,
+                    errors,
+                    Kont::ReturnBlobThenMime {
+                        mime_type: mime_loc,
+                        span: outer_span,
+                    },
+                );
             } else {
                 eval_exp(
                     env,
                     state,
-                    &mime_type,
+                    &mime_loc,
                     errors,
-                    &mut |state, errors, mime_atom| {
-                        state.send(&mime_atom, &span2, errors);
+                    Kont::MimeSendOnly {
+                        span: outer_span,
+                        rest: Box::new(Kont::End),
                     },
                 );
             }
         }
 
         Exp::Redirect(e1, _) => {
-            let span2 = span.clone();
-            eval_exp(env, state, e1, errors, &mut |state, errors, a| {
-                state.send(&a, &span2, errors);
-            });
+            let outer_span = span.clone();
+            eval_exp(
+                env,
+                state,
+                e1,
+                errors,
+                Kont::RedirectSendOnly { span: outer_span },
+            );
         }
 
         Exp::Write(e1) => {
-            let span2 = span.clone();
-            eval_exp(env, state, e1, errors, &mut |state, errors, a| {
-                state.send(&a, &span2, errors);
-                k(state, errors, Atom::Recd(vec![]));
-            });
+            let outer_span = span.clone();
+            eval_exp(
+                env,
+                state,
+                e1,
+                errors,
+                Kont::WriteThen {
+                    span: outer_span,
+                    rest: Box::new(kont),
+                },
+            );
         }
 
         Exp::Seq(e1, e2) => {
-            eval_exp(env, state, e1, errors, &mut |state, errors, _| {
-                eval_exp(env, state, e2, errors, k);
-            });
+            eval_exp(
+                env,
+                state,
+                e1,
+                errors,
+                Kont::SeqSecond {
+                    e2: (**e2).clone(),
+                    env: env.to_vec(),
+                    rest: Box::new(kont),
+                },
+            );
         }
 
         Exp::Let(_, _, e1, e2) => {
-            eval_exp(env, state, e1, errors, &mut |state, errors, bound_atom| {
-                let mut new_env = env.to_vec();
-                new_env.push(bound_atom);
-                eval_exp(&new_env, state, e2, errors, k);
-            });
+            eval_exp(
+                env,
+                state,
+                e1,
+                errors,
+                Kont::LetBody {
+                    e2: (**e2).clone(),
+                    base_env: env.to_vec(),
+                    rest: Box::new(kont),
+                },
+            );
         }
 
         Exp::Closure(n, captured) => {
-            let n = *n;
-            let captured: Vec<LocExp> = captured.clone();
-            fn collect_closure_args(
-                env: &[Atom],
-                state: &mut IflowState,
-                errors: &mut ErrorReporter,
-                remaining: &[LocExp],
-                acc: Vec<Atom>,
-                n: usize,
-                k: &mut dyn FnMut(&mut IflowState, &mut ErrorReporter, Atom),
-            ) {
-                if remaining.is_empty() {
-                    let name = format!("Cl{}", n);
-                    k(state, errors, Atom::Func(Func::Other(name), acc));
-                    return;
-                }
-                let head = &remaining[0];
-                let tail = &remaining[1..];
-                eval_exp(env, state, head, errors, &mut |state, errors, a| {
-                    let mut acc2 = acc.clone();
-                    acc2.push(a);
-                    collect_closure_args(env, state, errors, tail, acc2, n, k);
-                });
+            let closure_n = *n;
+            let captured_exprs: Vec<LocExp> = captured.clone();
+            if captured_exprs.is_empty() {
+                let name = format!("Cl{}", closure_n);
+                resume_with_atom(
+                    env,
+                    state,
+                    errors,
+                    Atom::Func(Func::Other(name), vec![]),
+                    kont,
+                );
+            } else {
+                let head_captured_exp = captured_exprs[0].clone();
+                eval_exp(
+                    env,
+                    state,
+                    &head_captured_exp,
+                    errors,
+                    Kont::ClosureRest {
+                        captured: captured_exprs,
+                        acc: vec![],
+                        closure_id: closure_n,
+                        rest: Box::new(kont),
+                    },
+                );
             }
-            collect_closure_args(env, state, errors, &captured, vec![], n, k);
         }
 
         Exp::Query(qm) => {
-            let span2 = span.clone();
-            let body = *qm.body.clone();
-            let initial = *qm.initial.clone();
+            let outer_span = span.clone();
+            let body = (*qm.body).clone();
+            let initial = (*qm.initial).clone();
             let tables: Vec<String> = qm.tables.iter().map(|(t, _)| t.clone()).collect();
-
             eval_exp(
                 env,
                 state,
                 &initial,
                 errors,
-                &mut |state, errors, init_atom| {
-                    let r = state.fresh_var();
-                    let acc = state.fresh_var();
-
-                    // Assert table membership facts for each table in the query
-                    let mut row_vars: Vec<Atom> = Vec::new();
-                    let mut query_atoms: Vec<CondAtom> = Vec::new();
-                    for tab in &tables {
-                        let row_var = state.fresh_var();
-                        query_atoms.push(CondAtom::AReln(
-                            Reln::Sql(tab.clone()),
-                            vec![row_var.clone()],
-                        ));
-                        row_vars.push(row_var);
-                    }
-                    state.assert_atoms(&query_atoms);
-
-                    // For each table row, check that the row is sendable under current policies.
-                    // This mirrors the SML's AllCols callback which calls St.send on each
-                    // projected field.  If no policy covers the table, this will report.
-                    for row_var in &row_vars {
-                        state.send(row_var, &span2, errors);
-                    }
-
-                    // Assert r = (current row) for the body evaluation
-                    state.assert_atoms(&[CondAtom::AReln(
-                        Reln::Eq,
-                        vec![r.clone(), init_atom.clone()],
-                    )]);
-
-                    // Evaluate body with (acc :: r :: env)
-                    let mut body_env = env.to_vec();
-                    body_env.push(r.clone());
-                    body_env.push(acc.clone());
-                    eval_exp(&body_env, state, &body, errors, k);
+                Kont::QueryAfterInit {
+                    outer_span,
+                    tables,
+                    body,
+                    base_env: env.to_vec(),
+                    rest: Box::new(kont),
                 },
             );
         }
 
         Exp::Dml(e1, _) => {
-            // DML handling: parse as a simple SQL operation check.
-            // The full SML parses the DML expression; we check the expression
-            // and report insert/delete/update policy violations conservatively.
-            let span2 = span.clone();
-            eval_exp(env, state, e1, errors, &mut |state, errors, _| {
-                // We can't parse the DML string directly here; conservatively
-                // check if an insert policy is needed.
-                // The tables mentioned in the Dml expression are checked at
-                // the DTable declaration level.
-                let _ = span2;
-                k(state, errors, Atom::Recd(vec![]));
-            });
+            eval_exp(
+                env,
+                state,
+                e1,
+                errors,
+                Kont::DmlThen {
+                    rest: Box::new(kont),
+                },
+            );
         }
 
         Exp::Nextval(e1) => {
-            let _span2 = span.clone();
-            eval_exp(env, state, e1, errors, &mut |state, errors, seq_atom| {
-                // If seq is a known string, assert Sql(seq_name, nv)
-                let nv = state.fresh_var();
-                if let Atom::Const(Prim::String(_, s)) = &seq_atom {
-                    // strip "uw_" prefix if present
-                    let seq_name = s
-                        .strip_prefix("uw_")
-                        .map(|t| t.to_string())
-                        .unwrap_or_else(|| s.clone());
-                    state.assert_atoms(&[CondAtom::AReln(Reln::Sql(seq_name), vec![nv.clone()])]);
-                }
-                k(state, errors, nv);
-            });
+            eval_exp(
+                env,
+                state,
+                e1,
+                errors,
+                Kont::NextvalThen {
+                    rest: Box::new(kont),
+                },
+            );
         }
 
         Exp::Setval(e1, e2) => {
-            eval_exp(env, state, e1, errors, &mut |state, errors, _| {
-                eval_exp(env, state, e2, errors, &mut |state, errors, _| {
-                    k(state, errors, Atom::Recd(vec![]));
-                });
-            });
+            eval_exp(
+                env,
+                state,
+                e1,
+                errors,
+                Kont::SetvalFirst {
+                    e2: (**e2).clone(),
+                    env: env.to_vec(),
+                    rest: Box::new(kont),
+                },
+            );
         }
 
         Exp::Uurlify(inner, _, _) => {
-            // get_cookie pattern: if inner is get_cookie(cname), assert known
             match &inner.node {
                 Exp::FfiApp(m, f, args) if m == "Basis" && f == "get_cookie" && args.len() == 1 => {
                     if let Exp::Prim(Prim::String(_, cname)) = &args[0].0.node {
@@ -1205,26 +1675,25 @@ fn eval_exp(
                             CondAtom::AReln(Reln::Known, vec![nv.clone()]),
                             CondAtom::AReln(Reln::Eq, vec![nv.clone(), cookie_func]),
                         ]);
-                        k(state, errors, nv);
+                        resume_with_atom(env, state, errors, nv, kont);
                         return;
                     }
                 }
                 _ => {}
             }
-            default!()
+            eval_default!()
         }
 
-        Exp::JavaScript(_, _) => default!(),
-        Exp::SignalReturn(_) => default!(),
-        Exp::SignalBind(_, _) => default!(),
-        Exp::SignalSource(_) => default!(),
-        Exp::ServerCall(_, _, _, _) => default!(),
-        Exp::Recv(_, _) => default!(),
-        Exp::Sleep(_) => default!(),
-        Exp::Spawn(_) => default!(),
+        Exp::JavaScript(_, _) => eval_default!(),
+        Exp::SignalReturn(_) => eval_default!(),
+        Exp::SignalBind(_, _) => eval_default!(),
+        Exp::SignalSource(_) => eval_default!(),
+        Exp::ServerCall(_, _, _, _) => eval_default!(),
+        Exp::Recv(_, _) => eval_default!(),
+        Exp::Sleep(_) => eval_default!(),
+        Exp::Spawn(_) => eval_default!(),
     }
 }
-
 // ---------------------------------------------------------------------------
 // Declaration processor
 // ---------------------------------------------------------------------------
@@ -1276,7 +1745,7 @@ fn process_decl(
             state.assert_atoms(&ps);
 
             let _ = name; // name available for debug
-            eval_exp(&env, state, &inner_e, errors, &mut |_, _, _| {});
+            eval_exp(&env, state, &inner_e, errors, Kont::End);
             state.reinstate(saved);
         }
 
@@ -1310,7 +1779,7 @@ fn process_decl(
                 let inner_e = de_abs_rec(e, &mut env, state, is_exported, &mut ps);
                 state.assert_atoms(&ps);
                 let _ = name;
-                eval_exp(&env, state, &inner_e, errors, &mut |_, _, _| {});
+                eval_exp(&env, state, &inner_e, errors, Kont::End);
                 state.reinstate(saved);
             }
         }
@@ -1468,7 +1937,10 @@ mod tests {
         assert!(!settings.debug, "default settings must have debug=false");
         let mut errors = ErrorReporter::new();
         check(&file, &settings, &mut errors);
-        assert!(!errors.has_errors(), "check must be no-op when debug=false");
+        assert!(
+            !errors.has_hard_errors(),
+            "check must be no-op when debug=false"
+        );
     }
 
     #[test]
@@ -1480,7 +1952,10 @@ mod tests {
         };
         let mut errors = ErrorReporter::new();
         check(&file, &settings, &mut errors);
-        assert!(!errors.has_errors(), "empty file must not produce errors");
+        assert!(
+            !errors.has_hard_errors(),
+            "empty file must not produce hard errors"
+        );
     }
 
     #[test]
@@ -1503,8 +1978,8 @@ mod tests {
         let mut errors = ErrorReporter::new();
         check(&file, &settings, &mut errors);
         assert!(
-            !errors.has_errors(),
-            "no policies declared → no iflow errors"
+            !errors.has_hard_errors(),
+            "no policies declared → no iflow hard errors"
         );
     }
 
@@ -1532,8 +2007,8 @@ mod tests {
         let mut errors = ErrorReporter::new();
         check(&file, &settings, &mut errors);
         assert!(
-            !errors.has_errors(),
-            "table covered by policy must not trigger iflow error"
+            !errors.has_hard_errors(),
+            "table covered by policy must not trigger iflow hard error"
         );
     }
 
@@ -1561,7 +2036,7 @@ mod tests {
         let mut errors = ErrorReporter::new();
         check(&file, &settings, &mut errors);
         assert!(
-            errors.has_errors(),
+            errors.has_hard_errors(),
             "table not covered by any policy must trigger iflow error"
         );
     }
@@ -1590,7 +2065,7 @@ mod tests {
         let mut errors = ErrorReporter::new();
         check(&file, &settings, &mut errors);
         assert!(
-            errors.has_errors(),
+            errors.has_hard_errors(),
             "ValRec bodies must also be checked for iflow violations"
         );
     }

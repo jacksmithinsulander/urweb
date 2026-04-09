@@ -24,8 +24,6 @@
 //!
 //! When `settings.sqlcache` is `false` the file is returned unchanged.
 
-#![allow(dead_code, unused_variables)]
-
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::error_types::{Located, Span};
@@ -38,10 +36,6 @@ use crate::settings::Settings;
 // Type helpers
 // ---------------------------------------------------------------------------
 
-fn dummy_span() -> Span {
-    Span::dummy()
-}
-
 fn mk_typ(node: Typ, span: &Span) -> LocTyp {
     Located::new(node, span.clone())
 }
@@ -52,10 +46,6 @@ fn mk_exp(node: Exp, span: &Span) -> LocExp {
 
 fn string_typ(span: &Span) -> LocTyp {
     mk_typ(Typ::Ffi("Basis".into(), "string".into()), span)
-}
-
-fn unit_typ(span: &Span) -> LocTyp {
-    mk_typ(Typ::Record(vec![]), span)
 }
 
 fn option_string_typ(span: &Span) -> LocTyp {
@@ -254,8 +244,6 @@ struct CacheSlot {
     /// Free variable levels (sorted) of the query expression — these become
     /// the cache keys.
     free_levels: Vec<usize>,
-    /// The return type of the query (used for Uurlify serialization).
-    state_typ: LocTyp,
 }
 
 // ---------------------------------------------------------------------------
@@ -304,7 +292,7 @@ fn wrap_query_with_cache(
     state: &mut CachingState,
     qm: QueryMeta,
     span: &Span,
-    env_len: usize,
+    _env_len: usize,
 ) -> Exp {
     let i = state.next();
 
@@ -319,7 +307,6 @@ fn wrap_query_with_cache(
         index: i,
         tables,
         free_levels: free.clone(),
-        state_typ: state_typ.clone(),
     });
 
     // Build the key arguments list for FfiApp.
@@ -435,108 +422,13 @@ fn make_flush_call(slot: &CacheSlot, span: &Span, depth: usize) -> LocExp {
 // ---------------------------------------------------------------------------
 
 struct Transformer {
-    caching: CachingState,
-    /// After the caching pass, table→[slot_index] map is built here.
+    /// Table names → cache slot indices that read those tables (from phase 1).
     table_to_caches: BTreeMap<String, Vec<usize>>,
-    /// The slots collected during caching (populated after first pass).
+    /// Cache slots produced during phase 1 (`wrap_query_with_cache`).
     slots: Vec<CacheSlot>,
 }
 
 impl Transformer {
-    fn new() -> Self {
-        Transformer {
-            caching: CachingState::new(),
-            table_to_caches: BTreeMap::new(),
-            slots: Vec::new(),
-        }
-    }
-
-    fn build_table_map(&mut self) {
-        for (idx, slot) in self.caching.slots.iter().enumerate() {
-            for tbl in &slot.tables {
-                self.table_to_caches
-                    .entry(tbl.clone())
-                    .or_default()
-                    .push(slot.index);
-            }
-        }
-        // Move slots out for later use.
-        self.slots = std::mem::take(&mut self.caching.slots);
-    }
-
-    /// Phase 1: instrument query nodes with cache check/store.
-    fn phase1_exp(&mut self, e: LocExp) -> LocExp {
-        let span = e.span.clone();
-        match e.node {
-            Exp::Query(qm) => {
-                let new_node = wrap_query_with_cache(&mut self.caching, qm, &span, 0);
-                Located::new(new_node, span)
-            }
-            // Structural recursion for all other nodes.
-            node => {
-                let new_node = self.phase1_node(node, &span);
-                Located::new(new_node, span)
-            }
-        }
-    }
-
-    fn phase1_node(&mut self, e: Exp, span: &Span) -> Exp {
-        use Exp::*;
-        macro_rules! p1 {
-            ($e:expr) => {
-                self.phase1_exp($e)
-            };
-        }
-        match e {
-            Prim(_) | Rel(_) | Named(_) | Ffi(_, _) | None(_) => e,
-            Con(dk, pc, arg) => Con(dk, pc, arg.map(|a| Box::new(p1!(*a)))),
-            Some(t, inner) => Some(t, Box::new(p1!(*inner))),
-            FfiApp(m, x, args) => {
-                FfiApp(m, x, args.into_iter().map(|(a, t)| (p1!(a), t)).collect())
-            }
-            App(e1, e2) => App(Box::new(p1!(*e1)), Box::new(p1!(*e2))),
-            Abs(x, dom, ran, body) => Abs(x, dom, ran, Box::new(p1!(*body))),
-            Unop(s, e1) => Unop(s, Box::new(p1!(*e1))),
-            Binop(bi, s, e1, e2) => Binop(bi, s, Box::new(p1!(*e1)), Box::new(p1!(*e2))),
-            Record(xets) => Record(xets.into_iter().map(|(x, e, t)| (x, p1!(e), t)).collect()),
-            Field(e1, x) => Field(Box::new(p1!(*e1)), x),
-            Case(disc, arms, meta) => {
-                let disc2 = p1!(*disc);
-                let arms2 = arms.into_iter().map(|(p, arm_e)| (p, p1!(arm_e))).collect();
-                Case(Box::new(disc2), arms2, meta)
-            }
-            Strcat(e1, e2) => Strcat(Box::new(p1!(*e1)), Box::new(p1!(*e2))),
-            Error(e1, t) => Error(Box::new(p1!(*e1)), t),
-            ReturnBlob { blob, mime_type, t } => ReturnBlob {
-                blob: blob.map(|b| Box::new(p1!(*b))),
-                mime_type: Box::new(p1!(*mime_type)),
-                t,
-            },
-            Redirect(e1, t) => Redirect(Box::new(p1!(*e1)), t),
-            Write(e1) => Write(Box::new(p1!(*e1))),
-            Seq(e1, e2) => Seq(Box::new(p1!(*e1)), Box::new(p1!(*e2))),
-            Let(x, t, e1, e2) => Let(x, t, Box::new(p1!(*e1)), Box::new(p1!(*e2))),
-            Closure(n, envs) => Closure(n, envs.into_iter().map(|a| p1!(a)).collect()),
-            Query(qm) => {
-                // This case is handled in phase1_exp; shouldn't reach here.
-
-                wrap_query_with_cache(&mut self.caching, qm, span, 0)
-            }
-            Dml(e1, fm) => Dml(Box::new(p1!(*e1)), fm),
-            Nextval(e1) => Nextval(Box::new(p1!(*e1))),
-            Setval(e1, e2) => Setval(Box::new(p1!(*e1)), Box::new(p1!(*e2))),
-            Uurlify(e1, t, b) => Uurlify(Box::new(p1!(*e1)), t, b),
-            JavaScript(mode, e1) => JavaScript(mode, Box::new(p1!(*e1))),
-            SignalReturn(e1) => SignalReturn(Box::new(p1!(*e1))),
-            SignalBind(e1, e2) => SignalBind(Box::new(p1!(*e1)), Box::new(p1!(*e2))),
-            SignalSource(e1) => SignalSource(Box::new(p1!(*e1))),
-            ServerCall(e1, t, eff, fm) => ServerCall(Box::new(p1!(*e1)), t, eff, fm),
-            Recv(e1, t) => Recv(Box::new(p1!(*e1)), t),
-            Sleep(e1) => Sleep(Box::new(p1!(*e1))),
-            Spawn(e1) => Spawn(Box::new(p1!(*e1))),
-        }
-    }
-
     /// Phase 2: prepend flush calls before DML operations.
     fn phase2_exp(&self, e: LocExp) -> LocExp {
         let span = e.span.clone();
@@ -585,7 +477,7 @@ impl Transformer {
         }
     }
 
-    fn phase2_node(&self, e: Exp, span: &Span) -> Exp {
+    fn phase2_node(&self, e: Exp, _span: &Span) -> Exp {
         use Exp::*;
         macro_rules! p2 {
             ($e:expr) => {
@@ -657,7 +549,7 @@ fn phase1_decl(state: &mut CachingState, d: LocDecl) -> LocDecl {
     Located::new(new_node, span)
 }
 
-fn phase1_decl_node(state: &mut CachingState, d: Decl, span: &Span) -> Decl {
+fn phase1_decl_node(state: &mut CachingState, d: Decl, _span: &Span) -> Decl {
     // We need a local helper that owns `state` via a mutable reference.
     // Temporarily build a thin shim.
     struct Ph1<'a>(&'a mut CachingState);
@@ -764,7 +656,7 @@ fn phase2_decl(xfm: &Transformer, d: LocDecl) -> LocDecl {
     Located::new(new_node, span)
 }
 
-fn phase2_decl_node(xfm: &Transformer, d: Decl, span: &Span) -> Decl {
+fn phase2_decl_node(xfm: &Transformer, d: Decl, _span: &Span) -> Decl {
     match d {
         Decl::Val(x, n, t, e, s) => Decl::Val(x, n, t, xfm.phase2_exp(e), s),
         Decl::ValRec(vis) => Decl::ValRec(
@@ -830,7 +722,6 @@ pub fn go(file: File, settings: &Settings) -> File {
 
     // Phase 2: instrument DML with flushes.
     let xfm = Transformer {
-        caching: CachingState::new(), // unused in phase 2
         table_to_caches,
         slots,
     };

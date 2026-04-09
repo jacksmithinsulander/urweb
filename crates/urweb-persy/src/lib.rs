@@ -12,7 +12,15 @@ use persy::{ByteVec, Persy, ValueMode};
 /// Persy index name (byte keys/values).
 const IX: &str = "urweb_kv";
 
-/// Open or create a Persy database at `path`. Returns an opaque handle or null on error.
+/// Open or create a Persy embedded database at `path`.
+///
+/// # Arguments
+///
+/// * `path` — Null-terminated filesystem path (`const char *` from C).
+///
+/// # Returns
+///
+/// Opaque handle as `void *`, or null on invalid path or open failure.
 ///
 /// # Safety
 ///
@@ -43,6 +51,14 @@ pub unsafe extern "C" fn urweb_persy_open(path: *const c_char) -> *mut c_void {
 
 /// Release a handle returned by [`urweb_persy_open`].
 ///
+/// # Arguments
+///
+/// * `h` — Handle from [`urweb_persy_open`], or null (no-op).
+///
+/// # Returns
+///
+/// Nothing.
+///
 /// # Safety
 ///
 /// `h` must be null or a pointer previously returned by `urweb_persy_open` and not yet closed.
@@ -54,7 +70,17 @@ pub unsafe extern "C" fn urweb_persy_close(h: *mut c_void) {
     drop(Box::from_raw(h as *mut Persy));
 }
 
-/// Store `key` → `val` in the Persy index. Returns 0 on success.
+/// Store `key` → `val` in the Persy index.
+///
+/// # Arguments
+///
+/// * `h` — Open database handle.
+/// * `key` / `key_len` — Byte slice of the key.
+/// * `val` / `val_len` — Byte slice of the value.
+///
+/// # Returns
+///
+/// `0` on success, `-1` on argument or persistence error.
 ///
 /// # Safety
 ///
@@ -106,7 +132,17 @@ pub unsafe extern "C" fn urweb_persy_put(
     0
 }
 
-/// Look up `key`. On success sets `*out` and `*out_len` to a `malloc`ed buffer.
+/// Look up `key` in the Persy index.
+///
+/// # Arguments
+///
+/// * `h` — Open database handle.
+/// * `key` / `key_len` — Key bytes.
+/// * `out` / `out_len` — Outputs: on success, `malloc`’d value buffer and length.
+///
+/// # Returns
+///
+/// `0` if found (caller must `free(*out)`), `1` if missing, `-1` on error.
 ///
 /// # Safety
 ///

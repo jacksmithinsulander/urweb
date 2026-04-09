@@ -5,6 +5,13 @@
 //! names. `ModProj` for qualified module references.
 //!
 //! Mirrors `elab.sml`.
+//!
+//! **Style:** new/edited Rust here follows [README.md](../../README.md) Rust code style (exceptions documented there).
+//!
+//! Pipeline entry points [`elaborate::elab_file`], [`unnest::unnest`], and [`explify::explify`] document
+//! `# Arguments`, `# Returns`, and error reporting (`ErrorReporter`) where relevant.
+//! [`elaborate`], [`elaboration_errors`], [`type_operations`], [`environment`] binders,
+//! [`disjointness_analysis`], and [`type_display`] use the same headings on their public helpers.
 
 pub mod disjointness_analysis;
 pub mod elaborate;
@@ -263,6 +270,7 @@ pub enum SignatureItem {
     DatatypeImp {
         name: String,
         id: usize,
+        params: Vec<String>,
         orig_mod: usize,
         orig_path: Vec<String>,
         orig_name: String,
@@ -307,6 +315,7 @@ pub enum Declaration {
     DatatypeImp {
         name: String,
         id: usize,
+        params: Vec<String>,
         orig_mod: usize,
         orig_path: Vec<String>,
         orig_name: String,

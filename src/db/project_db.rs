@@ -125,6 +125,18 @@ impl ProjectDb {
     }
 
     /// Parse a non-empty `-dbms` / `.urp` token (ASCII case-insensitive).
+    ///
+    /// # Arguments
+    ///
+    /// * `input` — Engine name (may have surrounding whitespace).
+    ///
+    /// # Errors
+    ///
+    /// Empty after trim, or not in [`KNOWN_DB_NAMES`].
+    ///
+    /// # Returns
+    ///
+    /// The corresponding [`ProjectDb`] variant.
     pub fn parse_user_input(input: &str) -> Result<Self, String> {
         let s = input.trim();
         if s.is_empty() {
@@ -158,6 +170,10 @@ impl ProjectDb {
     }
 
     /// Wire name for SQL-oriented tooling: `sqlite` / `mysql` / `postgres`, or `None` for native stores.
+    ///
+    /// # Returns
+    ///
+    /// [`SqlFlavor::wire_name`] for [`ProjectDb::Sql`], else `None`.
     pub fn sql_wire_name(&self) -> Option<&'static str> {
         match self {
             ProjectDb::Sql(f) => Some(f.wire_name()),
@@ -226,7 +242,19 @@ impl DatabaseBackend for ProjectDb {
     }
 }
 
-/// Legacy helper: parse CLI / job token to static name (for logging only).
+/// Legacy helper: parse a CLI / job token to the canonical static name (for logging only).
+///
+/// # Arguments
+///
+/// * `input` — Same strings as [`ProjectDb::parse_user_input`].
+///
+/// # Errors
+///
+/// Same as [`ProjectDb::parse_user_input`].
+///
+/// # Returns
+///
+/// Lowercase canonical name (e.g. `postgres`, `persy`).
 pub fn canonical_dbms(input: &str) -> Result<&'static str, String> {
     Ok(ProjectDb::parse_user_input(input)?.canonical_name())
 }

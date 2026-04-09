@@ -6,12 +6,11 @@
 //!
 //! Mirrors `marshalcheck.sml`.
 
-#![allow(dead_code)]
-
 use std::collections::{BTreeSet, HashMap};
 
 use crate::core::utilities::constructor as con_util;
 use crate::core::*;
+use crate::diagnostics::{DiagnosticId, DiagnosticPayload};
 use crate::error_types::ErrorReporter;
 use crate::settings::Settings;
 
@@ -113,13 +112,14 @@ fn walk_expression(
                 if m == "Basis" && (x == "serialize" || x == "deserialize") {
                     let s = sins(cmap, t_con, settings);
                     if !s.is_empty() {
-                        errors.report_at(
+                        errors.report_type_at_with_hint(
                             t_con.span.clone(),
-                            format!(
-                                "Not allowed to [de]serialize a value involving one or more \
-                                 disallowed types: {}",
-                                sins_to_string(&s)
+                            DiagnosticPayload::new(
+                                DiagnosticId::SerializationExcludedTypes,
+                                vec![sins_to_string(&s)],
                             ),
+                            DiagnosticId::HintSerializationExcludedTypes,
+                            vec![],
                         );
                     }
                 }
@@ -231,20 +231,25 @@ fn process_declaration(
         }
 
         Declaration::Export(_, n, _) => match emap.get(n) {
-            None => errors.report_at(span, "MarshalCheck: Unknown export".to_string()),
+            None => errors.report_type_at_with_hint(
+                span,
+                DiagnosticPayload::new(DiagnosticId::ExportNamesUndefinedValue, vec![]),
+                DiagnosticId::HintExportNamesUndefinedValue,
+                vec![],
+            ),
             Some((t, tag)) => {
                 let t = t.clone();
                 let tag = tag.clone();
                 let s = make_s(cmap, &t, settings);
                 if !s.is_empty() {
-                    errors.report_at(
+                    errors.report_type_at_with_hint(
                         span,
-                        format!(
-                            "Input to exported function '{}' involves one or more types \
-                             that are disallowed for page handler inputs: {}",
-                            tag,
-                            sins_to_string(&s)
+                        DiagnosticPayload::new(
+                            DiagnosticId::ExportedHandlerUnsafeTypes,
+                            vec![tag, sins_to_string(&s)],
                         ),
+                        DiagnosticId::HintExportedHandlerUnsafeTypes,
+                        vec![],
                     );
                 }
             }
@@ -253,13 +258,14 @@ fn process_declaration(
         Declaration::Cookie(_, _, t, tag) => {
             let s = sins(cmap, t, settings);
             if !s.is_empty() {
-                errors.report_at(
+                errors.report_type_at_with_hint(
                     span,
-                    format!(
-                        "Cookie '{}' includes one or more types that are disallowed for cookies: {}",
-                        tag,
-                        sins_to_string(&s)
+                    DiagnosticPayload::new(
+                        DiagnosticId::CookieStoresUnmarshallableTypes,
+                        vec![tag.clone(), sins_to_string(&s)],
                     ),
+                    DiagnosticId::HintCookieStoresUnmarshallableTypes,
+                    vec![],
                 );
             }
         }
@@ -312,18 +318,6 @@ mod tests {
 
     fn dummy_con() -> LocatedConstructor {
         dummy(Constructor::Unit)
-    }
-
-    fn dummy_exp() -> LocatedExpression {
-        dummy(Expression::Named(0))
-    }
-
-    fn settings_with_allowed(allowed: &[(&str, &str)]) -> Settings {
-        let mut s = Settings::default();
-        for (m, x) in allowed {
-            s.client_to_server.insert((m.to_string(), x.to_string()));
-        }
-        s
     }
 
     /// Empty file produces no errors.

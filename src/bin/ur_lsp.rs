@@ -1,7 +1,9 @@
-//! ur-lsp — LSP server for Ur/Web (stdio JSON-RPC).
+//! Language Server Protocol implementation for Ur/Web over standard input and output (JSON remote procedure calls).
 //!
-//! Requires the editor workspace root to contain exactly one `.urp` (same as the legacy SML
-//! server). Sets the process working directory to that root so relative paths in the `.urp` resolve.
+//! The workspace root must contain exactly one `.urp` Ur/Web project file, like the legacy Standard ML server.
+//! [`std::env::set_current_dir`] switches to that root so paths in the project file match batch compilation.
+//!
+//! **Style:** this binary follows [README.md](../../README.md) Rust code style where edited.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -25,70 +27,90 @@ use lsp_types::request::{
 use lsp_types::{
     CompletionOptions, CompletionParams, CompletionResponse, DidChangeTextDocumentParams,
     DidCloseTextDocumentParams, DidOpenTextDocumentParams, DocumentFormattingParams,
-    DocumentHighlightParams, DocumentSymbolParams, DocumentSymbolResponse, FoldingRangeParams,
+    DocumentHighlight, DocumentHighlightKind, DocumentHighlightParams, DocumentSymbol,
+    DocumentSymbolParams, DocumentSymbolResponse, FoldingRangeParams,
     FoldingRangeProviderCapability, GotoDefinitionParams, GotoDefinitionResponse, Hover,
-    HoverContents, HoverParams, InitializeParams, InlayHintParams, OneOf, Position,
-    PrepareRenameResponse, Range, ReferenceParams, RenameOptions, RenameParams,
-    SelectionRangeParams, SelectionRangeProviderCapability, SemanticTokens,
-    SemanticTokensFullOptions, SemanticTokensLegend, SemanticTokensOptions, SemanticTokensParams,
-    SemanticTokensServerCapabilities, ServerCapabilities, ServerInfo, SignatureHelpOptions,
-    SignatureHelpParams, TextDocumentPositionParams, TextDocumentSyncCapability,
-    TextDocumentSyncKind, TextEdit, TypeDefinitionProviderCapability, Uri, WorkDoneProgressOptions,
-    WorkspaceSymbolParams,
+    HoverContents, HoverParams, InitializeParams, InlayHintParams, Location, OneOf,
+    PrepareRenameResponse, ReferenceParams, RenameOptions, RenameParams, SelectionRangeParams,
+    SelectionRangeProviderCapability, SemanticTokens, SemanticTokensFullOptions,
+    SemanticTokensLegend, SemanticTokensOptions, SemanticTokensParams,
+    SemanticTokensServerCapabilities, ServerCapabilities, ServerInfo, SignatureHelp,
+    SignatureHelpOptions, SignatureHelpParams, SignatureInformation, SymbolInformation, SymbolKind,
+    TextDocumentPositionParams, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit,
+    TypeDefinitionProviderCapability, Uri, WorkDoneProgressOptions, WorkspaceSymbolParams,
 };
 
+use ur::cli_common::{
+    self, cli_diagnostic_text, diagnostic_locale_for_cli, diagnostic_locale_from_manifest_path,
+};
+use ur::diagnostics::DiagnosticId;
 use ur::lsp_analysis::{AnalysisSnapshot, ProjectState};
 use ur::lsp_semantics;
 use ur::lsp_workspace::{
-    file_key_relative_to_root, uri_local_path_for_tooling, uri_to_file_path,
+    relative_file_key_for_uri, uri_local_path_for_tooling, uri_to_file_path,
     workspace_root_from_initialize,
 };
 
-/// Whole-buffer range for a full-document `TextEdit` (UTF-16 end column).
-fn full_document_range(text: &str) -> Range {
-    let lines: Vec<&str> = text.split('\n').collect();
-    let last_line_idx = lines.len().saturating_sub(1);
-    let last_line = lines.get(last_line_idx).copied().unwrap_or("");
-    let end_char = last_line.encode_utf16().count() as u32;
-    Range::new(
-        Position::new(0, 0),
-        Position::new(last_line_idx as u32, end_char),
-    )
-}
-
+/// Run the server loop; exit with status zero when the editor disconnects cleanly.
+///
+/// Delegates to [`run`] and treats transport teardown as success when [`ur::lsp_support::disconnect_error_exits_clean`] matches.
+///
+/// # Returns
+///
+/// Does not return: calls [`std::process::exit`] with `0` or `1`.
 fn main() {
-    if let Err(e) = run() {
-        let msg = e.to_string();
-        if ur::lsp_support::disconnect_error_exits_clean(&msg) {
+    if let Err(run_error) = run() {
+        let disconnect_message = run_error.to_string();
+        if ur::lsp_support::disconnect_error_exits_clean(&disconnect_message) {
             std::process::exit(0);
         }
-        eprintln!("ur-lsp error: {e}");
+        let locale = diagnostic_locale_for_cli(None);
+        let text = cli_diagnostic_text(
+            DiagnosticId::CliLspRunFailed,
+            vec![format!("{run_error:#}")],
+            locale,
+        );
+        cli_common::writeln_stderr_display(text);
         std::process::exit(1);
     }
 }
 
+/// Open buffer text and a generation stamp so stale background work is discarded.
 struct DocState {
     text: String,
-    /// Monotonic counter so stale background analyses are ignored.
+    /// Bumped on each change; must match a finished job for its diagnostics to apply.
     analysis_gen: u64,
 }
 
+/// Result from a background analysis thread: document, generation stamp, and snapshot.
 struct AnalysisReady {
     uri: Uri,
     gen: u64,
     snap: AnalysisSnapshot,
 }
 
+/// Shared session state for one server run (behind a mutex inside an [`Arc`]).
 struct Global {
     workspace_root: Option<PathBuf>,
     project: Option<ProjectState>,
     docs: HashMap<Uri, DocState>,
-    /// Last successful/elaborated snapshot per URI (for hover when analysis had errors).
+    /// Last elaboration snapshot per uniform resource identifier (for hover and similar) when the latest run still had errors.
     last_snap: HashMap<Uri, AnalysisSnapshot>,
 }
 
 type GlobalRef = Arc<Mutex<Global>>;
 
+/// Main server loop: initialize, advertise capabilities, then poll JSON messages from the client.
+///
+/// Uses a receive timeout so [`AnalysisReady`] work is merged without blocking forever on idle standard input; each drain pass processes at most a fixed number of completions.
+///
+/// # Returns
+///
+/// `Ok(())` after the inbound channel disconnects or initialize fails early; `Err` on I/O/serialization failures in the loop body.
+///
+/// # Errors
+///
+/// Initialization finish, JSON serialization, message handling, or diagnostic publish failures propagate as [`anyhow::Error`].
 fn run() -> Result<()> {
     let (connection, io_threads) = Connection::stdio();
 
@@ -100,19 +122,33 @@ fn run() -> Result<()> {
         serde_json::from_value(init_value).unwrap_or_else(|_| InitializeParams::default());
 
     let workspace_root = workspace_root_from_initialize(&init_params);
+    let lsp_locale = workspace_root
+        .as_ref()
+        .map(|root| diagnostic_locale_from_manifest_path(&root.join("ur.toml")))
+        .unwrap_or_else(|| diagnostic_locale_for_cli(None));
     let project = workspace_root
         .as_ref()
-        .and_then(|r| match ProjectState::open(r) {
+        .and_then(|r| match ProjectState::open(r, lsp_locale) {
             Ok(p) => Some(p),
             Err(e) => {
-                eprintln!("ur-lsp: project load: {e}");
+                let msg = cli_diagnostic_text(
+                    DiagnosticId::CliLspProjectOpenFailed,
+                    vec![format!("{e:#}")],
+                    lsp_locale,
+                );
+                cli_common::writeln_stderr_display(msg);
                 None
             }
         });
 
     if let Some(ref root) = workspace_root {
         if let Err(e) = std::env::set_current_dir(root) {
-            eprintln!("ur-lsp: set_current_dir({}): {e}", root.display());
+            let msg = cli_diagnostic_text(
+                DiagnosticId::CliLspWorkspaceChdirFailed,
+                vec![root.display().to_string(), format!("{e:#}")],
+                lsp_locale,
+            );
+            cli_common::writeln_stderr_display(msg);
         }
     }
 
@@ -178,18 +214,18 @@ fn run() -> Result<()> {
     let (analysis_tx, analysis_rx) = mpsc::channel::<AnalysisReady>();
 
     const POLL: Duration = Duration::from_millis(50);
+    // Bounded `for` range; normal shutdown exits via `RecvTimeoutError::Disconnected` first.
+    const MAIN_LOOP_MAX_ROUNDS: u64 = u64::MAX;
 
-    loop {
+    for _main_loop_round in 0..MAIN_LOOP_MAX_ROUNDS {
         match connection.receiver.recv_timeout(POLL) {
             Ok(msg) => {
                 dispatch_message(&connection, msg, &global, &analysis_tx)?;
             }
-            Err(RecvTimeoutError::Timeout) => {
-                drain_analysis(&connection, &global, &analysis_rx)?;
-            }
+            Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => break,
         }
-        // Also drain after each message
+        // Drain after every message and after idle polls so completions are published promptly.
         drain_analysis(&connection, &global, &analysis_rx)?;
     }
 
@@ -197,12 +233,35 @@ fn run() -> Result<()> {
     Ok(())
 }
 
+/// Take finished analyses from the channel and publish diagnostics when the buffer generation still matches.
+///
+/// Drops stale [`AnalysisReady`] values if the user edited the buffer (analysis generation advanced).
+///
+/// # Arguments
+///
+/// * `connection` — Active server connection for outbound notifications.
+/// * `global` — Mutex-protected session state.
+/// * `rx` — Bounded channel of completed analysis jobs.
+///
+/// # Returns
+///
+/// `Ok(())` when all pending items are processed for this call.
+///
+/// # Errors
+///
+/// If [`ur::lsp_support::publish_diagnostics`] cannot send on the connection.
 fn drain_analysis(
     connection: &Connection,
     global: &GlobalRef,
     rx: &mpsc::Receiver<AnalysisReady>,
 ) -> Result<()> {
-    while let Ok(ready) = rx.try_recv() {
+    // Bounded drain per poll so one pathological backlog cannot starve message handling.
+    const MAX_ANALYSIS_READY_DRAIN_PER_POLL: usize = 65_536;
+    for _drain_round in 0..MAX_ANALYSIS_READY_DRAIN_PER_POLL {
+        let ready = match rx.try_recv() {
+            Ok(r) => r,
+            Err(_) => break,
+        };
         let mut g = global.lock().unwrap();
         let skip = g
             .docs
@@ -221,6 +280,22 @@ fn drain_analysis(
     Ok(())
 }
 
+/// Schedule parsing or full-project analysis for `text` at `uri`, stamped with `gen` for staleness checks.
+///
+/// Without a [`ProjectState`], only [`ur::parse::parse_ur`] runs. With a project, a background thread sleeps briefly to coalesce edits,
+/// then calls [`ProjectState::analyze_buffer`].
+///
+/// # Arguments
+///
+/// * `global` — Read-locks to clone project state or choose parse-only mode.
+/// * `analysis_tx` — Sender for [`AnalysisReady`] results.
+/// * `uri` — Document identifier.
+/// * `text` — Current buffer text.
+/// * `gen` — Monotonic generation; must match the open document’s `analysis_gen` for results to apply.
+///
+/// # Returns
+///
+/// Nothing; sends zero or one message on `analysis_tx` (or spawns a thread that sends).
 fn schedule_analysis(
     global: &GlobalRef,
     analysis_tx: &mpsc::Sender<AnalysisReady>,
@@ -263,6 +338,24 @@ fn schedule_analysis(
     });
 }
 
+/// Demultiplex one wire message into requests, notifications, or ignored responses.
+///
+/// Shutdown is handled inside `lsp_server`; every other request goes to [`handle_request`].
+///
+/// # Arguments
+///
+/// * `connection` — Active connection.
+/// * `msg` — One decoded [`Message`].
+/// * `global` — Shared session state.
+/// * `analysis_tx` — Channel passed to handlers that schedule work.
+///
+/// # Returns
+///
+/// `Ok(())` after the message is handled.
+///
+/// # Errors
+///
+/// Shutdown handling, [`handle_request`], or [`handle_notification`] failures.
 fn dispatch_message(
     connection: &Connection,
     msg: Message,
@@ -284,6 +377,24 @@ fn dispatch_message(
     Ok(())
 }
 
+/// Handle editor notifications: open, change, close, initialized, and related methods.
+///
+/// Updates open documents, calls [`schedule_analysis`], and may invoke [`ur::lsp_support::publish_parse_diagnostics`] for quick parse-only feedback.
+///
+/// # Arguments
+///
+/// * `connection` — For outbound diagnostics when needed.
+/// * `notif` — One notification with JSON `params`.
+/// * `global` — Session state to mutate.
+/// * `analysis_tx` — Analysis scheduling channel.
+///
+/// # Returns
+///
+/// `Ok(())` when the notification is recognized or ignored safely.
+///
+/// # Errors
+///
+/// JSON parse failures, diagnostic publish failures, or inner request helpers.
 fn handle_notification(
     connection: &Connection,
     notif: Notification,
@@ -296,7 +407,7 @@ fn handle_notification(
             let uri = p.text_document.uri;
             let text = p.text_document.text;
             let mut g = global.lock().unwrap();
-            let gen = 1u64;
+            let gen = ur::lsp_support::next_buffer_analysis_generation(None);
             g.docs.insert(
                 uri.clone(),
                 DocState {
@@ -313,7 +424,9 @@ fn handle_notification(
                 let uri = p.text_document.uri;
                 let text = ch.text;
                 let mut g = global.lock().unwrap();
-                let gen = g.docs.get(&uri).map(|d| d.analysis_gen + 1).unwrap_or(1);
+                let gen = ur::lsp_support::next_buffer_analysis_generation(
+                    g.docs.get(&uri).map(|document| document.analysis_gen),
+                );
                 g.docs.insert(
                     uri.clone(),
                     DocState {
@@ -342,12 +455,36 @@ fn handle_notification(
     Ok(())
 }
 
+/// Workspace-relative `/` path for `uri`, or `None` if there is no root or not a `file:` location.
+///
+/// # Arguments
+///
+/// * `g` — Session state (needs `workspace_root`).
+/// * `uri` — Document uniform resource identifier.
+///
+/// # Returns
+///
+/// String key suitable for [`ur::lsp_workspace::file_key_relative_to_root`], or `None`.
 fn file_key(g: &Global, uri: &Uri) -> Option<String> {
-    let root = g.workspace_root.as_ref()?;
-    let disk = uri_to_file_path(uri)?;
-    Some(file_key_relative_to_root(root, &disk))
+    relative_file_key_for_uri(g.workspace_root.as_deref(), uri)
 }
 
+/// Answer a single Language Server Protocol request (hover, goto, formatting, …) and send the JSON response.
+///
+/// # Arguments
+///
+/// * `connection` — For sending [`Response`] values.
+/// * `req` — Incoming request with method name and JSON params.
+/// * `global` — Read-locks for documents and last analysis snapshot.
+/// * `_analysis_tx` — Reserved for handlers that might schedule work (currently unused in some code paths).
+///
+/// # Returns
+///
+/// `Ok(())` after a response is sent or the method is ignored.
+///
+/// # Errors
+///
+/// JSON deserialization failures or outbound send errors.
 fn handle_request(
     connection: &Connection,
     req: LspRequest,
@@ -368,7 +505,7 @@ fn handle_request(
         let pos = &params.text_document_position_params.position;
         let hover = fk.as_ref().and_then(|fk| {
             lsp_semantics::hover_markdown(elab, fk, text, pos.line, pos.character).map(|c| Hover {
-                contents: HoverContents::Markup(c),
+                contents: HoverContents::Markup(c.into_lsp_markup()),
                 range: None,
             })
         });
@@ -390,7 +527,8 @@ fn handle_request(
         let loc = fk.and_then(|fk| {
             lsp_semantics::goto_definition(elab, &fk, uri.as_str(), text, pos.line, pos.character)
         });
-        let out: Option<GotoDefinitionResponse> = loc.map(GotoDefinitionResponse::Scalar);
+        let out: Option<GotoDefinitionResponse> =
+            loc.and_then(|s| s.try_lsp_location().map(GotoDefinitionResponse::Scalar));
         connection
             .sender
             .send(Response::new_ok(id, serde_json::to_value(out)?).into())?;
@@ -415,7 +553,15 @@ fn handle_request(
         let text = doc.map(|d| d.text.as_str()).unwrap_or("");
         let pos = &params.text_document_position.position;
         let comp = fk
-            .map(|fk| lsp_semantics::completion_at_point(elab, &fk, text, pos.line, pos.character))
+            .map(|fk| {
+                CompletionResponse::Array(lsp_semantics::completion_at_point(
+                    elab,
+                    &fk,
+                    text,
+                    pos.line,
+                    pos.character,
+                ))
+            })
             .unwrap_or_else(|| CompletionResponse::Array(vec![]));
         connection
             .sender
@@ -432,8 +578,23 @@ fn handle_request(
         let elab = g.last_snap.get(uri).and_then(|s| s.elaborated.as_ref());
         let text = doc.map(|d| d.text.as_str()).unwrap_or("");
         let pos = &params.text_document_position_params.position;
-        let sh = fk
-            .and_then(|fk| lsp_semantics::signature_help(elab, &fk, text, pos.line, pos.character));
+        let sh = fk.and_then(|fk| {
+            lsp_semantics::signature_help(elab, &fk, text, pos.line, pos.character).map(|labels| {
+                SignatureHelp {
+                    signatures: labels
+                        .into_iter()
+                        .map(|label| SignatureInformation {
+                            label,
+                            documentation: None,
+                            parameters: None,
+                            active_parameter: Some(0),
+                        })
+                        .collect(),
+                    active_signature: Some(0),
+                    active_parameter: Some(0),
+                }
+            })
+        });
         connection
             .sender
             .send(Response::new_ok(id, serde_json::to_value(sh)?).into())?;
@@ -447,7 +608,14 @@ fn handle_request(
         let doc = g.docs.get(uri);
         let text = doc.map(|d| d.text.as_str()).unwrap_or("");
         let pos = &params.text_document_position_params.position;
-        let hi = lsp_semantics::document_highlights(text, pos.line, pos.character);
+        let hi: Vec<DocumentHighlight> =
+            lsp_semantics::document_highlights(text, pos.line, pos.character)
+                .into_iter()
+                .map(|range| DocumentHighlight {
+                    range,
+                    kind: Some(DocumentHighlightKind::TEXT),
+                })
+                .collect();
         connection
             .sender
             .send(Response::new_ok(id, serde_json::to_value(hi)?).into())?;
@@ -461,7 +629,26 @@ fn handle_request(
         let fk = file_key(&g, uri);
         let elab = g.last_snap.get(uri).and_then(|s| s.elaborated.as_ref());
         let syms = fk
-            .map(|fk| lsp_semantics::document_symbols(elab, &fk))
+            .map(|fk| {
+                DocumentSymbolResponse::Nested(
+                    lsp_semantics::document_symbols(elab, &fk)
+                        .into_iter()
+                        .map(|row| {
+                            #[allow(deprecated)]
+                            DocumentSymbol {
+                                name: row.name,
+                                detail: Some(row.detail).filter(|d| !d.is_empty()),
+                                kind: SymbolKind::FUNCTION,
+                                tags: None,
+                                deprecated: None,
+                                range: row.range,
+                                selection_range: row.selection_range,
+                                children: None,
+                            }
+                        })
+                        .collect(),
+                )
+            })
             .unwrap_or_else(|| DocumentSymbolResponse::Nested(vec![]));
         connection
             .sender
@@ -483,7 +670,24 @@ fn handle_request(
             .values()
             .max_by_key(|s| s.elaborated.as_ref().map_or(0, |e| e.len()))
             .and_then(|s| s.elaborated.as_ref());
-        let syms = lsp_semantics::workspace_symbol(elab, root);
+        let syms: Vec<SymbolInformation> = lsp_semantics::workspace_symbol(elab, root)
+            .into_iter()
+            .filter_map(|row| {
+                let uri: Uri = row.uri_str.parse().ok()?;
+                #[allow(deprecated)]
+                Some(SymbolInformation {
+                    name: row.name,
+                    kind: SymbolKind::FUNCTION,
+                    tags: None,
+                    deprecated: None,
+                    location: Location {
+                        uri,
+                        range: row.range,
+                    },
+                    container_name: Some(row.type_str),
+                })
+            })
+            .collect();
         connection
             .sender
             .send(Response::new_ok(id, serde_json::to_value(syms)?).into())?;
@@ -497,7 +701,11 @@ fn handle_request(
         let doc = g.docs.get(uri);
         let text = doc.map(|d| d.text.as_str()).unwrap_or("");
         let pos = &params.text_document_position.position;
-        let locs = lsp_semantics::references_in_file(text, pos.line, pos.character, uri.as_str());
+        let locs: Vec<Location> =
+            lsp_semantics::references_in_file(text, pos.line, pos.character, uri.as_str())
+                .into_iter()
+                .filter_map(|s| s.try_lsp_location())
+                .collect();
         connection
             .sender
             .send(Response::new_ok(id, serde_json::to_value(locs)?).into())?;
@@ -637,7 +845,7 @@ fn handle_request(
             }
             Ok(fmt) => {
                 let edits = vec![TextEdit {
-                    range: full_document_range(&doc.text),
+                    range: ur::lsp_support::lsp_full_document_range(&doc.text),
                     new_text: fmt,
                 }];
                 connection
@@ -660,11 +868,12 @@ fn handle_request(
         return Ok(());
     }
 
+    // JSON-RPC error `message` is conventionally English for LSP clients; not localized like stderr catalog text.
     connection.sender.send(
         Response::new_err(
             id,
             ErrorCode::MethodNotFound as i32,
-            format!("unknown method: {method}"),
+            format!("Method not found: {method}"),
         )
         .into(),
     )?;

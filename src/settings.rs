@@ -1,12 +1,18 @@
-//! Compilation settings parsed from `.urp` project files.
+//! Compilation settings parsed from Ur/Web `.urp` project files.
 //!
-//! - **Job** / **Settings**: URL prefix, database, FFI mappings, effectful annotations
-//! - **Rewrite**, **Rule**: URL/mime/request filters
-//! - SQL mangling, timeouts, protocol, `db_backend`, etc.
+//! [`crate::compiler::Job`] and [`Settings`] hold uniform resource locator prefixes, database options,
+//! foreign function interface maps, and effect annotations. Rewrite rules filter by path or request shape.
+//! Structured Query Language identifier mangling, protocol hooks, timeouts, and resolved `db_backend` live here too.
+//!
+//! Non-trivial methods document `# Arguments`, `# Returns`, and `# Errors` (or `# Panics`) where helpful;
+//! one-field predicates usually omit headings.
+//!
+//! **Style:** new/edited Rust here follows [README.md](../README.md) Rust code style (exceptions documented there).
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::db::{ProjectDb, ProjectDbCtx};
+use crate::diagnostics::DiagnosticLocale;
 
 /// An FFI function identifier: `(module_name, function_name)`.
 pub type Ffi = (String, String);
@@ -247,6 +253,15 @@ pub struct Settings {
     // Debug
     pub debug: bool,
 
+    /// Foundry-style `-v` … `-vvvvv` (capped at [`crate::compiler_tracing::MAX_COMPILER_VERBOSITY`]); `0` keeps default tracing quiet unless `RUST_LOG` is set.
+    pub verbosity: u8,
+
+    /// Legacy `-timing`: print coarse phase wall times on stderr; also enabled when `verbosity >= 4`.
+    pub emit_phase_timing: bool,
+
+    /// User-facing diagnostic language from `ur.toml` `[package].language` (`en` / `sv` / `es`).
+    pub diagnostic_locale: DiagnosticLocale,
+
     // Static files
     pub file_path: String,
     pub js_output: Option<String>,
@@ -267,6 +282,11 @@ fn basis_js_map(pairs: &[(&str, &str)]) -> BTreeMap<Ffi, String> {
 }
 
 impl Settings {
+    /// Default compilation settings (built-in Foreign Function Interface sets, rules, limits, paths).
+    ///
+    /// # Returns
+    ///
+    /// Fresh [`Settings`] as if no `.urp` overrides were applied yet.
     pub fn new() -> Self {
         let client_to_server_base = basis_ffi_set(&[
             "int",
@@ -615,6 +635,9 @@ impl Settings {
             sqlcache: false,
             mime_file_path: "/etc/mime.types".into(),
             debug: false,
+            verbosity: 0,
+            emit_phase_timing: false,
+            diagnostic_locale: DiagnosticLocale::default(),
             file_path: ".".into(),
             js_output: None,
         }
@@ -624,6 +647,11 @@ impl Settings {
     // URL prefix
     // -----------------------------------------------------------------------
 
+    /// Normalize `p` into `url_prefix`, `url_pre_prefix`, and `url_prefix_full` (adds trailing `/`, splits `http(s)://`).
+    ///
+    /// # Arguments
+    ///
+    /// * `p` — User-supplied prefix string (may be empty or include a scheme).
     pub fn set_url_prefix(&mut self, p: &str) {
         let prefix = if p.is_empty() {
             "/".to_string()
@@ -661,7 +689,11 @@ impl Settings {
     // SQL name mangling
     // -----------------------------------------------------------------------
 
-    /// Effective backend: CLI / `.urp` value, or default Postgres-style (legacy empty `dbms`).
+    /// Effective database backend after resolving `None` (legacy empty `dbms`) to Postgres-style.
+    ///
+    /// # Returns
+    ///
+    /// [`ProjectDb`] chosen from [`Settings::db_backend`] and project defaults.
     pub fn resolved_db_backend(&self) -> ProjectDb {
         ProjectDbCtx::new(&self.db_backend).resolved()
     }
@@ -761,6 +793,16 @@ impl Settings {
     // Path rewriting
     // -----------------------------------------------------------------------
 
+    /// Apply the first matching rewrite in [`Settings::rewrites`] for `pk`, or return `s` unchanged.
+    ///
+    /// # Arguments
+    ///
+    /// * `pk` — Kind of path (URL, table, style, etc.).
+    /// * `s` — Input string before rewriting.
+    ///
+    /// # Returns
+    ///
+    /// Rewritten string, optionally with underscores replaced by hyphens per rule.
     pub fn rewrite(&self, pk: &PathKind, s: &str) -> String {
         for rewr in &self.rewrites {
             if subsumes(pk, &rewr.pkind) {
@@ -814,6 +856,20 @@ impl Settings {
         "time",
     ];
 
+    /// Append a resource limit if `name` is in [`Settings::VALID_LIMITS`].
+    ///
+    /// # Arguments
+    ///
+    /// * `name` — Limit category (e.g. `messages`, `heap`).
+    /// * `value` — Numeric bound for that category.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error string when `name` is not a known limit.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` after pushing `(name, value)`; enables deadlines when `name` is `time`.
     pub fn add_limit(&mut self, name: &str, value: i32) -> Result<(), String> {
         if Self::VALID_LIMITS.contains(&name) {
             self.limits.push((name.to_string(), value));

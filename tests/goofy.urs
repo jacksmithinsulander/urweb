@@ -1,1 +1,1 @@
-val goofy : bodyTag ([Nam = meta] ++ boxAttrs)
+val goofy : bodyTag [Nam = string, Data_role = string]

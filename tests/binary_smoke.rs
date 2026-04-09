@@ -1,26 +1,10 @@
 //! Run dev binaries so `main` cannot be emptied without failing tests.
 
-use std::path::PathBuf;
+mod common;
+
 use std::process::Command;
 
-fn cargo_bin(name: &str) -> PathBuf {
-    let underscored = name.replace('-', "_");
-    let key = format!("CARGO_BIN_EXE_{underscored}");
-    if let Some(p) = std::env::var_os(&key) {
-        return PathBuf::from(p);
-    }
-    let profile = std::env::var("PROFILE").unwrap_or_else(|_| "debug".into());
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("target")
-        .join(&profile)
-        .join(name);
-    assert!(
-        path.exists(),
-        "missing binary {name}: set {key} or build with cargo test — looked for {:?}",
-        path
-    );
-    path
-}
+use common::ur_package_binary as cargo_bin;
 
 #[test]
 fn test_pp_prints_context() {
@@ -35,8 +19,8 @@ fn test_pp_prints_context() {
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        stdout.starts_with("Context:"),
-        "expected Context line, got {stdout:?}"
+        stdout.contains("Preprocessor window (debug):"),
+        "expected test_pp preprocessor debug line (CliTestPpContextOk), got {stdout:?}"
     );
 }
 
@@ -53,13 +37,12 @@ fn test_parse_prints_status() {
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        stdout.contains("Errors:")
-            && (stdout.contains("Parsed") || stdout.contains("Parse failed")),
-        "unexpected stdout: {stdout:?}"
+        stdout.contains("Reporter reports errors:") && stdout.contains("declaration count"),
+        "unexpected test_parse stdout (catalog-backed CliTestParse*): {stdout:?}"
     );
     assert!(
-        stdout.contains("two_decls: 2") || stdout.contains("two_decls: parse failed"),
-        "test_parse must count two val decls or report parse failure (not a wrong count): {stdout:?}"
+        stdout.contains("Second sample") && stdout.contains("declaration count: 2"),
+        "test_parse second sample must report declaration count 2: {stdout:?}"
     );
 }
 
@@ -117,12 +100,12 @@ fn ur_new_app_usage_without_name() {
     assert!(!out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("usage: ur-new <name>"),
-        "expected app usage, got {stderr:?}"
+        stderr.contains("ur-new") && stderr.contains("<project-name>"),
+        "expected CliUrNewUsageApp on stderr, got {stderr:?}"
     );
     assert!(
         !stderr.contains("--lib"),
-        "app usage must not use the --lib template: {stderr:?}"
+        "app usage must not mention --lib: {stderr:?}"
     );
 }
 
@@ -135,7 +118,7 @@ fn ur_new_lib_usage_without_name() {
     assert!(!out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("usage: ur-new --lib <name>"),
-        "expected library usage, got {stderr:?}"
+        stderr.contains("ur-new --lib") && stderr.contains("<library-name>"),
+        "expected CliUrNewUsageLib on stderr, got {stderr:?}"
     );
 }

@@ -7,6 +7,7 @@ use super::{
     ProjectDb, ProjectDbCtx, SqlFlavor, KNOWN_DB_NAMES, NON_SQL_BACKENDS, SQL_BACKENDS,
 };
 use crate::settings::Settings;
+use std::sync::atomic::Ordering;
 fn all_project_db_variants() -> Vec<ProjectDb> {
     vec![
         ProjectDb::sqlite(),
@@ -203,6 +204,17 @@ fn link_and_require_helpers_from_option() {
     let rocks = Some(ProjectDb::Rocksdb);
     assert_eq!(link_library_flag_from_option(&rocks), "-lrocksdb -lstdc++");
     assert!(require_sql_codegen_from_option(&rocks).is_ok());
+}
+
+/// Mutants that replace [`require_sql_codegen_from_option`] with a bare `Ok(())` skip the invocation counter.
+#[test]
+fn require_sql_codegen_from_option_runs_real_body() {
+    super::REQUIRE_SQL_CODEGEN_FROM_OPTION_INVOCATIONS.store(0, Ordering::SeqCst);
+    require_sql_codegen_from_option(&Some(ProjectDb::sqlite())).unwrap();
+    assert!(
+        super::REQUIRE_SQL_CODEGEN_FROM_OPTION_INVOCATIONS.load(Ordering::SeqCst) >= 1,
+        "wrapper must call into ProjectDbCtx (not empty body)"
+    );
 }
 
 #[test]

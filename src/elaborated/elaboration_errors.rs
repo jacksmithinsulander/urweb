@@ -1,33 +1,213 @@
-#![allow(dead_code, unused_variables, unused_imports)]
-
 //! Elaboration error types and reporting.
 //!
 //! Translated from `elab_err.sml`.
+//!
+//! Mappers use [`CompileError::type_at`] / [`CompileError::type_at_with_hint`] so user-facing output shows the
+//! `-- TYPE` banner consistently with other type-checker phases.
+//!
+//! Each `compile_error_from_*` mapper turns a structured error enum into a [`CompileError`] (spans preserved
+//! where the underlying AST carries them). [`format_kind_unification_failure`] and nested
+//! [`compile_error_from_constructor_unification_failure`] produce human-readable text for embedding in larger
+//! diagnostics.
 
+use crate::diagnostics::{
+    render_diagnostic_body, DiagnosticId, DiagnosticLocale, DiagnosticPayload,
+};
+use crate::elaborated::type_display::{
+    format_constructor, format_expression, format_kind, format_pattern, format_signature,
+    format_signature_item,
+};
 use crate::elaborated::{
-    Constructor, Declaration, Expression, Kind, LocatedConstructor, LocatedDeclaration,
-    LocatedExpression, LocatedKind, LocatedPattern, LocatedSignature, LocatedSignatureItem,
-    Pattern, Signature, SignatureItem,
+    LocatedConstructor, LocatedDeclaration, LocatedExpression, LocatedKind, LocatedPattern,
+    LocatedSignature, LocatedSignatureItem,
 };
 use crate::error_types::{CompileError, Span};
+
+/// Build a catalog payload for [`KindUnificationFailure`] (nested under constructor / signature errors).
+///
+/// # Arguments
+///
+/// * `failure` — Kind unification failure from the elaborator.
+///
+/// # Returns
+///
+/// [`DiagnosticPayload`] whose template takes pretty-printed kind text.
+pub fn kind_unification_payload(failure: &KindUnificationFailure) -> DiagnosticPayload {
+    match failure {
+        KindUnificationFailure::OccursCheckFailed(found_kind, expected_kind) => {
+            DiagnosticPayload::new(
+                DiagnosticId::KindOccursCheckFailed,
+                vec![format_kind(found_kind), format_kind(expected_kind)],
+            )
+        }
+        KindUnificationFailure::IncompatibleKinds(found_kind, expected_kind) => {
+            DiagnosticPayload::new(
+                DiagnosticId::IncompatibleKinds,
+                vec![format_kind(found_kind), format_kind(expected_kind)],
+            )
+        }
+        KindUnificationFailure::ScopePreventsUnification(first_kind, second_kind) => {
+            DiagnosticPayload::new(
+                DiagnosticId::ScopePreventsKindUnification,
+                vec![format_kind(first_kind), format_kind(second_kind)],
+            )
+        }
+    }
+}
+
+/// Build a catalog payload for [`ConstructorUnificationFailure`] (plain or nested under other bodies).
+///
+/// # Arguments
+///
+/// * `failure` — Constructor unification failure from [`crate::elaborated::elaborate::unify_cons`].
+///
+/// # Returns
+///
+/// Fully localized tree when later rendered; record tails may embed English nested text for `{2}`.
+pub fn constructor_unification_payload(
+    failure: &ConstructorUnificationFailure,
+) -> DiagnosticPayload {
+    match failure {
+        ConstructorUnificationFailure::NestedKindUnificationFailure(
+            found_kind,
+            expected_kind,
+            kind_failure,
+        ) => DiagnosticPayload::new(
+            DiagnosticId::NestedKindUnificationFailure,
+            vec![format_kind(found_kind), format_kind(expected_kind)],
+        )
+        .with_suffix(kind_unification_payload(kind_failure)),
+        ConstructorUnificationFailure::ConstructorOccursCheckFailed(left, right) => {
+            DiagnosticPayload::new(
+                DiagnosticId::ConstructorOccursCheckFailed,
+                vec![format_constructor(left), format_constructor(right)],
+            )
+        }
+        ConstructorUnificationFailure::IncompatibleConstructors(left, right) => {
+            DiagnosticPayload::new(
+                DiagnosticId::IncompatibleConstructorsUnif,
+                vec![format_constructor(left), format_constructor(right)],
+            )
+        }
+        ConstructorUnificationFailure::TypeFunctionExplicitnessMismatch(left, right) => {
+            DiagnosticPayload::new(
+                DiagnosticId::TypeFunctionExplicitnessMismatch,
+                vec![format_constructor(left), format_constructor(right)],
+            )
+        }
+        ConstructorUnificationFailure::UnexpectedKindForKindofQuery(
+            kind,
+            constructor,
+            expectation,
+        ) => DiagnosticPayload::new(
+            DiagnosticId::UnexpectedKindForKindofQuery,
+            vec![
+                expectation.clone(),
+                format_kind(kind),
+                format_constructor(constructor),
+            ],
+        ),
+        ConstructorUnificationFailure::RecordConstructorUnificationFailure(
+            left_record,
+            right_record,
+            field_detail,
+        ) => {
+            let mut part3 = String::new();
+            if let Some((
+                field_name_constructor,
+                left_field_type,
+                right_field_type,
+                nested_failure,
+            )) = field_detail
+            {
+                part3.push_str(&format!(
+                    "; field {}: {} vs {}",
+                    format_constructor(field_name_constructor),
+                    format_constructor(left_field_type),
+                    format_constructor(right_field_type),
+                ));
+                if let Some(inner) = nested_failure {
+                    part3.push_str("; ");
+                    part3.push_str(&render_diagnostic_body(
+                        &constructor_unification_payload(inner),
+                        DiagnosticLocale::En,
+                    ));
+                }
+            }
+            DiagnosticPayload::new(
+                DiagnosticId::RecordConstructorUnificationFailure,
+                vec![
+                    format_constructor(left_record),
+                    format_constructor(right_record),
+                    part3,
+                ],
+            )
+        }
+        ConstructorUnificationFailure::SuspendedLiftingClash(first_span, second_span) => {
+            DiagnosticPayload::new(
+                DiagnosticId::SuspendedLiftingClash,
+                vec![first_span.to_string(), second_span.to_string()],
+            )
+        }
+        ConstructorUnificationFailure::SubstitutionBlockedByDeepUnification(_head, body) => {
+            DiagnosticPayload::new(
+                DiagnosticId::SubstitutionBlockedByDeepUnification,
+                vec![String::new(), format_constructor(body)],
+            )
+        }
+        ConstructorUnificationFailure::UnificationLiftingTooDeep => {
+            DiagnosticPayload::new(DiagnosticId::UnificationLiftingTooDeep, Vec::new())
+        }
+        ConstructorUnificationFailure::ScopePreventsConstructorUnification(left, right) => {
+            DiagnosticPayload::new(
+                DiagnosticId::ScopePreventsConstructorUnification,
+                vec![format_constructor(left), format_constructor(right)],
+            )
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Kind errors
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
-pub enum KindError {
-    UnboundKind(Span, String),
-    KDisallowedWildcard(Span),
+pub enum KindElaborationError {
+    UnboundKindVariable(Span, String),
+    WildcardDisallowedInSignature(Span),
 }
 
-pub fn kind_error(err: &KindError) -> CompileError {
-    match err {
-        KindError::UnboundKind(span, s) => {
-            CompileError::at(span.clone(), format!("Unbound kind variable:  {}", s))
+/// Map a [`KindElaborationError`] to a [`CompileError`] at the appropriate span.
+///
+/// # Arguments
+///
+/// * `kind_elaboration_error` — Structured kind error from elaboration.
+///
+/// # Returns
+///
+/// [`CompileError::type_at`] (or equivalent) with user-facing text.
+pub fn compile_error_from_kind_elaboration_error(
+    kind_elaboration_error: &KindElaborationError,
+) -> CompileError {
+    match kind_elaboration_error {
+        KindElaborationError::UnboundKindVariable(source_span, variable_name) => {
+            CompileError::type_at_with_hint(
+                source_span.clone(),
+                DiagnosticPayload::new(
+                    DiagnosticId::UnboundKindVariable,
+                    vec![variable_name.clone()],
+                ),
+                DiagnosticId::HintUnboundKindVariable,
+                Vec::new(),
+            )
         }
-        KindError::KDisallowedWildcard(span) => {
-            CompileError::at(span.clone(), "Wildcard not allowed in signature")
+        KindElaborationError::WildcardDisallowedInSignature(source_span) => {
+            CompileError::type_at_with_hint(
+                source_span.clone(),
+                DiagnosticPayload::new(DiagnosticId::WildcardDisallowedInSignature, Vec::new()),
+                DiagnosticId::HintWildcardDisallowedInSignature,
+                Vec::new(),
+            )
         }
     }
 }
@@ -37,27 +217,23 @@ pub fn kind_error(err: &KindError) -> CompileError {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
-pub enum KunifyError {
-    KOccursCheckFailed(LocatedKind, LocatedKind),
-    KIncompatible(LocatedKind, LocatedKind),
-    KScope(LocatedKind, LocatedKind),
+pub enum KindUnificationFailure {
+    OccursCheckFailed(LocatedKind, LocatedKind),
+    IncompatibleKinds(LocatedKind, LocatedKind),
+    ScopePreventsUnification(LocatedKind, LocatedKind),
 }
 
-pub fn kunify_error_message(err: &KunifyError) -> String {
-    match err {
-        KunifyError::KOccursCheckFailed(k1, k2) => {
-            format!("Kind occurs check failed: {:?} vs {:?}", k1.node, k2.node)
-        }
-        KunifyError::KIncompatible(k1, k2) => {
-            format!("Incompatible kinds: {:?} vs {:?}", k1.node, k2.node)
-        }
-        KunifyError::KScope(k1, k2) => {
-            format!(
-                "Scoping prevents kind unification: {:?} vs {:?}",
-                k1.node, k2.node
-            )
-        }
-    }
+/// Short English explanation of a [`KindUnificationFailure`] for nested messages (not a [`CompileError`] alone).
+///
+/// # Arguments
+///
+/// * `failure` — Kind unification failure.
+///
+/// # Returns
+///
+/// Single-line summary (pretty-printed kinds; for diagnostics only).
+pub fn format_kind_unification_failure(failure: &KindUnificationFailure) -> String {
+    render_diagnostic_body(&kind_unification_payload(failure), DiagnosticLocale::En)
 }
 
 // ---------------------------------------------------------------------------
@@ -65,51 +241,126 @@ pub fn kunify_error_message(err: &KunifyError) -> String {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
-pub enum ConError {
-    UnboundCon(Span, String),
-    UnboundDatatype(Span, String),
-    UnboundStrInCon(Span, String),
-    WrongKind(LocatedConstructor, LocatedKind, LocatedKind, KunifyError),
-    DuplicateField(Span, String),
-    ProjBounds(LocatedConstructor, usize),
-    ProjMismatch(LocatedConstructor, LocatedKind),
-    CDisallowedWildcard(Span),
+pub enum ConstructorElaborationError {
+    UnboundConstructorVariable(Span, String),
+    UnboundDatatypeName(Span, String),
+    UnboundStructureReference(Span, String),
+    ConstructorWrongKind(
+        LocatedConstructor,
+        LocatedKind,
+        LocatedKind,
+        KindUnificationFailure,
+    ),
+    DuplicateRecordFieldName(Span, String),
+    ProjectionIndexOutOfBounds(LocatedConstructor, usize),
+    ProjectionKindMismatch(LocatedConstructor, LocatedKind),
+    ConstructorWildcardDisallowedInSignature(Span),
 }
 
-pub fn con_error(err: &ConError) -> CompileError {
-    match err {
-        ConError::UnboundCon(span, s) => CompileError::at(
-            span.clone(),
-            format!("Unbound constructor variable:  {}", s),
+/// Map a [`ConstructorElaborationError`] to [`CompileError`].
+///
+/// # Arguments
+///
+/// * `constructor_elaboration_error` — Structured constructor error.
+///
+/// # Returns
+///
+/// Diagnostic with span taken from the offending node or explicit [`Span`] in `constructor_elaboration_error`.
+pub fn compile_error_from_constructor_elaboration_error(
+    constructor_elaboration_error: &ConstructorElaborationError,
+) -> CompileError {
+    match constructor_elaboration_error {
+        ConstructorElaborationError::UnboundConstructorVariable(source_span, variable_name) => {
+            CompileError::type_at_with_hint(
+                source_span.clone(),
+                DiagnosticPayload::new(
+                    DiagnosticId::UnboundConstructorVariable,
+                    vec![variable_name.clone()],
+                ),
+                DiagnosticId::HintUnboundConstructorVariable,
+                Vec::new(),
+            )
+        }
+        ConstructorElaborationError::UnboundDatatypeName(source_span, datatype_name) => {
+            CompileError::type_at_with_hint(
+                source_span.clone(),
+                DiagnosticPayload::new(
+                    DiagnosticId::UnboundDatatypeName,
+                    vec![datatype_name.clone()],
+                ),
+                DiagnosticId::HintUnboundDatatypeName,
+                Vec::new(),
+            )
+        }
+        ConstructorElaborationError::UnboundStructureReference(source_span, structure_name) => {
+            CompileError::type_at_with_hint(
+                source_span.clone(),
+                DiagnosticPayload::new(
+                    DiagnosticId::UnboundStructureReference,
+                    vec![structure_name.clone()],
+                ),
+                DiagnosticId::HintUnboundStructureReference,
+                Vec::new(),
+            )
+        }
+        ConstructorElaborationError::ConstructorWrongKind(
+            constructor,
+            found_kind,
+            expected_kind,
+            kind_failure,
+        ) => CompileError::type_at_with_hint(
+            constructor.span.clone(),
+            DiagnosticPayload::new(
+                DiagnosticId::ConstructorWrongKind,
+                vec![format_kind(found_kind), format_kind(expected_kind)],
+            )
+            .with_suffix(kind_unification_payload(kind_failure)),
+            DiagnosticId::HintConstructorWrongKind,
+            Vec::new(),
         ),
-        ConError::UnboundDatatype(span, s) => {
-            CompileError::at(span.clone(), format!("Unbound datatype:  {}", s))
+        ConstructorElaborationError::DuplicateRecordFieldName(source_span, field_name) => {
+            CompileError::type_at_with_hint(
+                source_span.clone(),
+                DiagnosticPayload::new(
+                    DiagnosticId::DuplicateRecordFieldName,
+                    vec![field_name.clone()],
+                ),
+                DiagnosticId::HintDuplicateRecordFieldName,
+                Vec::new(),
+            )
         }
-        ConError::UnboundStrInCon(span, s) => {
-            CompileError::at(span.clone(), format!("Unbound structure:  {}", s))
+        ConstructorElaborationError::ProjectionIndexOutOfBounds(constructor, projection_index) => {
+            CompileError::type_at_with_hint(
+                constructor.span.clone(),
+                DiagnosticPayload::new(
+                    DiagnosticId::ProjectionIndexOutOfBounds,
+                    vec![projection_index.to_string()],
+                ),
+                DiagnosticId::HintProjectionIndexOutOfBounds,
+                Vec::new(),
+            )
         }
-        ConError::WrongKind(c, k1, k2, kerr) => {
-            let msg = format!(
-                "Wrong kind; have {:?}, need {:?}; {}",
-                k1.node,
-                k2.node,
-                kunify_error_message(kerr)
-            );
-            CompileError::at(c.span.clone(), msg)
+        ConstructorElaborationError::ProjectionKindMismatch(constructor, kind) => {
+            CompileError::type_at_with_hint(
+                constructor.span.clone(),
+                DiagnosticPayload::new(
+                    DiagnosticId::ProjectionKindMismatch,
+                    vec![format_kind(kind)],
+                ),
+                DiagnosticId::HintProjectionKindMismatch,
+                Vec::new(),
+            )
         }
-        ConError::DuplicateField(span, s) => {
-            CompileError::at(span.clone(), format!("Duplicate record field:  {}", s))
-        }
-        ConError::ProjBounds(c, n) => CompileError::at(
-            c.span.clone(),
-            format!("Out of bounds constructor projection (index {})", n),
-        ),
-        ConError::ProjMismatch(c, k) => CompileError::at(
-            c.span.clone(),
-            format!("Projection from non-tuple constructor (kind {:?})", k.node),
-        ),
-        ConError::CDisallowedWildcard(span) => {
-            CompileError::at(span.clone(), "Wildcard not allowed in signature")
+        ConstructorElaborationError::ConstructorWildcardDisallowedInSignature(source_span) => {
+            CompileError::type_at_with_hint(
+                source_span.clone(),
+                DiagnosticPayload::new(
+                    DiagnosticId::ConstructorWildcardDisallowedInSignatureConstructor,
+                    Vec::new(),
+                ),
+                DiagnosticId::HintConstructorWildcardDisallowedInSignatureConstructor,
+                Vec::new(),
+            )
         }
     }
 }
@@ -119,111 +370,51 @@ pub fn con_error(err: &ConError) -> CompileError {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
-pub enum CunifyError {
-    CKind(LocatedKind, LocatedKind, KunifyError),
-    COccursCheckFailed(LocatedConstructor, LocatedConstructor),
-    CIncompatible(LocatedConstructor, LocatedConstructor),
-    CExplicitness(LocatedConstructor, LocatedConstructor),
-    CKindof(LocatedKind, LocatedConstructor, String),
-    CRecordFailure(
+pub enum ConstructorUnificationFailure {
+    NestedKindUnificationFailure(LocatedKind, LocatedKind, KindUnificationFailure),
+    ConstructorOccursCheckFailed(LocatedConstructor, LocatedConstructor),
+    IncompatibleConstructors(LocatedConstructor, LocatedConstructor),
+    TypeFunctionExplicitnessMismatch(LocatedConstructor, LocatedConstructor),
+    UnexpectedKindForKindofQuery(LocatedKind, LocatedConstructor, String),
+    RecordConstructorUnificationFailure(
         LocatedConstructor,
         LocatedConstructor,
         Option<(
             LocatedConstructor,
             LocatedConstructor,
             LocatedConstructor,
-            Option<Box<CunifyError>>,
+            Option<Box<ConstructorUnificationFailure>>,
         )>,
     ),
-    TooLifty(Span, Span),
-    TooUnify(LocatedConstructor, LocatedConstructor),
-    TooDeep,
-    CScope(LocatedConstructor, LocatedConstructor),
+    SuspendedLiftingClash(Span, Span),
+    SubstitutionBlockedByDeepUnification(LocatedConstructor, LocatedConstructor),
+    UnificationLiftingTooDeep,
+    ScopePreventsConstructorUnification(LocatedConstructor, LocatedConstructor),
 }
 
-pub fn cunify_error(err: &CunifyError) -> CompileError {
-    match err {
-        CunifyError::CKind(k1, k2, kerr) => {
-            let msg = format!(
-                "Kind unification failure: have {:?}, need {:?}; {}",
-                k1.node,
-                k2.node,
-                kunify_error_message(kerr)
-            );
-            CompileError::Plain(msg)
+/// Map constructor unification failure to [`CompileError`] ([`CompileError::Plain`] when no single span fits).
+///
+/// Nested [`ConstructorUnificationFailure`] values in [`ConstructorUnificationFailure::RecordConstructorUnificationFailure`]
+/// stringify via this function.
+///
+/// # Arguments
+///
+/// * `failure` — Unification failure from [`crate::elaborated::elaborate::unify_cons`] or related logic.
+///
+/// # Returns
+///
+/// Printable compiler error (may embed sub-messages from [`format_kind_unification_failure`]).
+pub fn compile_error_from_constructor_unification_failure(
+    failure: &ConstructorUnificationFailure,
+) -> CompileError {
+    match failure {
+        ConstructorUnificationFailure::SuspendedLiftingClash(first_span, _second_span) => {
+            CompileError::type_at(first_span.clone(), constructor_unification_payload(failure))
         }
-        CunifyError::COccursCheckFailed(c1, c2) => {
-            CompileError::Plain(format!(
-                "Constructor occurs check failed: {:?} vs {:?}",
-                c1.node, c2.node
-            ))
+        ConstructorUnificationFailure::SubstitutionBlockedByDeepUnification(head, _body) => {
+            CompileError::type_at(head.span.clone(), constructor_unification_payload(failure))
         }
-        CunifyError::CIncompatible(c1, c2) => {
-            CompileError::Plain(format!(
-                "Incompatible constructors: {:?} vs {:?}",
-                c1.node, c2.node
-            ))
-        }
-        CunifyError::CExplicitness(c1, c2) => {
-            CompileError::Plain(format!(
-                "Differing constructor function explicitness: {:?} vs {:?}",
-                c1.node, c2.node
-            ))
-        }
-        CunifyError::CKindof(k, c, expected) => {
-            CompileError::Plain(format!(
-                "Unexpected kind for kindof calculation (expecting {}): kind {:?}, con {:?}",
-                expected, k.node, c.node
-            ))
-        }
-        CunifyError::CRecordFailure(c1, c2, fo) => {
-            let base = format!(
-                "Can't unify record constructors: {:?} vs {:?}",
-                c1.node, c2.node
-            );
-            let detail = if let Some((nm, t1, t2, inner_err)) = fo {
-                let field_msg = format!(
-                    "; field {:?}: {:?} vs {:?}",
-                    nm.node, t1.node, t2.node
-                );
-                let inner_msg = if let Some(inner) = inner_err {
-                    format!("; {}", cunify_error(inner))
-                } else {
-                    String::new()
-                };
-                format!("{}{}", field_msg, inner_msg)
-            } else {
-                String::new()
-            };
-            CompileError::Plain(format!("{}{}", base, detail))
-        }
-        CunifyError::TooLifty(loc1, loc2) => {
-            CompileError::at(
-                loc1.clone(),
-                format!(
-                    "Can't unify two unification variables that both have suspended liftings; other location: {}",
-                    loc2
-                ),
-            )
-        }
-        CunifyError::TooUnify(c1, c2) => {
-            CompileError::at(
-                c1.span.clone(),
-                format!(
-                    "Substitution in constructor is blocked by a too-deep unification variable; body: {:?}",
-                    c2.node
-                ),
-            )
-        }
-        CunifyError::TooDeep => {
-            CompileError::Plain("Can't reverse-engineer unification variable lifting".to_string())
-        }
-        CunifyError::CScope(c1, c2) => {
-            CompileError::Plain(format!(
-                "Scoping prevents constructor unification: {:?} vs {:?}",
-                c1.node, c2.node
-            ))
-        }
+        _ => CompileError::Plain(constructor_unification_payload(failure)),
     }
 }
 
@@ -232,126 +423,254 @@ pub fn cunify_error(err: &CunifyError) -> CompileError {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
-pub enum ExpError {
-    UnboundExp(Span, String),
-    UnboundStrInExp(Span, String),
-    Unify(
+pub enum ExpressionElaborationError {
+    UnboundExpressionVariable(Span, String),
+    UnboundStructureInExpression(Span, String),
+    ExpressionUnificationFailure(
         LocatedExpression,
         LocatedConstructor,
         LocatedConstructor,
-        CunifyError,
+        ConstructorUnificationFailure,
     ),
-    Unif(String, Span, LocatedConstructor),
-    WrongForm(String, LocatedExpression, LocatedConstructor),
-    IncompatibleCons(LocatedConstructor, LocatedConstructor),
+    UnificationVariableObstructsOperation(String, Span, LocatedConstructor),
+    ExpressionWrongForm(String, LocatedExpression, LocatedConstructor),
+    IncompatibleConstructors(LocatedConstructor, LocatedConstructor),
     DuplicatePatternVariable(Span, String),
-    PatUnify(
+    PatternUnificationFailure(
         LocatedPattern,
         LocatedConstructor,
         LocatedConstructor,
-        CunifyError,
+        ConstructorUnificationFailure,
     ),
-    UnboundConstructor(Span, Vec<String>, String),
-    PatHasArg(Span),
-    PatHasNoArg(Span),
-    Inexhaustive(Span, LocatedPattern),
-    DuplicatePatField(Span, String),
-    Unresolvable(Span, LocatedConstructor),
-    OutOfContext(Span, Option<(LocatedExpression, LocatedConstructor)>),
-    IllegalRec(String, LocatedExpression),
+    UnboundQualifiedConstructor(Span, Vec<String>, String),
+    PatternConstructorGivenArgumentButExpectsNone(Span),
+    PatternConstructorExpectsArgumentButNoneGiven(Span),
+    InexhaustiveCaseAnalysis(Span, LocatedPattern),
+    DuplicatePatternRecordField(Span, String),
+    UnresolvableTypeClassInstance(Span, LocatedConstructor),
+    TypeClassWildcardOutOfContext(Span, Option<(LocatedExpression, LocatedConstructor)>),
+    IllegalRecursiveValueBinding(String, LocatedExpression),
 }
 
-pub fn exp_error(err: &ExpError) -> CompileError {
-    match err {
-        ExpError::UnboundExp(span, s) => {
-            CompileError::at(span.clone(), format!("Unbound expression variable:  {}", s))
-        }
-        ExpError::UnboundStrInExp(span, s) => {
-            CompileError::at(span.clone(), format!("Unbound structure:  {}", s))
-        }
-        ExpError::Unify(e, c1, c2, uerr) => {
-            let msg = format!(
-                "Unification failure; have con {:?}, need con {:?}; {}",
-                c1.node,
-                c2.node,
-                cunify_error(uerr)
-            );
-            CompileError::at(e.span.clone(), msg)
-        }
-        ExpError::Unif(action, span, c) => CompileError::at(
-            span.clone(),
-            format!("Unification variable blocks {}", action),
-        ),
-        ExpError::WrongForm(variety, e, t) => {
-            CompileError::at(e.span.clone(), format!("Expression is not a {}", variety))
-        }
-        ExpError::IncompatibleCons(c1, c2) => CompileError::at(
-            c1.span.clone(),
-            format!("Incompatible constructors: {:?} vs {:?}", c1.node, c2.node),
-        ),
-        ExpError::DuplicatePatternVariable(span, s) => {
-            CompileError::at(span.clone(), format!("Duplicate pattern variable:  {}", s))
-        }
-        ExpError::PatUnify(p, c1, c2, uerr) => {
-            let msg = format!(
-                "Unification failure for pattern; have con {:?}, need con {:?}; {}",
-                c1.node,
-                c2.node,
-                cunify_error(uerr)
-            );
-            CompileError::at(p.span.clone(), msg)
-        }
-        ExpError::UnboundConstructor(span, ms, s) => {
-            let full = {
-                let mut parts = ms.clone();
-                parts.push(s.clone());
-                parts.join(".")
-            };
-            CompileError::at(
-                span.clone(),
-                format!("Unbound constructor {} in pattern", full),
+/// Map an [`ExpressionElaborationError`] to [`CompileError`].
+///
+/// # Arguments
+///
+/// * `expression_error` — Pattern, unification, or binding error arising in [`crate::elaborated::elaborate::elab_exp`].
+///
+/// # Returns
+///
+/// Diagnostic at expression or pattern span; includes [`compile_error_from_constructor_unification_failure`]
+/// when a [`ConstructorUnificationFailure`] is attached.
+pub fn compile_error_from_expression_elaboration_error(
+    expression_error: &ExpressionElaborationError,
+) -> CompileError {
+    match expression_error {
+        ExpressionElaborationError::UnboundExpressionVariable(source_span, variable_name) => {
+            CompileError::type_at_with_hint(
+                source_span.clone(),
+                DiagnosticPayload::new(
+                    DiagnosticId::UnboundExpressionVariable,
+                    vec![variable_name.clone()],
+                ),
+                DiagnosticId::HintUnboundExpressionVariable,
+                Vec::new(),
             )
         }
-        ExpError::PatHasArg(span) => CompileError::at(
-            span.clone(),
-            "Constructor expects no argument but is used with argument",
+        ExpressionElaborationError::UnboundStructureInExpression(source_span, structure_name) => {
+            CompileError::type_at_with_hint(
+                source_span.clone(),
+                DiagnosticPayload::new(
+                    DiagnosticId::UnboundStructureInExpression,
+                    vec![structure_name.clone()],
+                ),
+                DiagnosticId::HintUnboundStructureInExpression,
+                Vec::new(),
+            )
+        }
+        ExpressionElaborationError::ExpressionUnificationFailure(
+            expression,
+            inferred_constructor,
+            expected_constructor,
+            unification_failure,
+        ) => CompileError::type_at_with_hint(
+            expression.span.clone(),
+            DiagnosticPayload::new(
+                DiagnosticId::ExpressionUnificationFailure,
+                vec![
+                    format_constructor(inferred_constructor),
+                    format_constructor(expected_constructor),
+                ],
+            )
+            .with_suffix(constructor_unification_payload(unification_failure)),
+            DiagnosticId::HintExpressionUnificationFailure,
+            Vec::new(),
         ),
-        ExpError::PatHasNoArg(span) => CompileError::at(
-            span.clone(),
-            "Constructor expects argument but is used with no argument",
+        ExpressionElaborationError::UnificationVariableObstructsOperation(
+            operation_description,
+            source_span,
+            _blocking_constructor,
+        ) => CompileError::type_at_with_hint(
+            source_span.clone(),
+            DiagnosticPayload::new(
+                DiagnosticId::UnificationVariableObstructsOperation,
+                vec![operation_description.clone()],
+            ),
+            DiagnosticId::HintUnificationVariableObstructs,
+            Vec::new(),
         ),
-        ExpError::Inexhaustive(span, p) => CompileError::at(
-            span.clone(),
-            format!("Inexhaustive 'case'; missed case: {:?}", p.node),
+        ExpressionElaborationError::ExpressionWrongForm(expected_form_name, expression, _type) => {
+            CompileError::type_at_with_hint(
+                expression.span.clone(),
+                DiagnosticPayload::new(
+                    DiagnosticId::ExpressionWrongForm,
+                    vec![expected_form_name.clone()],
+                ),
+                DiagnosticId::HintExpressionWrongForm,
+                Vec::new(),
+            )
+        }
+        ExpressionElaborationError::IncompatibleConstructors(left, right) => {
+            CompileError::type_at_with_hint(
+                left.span.clone(),
+                DiagnosticPayload::new(
+                    DiagnosticId::IncompatibleConstructorsExpression,
+                    vec![format_constructor(left), format_constructor(right)],
+                ),
+                DiagnosticId::HintIncompatibleConstructorsExpression,
+                Vec::new(),
+            )
+        }
+        ExpressionElaborationError::DuplicatePatternVariable(source_span, variable_name) => {
+            CompileError::type_at_with_hint(
+                source_span.clone(),
+                DiagnosticPayload::new(
+                    DiagnosticId::DuplicatePatternVariable,
+                    vec![variable_name.clone()],
+                ),
+                DiagnosticId::HintDuplicatePatternVariable,
+                Vec::new(),
+            )
+        }
+        ExpressionElaborationError::PatternUnificationFailure(
+            pattern,
+            inferred_constructor,
+            expected_constructor,
+            unification_failure,
+        ) => CompileError::type_at_with_hint(
+            pattern.span.clone(),
+            DiagnosticPayload::new(
+                DiagnosticId::PatternUnificationFailure,
+                vec![
+                    format_constructor(inferred_constructor),
+                    format_constructor(expected_constructor),
+                ],
+            )
+            .with_suffix(constructor_unification_payload(unification_failure)),
+            DiagnosticId::HintPatternUnificationFailure,
+            Vec::new(),
         ),
-        ExpError::DuplicatePatField(span, s) => CompileError::at(
-            span.clone(),
-            format!("Duplicate record field {} in pattern", s),
-        ),
-        ExpError::Unresolvable(span, c) => CompileError::at(
-            span.clone(),
-            format!(
-                "Can't resolve type class instance; class constraint: {:?}",
-                c.node
+        ExpressionElaborationError::UnboundQualifiedConstructor(
+            source_span,
+            module_path,
+            constructor_name,
+        ) => {
+            let full_qualifier = {
+                let mut path_components = module_path.clone();
+                path_components.push(constructor_name.clone());
+                path_components.join(".")
+            };
+            CompileError::type_at_with_hint(
+                source_span.clone(),
+                DiagnosticPayload::new(
+                    DiagnosticId::UnboundQualifiedConstructor,
+                    vec![full_qualifier],
+                ),
+                DiagnosticId::HintUnboundQualifiedConstructor,
+                Vec::new(),
+            )
+        }
+        ExpressionElaborationError::PatternConstructorGivenArgumentButExpectsNone(source_span) => {
+            CompileError::type_at_with_hint(
+                source_span.clone(),
+                DiagnosticPayload::new(
+                    DiagnosticId::PatternConstructorGivenArgumentButExpectsNone,
+                    Vec::new(),
+                ),
+                DiagnosticId::HintPatternConstructorGivenArgumentButExpectsNone,
+                Vec::new(),
+            )
+        }
+        ExpressionElaborationError::PatternConstructorExpectsArgumentButNoneGiven(source_span) => {
+            CompileError::type_at_with_hint(
+                source_span.clone(),
+                DiagnosticPayload::new(
+                    DiagnosticId::PatternConstructorExpectsArgumentButNoneGiven,
+                    Vec::new(),
+                ),
+                DiagnosticId::HintPatternConstructorExpectsArgumentButNoneGiven,
+                Vec::new(),
+            )
+        }
+        ExpressionElaborationError::InexhaustiveCaseAnalysis(source_span, pattern) => {
+            CompileError::type_at(
+                source_span.clone(),
+                DiagnosticPayload::new(
+                    DiagnosticId::InexhaustiveCaseAnalysis,
+                    vec![format_pattern(pattern)],
+                ),
+            )
+        }
+        ExpressionElaborationError::DuplicatePatternRecordField(source_span, field_name) => {
+            CompileError::type_at_with_hint(
+                source_span.clone(),
+                DiagnosticPayload::new(
+                    DiagnosticId::DuplicatePatternRecordField,
+                    vec![field_name.clone()],
+                ),
+                DiagnosticId::HintDuplicatePatternRecordField,
+                Vec::new(),
+            )
+        }
+        ExpressionElaborationError::UnresolvableTypeClassInstance(
+            source_span,
+            class_constraint,
+        ) => CompileError::type_at(
+            source_span.clone(),
+            DiagnosticPayload::new(
+                DiagnosticId::UnresolvableTypeClassInstance,
+                vec![format_constructor(class_constraint)],
             ),
         ),
-        ExpError::OutOfContext(span, co) => {
-            let detail = if let Some((e, c)) = co {
-                format!("; function: {:?}, type: {:?}", e.node, c.node)
+        ExpressionElaborationError::TypeClassWildcardOutOfContext(
+            source_span,
+            optional_context,
+        ) => {
+            let detail = if let Some((function_expression, function_type)) = optional_context {
+                format!(
+                    "; function: {}, type: {}",
+                    format_expression(function_expression),
+                    format_constructor(function_type),
+                )
             } else {
                 String::new()
             };
-            CompileError::at(
-                span.clone(),
-                format!("Type class wildcard occurs out of context{}", detail),
+            CompileError::type_at(
+                source_span.clone(),
+                DiagnosticPayload::new(DiagnosticId::TypeClassWildcardOutOfContext, vec![detail]),
             )
         }
-        ExpError::IllegalRec(x, e) => CompileError::at(
-            e.span.clone(),
-            format!(
-                "Illegal 'val rec' righthand side (must be a function abstraction); variable: {}",
-                x
+        ExpressionElaborationError::IllegalRecursiveValueBinding(
+            bound_variable_name,
+            right_hand_side,
+        ) => CompileError::type_at_with_hint(
+            right_hand_side.span.clone(),
+            DiagnosticPayload::new(
+                DiagnosticId::IllegalRecursiveValueBinding,
+                vec![bound_variable_name.clone()],
             ),
+            DiagnosticId::HintIllegalRecursiveValueBinding,
+            Vec::new(),
         ),
     }
 }
@@ -361,41 +680,66 @@ pub fn exp_error(err: &ExpError) -> CompileError {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
-pub enum DeclError {
-    KunifsRemain(Box<Vec<LocatedDeclaration>>),
-    CunifsRemain(Box<Vec<LocatedDeclaration>>),
-    Nonpositive(LocatedDeclaration),
-    Hole(LocatedConstructor),
+pub enum DeclarationElaborationError {
+    KindUnifiersRemainUndetermined(Box<Vec<LocatedDeclaration>>),
+    ConstructorUnifiersRemainUndetermined(Box<Vec<LocatedDeclaration>>),
+    NonStrictlyPositiveDeclaration(LocatedDeclaration),
+    TypeHoleFound(LocatedConstructor),
 }
 
-fn lspan(ds: &[LocatedDeclaration]) -> Span {
-    ds.first()
-        .map(|d| d.span.clone())
+fn declarations_fallback_span(declarations: &[LocatedDeclaration]) -> Span {
+    declarations
+        .first()
+        .map(|declaration| declaration.span.clone())
         .unwrap_or_else(Span::dummy)
 }
 
-pub fn decl_error(err: &DeclError) -> CompileError {
-    match err {
-        DeclError::KunifsRemain(ds) => {
-            CompileError::at(
-                lspan(ds),
-                "Some kind unification variables are undetermined in declaration\n(look for them as \"<UNIF:...>\")",
+/// Map declaration-hygiene errors to [`CompileError`].
+///
+/// # Arguments
+///
+/// * `declaration_error` — Post-elaboration declaration problem.
+///
+/// # Returns
+///
+/// [`CompileError::type_at`] for list-based issues; [`DeclarationElaborationError::TypeHoleFound`] uses
+/// [`CompileError::Plain`] with constructor debug.
+pub fn compile_error_from_declaration_elaboration_error(
+    declaration_error: &DeclarationElaborationError,
+) -> CompileError {
+    match declaration_error {
+        DeclarationElaborationError::KindUnifiersRemainUndetermined(declarations) => {
+            CompileError::type_at_with_hint(
+                declarations_fallback_span(declarations),
+                DiagnosticPayload::new(DiagnosticId::KindUnifiersRemainUndetermined, Vec::new()),
+                DiagnosticId::HintKindUnifiersRemainUndetermined,
+                Vec::new(),
             )
         }
-        DeclError::CunifsRemain(ds) => {
-            CompileError::at(
-                lspan(ds),
-                "Some constructor unification variables are undetermined in declaration\n(look for them as \"<UNIF:...>\")",
+        DeclarationElaborationError::ConstructorUnifiersRemainUndetermined(declarations) => {
+            CompileError::type_at_with_hint(
+                declarations_fallback_span(declarations),
+                DiagnosticPayload::new(
+                    DiagnosticId::ConstructorUnifiersRemainUndetermined,
+                    Vec::new(),
+                ),
+                DiagnosticId::HintConstructorUnifiersRemainUndetermined,
+                Vec::new(),
             )
         }
-        DeclError::Nonpositive(d) => {
-            CompileError::at(
-                d.span.clone(),
-                "Non-strictly-positive datatype declaration (could allow non-termination)",
+        DeclarationElaborationError::NonStrictlyPositiveDeclaration(declaration) => {
+            CompileError::type_at_with_hint(
+                declaration.span.clone(),
+                DiagnosticPayload::new(DiagnosticId::NonStrictlyPositiveDeclaration, Vec::new()),
+                DiagnosticId::HintNonStrictlyPositiveDeclaration,
+                Vec::new(),
             )
         }
-        DeclError::Hole(c) => {
-            CompileError::Plain(format!("Hole found with type: {:?}", c.node))
+        DeclarationElaborationError::TypeHoleFound(constructor) => {
+            CompileError::Plain(DiagnosticPayload::new(
+                DiagnosticId::TypeHoleFoundInternal,
+                vec![format_constructor(constructor)],
+            ))
         }
     }
 }
@@ -405,124 +749,256 @@ pub fn decl_error(err: &DeclError) -> CompileError {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
-pub enum SgnError {
-    UnboundSgn(Span, String),
-    UnmatchedSgi(Span, LocatedSignatureItem),
-    SgiWrongKind(
+pub enum SignatureElaborationError {
+    UnboundSignatureName(Span, String),
+    UnmatchedSignatureItem(Span, LocatedSignatureItem),
+    SignatureItemKindUnificationFailed(
         Span,
         LocatedSignatureItem,
         LocatedKind,
         LocatedSignatureItem,
         LocatedKind,
-        KunifyError,
+        KindUnificationFailure,
     ),
-    SgiWrongCon(
+    SignatureItemConstructorUnificationFailed(
         Span,
         LocatedSignatureItem,
         LocatedConstructor,
         LocatedSignatureItem,
         LocatedConstructor,
-        CunifyError,
+        ConstructorUnificationFailure,
     ),
-    SgiMismatchedDatatypes(
+    SignatureItemDatatypeSpecificationsMismatch(
         Span,
         LocatedSignatureItem,
         LocatedSignatureItem,
-        Option<(LocatedConstructor, LocatedConstructor, CunifyError)>,
+        Option<(
+            LocatedConstructor,
+            LocatedConstructor,
+            ConstructorUnificationFailure,
+        )>,
     ),
-    SgnWrongForm(Span, LocatedSignature, LocatedSignature),
-    UnWhereable(LocatedSignature, String),
-    WhereWrongKind(LocatedKind, LocatedKind, KunifyError),
-    NotIncludable(LocatedSignature),
-    DuplicateCon(Span, String),
-    DuplicateVal(Span, String),
-    DuplicateSgn(Span, String),
-    DuplicateStr(Span, String),
-    NotConstraintsable(LocatedSignature),
+    IncompatibleSignatureShapes(Span, LocatedSignature, LocatedSignature),
+    WhereClauseFieldUnavailable(LocatedSignature, String),
+    WhereClauseKindMismatch(LocatedKind, LocatedKind, KindUnificationFailure),
+    SignatureNotValidForInclude(LocatedSignature),
+    DuplicateConstructorNameInSignature(Span, String),
+    DuplicateValueNameInSignature(Span, String),
+    DuplicateNestedSignatureName(Span, String),
+    DuplicateStructureNameInSignature(Span, String),
+    SignatureNotValidForOpenConstraints(LocatedSignature),
 }
 
-pub fn sgn_error(err: &SgnError) -> CompileError {
-    match err {
-        SgnError::UnboundSgn(span, s) => {
-            CompileError::at(span.clone(), format!("Unbound signature variable:  {}", s))
-        }
-        SgnError::UnmatchedSgi(span, sgi) => {
-            CompileError::at(span.clone(), format!("Unmatched signature item: {:?}", sgi.node))
-        }
-        SgnError::SgiWrongKind(span, sgi1, k1, sgi2, k2, kerr) => {
-            CompileError::at(
-                span.clone(),
-                format!(
-                    "Kind unification failure in signature matching: have {:?} (kind {:?}), need {:?} (kind {:?}); {}",
-                    sgi1.node, k1.node, sgi2.node, k2.node,
-                    kunify_error_message(kerr)
-                ),
+/// Map signature matching / `where` / duplicate-item errors to [`CompileError`].
+///
+/// # Arguments
+///
+/// * `signature_error` — Subtyping or signature elaboration problem.
+///
+/// # Returns
+///
+/// Diagnostic; may embed [`format_kind_unification_failure`] or [`compile_error_from_constructor_unification_failure`].
+pub fn compile_error_from_signature_elaboration_error(
+    signature_error: &SignatureElaborationError,
+) -> CompileError {
+    match signature_error {
+        SignatureElaborationError::UnboundSignatureName(source_span, name) => {
+            CompileError::type_at_with_hint(
+                source_span.clone(),
+                DiagnosticPayload::new(DiagnosticId::UnboundSignatureName, vec![name.clone()]),
+                DiagnosticId::HintUnboundSignatureName,
+                Vec::new(),
             )
         }
-        SgnError::SgiWrongCon(span, sgi1, c1, sgi2, c2, cerr) => {
-            CompileError::at(
-                span.clone(),
-                format!(
-                    "Constructor unification failure in signature matching: have {:?} (con {:?}), need {:?} (con {:?}); {}",
-                    sgi1.node, c1.node, sgi2.node, c2.node,
-                    cunify_error(cerr)
+        SignatureElaborationError::UnmatchedSignatureItem(source_span, item) => {
+            CompileError::type_at_with_hint(
+                source_span.clone(),
+                DiagnosticPayload::new(
+                    DiagnosticId::UnmatchedSignatureItem,
+                    vec![format_signature_item(item)],
                 ),
+                DiagnosticId::HintUnmatchedSignatureItem,
+                Vec::new(),
             )
         }
-        SgnError::SgiMismatchedDatatypes(span, sgi1, sgi2, cerro) => {
-            let detail = if let Some((c1, c2, ue)) = cerro {
-                format!("; unification error: {:?} vs {:?}; {}", c1.node, c2.node, cunify_error(ue))
+        SignatureElaborationError::SignatureItemKindUnificationFailed(
+            source_span,
+            actual_item,
+            actual_kind,
+            expected_item,
+            expected_kind,
+            kind_failure,
+        ) => CompileError::type_at(
+            source_span.clone(),
+            DiagnosticPayload::new(
+                DiagnosticId::SignatureItemKindUnificationFailed,
+                vec![
+                    format_signature_item(actual_item),
+                    format_kind(actual_kind),
+                    format_signature_item(expected_item),
+                    format_kind(expected_kind),
+                ],
+            )
+            .with_suffix(kind_unification_payload(kind_failure)),
+        ),
+        SignatureElaborationError::SignatureItemConstructorUnificationFailed(
+            source_span,
+            actual_item,
+            actual_constructor,
+            expected_item,
+            expected_constructor,
+            constructor_failure,
+        ) => CompileError::type_at(
+            source_span.clone(),
+            DiagnosticPayload::new(
+                DiagnosticId::SignatureItemConstructorUnificationFailed,
+                vec![
+                    format_signature_item(actual_item),
+                    format_constructor(actual_constructor),
+                    format_signature_item(expected_item),
+                    format_constructor(expected_constructor),
+                ],
+            )
+            .with_suffix(constructor_unification_payload(constructor_failure)),
+        ),
+        SignatureElaborationError::SignatureItemDatatypeSpecificationsMismatch(
+            source_span,
+            first_item,
+            second_item,
+            optional_unification_detail,
+        ) => {
+            let detail = if let Some((left_constructor, right_constructor, unification_failure)) =
+                optional_unification_detail
+            {
+                format!(
+                    "; unification error: {} vs {}; {}",
+                    format_constructor(left_constructor),
+                    format_constructor(right_constructor),
+                    render_diagnostic_body(
+                        &constructor_unification_payload(unification_failure),
+                        DiagnosticLocale::En,
+                    )
+                )
             } else {
                 String::new()
             };
-            CompileError::at(
-                span.clone(),
-                format!(
-                    "Mismatched 'datatype' specifications: {:?} vs {:?}{}",
-                    sgi1.node, sgi2.node, detail
+            CompileError::type_at(
+                source_span.clone(),
+                DiagnosticPayload::new(
+                    DiagnosticId::SignatureItemDatatypeSpecificationsMismatch,
+                    vec![
+                        format_signature_item(first_item),
+                        format_signature_item(second_item),
+                        detail,
+                    ],
                 ),
             )
         }
-        SgnError::SgnWrongForm(span, sgn1, sgn2) => {
-            CompileError::at(
-                span.clone(),
-                format!("Incompatible signatures: {:?} vs {:?}", sgn1.node, sgn2.node),
-            )
-        }
-        SgnError::UnWhereable(sgn, x) => {
-            CompileError::at(
-                sgn.span.clone(),
-                format!("Unavailable field for 'where': {}", x),
-            )
-        }
-        SgnError::WhereWrongKind(k1, k2, kerr) => {
-            CompileError::at(
-                k1.span.clone(),
-                format!(
-                    "Wrong kind for 'where': have {:?}, need {:?}; {}",
-                    k1.node,
-                    k2.node,
-                    kunify_error_message(kerr)
+        SignatureElaborationError::IncompatibleSignatureShapes(
+            source_span,
+            left_signature,
+            right_signature,
+        ) => CompileError::type_at(
+            source_span.clone(),
+            DiagnosticPayload::new(
+                DiagnosticId::IncompatibleSignatureShapes,
+                vec![
+                    format_signature(left_signature),
+                    format_signature(right_signature),
+                ],
+            ),
+        ),
+        SignatureElaborationError::WhereClauseFieldUnavailable(signature, field_name) => {
+            CompileError::type_at_with_hint(
+                signature.span.clone(),
+                DiagnosticPayload::new(
+                    DiagnosticId::WhereClauseFieldUnavailable,
+                    vec![field_name.clone()],
                 ),
+                DiagnosticId::HintWhereClauseFieldUnavailable,
+                Vec::new(),
             )
         }
-        SgnError::NotIncludable(sgn) => {
-            CompileError::at(sgn.span.clone(), "Invalid signature to 'include'")
+        SignatureElaborationError::WhereClauseKindMismatch(
+            found_kind,
+            expected_kind,
+            kind_failure,
+        ) => CompileError::type_at(
+            found_kind.span.clone(),
+            DiagnosticPayload::new(
+                DiagnosticId::WhereClauseKindMismatch,
+                vec![
+                    format_kind(found_kind),
+                    format_kind(expected_kind),
+                    render_diagnostic_body(
+                        &kind_unification_payload(kind_failure),
+                        DiagnosticLocale::En,
+                    ),
+                ],
+            ),
+        ),
+        SignatureElaborationError::SignatureNotValidForInclude(signature) => {
+            CompileError::type_at_with_hint(
+                signature.span.clone(),
+                DiagnosticPayload::new(DiagnosticId::SignatureNotValidForInclude, Vec::new()),
+                DiagnosticId::HintSignatureNotValidForInclude,
+                Vec::new(),
+            )
         }
-        SgnError::DuplicateCon(span, s) => {
-            CompileError::at(span.clone(), format!("Duplicate constructor {} in signature", s))
+        SignatureElaborationError::DuplicateConstructorNameInSignature(source_span, name) => {
+            CompileError::type_at_with_hint(
+                source_span.clone(),
+                DiagnosticPayload::new(
+                    DiagnosticId::DuplicateConstructorNameInSignature,
+                    vec![name.clone()],
+                ),
+                DiagnosticId::HintDuplicateConstructorNameInSignature,
+                Vec::new(),
+            )
         }
-        SgnError::DuplicateVal(span, s) => {
-            CompileError::at(span.clone(), format!("Duplicate value {} in signature", s))
+        SignatureElaborationError::DuplicateValueNameInSignature(source_span, name) => {
+            CompileError::type_at_with_hint(
+                source_span.clone(),
+                DiagnosticPayload::new(
+                    DiagnosticId::DuplicateValueNameInSignature,
+                    vec![name.clone()],
+                ),
+                DiagnosticId::HintDuplicateValueNameInSignature,
+                Vec::new(),
+            )
         }
-        SgnError::DuplicateSgn(span, s) => {
-            CompileError::at(span.clone(), format!("Duplicate signature {} in signature", s))
+        SignatureElaborationError::DuplicateNestedSignatureName(source_span, name) => {
+            CompileError::type_at_with_hint(
+                source_span.clone(),
+                DiagnosticPayload::new(
+                    DiagnosticId::DuplicateNestedSignatureNameInSignature,
+                    vec![name.clone()],
+                ),
+                DiagnosticId::HintDuplicateNestedSignatureNameInSignature,
+                Vec::new(),
+            )
         }
-        SgnError::DuplicateStr(span, s) => {
-            CompileError::at(span.clone(), format!("Duplicate structure {} in signature", s))
+        SignatureElaborationError::DuplicateStructureNameInSignature(source_span, name) => {
+            CompileError::type_at_with_hint(
+                source_span.clone(),
+                DiagnosticPayload::new(
+                    DiagnosticId::DuplicateStructureNameInSignature,
+                    vec![name.clone()],
+                ),
+                DiagnosticId::HintDuplicateStructureNameInSignature,
+                Vec::new(),
+            )
         }
-        SgnError::NotConstraintsable(sgn) => {
-            CompileError::at(sgn.span.clone(), "Invalid signature for 'open constraints'")
+        SignatureElaborationError::SignatureNotValidForOpenConstraints(signature) => {
+            CompileError::type_at_with_hint(
+                signature.span.clone(),
+                DiagnosticPayload::new(
+                    DiagnosticId::SignatureNotValidForOpenConstraints,
+                    Vec::new(),
+                ),
+                DiagnosticId::HintSignatureNotValidForOpenConstraints,
+                Vec::new(),
+            )
         }
     }
 }
@@ -532,44 +1008,104 @@ pub fn sgn_error(err: &SgnError) -> CompileError {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
-pub enum StrError {
-    UnboundStr(Span, String),
-    NotFunctor(LocatedSignature),
-    FunctorRebind(Span),
-    UnOpenable(LocatedSignature),
-    NotType(Span, LocatedKind, (LocatedKind, LocatedKind, KunifyError)),
-    DuplicateConstructor(String, Span),
-    NotDatatype(Span),
+pub enum StructureElaborationError {
+    UnboundStructureVariable(Span, String),
+    AppliedNonFunctor(LocatedSignature),
+    FunctorRebindingAttempt(Span),
+    StructureNotOpenable(LocatedSignature),
+    ValueTypeKindIsNotType(
+        Span,
+        LocatedKind,
+        (LocatedKind, LocatedKind, KindUnificationFailure),
+    ),
+    DuplicateDatatypeConstructorName(String, Span),
+    ImportingNonDatatypeAsDatatype(Span),
 }
 
-pub fn str_error(err: &StrError) -> CompileError {
-    match err {
-        StrError::UnboundStr(span, s) => {
-            CompileError::at(span.clone(), format!("Unbound structure variable {}", s))
+/// Map structure elaboration errors to [`CompileError`].
+///
+/// # Arguments
+///
+/// * `structure_error` — Error from [`crate::elaborated::elaborate::elab_str`] paths.
+///
+/// # Returns
+///
+/// [`CompileError`] at structure or span carried in `structure_error`.
+pub fn compile_error_from_structure_elaboration_error(
+    structure_error: &StructureElaborationError,
+) -> CompileError {
+    match structure_error {
+        StructureElaborationError::UnboundStructureVariable(source_span, structure_name) => {
+            CompileError::type_at_with_hint(
+                source_span.clone(),
+                DiagnosticPayload::new(
+                    DiagnosticId::UnboundStructureVariable,
+                    vec![structure_name.clone()],
+                ),
+                DiagnosticId::HintUnboundStructureVariable,
+                Vec::new(),
+            )
         }
-        StrError::NotFunctor(sgn) => {
-            CompileError::at(sgn.span.clone(), "Application of non-functor")
+        StructureElaborationError::AppliedNonFunctor(signature) => CompileError::type_at_with_hint(
+            signature.span.clone(),
+            DiagnosticPayload::new(DiagnosticId::AppliedNonFunctor, Vec::new()),
+            DiagnosticId::HintAppliedNonFunctor,
+            Vec::new(),
+        ),
+        StructureElaborationError::FunctorRebindingAttempt(source_span) => {
+            CompileError::type_at_with_hint(
+                source_span.clone(),
+                DiagnosticPayload::new(DiagnosticId::FunctorRebindingAttempt, Vec::new()),
+                DiagnosticId::HintFunctorRebindingAttempt,
+                Vec::new(),
+            )
         }
-        StrError::FunctorRebind(span) => {
-            CompileError::at(span.clone(), "Attempt to rebind functor")
+        StructureElaborationError::StructureNotOpenable(signature) => {
+            CompileError::type_at_with_hint(
+                signature.span.clone(),
+                DiagnosticPayload::new(DiagnosticId::StructureNotOpenable, Vec::new()),
+                DiagnosticId::HintStructureNotOpenable,
+                Vec::new(),
+            )
         }
-        StrError::UnOpenable(sgn) => CompileError::at(sgn.span.clone(), "Un-openable structure"),
-        StrError::NotType(span, k, (k1, k2, ue)) => CompileError::at(
-            span.clone(),
-            format!(
-                "'val' type kind is not 'Type': kind {:?}, subkind 1 {:?}, subkind 2 {:?}; {}",
-                k.node,
-                k1.node,
-                k2.node,
-                kunify_error_message(ue)
+        StructureElaborationError::ValueTypeKindIsNotType(
+            source_span,
+            kind,
+            (subkind_left, subkind_right, kind_failure),
+        ) => CompileError::type_at(
+            source_span.clone(),
+            DiagnosticPayload::new(
+                DiagnosticId::ValTypeKindIsNotType,
+                vec![
+                    format_kind(kind),
+                    format_kind(subkind_left),
+                    format_kind(subkind_right),
+                    render_diagnostic_body(
+                        &kind_unification_payload(kind_failure),
+                        DiagnosticLocale::En,
+                    ),
+                ],
             ),
         ),
-        StrError::DuplicateConstructor(x, span) => CompileError::at(
-            span.clone(),
-            format!("Duplicate datatype constructor {}", x),
+        StructureElaborationError::DuplicateDatatypeConstructorName(
+            constructor_name,
+            source_span,
+        ) => CompileError::type_at_with_hint(
+            source_span.clone(),
+            DiagnosticPayload::new(
+                DiagnosticId::DuplicateDatatypeConstructorNameInGroup,
+                vec![constructor_name.clone()],
+            ),
+            DiagnosticId::HintDuplicateDatatypeConstructorNameInGroup,
+            Vec::new(),
         ),
-        StrError::NotDatatype(span) => {
-            CompileError::at(span.clone(), "Trying to import non-datatype as a datatype")
+        StructureElaborationError::ImportingNonDatatypeAsDatatype(source_span) => {
+            CompileError::type_at_with_hint(
+                source_span.clone(),
+                DiagnosticPayload::new(DiagnosticId::ImportingNonDatatypeAsDatatype, Vec::new()),
+                DiagnosticId::HintImportingNonDatatypeAsDatatype,
+                Vec::new(),
+            )
         }
     }
 }

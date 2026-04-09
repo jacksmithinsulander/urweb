@@ -47,7 +47,15 @@ fn open_create_append(path: &Path) -> std::io::Result<()> {
         .map(|_| ())
 }
 
-/// Open or create an NDB-backed line file. Returns an opaque handle or null on error.
+/// Open or create the line-oriented NDB backing file for `path`.
+///
+/// # Arguments
+///
+/// * `path` — Null-terminated path string; `:memory:` selects a temporary file.
+///
+/// # Returns
+///
+/// Opaque `void *` handle, or null on failure.
 ///
 /// # Safety
 ///
@@ -75,6 +83,14 @@ pub unsafe extern "C" fn urweb_ndb_open(path: *const c_char) -> *mut c_void {
 
 /// Release a handle returned by [`urweb_ndb_open`].
 ///
+/// # Arguments
+///
+/// * `h` — Handle or null.
+///
+/// # Returns
+///
+/// Nothing.
+///
 /// # Safety
 ///
 /// `h` must be null or a pointer previously returned by `urweb_ndb_open` and not yet closed.
@@ -86,7 +102,16 @@ pub unsafe extern "C" fn urweb_ndb_close(h: *mut c_void) {
     drop(Box::from_raw(h as *mut Handle));
 }
 
-/// Append one `UrK=... UrV=...` line for `key`/`val`. Returns 0 on success.
+/// Append one `UrK=... UrV=...` line for `key` and `val`.
+///
+/// # Arguments
+///
+/// * `h` — Open NDB handle.
+/// * `key` / `key_len`, `val` / `val_len` — UTF-8 key and value (no `=`, newlines, or empty).
+///
+/// # Returns
+///
+/// `0` on success, `-1` on invalid input or I/O error.
 ///
 /// # Safety
 ///
@@ -134,7 +159,17 @@ pub unsafe extern "C" fn urweb_ndb_put(
     0
 }
 
-/// Look up the last value for `key`. On success sets `*out` and `*out_len` to a `malloc`ed buffer.
+/// Return the last `UrV=` value recorded for `key` in the line file.
+///
+/// # Arguments
+///
+/// * `h` — Open handle.
+/// * `key` / `key_len` — UTF-8 key.
+/// * `out` / `out_len` — Receives `malloc`’d bytes on success.
+///
+/// # Returns
+///
+/// `0` if found (`free(*out)` required), `1` if missing, `-1` on error.
 ///
 /// # Safety
 ///

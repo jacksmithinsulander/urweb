@@ -7,6 +7,7 @@
 
 use std::collections::HashSet;
 
+use crate::diagnostics::{DiagnosticId, DiagnosticPayload};
 use crate::error_types::ErrorReporter;
 use crate::monomorphized::{Decl, Exp, File, LocExp};
 use crate::primitives::Prim;
@@ -25,9 +26,14 @@ fn collect_constraints(
         Exp::Record(xets) if xets.len() == 1 => {
             let path = format!("{}_{}", table, xets[0].0);
             if rels.contains(&path) {
-                errors.report_at(
+                errors.report_at_with_hint(
                     e.span.clone(),
-                    format!("Duplicate constraint path {}", path),
+                    DiagnosticPayload::new(
+                        DiagnosticId::PathTwoConstraintsSameGeneratedPath,
+                        vec![path],
+                    ),
+                    DiagnosticId::HintPathTwoConstraintsSameGeneratedPath,
+                    vec![],
                 );
             } else {
                 rels.insert(path);
@@ -62,7 +68,15 @@ pub fn check(file: &File, errors: &mut ErrorReporter) {
         match &d.node {
             Decl::Export(_, s, _, _, _, _) => {
                 if funcs.contains(s) {
-                    errors.report_at(span, format!("Duplicate function path {}", s));
+                    errors.report_at_with_hint(
+                        span,
+                        DiagnosticPayload::new(
+                            DiagnosticId::PathTwoExportsSameUrl,
+                            vec![s.clone()],
+                        ),
+                        DiagnosticId::HintPathTwoExportsSameUrl,
+                        vec![],
+                    );
                 } else {
                     funcs.insert(s.clone());
                 }
@@ -70,7 +84,15 @@ pub fn check(file: &File, errors: &mut ErrorReporter) {
             Decl::Table(s, _, pk_exp, ce) => {
                 // Check table itself
                 if rels.contains(s) {
-                    errors.report_at(span.clone(), format!("Duplicate table/sequence path {}", s));
+                    errors.report_at_with_hint(
+                        span.clone(),
+                        DiagnosticPayload::new(
+                            DiagnosticId::PathTableOrSequenceDeclaredTwice,
+                            vec![s.clone()],
+                        ),
+                        DiagnosticId::HintPathTableOrSequenceDeclaredTwice,
+                        vec![],
+                    );
                 } else {
                     rels.insert(s.clone());
                 }
@@ -80,9 +102,14 @@ pub fn check(file: &File, errors: &mut ErrorReporter) {
                 if !pk_empty {
                     let pkey_path = format!("{}_Pkey", s);
                     if rels.contains(&pkey_path) {
-                        errors.report_at(
+                        errors.report_at_with_hint(
                             span.clone(),
-                            format!("Duplicate primary key constraint path {}", pkey_path),
+                            DiagnosticPayload::new(
+                                DiagnosticId::PathPrimaryKeyMetadataCollides,
+                                vec![pkey_path],
+                            ),
+                            DiagnosticId::HintPathPrimaryKeyMetadataCollides,
+                            vec![],
                         );
                     } else {
                         rels.insert(pkey_path);
@@ -93,21 +120,45 @@ pub fn check(file: &File, errors: &mut ErrorReporter) {
             }
             Decl::Sequence(s) => {
                 if rels.contains(s) {
-                    errors.report_at(span, format!("Duplicate table/sequence path {}", s));
+                    errors.report_at_with_hint(
+                        span,
+                        DiagnosticPayload::new(
+                            DiagnosticId::PathTableOrSequenceDeclaredTwice,
+                            vec![s.clone()],
+                        ),
+                        DiagnosticId::HintPathTableOrSequenceDeclaredTwice,
+                        vec![],
+                    );
                 } else {
                     rels.insert(s.clone());
                 }
             }
             Decl::Cookie(s) => {
                 if cookies.contains(s) {
-                    errors.report_at(span, format!("Duplicate cookie path {}", s));
+                    errors.report_at_with_hint(
+                        span,
+                        DiagnosticPayload::new(
+                            DiagnosticId::PathTwoCookiesSharePath,
+                            vec![s.clone()],
+                        ),
+                        DiagnosticId::HintPathTwoCookiesSharePath,
+                        vec![],
+                    );
                 } else {
                     cookies.insert(s.clone());
                 }
             }
             Decl::Style(s) => {
                 if styles.contains(s) {
-                    errors.report_at(span, format!("Duplicate style path {}", s));
+                    errors.report_at_with_hint(
+                        span,
+                        DiagnosticPayload::new(
+                            DiagnosticId::PathTwoStylesSamePath,
+                            vec![s.clone()],
+                        ),
+                        DiagnosticId::HintPathTwoStylesSamePath,
+                        vec![],
+                    );
                 } else {
                     styles.insert(s.clone());
                 }

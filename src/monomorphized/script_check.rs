@@ -8,6 +8,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use crate::diagnostics::{DiagnosticId, DiagnosticPayload};
 use crate::error_types::ErrorReporter;
 use crate::export::ExportKind;
 use crate::monomorphized::{Decl, Exp, File, LocExp, Sidedness};
@@ -254,12 +255,14 @@ pub fn classify(file: File, settings: &Settings, errors: &mut ErrorReporter) -> 
             let side = if push_ids.contains(&n) {
                 if !protocol_persistent && !found_bad {
                     found_bad = true;
-                    errors.report_at(
+                    errors.report_at_with_hint(
                         crate::error_types::Span::dummy(),
-                        format!(
-                            "This program needs server push, but the current protocol ({}) doesn't support that.",
-                            settings.protocol
+                        DiagnosticPayload::new(
+                            DiagnosticId::ScriptPushProtocolNotPersistent,
+                            vec![settings.protocol.clone()],
                         ),
+                        DiagnosticId::HintScriptPushProtocolNotPersistent,
+                        vec![],
                     );
                 }
                 Sidedness::ServerAndPullAndPush

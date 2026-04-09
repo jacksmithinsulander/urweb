@@ -5,11 +5,10 @@
 //!
 //! Mirrors `corify.sml`.
 
-#![allow(dead_code)]
-
 use std::collections::HashMap;
 
 use crate::datatype_kind::DatatypeKind;
+use crate::diagnostics::{DiagnosticId, DiagnosticPayload};
 use crate::error_types::{ErrorReporter, Located, Span};
 use crate::export::{Effect, ExportKind};
 use crate::settings::{PathKind, Settings};
@@ -18,10 +17,6 @@ use crate::{core as core_ir, explicit as expl};
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-fn loc_dummy() -> Span {
-    Span::dummy()
-}
 
 fn do_restify(settings: &Settings, kind: &PathKind, mods: &[String], s: &str) -> String {
     // Strip "wrap_" prefix if present
@@ -53,8 +48,8 @@ struct CorifyCx<'a> {
 }
 
 impl CorifyCx<'_> {
-    fn report_at(&mut self, span: Span, msg: impl Into<String>) {
-        self.errors.report_at(span, msg);
+    fn report_at(&mut self, span: Span, payload: DiagnosticPayload) {
+        self.errors.report_type_at(span, payload);
     }
 }
 
@@ -178,11 +173,6 @@ impl St {
         self.val_ffi_map.get(&explicit_id)
     }
 
-    fn basis_is(mut self, n: usize) -> Self {
-        self.basis = Some(n);
-        self
-    }
-
     fn lookup_basis(&self) -> Option<usize> {
         self.basis
     }
@@ -202,7 +192,10 @@ impl St {
             Flattening::Ffi { .. } => {
                 cx.report_at(
                     report.clone(),
-                    "Corify: internal error — cannot declare a type name inside FFI flattening",
+                    DiagnosticPayload::new(
+                        DiagnosticId::CorifyInternalCannotDeclareTypeInFfi,
+                        vec![],
+                    ),
                 );
             }
         }
@@ -232,7 +225,10 @@ impl St {
             Flattening::Ffi { .. } => {
                 cx.report_at(
                     report.clone(),
-                    "Corify: internal error — cannot bind a value inside FFI flattening",
+                    DiagnosticPayload::new(
+                        DiagnosticId::CorifyInternalCannotBindValueInFfi,
+                        vec![],
+                    ),
                 );
             }
         }
@@ -255,7 +251,10 @@ impl St {
             Flattening::Ffi { .. } => {
                 cx.report_at(
                     report.clone(),
-                    "Corify: internal error — cannot bind a data constructor value inside FFI flattening",
+                    DiagnosticPayload::new(
+                        DiagnosticId::CorifyInternalCannotBindDataConstructorValueInFfi,
+                        vec![],
+                    ),
                 );
             }
         }
@@ -292,7 +291,10 @@ impl St {
             Flattening::Ffi { .. } => {
                 cx.report_at(
                     report.clone(),
-                    "Corify: internal error — cannot bind a data constructor inside FFI flattening",
+                    DiagnosticPayload::new(
+                        DiagnosticId::CorifyInternalCannotBindDataConstructorInFfi,
+                        vec![],
+                    ),
                 );
             }
         }
@@ -347,7 +349,10 @@ impl St {
             None => {
                 cx.report_at(
                     report.clone(),
-                    "Corify: structure nesting stack underflow (compiler internal state)",
+                    DiagnosticPayload::new(
+                        DiagnosticId::CorifyStructureNestingStackUnderflow,
+                        vec![],
+                    ),
                 );
                 Flattening::new_normal(vec![])
             }
@@ -365,7 +370,10 @@ impl St {
             Flattening::Ffi { .. } => {
                 cx.report_at(
                     report.clone(),
-                    "Corify: internal error — cannot bind a nested structure inside FFI flattening",
+                    DiagnosticPayload::new(
+                        DiagnosticId::CorifyInternalCannotBindNestedStructureInFfi,
+                        vec![],
+                    ),
                 );
             }
         }
@@ -405,7 +413,10 @@ impl St {
             Flattening::Ffi { .. } => {
                 cx.report_at(
                     report.clone(),
-                    "Corify: internal error — cannot bind a functor inside FFI flattening",
+                    DiagnosticPayload::new(
+                        DiagnosticId::CorifyInternalCannotBindFunctorInFfi,
+                        vec![],
+                    ),
                 );
             }
         }
@@ -459,7 +470,10 @@ fn walk_modproj_str(st: &St, m: usize, ms: &[String], span: &Span, cx: &mut Cori
         None => {
             cx.report_at(
                 span.clone(),
-                format!("Corify: unknown structure id {m} in module path"),
+                DiagnosticPayload::new(
+                    DiagnosticId::CorifyUnknownStructureIdInPath,
+                    vec![m.to_string()],
+                ),
             );
             St::dummy(st.basis, Flattening::new_normal(vec![]))
         }
@@ -470,7 +484,10 @@ fn walk_modproj_str(st: &St, m: usize, ms: &[String], span: &Span, cx: &mut Cori
             None => {
                 cx.report_at(
                     span.clone(),
-                    format!("Corify: unknown submodule `{seg}` in module path"),
+                    DiagnosticPayload::new(
+                        DiagnosticId::CorifyUnknownSubmoduleInPath,
+                        vec![seg.to_string()],
+                    ),
                 );
                 St::dummy(st.basis, Flattening::new_normal(vec![]))
             }
@@ -554,8 +571,9 @@ fn corify_con(
                 None => {
                     cx.report_at(
                         span.clone(),
-                        format!(
-                            "Corify: unknown type name `{x}` in this module path (check spelling and imports)"
+                        DiagnosticPayload::new(
+                            DiagnosticId::CorifyUnknownTypeNameInModulePath,
+                            vec![x],
                         ),
                     );
                     core_ir::Constructor::Unit
@@ -617,22 +635,28 @@ fn corify_pat_con(
             st.lookup_constructor_by_id_opt(n).unwrap_or_else(|| {
                 cx.report_at(
                     span.clone(),
-                    format!("Corify: unknown pattern constructor id {n}"),
+                    DiagnosticPayload::new(
+                        DiagnosticId::CorifyUnknownPatternConstructorId,
+                        vec![n.to_string()],
+                    ),
                 );
                 recovery_pat_con(cx)
             })
         }
         expl::PatternConstructor::Proj(m1, ms, x) => {
             let sub_st = walk_modproj_str(st, m1, &ms, span, cx);
-            sub_st.lookup_constructor_by_name_opt(&x).unwrap_or_else(|| {
-                cx.report_at(
-                    span.clone(),
-                    format!(
-                        "Corify: unknown data constructor `{x}` in this module path (check spelling)"
-                    ),
-                );
-                recovery_pat_con(cx)
-            })
+            sub_st
+                .lookup_constructor_by_name_opt(&x)
+                .unwrap_or_else(|| {
+                    cx.report_at(
+                        span.clone(),
+                        DiagnosticPayload::new(
+                            DiagnosticId::CorifyUnknownDataConstructorInModulePath,
+                            vec![x],
+                        ),
+                    );
+                    recovery_pat_con(cx)
+                })
         }
     }
 }
@@ -934,8 +958,9 @@ fn corify_exp(
                     let bogus = alloc(cx.counter);
                     cx.report_at(
                         span.clone(),
-                        format!(
-                            "Corify: `{x}` is not a value or data constructor at this module path"
+                        DiagnosticPayload::new(
+                            DiagnosticId::CorifyNotValueOrConstructorAtPath,
+                            vec![x],
                         ),
                     );
                     return Located {
@@ -1054,6 +1079,45 @@ fn classify_datatype_core(
         DatatypeKind::Option
     } else {
         DatatypeKind::Default
+    }
+}
+
+/// Deferred page export: wrapper has been added to explicit AST; core `Export` is built after `corify_str` binds it (static dispatch, no `dyn` callback).
+struct PendingPageExport {
+    /// Module id for `ModProj` to the wrapper `val`.
+    module_entry: usize,
+    wrap_name: String,
+    span: Span,
+    export_kind: ExportKind,
+}
+
+/// Build a core `Declaration::Export` for [`PendingPageExport`] using the freshly corified wrapper name.
+fn corify_pending_page_export(
+    st: &St,
+    lcx: &mut CorifyCx<'_>,
+    pending: &PendingPageExport,
+) -> core_ir::LocatedDeclaration {
+    let e = expl::LocatedExpression {
+        node: expl::Expression::ModProj(pending.module_entry, vec![], pending.wrap_name.clone()),
+        span: pending.span.clone(),
+    };
+    let ce = corify_exp(st, e, lcx);
+    match ce.node {
+        core_ir::Expression::Named(n) => Located {
+            node: core_ir::Declaration::Export(pending.export_kind, n, false),
+            span: pending.span.clone(),
+        },
+        _ => {
+            lcx.report_at(
+                pending.span.clone(),
+                DiagnosticPayload::new(DiagnosticId::CorifyExportDidNotCorifyToGlobalName, vec![]),
+            );
+            let n = alloc(lcx.counter);
+            Located {
+                node: core_ir::Declaration::Export(pending.export_kind, n, false),
+                span: pending.span.clone(),
+            }
+        }
     }
 }
 
@@ -1266,7 +1330,10 @@ fn corify_decl(
                     .unwrap_or_else(|| {
                         cfx.report_at(
                             span.clone(),
-                            format!("Corify: unknown imported data constructor `{cx}`"),
+                            DiagnosticPayload::new(
+                                DiagnosticId::CorifyUnknownImportedDataConstructor,
+                                vec![cx.clone()],
+                            ),
                         );
                         recovery_pat_con(cfx)
                     });
@@ -1333,7 +1400,10 @@ fn corify_decl(
             } else {
                 cfx.report_at(
                     span.clone(),
-                    "Corify: internal error — val binding expected to be Named here",
+                    DiagnosticPayload::new(
+                        DiagnosticId::CorifyInternalValBindingExpectedNamed,
+                        vec![],
+                    ),
                 );
                 return vec![];
             };
@@ -1438,8 +1508,9 @@ fn corify_decl(
                 } else {
                     cfx.report_at(
                         span.clone(),
-                        format!(
-                            "Corify: `{x_prime}` is not a submodule or functor visible in this structure"
+                        DiagnosticPayload::new(
+                            DiagnosticId::CorifyNotSubmoduleOrFunctor,
+                            vec![x_prime],
                         ),
                     );
                 }
@@ -1459,7 +1530,10 @@ fn corify_decl(
                 } else {
                     cfx.report_at(
                         span.clone(),
-                        format!("Corify: unknown structure variable id {n_prime}"),
+                        DiagnosticPayload::new(
+                            DiagnosticId::CorifyUnknownStructureVariableId,
+                            vec![n_prime.to_string()],
+                        ),
                     );
                 }
             }
@@ -1734,7 +1808,10 @@ fn corify_decl(
                 }
                 ds
             } else {
-                cfx.report_at(span, "Non-const signature for FFI structure");
+                cfx.report_at(
+                    span,
+                    DiagnosticPayload::new(DiagnosticId::CorifyNonConstFfiSignature, vec![]),
+                );
                 vec![]
             }
         }
@@ -1758,29 +1835,29 @@ fn corify_decl(
 
                 match pathify(&str.node) {
                     None => {
-                        cfx.report_at(span, "Structure is too fancy to export");
+                        cfx.report_at(
+                            span,
+                            DiagnosticPayload::new(
+                                DiagnosticId::CorifyStructureTooFancyToExport,
+                                vec![],
+                            ),
+                        );
                         vec![]
                     }
                     Some((m, ms)) => {
                         let Some(basis_n) = st.lookup_basis() else {
                             cfx.report_at(
                                 span.clone(),
-                                "Corify: Basis FFI module is missing; cannot compile 'export' of a page",
+                                DiagnosticPayload::new(
+                                    DiagnosticId::CorifyBasisMissingForExport,
+                                    vec![],
+                                ),
                             );
                             return vec![];
                         };
 
                         let mut wrap_decls: Vec<expl::LocatedDeclaration> = Vec::new();
-                        let mut export_fns: Vec<
-                            Box<
-                                dyn Fn(
-                                    &St,
-                                    &mut ErrorReporter,
-                                    &mut usize,
-                                )
-                                    -> core_ir::LocatedDeclaration,
-                            >,
-                        > = Vec::new();
+                        let mut pending_exports: Vec<PendingPageExport> = Vec::new();
 
                         for sgi in sgis {
                             if let expl::SignatureItem::Val(s, _, t) = sgi.node {
@@ -1972,47 +2049,12 @@ fn corify_decl(
                                         span: span.clone(),
                                     });
 
-                                    let _s_clone = s.clone();
-                                    let wrap_name_clone = wrap_name.clone();
-                                    let span_clone = span.clone();
-                                    export_fns.push(Box::new(
-                                        move |st2: &St, errs: &mut ErrorReporter, ctr: &mut usize| {
-                                            let mut lcx = CorifyCx {
-                                                errors: errs,
-                                                counter: ctr,
-                                            };
-                                            let e = expl::LocatedExpression {
-                                                node: expl::Expression::ModProj(
-                                                    en,
-                                                    vec![],
-                                                    wrap_name_clone.clone(),
-                                                ),
-                                                span: span_clone.clone(),
-                                            };
-                                            let ce = corify_exp(st2, e, &mut lcx);
-                                            match ce.node {
-                                                core_ir::Expression::Named(n) => Located {
-                                                    node: core_ir::Declaration::Export(
-                                                        exp_kind, n, false,
-                                                    ),
-                                                    span: span_clone.clone(),
-                                                },
-                                                _ => {
-                                                    lcx.report_at(
-                                                        span_clone.clone(),
-                                                        "Corify: exported value did not corify to a global name (skipping with a placeholder id)",
-                                                    );
-                                                    let n = alloc(lcx.counter);
-                                                    Located {
-                                                        node: core_ir::Declaration::Export(
-                                                            exp_kind, n, false,
-                                                        ),
-                                                        span: span_clone.clone(),
-                                                    }
-                                                }
-                                            }
-                                        },
-                                    ));
+                                    pending_exports.push(PendingPageExport {
+                                        module_entry: en,
+                                        wrap_name,
+                                        span: span.clone(),
+                                        export_kind: exp_kind,
+                                    });
                                 }
                             }
                         }
@@ -2029,9 +2071,9 @@ fn corify_decl(
                         let (ds, inner) = corify_str(&wrapper_mods, wrapper_str, st, cfx, settings);
                         st.bind_str("wrapper", en, &inner, cfx, &span);
 
-                        let export_ds: Vec<core_ir::LocatedDeclaration> = export_fns
+                        let export_ds: Vec<core_ir::LocatedDeclaration> = pending_exports
                             .iter()
-                            .map(|f| f(st, cfx.errors, cfx.counter))
+                            .map(|pending| corify_pending_page_export(&*st, cfx, pending))
                             .collect();
 
                         let mut out = ds;
@@ -2040,7 +2082,10 @@ fn corify_decl(
                     }
                 }
             } else {
-                cfx.report_at(span, "Non-const signature for 'export'");
+                cfx.report_at(
+                    span,
+                    DiagnosticPayload::new(DiagnosticId::CorifyNonConstSignatureForExport, vec![]),
+                );
                 vec![]
             }
         }
@@ -2160,7 +2205,10 @@ fn corify_decl(
                     span,
                 }],
                 Some(CoreVal::Ffi(_, _)) | None => {
-                    cfx.report_at(span, "Wrong type of identifier for 'onError'");
+                    cfx.report_at(
+                        span,
+                        DiagnosticPayload::new(DiagnosticId::CorifyWrongOnErrorIdentifier, vec![]),
+                    );
                     vec![]
                 }
             }
@@ -2173,7 +2221,7 @@ fn corify_decl(
                 _ => {
                     cfx.report_at(
                         span.clone(),
-                        "Used 'ffi' declaration beneath module top level",
+                        DiagnosticPayload::new(DiagnosticId::CorifyFfiNotAtModuleTopLevel, vec![]),
                     );
                     String::new()
                 }
@@ -2560,7 +2608,10 @@ fn corify_str(
                 None => {
                     cfx.report_at(
                         str_span.clone(),
-                        format!("Corify: unknown structure id {n}"),
+                        DiagnosticPayload::new(
+                            DiagnosticId::CorifyUnknownStructureId,
+                            vec![n.to_string()],
+                        ),
                     );
                     St::dummy(st.basis, Flattening::new_normal(vec![]))
                 }
@@ -2574,7 +2625,10 @@ fn corify_str(
                 None => {
                     cfx.report_at(
                         str_span.clone(),
-                        format!("Corify: unknown submodule `{x}` in structure projection"),
+                        DiagnosticPayload::new(
+                            DiagnosticId::CorifyUnknownSubmoduleInProjection,
+                            vec![x],
+                        ),
                     );
                     St::dummy(inner.basis, Flattening::new_normal(vec![]))
                 }
@@ -2584,7 +2638,10 @@ fn corify_str(
         expl::Structure::Fun(_, _, _, _, _) => {
             cfx.report_at(
                 str_span,
-                "Corify: nested functor definitions inside functor applications are not supported",
+                DiagnosticPayload::new(
+                    DiagnosticId::CorifyNestedFunctorInApplicationUnsupported,
+                    vec![],
+                ),
             );
             (vec![], St::dummy(st.basis, Flattening::new_normal(vec![])))
         }
@@ -2625,7 +2682,10 @@ fn corify_str(
             let Some((xa, na, body)) = unwind_functor(&str1.node, st, cfx, &str_span) else {
                 cfx.report_at(
                     str_span.clone(),
-                    "Corify: functor application is not in a supported form (expected path to a functor)",
+                    DiagnosticPayload::new(
+                        DiagnosticId::CorifyFunctorApplicationUnsupportedForm,
+                        vec![],
+                    ),
                 );
                 return (vec![], St::dummy(st.basis, Flattening::new_normal(vec![])));
             };
@@ -2716,7 +2776,7 @@ pub fn corify(
         out.extend(ds);
     }
 
-    if cfx.errors.has_errors() {
+    if cfx.errors.has_hard_errors() {
         None
     } else {
         Some(out)
@@ -2733,6 +2793,11 @@ mod tests {
     use crate::core as core_ir;
     use crate::core::Constructor;
     use crate::error_types::Located;
+    use crate::error_types::Span;
+
+    fn loc_dummy() -> Span {
+        Span::dummy()
+    }
 
     #[test]
     fn do_restify_empty_mods_identity() {

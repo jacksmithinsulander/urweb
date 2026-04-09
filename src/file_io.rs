@@ -1,20 +1,25 @@
-//! File I/O and path resolution.
+//! File input/output and operating-system path handling for the compiler driver.
 //!
-//! - **open_text** / **open_binary**: read files, update most_recent_mod_time
-//! - **resolve**: resolve path relative to base
-//! - **most_recent_mod_time** / **ModTime**: for incremental builds
+//! Unicode UTF-8 text reads go through [`crate::file_io::open_text`]; raw bytes through [`crate::file_io::open_binary`].
+//! [`crate::file_io::ModTime`] records the latest file modification time observed for incremental rebuilds.
+//!
+//! - [`crate::file_io::open_text`] / [`crate::file_io::open_binary`]: read files and refresh the global modification-time tracker
+//! - [`crate::file_io::resolve`]: resolve a relative name against a base directory
+//! - [`crate::file_io::most_recent_mod_time`] / [`crate::file_io::ModTime`]: clock used for incremental decisions
 
+use crate::cli_common::{cli_diagnostic_text, diagnostic_locale_for_cli};
 use crate::compiler_diagnostics::lock_for_compile;
-use anyhow::Context;
+use crate::diagnostics::DiagnosticId;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-/// Latest modification time tracked by this module (`UNIX_EPOCH` if none yet).
+/// Newtype around the standard library [`SystemTime`] with [`Default`] set to the Unix epoch.
 ///
-/// Newtype so `Default` exists for cargo-mutants (unlike `SystemTime` itself).
+/// Lets mutation-testing tools use `Default::default()`; orphan rules block implementing [`Default`] for [`SystemTime`] directly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ModTime(pub SystemTime);
 
+/// Default mod-time is Unix epoch (no file read yet).
 impl Default for ModTime {
     fn default() -> Self {
         ModTime(SystemTime::UNIX_EPOCH)
@@ -28,11 +33,14 @@ static MOST_RECENT_MOD: std::sync::Mutex<Option<SystemTime>> = std::sync::Mutex:
 /// Number of times the mod-time tracker was updated (for tests; > vs >= is observable here).
 static UPDATE_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
+/// Update the process-global modification time when `path`’s metadata reports a strictly newer timestamp.
 fn update_mod_time(path: &Path) {
+    // Read filesystem metadata; ignore missing files.
     if let Ok(meta) = std::fs::metadata(path) {
         if let Ok(mtime) = meta.modified() {
             let mut guard =
                 lock_for_compile(&MOST_RECENT_MOD, "file I/O modification time tracker");
+            // Only bump when strictly greater so reopening the same file does not inflate counts.
             if guard.is_none_or(|prev| mtime > prev) {
                 *guard = Some(mtime);
                 UPDATE_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -41,47 +49,113 @@ fn update_mod_time(path: &Path) {
     }
 }
 
-/// Returns how many times the mod-time tracker was updated (tests only).
+/// Test-only: number of times the modification-time tracker recorded a strictly newer file timestamp.
+///
+/// # Returns
+///
+/// The number of successful timestamp updates since the last reset.
 pub(crate) fn __update_count_for_test() -> usize {
-    UPDATE_COUNT.load(std::sync::atomic::Ordering::Relaxed)
+    UPDATE_COUNT.load(std::sync::atomic::Ordering::Relaxed) // Atomic read of bump counter.
 }
 
-/// Resets mod-time state for tests.
+/// Test-only: reset the global modification-time state and bump counter (for `#[cfg(test)]` callers).
+///
+/// # Returns
+///
+/// Nothing.
 pub(crate) fn __reset_for_test() {
-    *lock_for_compile(&MOST_RECENT_MOD, "file I/O modification time tracker") = None;
-    UPDATE_COUNT.store(0, std::sync::atomic::Ordering::Relaxed);
+    *lock_for_compile(&MOST_RECENT_MOD, "file I/O modification time tracker") = None; // Clear last mtime.
+    UPDATE_COUNT.store(0, std::sync::atomic::Ordering::Relaxed); // Reset bump counter.
 }
 
-/// Returns the most recent modification time seen, or `UNIX_EPOCH` if none.
+/// Latest modification time seen through [`crate::file_io::open_text`] or [`crate::file_io::open_binary`], or the Unix epoch if none.
+///
+/// # Returns
+///
+/// [`ModTime`] wrapping the stored [`SystemTime`], or the Unix epoch when no file has been read yet.
 pub fn most_recent_mod_time() -> ModTime {
     ModTime(
         lock_for_compile(&MOST_RECENT_MOD, "file I/O modification time tracker")
-            .unwrap_or(SystemTime::UNIX_EPOCH),
+            .unwrap_or(SystemTime::UNIX_EPOCH), // `MutexGuard<Option<_>>` derefs to `Option`.
     )
 }
 
-/// Open a text file for reading, updating the mod-time tracker.
+/// Read a file as Unicode UTF-8 and update the modification-time tracker.
+///
+/// # Arguments
+///
+/// * `path` — Filesystem path; any `T: AsRef<Path>`.
+///
+/// # Returns
+///
+/// The full decoded text on success.
+///
+/// # Errors
+///
+/// Input/output failures from the kernel or invalid UTF-8 (message from the diagnostic catalog).
 pub fn open_text(path: impl AsRef<Path>) -> anyhow::Result<String> {
-    let path = path.as_ref();
-    update_mod_time(path);
-    std::fs::read_to_string(path).with_context(|| format!("opening {}", path.display()))
+    let path = path.as_ref(); // Borrow as `Path`.
+    update_mod_time(path); // Record mtime for incremental builds.
+    let locale = diagnostic_locale_for_cli(None); // Same locale selection as other driver I/O.
+    std::fs::read_to_string(path).map_err(|read_error| {
+        anyhow::anyhow!(
+            "{}",
+            cli_diagnostic_text(
+                DiagnosticId::CliFileReadFailed,
+                vec![path.display().to_string(), read_error.to_string()],
+                locale,
+            )
+        )
+    }) // Utf-8 read.
 }
 
-/// Open a binary file for reading, updating the mod-time tracker.
+/// Read a file as raw bytes and update the modification-time tracker (no Unicode validation).
+///
+/// # Arguments
+///
+/// * `path` — Filesystem path; any `T: AsRef<Path>`.
+///
+/// # Returns
+///
+/// The file contents as a byte vector on success.
+///
+/// # Errors
+///
+/// Input/output failures from reading the file (message from the diagnostic catalog).
 pub fn open_binary(path: impl AsRef<Path>) -> anyhow::Result<Vec<u8>> {
     let path = path.as_ref();
     update_mod_time(path);
-    std::fs::read(path).with_context(|| format!("opening {}", path.display()))
+    let locale = diagnostic_locale_for_cli(None);
+    std::fs::read(path).map_err(|read_error| {
+        anyhow::anyhow!(
+            "{}",
+            cli_diagnostic_text(
+                DiagnosticId::CliFileReadFailed,
+                vec![path.display().to_string(), read_error.to_string()],
+                locale,
+            )
+        )
+    })
 }
 
-/// Resolve a filename relative to a base directory, with fallback to the
-/// filename itself (mirrors `OS.Path.concat` with `handle Path`).
+/// Join `name` under `base`, unless `name` is already an absolute path (platform-specific).
+///
+/// Matches Standard ML `OS.Path.concat` behaviour from the MLton reference compiler.
+///
+/// # Arguments
+///
+/// * `base` — Directory or prefix path (`AsRef<Path>`).
+/// * `name` — Relative or absolute path string.
+///
+/// # Returns
+///
+/// [`PathBuf`] for `name` alone if it is absolute; otherwise `base.join(name)`.
 pub fn resolve(base: impl AsRef<Path>, name: &str) -> PathBuf {
     let base = base.as_ref();
     if Path::new(name).is_absolute() {
-        PathBuf::from(name)
+        PathBuf::from(name) // Absolute paths ignore `base`.
     } else {
-        base.join(name)
+        base.join(name) // Relative paths join under `base`.
     }
 }
 

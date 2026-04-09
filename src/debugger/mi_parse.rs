@@ -43,7 +43,10 @@ pub fn classify_mi_line(line: &str) -> Option<MiRecord<'_>> {
     }
     let bytes = line.as_bytes();
     let mut i = 0usize;
-    while i < bytes.len() && bytes[i].is_ascii_digit() {
+    for _ in 0..bytes.len() {
+        if i >= bytes.len() || !bytes[i].is_ascii_digit() {
+            break;
+        }
         i += 1;
     }
     let (token_opt, rest) = if i > 0
@@ -128,7 +131,11 @@ pub fn mi_get_str<'a>(payload: &'a str, key: &str) -> Option<&'a str> {
 pub fn mi_extract_frames(stack_list_payload: &str) -> Vec<String> {
     let mut v = Vec::new();
     let mut rest = stack_list_payload;
-    while let Some(pos) = rest.find("frame={") {
+    let scan_budget = stack_list_payload.len().saturating_add(1);
+    for _ in 0..scan_budget {
+        let Some(pos) = rest.find("frame={") else {
+            break;
+        };
         let from = pos + "frame=".len();
         let inner = &rest[from..];
         if let Some(end) = brace_close_index(inner) {
@@ -168,7 +175,11 @@ fn brace_close_index(s: &str) -> Option<usize> {
 pub fn mi_extract_var_children(children_payload: &str) -> Vec<String> {
     let mut v = Vec::new();
     let mut rest = children_payload;
-    while let Some(pos) = rest.find("child={") {
+    let scan_budget = children_payload.len().saturating_add(1);
+    for _ in 0..scan_budget {
+        let Some(pos) = rest.find("child={") else {
+            break;
+        };
         let from = pos + "child=".len();
         let inner = &rest[from..];
         if let Some(end) = brace_close_index(inner) {
@@ -185,7 +196,11 @@ pub fn mi_extract_var_children(children_payload: &str) -> Vec<String> {
 pub fn mi_extract_exec_source_file_paths(payload: &str) -> Vec<String> {
     let mut v = Vec::new();
     let mut rest = payload;
-    while let Some(pos) = rest.find("{file=\"") {
+    let scan_budget = payload.len().saturating_add(1);
+    for _ in 0..scan_budget {
+        let Some(pos) = rest.find("{file=\"") else {
+            break;
+        };
         let inner = &rest[pos..];
         if let Some(end) = brace_close_index(inner) {
             let blob = &inner[..=end];
@@ -208,9 +223,12 @@ pub fn mi_extract_exec_source_file_paths(payload: &str) -> Vec<String> {
 pub fn mi_extract_shared_libraries(payload: &str) -> Vec<(String, String)> {
     let mut v = Vec::new();
     let mut rest = payload;
-    let mut seq = 0u32;
-    while let Some(pos) = rest.find("target-name=\"") {
-        seq += 1;
+    let scan_budget = payload.len().saturating_add(1);
+    for (k, _) in (0..scan_budget).enumerate() {
+        let seq = (k + 1) as u32;
+        let Some(pos) = rest.find("target-name=\"") else {
+            break;
+        };
         let path_start = pos + "target-name=\"".len();
         let Some(path_end_rel) = rest[path_start..].find('"') else {
             break;
@@ -241,7 +259,11 @@ pub fn mi_extract_shared_libraries(payload: &str) -> Vec<(String, String)> {
 pub fn mi_extract_asm_insns(payload: &str) -> Vec<(String, String)> {
     let mut v = Vec::new();
     let mut rest = payload;
-    while let Some(pos) = rest.find("{address=\"") {
+    let scan_budget = payload.len().saturating_add(1);
+    for _ in 0..scan_budget {
+        let Some(pos) = rest.find("{address=\"") else {
+            break;
+        };
         let inner = &rest[pos..];
         if let Some(end) = brace_close_index(inner) {
             let blob = &inner[..=end];

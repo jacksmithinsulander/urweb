@@ -896,7 +896,7 @@ static void uw_try_reconnecting(uw_context ctx) {
 
 void uw_try_reconnecting_and_restarting(uw_context ctx) {
   uw_try_reconnecting(ctx);
-  uw_error(ctx, BOUNDED_RETRY, "Restarting transaction after fixing database connection");
+  uw_error(ctx, BOUNDED_RETRY, "Ur/Web / SQL: database connection was recovered; retrying this transaction from the start.");
 }
 
 void uw_ensure_transaction(uw_context ctx) {
@@ -905,7 +905,7 @@ void uw_ensure_transaction(uw_context ctx) {
       uw_try_reconnecting(ctx);
 
       if (ctx->app->db_begin(ctx, ctx->could_write_db))
-        uw_error(ctx, FATAL, "Error running SQL BEGIN");
+        uw_error(ctx, FATAL, "Ur/Web / SQL: could not start a database transaction (BEGIN failed after reconnect). Check the database and connection settings.");
     }
 
     ctx->transaction_started = 1;
@@ -922,7 +922,7 @@ uw_Basis_client uw_Basis_self(uw_context ctx) {
 
 void uw_pop_cleanup(uw_context ctx) {
   if (ctx->cleanup_front == ctx->cleanup)
-    uw_error(ctx, FATAL, "Attempt to pop from empty cleanup action stack");
+    uw_error(ctx, FATAL, "Ur/Web runtime: internal error — cleanup stack was empty (please report this as a compiler/runtime bug).");
 
   --ctx->cleanup_front;
   ctx->cleanup_front->func(ctx->cleanup_front->arg);

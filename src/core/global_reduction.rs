@@ -16,8 +16,6 @@
 //!
 //! Mirrors `reduce.sml`.
 
-#![allow(dead_code)]
-
 use std::collections::{BTreeSet, HashMap};
 
 use crate::core::local_reduction::{shift_con, shift_exp};
@@ -1688,11 +1686,11 @@ fn match_pat(
             for (field_name, sub_pat, _) in xps {
                 // Find matching field in record expression
                 match xes.iter().find(|(n, _, _)| {
-                    if let Constructor::Name(s) = &n.node {
-                        s.as_str() == field_name.as_str()
-                    } else {
-                        false
-                    }
+                    matches!(
+                        &n.node,
+                        Constructor::Name(record_label)
+                            if record_label.as_str() == field_name.as_str()
+                    )
                 }) {
                     None => return PatMatch::No,
                     Some((_, sub_exp, _)) => {

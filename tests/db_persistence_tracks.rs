@@ -1,10 +1,10 @@
 //! `ur.toml` `[build].db` must match the resolved project `dbms`.
 
+mod common;
+
 use std::fs;
 use std::sync::Mutex;
 use tempfile::tempdir;
-use ur::compiler;
-use ur::settings::Settings;
 
 static CWD_LOCK: Mutex<()> = Mutex::new(());
 
@@ -21,8 +21,7 @@ fn ur_toml_db_mismatch_with_urp_errors() {
     fs::write(dir_path.join("app.urp"), "dbms postgres\ndatabase x\n\nm\n").unwrap();
     fs::write(dir_path.join("m.ur"), "val x = 1").unwrap();
     std::env::set_current_dir(dir_path).unwrap();
-    let err =
-        compiler::compile_to_outputs(&dir_path.join("app.urp"), &mut Settings::new()).unwrap_err();
+    let err = common::compile_to_outputs_bounded(dir_path.join("app.urp"), |_| {}).unwrap_err();
     let msg = format!("{err:#}");
     assert!(
         msg.contains("ur.toml") && msg.contains("tigerbeetle") && msg.contains("postgres"),

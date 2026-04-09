@@ -6,12 +6,12 @@
 //!
 //! The public entry point is `js_compile`.
 
-#![allow(dead_code)]
-
+use std::cell::Cell;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::datatype_kind::DatatypeKind;
-use crate::error_types::{Located, Span};
+use crate::diagnostics::{DiagnosticId, DiagnosticPayload};
+use crate::error_types::{CompileError, ErrorReporter, Located, Span};
 use crate::export::Effect;
 use crate::monomorphized::{
     CaseMeta, DatatypeDecl, Decl, Exp, JavaScriptMode, LocExp, LocPat, LocTyp, Pat, PatCon, Typ,
@@ -23,8 +23,38 @@ use crate::settings::{FailureMode, Settings};
 // CantEmbed — emitted when a type can't be serialised to JS
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone)]
-struct CantEmbed(LocTyp);
+#[derive(Debug, Clone, Copy)]
+struct CantEmbed;
+
+/// Caps nested [`js_e`] calls so a pathological Mono expression cannot exhaust the stack.
+const MAX_JS_E_RECURSION_DEPTH: usize = 500_000;
+
+thread_local! {
+    static JS_E_RECURSION_DEPTH: Cell<usize> = const { Cell::new(0) };
+}
+
+/// Increment [`JS_E_RECURSION_DEPTH`] on entry; decrement on drop (even on `return`/`?`).
+struct JsERecursionGuard;
+
+impl JsERecursionGuard {
+    /// Enters one nested [`js_e`] frame; panics when [`MAX_JS_E_RECURSION_DEPTH`] is exceeded.
+    fn enter() -> Self {
+        JS_E_RECURSION_DEPTH.with(|depth_cell| {
+            let depth = depth_cell.get();
+            if depth >= MAX_JS_E_RECURSION_DEPTH {
+                panic!("js_e exceeded recursion depth {MAX_JS_E_RECURSION_DEPTH}");
+            }
+            depth_cell.set(depth + 1);
+        });
+        Self
+    }
+}
+
+impl Drop for JsERecursionGuard {
+    fn drop(&mut self) {
+        JS_E_RECURSION_DEPTH.with(|depth_cell| depth_cell.set(depth_cell.get().saturating_sub(1)));
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Mutable state threaded through the pass
@@ -104,14 +134,6 @@ fn fmt_typ(t: &LocTyp) -> String {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Helper: build a dummy LocExp / LocTyp at a given span
-// ---------------------------------------------------------------------------
-
-fn dummy_span() -> Span {
-    Span::dummy()
-}
-
 fn str_typ(span: &Span) -> LocTyp {
     Located::new(Typ::Ffi("Basis".into(), "string".into()), span.clone())
 }
@@ -123,18 +145,18 @@ fn str_lit(span: &Span, s: &str) -> LocExp {
     )
 }
 
-fn strcat_exp(span: &Span, es: Vec<LocExp>) -> LocExp {
+fn strcat_exp(errors: &mut ErrorReporter, span: &Span, es: Vec<LocExp>) -> LocExp {
     match es.len() {
         0 => str_lit(span, ""),
         1 => match es.into_iter().next() {
             Some(e) => e,
             None => {
-                eprintln!(
-                    "{}",
-                    crate::compiler_diagnostics::internal_compiler_error(
-                        "jscomp::strcat_exp",
-                        "length was 1 but iterator was empty",
-                    )
+                errors.report_at(
+                    span.clone(),
+                    DiagnosticPayload::new(
+                        DiagnosticId::JscompInternalStrcatInvariant,
+                        vec!["length was 1 but iterator was empty".to_string()],
+                    ),
                 );
                 str_lit(span, "")
             }
@@ -144,12 +166,12 @@ fn strcat_exp(span: &Span, es: Vec<LocExp>) -> LocExp {
             let mut acc = match iter.next() {
                 Some(e) => e,
                 None => {
-                    eprintln!(
-                        "{}",
-                        crate::compiler_diagnostics::internal_compiler_error(
-                            "jscomp::strcat_exp",
-                            "non-empty strcat list had empty iterator",
-                        )
+                    errors.report_at(
+                        span.clone(),
+                        DiagnosticPayload::new(
+                            DiagnosticId::JscompInternalStrcatInvariant,
+                            vec!["non-empty strcat list had empty iterator".to_string()],
+                        ),
                     );
                     return str_lit(span, "");
                 }
@@ -194,13 +216,6 @@ fn make_abs(span: &Span, x: &str, dom: LocTyp, ran: LocTyp, body: LocExp) -> Loc
 
 fn make_case(span: &Span, disc: LocExp, arms: Vec<(LocPat, LocExp)>, meta: CaseMeta) -> LocExp {
     Located::new(Exp::Case(Box::new(disc), arms, meta), span.clone())
-}
-
-fn make_let(span: &Span, x: &str, t: LocTyp, e1: LocExp, e2: LocExp) -> LocExp {
-    Located::new(
-        Exp::Let(x.to_string(), t, Box::new(e1), Box::new(e2)),
-        span.clone(),
-    )
 }
 
 fn pat_none(span: &Span, t: LocTyp) -> LocPat {
@@ -323,13 +338,14 @@ fn max_name_exp(e: &Exp, mx: &mut usize) {
 // ---------------------------------------------------------------------------
 
 /// Serialise expression `e` of type `t` into a Mono expression that produces
-/// a JavaScript string.  Returns `Err(CantEmbed(t))` for unsupported types.
+/// a JavaScript string.  Returns `Err(CantEmbed)` for unsupported types.
 fn quote_exp(
     span: &Span,
     t: &LocTyp,
     e: LocExp,
     st: &mut State,
     _settings: &Settings,
+    errors: &mut ErrorReporter,
 ) -> Result<LocExp, CantEmbed> {
     let s = span;
     match &t.node.clone() {
@@ -343,26 +359,26 @@ fn quote_exp(
         Typ::Record(fields) if fields.len() == 1 => {
             let (x, ft) = &fields[0].clone();
             let inner_e = field(s, e.clone(), x);
-            let quoted = quote_exp(s, ft, inner_e, st, _settings)?;
+            let quoted = quote_exp(s, ft, inner_e, st, _settings, errors)?;
             let parts = vec![str_lit(s, &format!("{{_{x}:")), quoted, str_lit(s, "}")];
-            Ok(strcat_exp(s, parts))
+            Ok(strcat_exp(errors, s, parts))
         }
 
         Typ::Record(fields) => {
             let fields = fields.clone();
             let (first_x, first_t) = &fields[0];
             let first_e = field(s, e.clone(), first_x);
-            let first_q = quote_exp(s, first_t, first_e, st, _settings)?;
+            let first_q = quote_exp(s, first_t, first_e, st, _settings, errors)?;
 
             let mut parts = vec![str_lit(s, &format!("{{_{first_x}:")), first_q];
             for (x, ft) in &fields[1..] {
                 let fe = field(s, e.clone(), x);
-                let fq = quote_exp(s, ft, fe, st, _settings)?;
+                let fq = quote_exp(s, ft, fe, st, _settings, errors)?;
                 parts.push(str_lit(s, &format!(",_{x}:")));
                 parts.push(fq);
             }
             parts.push(str_lit(s, "}"));
-            Ok(strcat_exp(s, parts))
+            Ok(strcat_exp(errors, s, parts))
         }
 
         Typ::Ffi(m, f) if m == "Basis" && f == "string" => {
@@ -440,13 +456,12 @@ fn quote_exp(
         Typ::Option(inner) => {
             let inner = (**inner).clone();
             // quoteExp for ERel(0) under a PSome binder
-            let inner_e = quote_exp(s, &inner, rel(s, 0), st, _settings)?;
+            let inner_e = quote_exp(s, &inner, rel(s, 0), st, _settings, errors)?;
 
             let nullable = is_nullable(&inner);
-            let some_body = if nullable {
-                strcat_exp(s, vec![str_lit(s, "{v:"), inner_e, str_lit(s, "}")])
-            } else {
-                inner_e
+            let some_body = match nullable {
+                true => strcat_exp(errors, s, vec![str_lit(s, "{v:"), inner_e, str_lit(s, "}")]),
+                false => inner_e,
             };
 
             let t_opt = t.clone();
@@ -486,7 +501,7 @@ fn quote_exp(
 
             // quote field "1" of ERel(0)
             let e_field1 = field(s, rel(s, 0), "1");
-            let e_prime = quote_exp(s, &inner, e_field1, st, _settings)?;
+            let e_prime = quote_exp(s, &inner, e_field1, st, _settings, errors)?;
 
             // The body: case ERel(0) of
             //   PNone rt => "null"
@@ -494,6 +509,7 @@ fn quote_exp(
             //     "{_1:" ^ e' ^ ",_2:" ^ (ENamed n')(EField(ERel 0, "2")) ^ "}"
             let none_arm = (pat_none(s, rt.clone()), str_lit(s, "null"));
             let some_body = strcat_exp(
+                errors,
                 s,
                 vec![
                     str_lit(s, "{_1:"),
@@ -553,17 +569,19 @@ fn quote_exp(
                     }
                     Some(ct_inner) => {
                         let ct_inner = ct_inner.clone();
-                        let inner_q = quote_exp(s, &ct_inner, rel(s, 0), st, _settings)?;
+                        let inner_q = quote_exp(s, &ct_inner, rel(s, 0), st, _settings, errors)?;
 
                         let body = match dk {
-                            DatatypeKind::Option => {
-                                if is_nullable(&ct_inner) {
-                                    strcat_exp(s, vec![str_lit(s, "{v:"), inner_q, str_lit(s, "}")])
-                                } else {
-                                    inner_q
-                                }
-                            }
+                            DatatypeKind::Option => match is_nullable(&ct_inner) {
+                                true => strcat_exp(
+                                    errors,
+                                    s,
+                                    vec![str_lit(s, "{v:"), inner_q, str_lit(s, "}")],
+                                ),
+                                false => inner_q,
+                            },
                             _ => strcat_exp(
+                                errors,
                                 s,
                                 vec![
                                     str_lit(s, &format!("{{n:{cn},v:")),
@@ -595,7 +613,7 @@ fn quote_exp(
             Ok(app(s, named(s, n_prime), e))
         }
 
-        _ => Err(CantEmbed(t.clone())),
+        _ => Err(CantEmbed),
     }
 }
 
@@ -603,24 +621,30 @@ fn quote_exp(
 // unurlifyExp — produce a JavaScript *string* snippet that unurlifies a type
 // ---------------------------------------------------------------------------
 
-fn unurlify_exp(span: &Span, t: &LocTyp, st: &mut State, _settings: &Settings) -> String {
+fn unurlify_exp(
+    span: &Span,
+    t: &LocTyp,
+    st: &mut State,
+    _settings: &Settings,
+    errors: &mut ErrorReporter,
+) -> String {
     match &t.node.clone() {
         Typ::Record(fields) if fields.is_empty() => "(i++,null)".to_string(),
         Typ::Ffi(m, f) if m == "Basis" && f == "unit" => "(i++,null)".to_string(),
 
         Typ::Record(fields) if fields.len() == 1 => {
             let (x, ft) = &fields[0].clone();
-            let e = unurlify_exp(span, ft, st, _settings);
+            let e = unurlify_exp(span, ft, st, _settings, errors);
             format!("{{_{x}:{e}}}")
         }
 
         Typ::Record(fields) => {
             let fields = fields.clone();
             let (first_x, first_t) = &fields[0];
-            let e0 = unurlify_exp(span, first_t, st, _settings);
+            let e0 = unurlify_exp(span, first_t, st, _settings, errors);
             let mut out = format!("{{_{first_x}:{e0}");
             for (x, ft) in &fields[1..] {
-                let e = unurlify_exp(span, ft, st, _settings);
+                let e = unurlify_exp(span, ft, st, _settings, errors);
                 out.push_str(&format!(",_{x}:{e}"));
             }
             out.push('}');
@@ -647,18 +671,17 @@ fn unurlify_exp(span: &Span, t: &LocTyp, st: &mut State, _settings: &Settings) -
 
         Typ::Option(inner) => {
             let inner = (**inner).clone();
-            let e = unurlify_exp(span, &inner, st, _settings);
-            let e2 = if is_nullable(&inner) {
-                format!("{{v:{e}}}")
-            } else {
-                e
+            let e = unurlify_exp(span, &inner, st, _settings, errors);
+            let e2 = match is_nullable(&inner) {
+                true => format!("{{v:{e}}}"),
+                false => e,
             };
             format!("(t[i++]==\"Some\"?{e2}:null)")
         }
 
         Typ::List(inner) => {
             let inner = (**inner).clone();
-            let e = unurlify_exp(span, &inner, st, _settings);
+            let e = unurlify_exp(span, &inner, st, _settings, errors);
             format!("uul(function(){{return t[i++];}},function(){{return {e}}})")
         }
 
@@ -692,15 +715,12 @@ fn unurlify_exp(span: &Span, t: &LocTyp, st: &mut State, _settings: &Settings) -
                         format!("x==\"{x}\"?{val}:{expr}")
                     }
                     Some(ct_inner) => {
-                        let e = unurlify_exp(span, ct_inner, st, _settings);
+                        let e = unurlify_exp(span, ct_inner, st, _settings, errors);
                         let val = match dk {
-                            DatatypeKind::Option => {
-                                if is_nullable(ct_inner) {
-                                    format!("{{v:{e}}}")
-                                } else {
-                                    e
-                                }
-                            }
+                            DatatypeKind::Option => match is_nullable(ct_inner) {
+                                true => format!("{{v:{e}}}"),
+                                false => e,
+                            },
                             _ => format!("{{n:{cn},v:{e}}}"),
                         };
                         format!("x==\"{x}\"?{val}:{expr}")
@@ -718,7 +738,10 @@ fn unurlify_exp(span: &Span, t: &LocTyp, st: &mut State, _settings: &Settings) -
 
         _ => {
             // Unknown type — emit error marker
-            eprintln!("jscomp: Don't know how to unurlify type in JavaScript");
+            errors.report(CompileError::warning_at(
+                span.clone(),
+                DiagnosticPayload::new(DiagnosticId::JscompUnurlifyUnknownType, vec![]),
+            ));
             "ERROR".to_string()
         }
     }
@@ -729,15 +752,16 @@ fn unurlify_exp(span: &Span, t: &LocTyp, st: &mut State, _settings: &Settings) -
 // ---------------------------------------------------------------------------
 
 fn pad_with(ch: char, s: &str, len: usize) -> String {
-    if s.len() < len {
-        let mut out = String::new();
-        for _ in 0..(len - s.len()) {
-            out.push(ch);
+    match s.len() < len {
+        true => {
+            let mut out = String::new();
+            for _ in 0..(len - s.len()) {
+                out.push(ch);
+            }
+            out.push_str(s);
+            out
         }
-        out.push_str(s);
-        out
-    } else {
-        s.to_string()
+        false => s.to_string(),
     }
 }
 
@@ -747,13 +771,10 @@ fn pad_with(ch: char, s: &str, len: usize) -> String {
 
 fn js_char(ch: char, mode: &JsMode) -> String {
     match ch {
-        '\'' => {
-            if *mode == JsMode::Attribute {
-                "\\047".to_string()
-            } else {
-                "'".to_string()
-            }
-        }
+        '\'' => match *mode == JsMode::Attribute {
+            true => "\\047".to_string(),
+            false => "'".to_string(),
+        },
         '"' => "\\\"".to_string(),
         '<' => "\\074".to_string(),
         '\\' => "\\\\".to_string(),
@@ -761,11 +782,14 @@ fn js_char(ch: char, mode: &JsMode) -> String {
         '\r' => "\\r".to_string(),
         '\t' => "\\t".to_string(),
         ch => {
-            if ch.is_ascii() && (ch.is_ascii_graphic() || ch == ' ') || (ch as u32) >= 128 {
-                ch.to_string()
-            } else {
-                let oct = format!("{:o}", ch as u32);
-                format!("\\{}", pad_with('0', &oct, 3))
+            let is_printable_ascii_or_unicode =
+                ch.is_ascii() && (ch.is_ascii_graphic() || ch == ' ') || (ch as u32) >= 128;
+            match is_printable_ascii_or_unicode {
+                true => ch.to_string(),
+                false => {
+                    let oct = format!("{:o}", ch as u32);
+                    format!("\\{}", pad_with('0', &oct, 3))
+                }
             }
         }
     }
@@ -787,26 +811,6 @@ fn java_script_mode_to_js_mode(m: &JavaScriptMode) -> JsMode {
         JavaScriptMode::Attribute => JsMode::Attribute,
         JavaScriptMode::Script => JsMode::Script,
         JavaScriptMode::Source(_) => JsMode::Source,
-    }
-}
-
-// ---------------------------------------------------------------------------
-// patBinds — collect types bound by a pattern (prepended to `outer`)
-// ---------------------------------------------------------------------------
-
-fn pat_binds_types(p: &LocPat, env: &mut Vec<LocTyp>) {
-    match &p.node {
-        Pat::Var(_, t) => env.insert(0, t.clone()),
-        Pat::Prim(_) => {}
-        Pat::Con(_, _, None) => {}
-        Pat::Con(_, _, Some(inner)) => pat_binds_types(inner, env),
-        Pat::Record(xpts) => {
-            for (_, p, _) in xpts {
-                pat_binds_types(p, env);
-            }
-        }
-        Pat::None(_) => {}
-        Pat::Some(_, inner) => pat_binds_types(inner, env),
     }
 }
 
@@ -893,12 +897,18 @@ fn pat_con_js(pc: &PatCon, span: &Span) -> LocExp {
 // jsPat — serialise a pattern to a JS pattern object
 // ---------------------------------------------------------------------------
 
-fn js_pat(p: &LocPat, some_ts: &HashMap<usize, LocTyp>, span: &Span) -> LocExp {
+fn js_pat(
+    p: &LocPat,
+    some_ts: &HashMap<usize, LocTyp>,
+    span: &Span,
+    errors: &mut ErrorReporter,
+) -> LocExp {
     match &p.node {
         Pat::Var(_, _) => str_lit(span, "{/*hoho*/c:\"v\"}"),
         Pat::Prim(prim) => {
             let js_p = js_prim(prim, span, &JsMode::Script);
             strcat_exp(
+                errors,
                 span,
                 vec![str_lit(span, "{c:\"c\",v:"), js_p, str_lit(span, "}")],
             )
@@ -918,9 +928,13 @@ fn js_pat(p: &LocPat, some_ts: &HashMap<usize, LocTyp>, span: &Span) -> LocExp {
             match some_ts.get(n) {
                 None => str_lit(span, "{c:\"c\",v:null}"), // fallback
                 Some(t) => {
-                    let nullable_str = if is_nullable(t) { "true" } else { "false" };
-                    let inner_js = js_pat(inner_p, some_ts, span);
+                    let nullable_str = match is_nullable(t) {
+                        true => "true",
+                        false => "false",
+                    };
+                    let inner_js = js_pat(inner_p, some_ts, span, errors);
                     strcat_exp(
+                        errors,
                         span,
                         vec![
                             str_lit(span, &format!("{{c:\"s\",n:{nullable_str},p:")),
@@ -934,14 +948,16 @@ fn js_pat(p: &LocPat, some_ts: &HashMap<usize, LocTyp>, span: &Span) -> LocExp {
         Pat::Con(_, pc, None) => {
             let pc_e = pat_con_js(pc, span);
             strcat_exp(
+                errors,
                 span,
                 vec![str_lit(span, "{c:\"c\",v:"), pc_e, str_lit(span, "}")],
             )
         }
         Pat::Con(_, pc, Some(inner_p)) => {
             let pc_e = pat_con_js(pc, span);
-            let inner_js = js_pat(inner_p, some_ts, span);
+            let inner_js = js_pat(inner_p, some_ts, span, errors);
             strcat_exp(
+                errors,
                 span,
                 vec![
                     str_lit(span, "{c:\"1\",n:"),
@@ -958,8 +974,9 @@ fn js_pat(p: &LocPat, some_ts: &HashMap<usize, LocTyp>, span: &Span) -> LocExp {
                 .iter()
                 .rev()
                 .fold(str_lit(span, "null"), |acc, (x, p, _)| {
-                    let pj = js_pat(p, some_ts, span);
+                    let pj = js_pat(p, some_ts, span, errors);
                     strcat_exp(
+                        errors,
                         span,
                         vec![
                             str_lit(span, &format!("cons({{n:\"{x}\",p:")),
@@ -971,15 +988,20 @@ fn js_pat(p: &LocPat, some_ts: &HashMap<usize, LocTyp>, span: &Span) -> LocExp {
                     )
                 });
             strcat_exp(
+                errors,
                 span,
                 vec![str_lit(span, "{c:\"r\",l:"), list_e, str_lit(span, "}")],
             )
         }
         Pat::None(_) => str_lit(span, "{c:\"c\",v:null}"),
         Pat::Some(t, inner_p) => {
-            let nullable_str = if is_nullable(t) { "true" } else { "false" };
-            let inner_js = js_pat(inner_p, some_ts, span);
+            let nullable_str = match is_nullable(t) {
+                true => "true",
+                false => "false",
+            };
+            let inner_js = js_pat(inner_p, some_ts, span, errors);
             strcat_exp(
+                errors,
                 span,
                 vec![
                     str_lit(span, &format!("{{c:\"s\",n:{nullable_str},p:")),
@@ -1023,6 +1045,7 @@ fn js_exp(
     e: &LocExp,
     st: &mut State,
     settings: &Settings,
+    errors: &mut ErrorReporter,
     nameds: &HashMap<usize, LocExp>,
     some_ts: &HashMap<usize, LocTyp>,
     found_javascript: &mut bool,
@@ -1034,6 +1057,7 @@ fn js_exp(
         e,
         st,
         settings,
+        errors,
         nameds,
         some_ts,
         found_javascript,
@@ -1047,10 +1071,12 @@ fn js_e(
     e: &LocExp,
     st: &mut State,
     settings: &Settings,
+    errors: &mut ErrorReporter,
     nameds: &HashMap<usize, LocExp>,
     some_ts: &HashMap<usize, LocTyp>,
     found_javascript: &mut bool,
 ) -> Result<LocExp, CantEmbed> {
+    let _js_e_recursion_guard = JsERecursionGuard::enter();
     let span = &e.span.clone();
     let s = span;
 
@@ -1059,7 +1085,11 @@ fn js_e(
             str_lit(s, $lit)
         };
     }
-    macro_rules! cat { ($($e:expr),+) => { strcat_exp(s, vec![$($e),+]) } }
+    macro_rules! cat {
+        ($($e:expr),+) => {
+            strcat_exp(errors, s, vec![$($e),+])
+        };
+    }
     macro_rules! recurse {
         ($ex:expr) => {
             js_e(
@@ -1069,6 +1099,7 @@ fn js_e(
                 $ex,
                 st,
                 settings,
+                errors,
                 nameds,
                 some_ts,
                 found_javascript,
@@ -1084,6 +1115,7 @@ fn js_e(
                 $ex,
                 st,
                 settings,
+                errors,
                 nameds,
                 some_ts,
                 found_javascript,
@@ -1099,14 +1131,15 @@ fn js_e(
 
         Exp::Rel(n) => {
             let n = *n;
-            if n < inner {
-                Ok(str!(&format!("{{c:\"v\",n:{n}}}")))
-            } else {
-                let idx = n - inner;
-                let t = outer.get(idx).ok_or_else(|| CantEmbed(str_typ(s)))?.clone();
-                let rel_e = rel(s, idx);
-                let quoted = quote_exp(s, &t, rel_e, st, settings)?;
-                Ok(cat![str!("{c:\"c\",v:"), quoted, str!("}")])
+            match n < inner {
+                true => Ok(str!(&format!("{{c:\"v\",n:{n}}}"))),
+                false => {
+                    let idx = n - inner;
+                    let t = outer.get(idx).ok_or(CantEmbed)?.clone();
+                    let rel_e = rel(s, idx);
+                    let quoted = quote_exp(s, &t, rel_e, st, settings, errors)?;
+                    Ok(cat![str!("{c:\"c\",v:"), quoted, str!("}")])
+                }
             }
         }
 
@@ -1123,6 +1156,7 @@ fn js_e(
                         &named_e,
                         st,
                         settings,
+                        errors,
                         nameds,
                         some_ts,
                         found_javascript,
@@ -1162,13 +1196,10 @@ fn js_e(
                     // Not in someTs — treat as Some
                     Ok(compiled)
                 }
-                Some(t) => {
-                    if is_nullable(t) {
-                        Ok(cat![str!("{c:\"s\",v:"), compiled, str!("}")])
-                    } else {
-                        Ok(compiled)
-                    }
-                }
+                Some(t) => match is_nullable(t) {
+                    true => Ok(cat![str!("{c:\"s\",v:"), compiled, str!("}")]),
+                    false => Ok(compiled),
+                },
             }
         }
         Exp::Con(_, pc, None) => {
@@ -1190,10 +1221,9 @@ fn js_e(
         Exp::None(_) => Ok(str!("{c:\"c\",v:null}")),
         Exp::Some(t, inner_e) => {
             let compiled = recurse!(inner_e);
-            if is_nullable(t) {
-                Ok(cat![str!("{c:\"s\",v:"), compiled, str!("}")])
-            } else {
-                Ok(compiled)
+            match is_nullable(t) {
+                true => Ok(cat![str!("{c:\"s\",v:"), compiled, str!("}")]),
+                false => Ok(compiled),
             }
         }
 
@@ -1202,10 +1232,13 @@ fn js_e(
             match settings.js_func(&key) {
                 Some(name) => Ok(str!(&format!("{{c:\"c\",v:{name}}}"))),
                 None => {
-                    eprintln!(
-                        "jscomp: Unsupported FFI identifier {f} in JavaScript at {}",
-                        s
-                    );
+                    errors.report(CompileError::warning_at(
+                        s.clone(),
+                        DiagnosticPayload::new(
+                            DiagnosticId::JscompUnsupportedFfiValueInJs,
+                            vec![f.clone(), s.to_string()],
+                        ),
+                    ));
                     Ok(str!("{c:\"c\",v:ERROR}"))
                 }
             }
@@ -1221,7 +1254,13 @@ fn js_e(
             let name = match settings.js_func(&key) {
                 Some(n) => n.to_string(),
                 None => {
-                    eprintln!("jscomp: Unsupported FFI function {m}.{f} in JavaScript at {s}");
+                    errors.report(CompileError::warning_at(
+                        s.clone(),
+                        DiagnosticPayload::new(
+                            DiagnosticId::JscompUnsupportedFfiCallInJs,
+                            vec![m.clone(), f.clone(), s.to_string()],
+                        ),
+                    ));
                     "ERROR".to_string()
                 }
             };
@@ -1237,6 +1276,7 @@ fn js_e(
                         arg_e,
                         st,
                         settings,
+                        errors,
                         nameds,
                         some_ts,
                         found_javascript,
@@ -1272,7 +1312,13 @@ fn js_e(
                 "!" => "not",
                 "-" => "neg",
                 other => {
-                    eprintln!("jscomp: Unknown unary operator {other}");
+                    errors.report(CompileError::warning_at(
+                        s.clone(),
+                        DiagnosticPayload::new(
+                            DiagnosticId::JscompUnknownUnaryOperatorInJs,
+                            vec![other.to_string()],
+                        ),
+                    ));
                     "ERROR"
                 }
             };
@@ -1307,7 +1353,13 @@ fn js_e(
                 "powl" => "pow",
                 "powf" => "pow",
                 other => {
-                    eprintln!("jscomp: Unknown binary operator {other}");
+                    errors.report(CompileError::warning_at(
+                        s.clone(),
+                        DiagnosticPayload::new(
+                            DiagnosticId::JscompUnknownBinaryOperatorInJs,
+                            vec![other.to_string()],
+                        ),
+                    ));
                     "ERROR"
                 }
             };
@@ -1336,6 +1388,7 @@ fn js_e(
                         field_e,
                         st,
                         settings,
+                        errors,
                         nameds,
                         some_ts,
                         found_javascript,
@@ -1363,6 +1416,7 @@ fn js_e(
                 s,
                 st,
                 settings,
+                errors,
                 nameds,
                 some_ts,
                 found_javascript,
@@ -1384,11 +1438,12 @@ fn js_e(
                         arm_e,
                         st,
                         settings,
+                        errors,
                         nameds,
                         some_ts,
                         found_javascript,
                     )?;
-                    let pat_js = js_pat(pat, some_ts, s);
+                    let pat_js = js_pat(pat, some_ts, s, errors);
                     Ok::<LocExp, CantEmbed>(cat![
                         str!("cons({p:"),
                         pat_js,
@@ -1450,6 +1505,7 @@ fn js_e(
                 inner_e,
                 st,
                 settings,
+                errors,
                 nameds,
                 some_ts,
                 found_javascript,
@@ -1463,31 +1519,73 @@ fn js_e(
         }
 
         Exp::Write(_) => {
-            eprintln!("jscomp: EWrite in code to be compiled to JavaScript");
+            errors.report(CompileError::warning_at(
+                s.clone(),
+                DiagnosticPayload::new(
+                    DiagnosticId::JscompClientConstructUnsupportedInJs,
+                    vec!["write effect (EWrite)".to_string()],
+                ),
+            ));
             Ok(str!("{c:\"c\",v:ERROR}"))
         }
         Exp::Closure(_, _) => {
-            eprintln!("jscomp: EClosure in code to be compiled to JavaScript");
+            errors.report(CompileError::warning_at(
+                s.clone(),
+                DiagnosticPayload::new(
+                    DiagnosticId::JscompClientConstructUnsupportedInJs,
+                    vec!["closure (EClosure)".to_string()],
+                ),
+            ));
             Ok(str!("{c:\"c\",v:ERROR}"))
         }
         Exp::Query(_) => {
-            eprintln!("jscomp: Query in code to be compiled to JavaScript");
+            errors.report(CompileError::warning_at(
+                s.clone(),
+                DiagnosticPayload::new(
+                    DiagnosticId::JscompClientConstructUnsupportedInJs,
+                    vec!["SQL query (Query)".to_string()],
+                ),
+            ));
             Ok(str!("{c:\"c\",v:ERROR}"))
         }
         Exp::Dml(_, _) => {
-            eprintln!("jscomp: DML in code to be compiled to JavaScript");
+            errors.report(CompileError::warning_at(
+                s.clone(),
+                DiagnosticPayload::new(
+                    DiagnosticId::JscompClientConstructUnsupportedInJs,
+                    vec!["SQL DML (Dml)".to_string()],
+                ),
+            ));
             Ok(str!("{c:\"c\",v:ERROR}"))
         }
         Exp::Nextval(_) => {
-            eprintln!("jscomp: Nextval in code to be compiled to JavaScript");
+            errors.report(CompileError::warning_at(
+                s.clone(),
+                DiagnosticPayload::new(
+                    DiagnosticId::JscompClientConstructUnsupportedInJs,
+                    vec!["sequence nextval (Nextval)".to_string()],
+                ),
+            ));
             Ok(str!("{c:\"c\",v:ERROR}"))
         }
         Exp::Setval(_, _) => {
-            eprintln!("jscomp: Setval in code to be compiled to JavaScript");
+            errors.report(CompileError::warning_at(
+                s.clone(),
+                DiagnosticPayload::new(
+                    DiagnosticId::JscompClientConstructUnsupportedInJs,
+                    vec!["sequence setval (Setval)".to_string()],
+                ),
+            ));
             Ok(str!("{c:\"c\",v:ERROR}"))
         }
         Exp::ReturnBlob { .. } => {
-            eprintln!("jscomp: EReturnBlob in code to be compiled to JavaScript");
+            errors.report(CompileError::warning_at(
+                s.clone(),
+                DiagnosticPayload::new(
+                    DiagnosticId::JscompClientConstructUnsupportedInJs,
+                    vec!["blob response (ReturnBlob)".to_string()],
+                ),
+            ));
             Ok(str!("{c:\"c\",v:ERROR}"))
         }
 
@@ -1501,13 +1599,19 @@ fn js_e(
         }
 
         Exp::Uurlify(_, _, true) => {
-            eprintln!("jscomp: EUnurlify (server-side) in code to be compiled to JavaScript");
+            errors.report(CompileError::warning_at(
+                s.clone(),
+                DiagnosticPayload::new(
+                    DiagnosticId::JscompClientConstructUnsupportedInJs,
+                    vec!["server-side unurlify (EUnurlify)".to_string()],
+                ),
+            ));
             Ok(str!("{c:\"c\",v:ERROR}"))
         }
 
         Exp::Uurlify(inner_e, t, false) => {
             let compiled = recurse!(inner_e);
-            let unurl = unurlify_exp(s, t, st, settings);
+            let unurl = unurlify_exp(s, t, st, settings, errors);
             Ok(cat![
                 str!(&format!(
                     "{{c:\"f\",f:unurlify,a:cons({{c:\"c\",v:function(s){{var t=s.split(\"/\");var i=0;return {unurl}}}}},cons("
@@ -1547,8 +1651,11 @@ fn js_e(
 
         Exp::ServerCall(inner_e, t, eff, fm) => {
             let compiled = recurse!(inner_e);
-            let unurl = unurlify_exp(s, t, st, settings);
-            let is_nullable_t = if is_nullable(t) { "true" } else { "false" };
+            let unurl = unurlify_exp(s, t, st, settings, errors);
+            let is_nullable_t = match is_nullable(t) {
+                true => "true",
+                false => "false",
+            };
             let last_arg = match fm {
                 FailureMode::None => "null".to_string(),
                 FailureMode::Error => {
@@ -1573,7 +1680,7 @@ fn js_e(
 
         Exp::Recv(inner_e, t) => {
             let compiled = recurse!(inner_e);
-            let unurl = unurlify_exp(s, t, st, settings);
+            let unurl = unurlify_exp(s, t, st, settings, errors);
             Ok(cat![
                 str!("{c:\"f\",f:rv,a:cons("),
                 compiled,
@@ -1609,6 +1716,7 @@ fn js_e(
 /// Walk a chain `EField(... EField(base, x1) ..., xN)` to check if it is
 /// rooted at an outer (captured) `ERel`.  If yes, quote the whole thing.
 /// Otherwise fall back to a generic `{c:".",r:...,f:...}` node.
+#[allow(clippy::too_many_arguments)] // Client JS walk threads many mirrors of SML `seekField`; `ErrorReporter` crosses the default arity limit.
 fn seek_field(
     mode: &JsMode,
     outer: &[LocTyp],
@@ -1619,6 +1727,7 @@ fn seek_field(
     s: &Span,
     st: &mut State,
     settings: &Settings,
+    errors: &mut ErrorReporter,
     nameds: &HashMap<usize, LocExp>,
     some_ts: &HashMap<usize, LocTyp>,
     found_javascript: &mut bool,
@@ -1626,72 +1735,80 @@ fn seek_field(
     match &base.node {
         Exp::Rel(n) => {
             let n = *n;
-            if n < inner {
-                // It is a JS-runtime variable — emit generic field access
-                let _base_c = js_e(
-                    mode,
-                    outer,
-                    inner,
-                    base,
-                    st,
-                    settings,
-                    nameds,
-                    some_ts,
-                    found_javascript,
-                )?;
-                let last_x = xs.last().ok_or_else(|| CantEmbed(str_typ(s)))?;
-                let inner_c = {
-                    // Build the base.fields_except_last expression
-                    let mut e = base.clone();
-                    for x in &xs[..xs.len() - 1] {
-                        e = field(s, e, x);
-                    }
-                    js_e(
+            match n < inner {
+                true => {
+                    // It is a JS-runtime variable — emit generic field access
+                    let _base_c = js_e(
                         mode,
                         outer,
                         inner,
-                        &e,
+                        base,
                         st,
                         settings,
+                        errors,
                         nameds,
                         some_ts,
                         found_javascript,
-                    )?
-                };
-                Ok(strcat_exp(
-                    s,
-                    vec![
-                        str_lit(s, "{c:\".\",r:"),
-                        inner_c,
-                        str_lit(s, &format!(",f:\"{last_x}\"}}")),
-                    ],
-                ))
-            } else {
-                // Captured from server — resolve type through field chain
-                let idx = n - inner;
-                let mut t = outer.get(idx).ok_or_else(|| CantEmbed(str_typ(s)))?.clone();
-                // Walk field chain to get the leaf type
-                for x in xs {
-                    if let Typ::Record(fields) = &t.node.clone() {
-                        t = fields
-                            .iter()
-                            .find(|(name, _)| name == x)
-                            .map(|(_, ft)| ft.clone())
-                            .ok_or_else(|| CantEmbed(str_typ(s)))?;
-                    } else {
-                        return Err(CantEmbed(t));
+                    )?;
+                    let last_x = xs.last().ok_or(CantEmbed)?;
+                    let inner_c = {
+                        // Build the base.fields_except_last expression
+                        let mut e = base.clone();
+                        for x in &xs[..xs.len() - 1] {
+                            e = field(s, e, x);
+                        }
+                        js_e(
+                            mode,
+                            outer,
+                            inner,
+                            &e,
+                            st,
+                            settings,
+                            errors,
+                            nameds,
+                            some_ts,
+                            found_javascript,
+                        )?
+                    };
+                    Ok(strcat_exp(
+                        errors,
+                        s,
+                        vec![
+                            str_lit(s, "{c:\".\",r:"),
+                            inner_c,
+                            str_lit(s, &format!(",f:\"{last_x}\"}}")),
+                        ],
+                    ))
+                }
+                false => {
+                    // Captured from server — resolve type through field chain
+                    let idx = n - inner;
+                    let mut t = outer.get(idx).ok_or(CantEmbed)?.clone();
+                    // Walk field chain to get the leaf type
+                    for x in xs {
+                        match &t.node.clone() {
+                            Typ::Record(fields) => {
+                                t = fields
+                                    .iter()
+                                    .find(|(name, _)| name == x)
+                                    .map(|(_, ft)| ft.clone())
+                                    .ok_or(CantEmbed)?;
+                            }
+                            _ => return Err(CantEmbed),
+                        }
                     }
+                    // Build the field-access expression to pass to quoteExp
+                    let mut acc = rel(s, idx);
+                    for x in xs {
+                        acc = field(s, acc, x);
+                    }
+                    let quoted = quote_exp(s, &t, acc, st, settings, errors)?;
+                    Ok(strcat_exp(
+                        errors,
+                        s,
+                        vec![str_lit(s, "{c:\"c\",v:"), quoted, str_lit(s, "}")],
+                    ))
                 }
-                // Build the field-access expression to pass to quoteExp
-                let mut acc = rel(s, idx);
-                for x in xs {
-                    acc = field(s, acc, x);
-                }
-                let quoted = quote_exp(s, &t, acc, st, settings)?;
-                Ok(strcat_exp(
-                    s,
-                    vec![str_lit(s, "{c:\"c\",v:"), quoted, str_lit(s, "}")],
-                ))
             }
         }
         Exp::Field(inner_base, x) => {
@@ -1707,6 +1824,7 @@ fn seek_field(
                 s,
                 st,
                 settings,
+                errors,
                 nameds,
                 some_ts,
                 found_javascript,
@@ -1714,38 +1832,42 @@ fn seek_field(
         }
         _ => {
             // Default: generic field access
-            let last_x = xs.last().ok_or_else(|| CantEmbed(str_typ(s)))?;
+            let last_x = xs.last().ok_or(CantEmbed)?;
             // Build the base expression (everything except the outermost field)
-            let inner_c = if xs.len() == 1 {
-                js_e(
+            let inner_c = match xs.len() == 1 {
+                true => js_e(
                     mode,
                     outer,
                     inner,
                     base,
                     st,
                     settings,
+                    errors,
                     nameds,
                     some_ts,
                     found_javascript,
-                )?
-            } else {
-                let mut e = base.clone();
-                for x in &xs[..xs.len() - 1] {
-                    e = field(s, e, x);
+                )?,
+                false => {
+                    let mut e = base.clone();
+                    for x in &xs[..xs.len() - 1] {
+                        e = field(s, e, x);
+                    }
+                    js_e(
+                        mode,
+                        outer,
+                        inner,
+                        &e,
+                        st,
+                        settings,
+                        errors,
+                        nameds,
+                        some_ts,
+                        found_javascript,
+                    )?
                 }
-                js_e(
-                    mode,
-                    outer,
-                    inner,
-                    &e,
-                    st,
-                    settings,
-                    nameds,
-                    some_ts,
-                    found_javascript,
-                )?
             };
             Ok(strcat_exp(
+                errors,
                 s,
                 vec![
                     str_lit(s, "{c:\".\",r:"),
@@ -1794,6 +1916,7 @@ fn exp_walk(
     e: &LocExp,
     st: &mut State,
     settings: &Settings,
+    errors: &mut ErrorReporter,
     nameds: &HashMap<usize, LocExp>,
     some_ts: &HashMap<usize, LocTyp>,
     found_javascript: &mut bool,
@@ -1802,7 +1925,16 @@ fn exp_walk(
 
     macro_rules! walk {
         ($ex:expr) => {
-            exp_walk(outer, $ex, st, settings, nameds, some_ts, found_javascript)
+            exp_walk(
+                outer,
+                $ex,
+                st,
+                settings,
+                errors,
+                nameds,
+                some_ts,
+                found_javascript,
+            )
         };
     }
 
@@ -1853,6 +1985,7 @@ fn exp_walk(
                 body,
                 st,
                 settings,
+                errors,
                 nameds,
                 some_ts,
                 found_javascript,
@@ -1899,6 +2032,7 @@ fn exp_walk(
                         arm_e,
                         st,
                         settings,
+                        errors,
                         nameds,
                         some_ts,
                         found_javascript,
@@ -1975,6 +2109,7 @@ fn exp_walk(
                 e2,
                 st,
                 settings,
+                errors,
                 nameds,
                 some_ts,
                 found_javascript,
@@ -2008,6 +2143,7 @@ fn exp_walk(
                 &qm.body,
                 st,
                 settings,
+                errors,
                 nameds,
                 some_ts,
                 found_javascript,
@@ -2058,6 +2194,7 @@ fn exp_walk(
                 &rel(s, 0),
                 st,
                 settings,
+                errors,
                 nameds,
                 some_ts,
                 found_javascript,
@@ -2079,6 +2216,7 @@ fn exp_walk(
                         inner_e,
                         st,
                         settings,
+                        errors,
                         nameds,
                         some_ts,
                         found_javascript,
@@ -2102,6 +2240,7 @@ fn exp_walk(
                 inner_e,
                 st,
                 settings,
+                errors,
                 nameds,
                 some_ts,
                 found_javascript,
@@ -2155,6 +2294,7 @@ fn decl_walk(
     d: &crate::monomorphized::LocDecl,
     st: &mut State,
     settings: &Settings,
+    errors: &mut ErrorReporter,
     nameds: &HashMap<usize, LocExp>,
     some_ts: &HashMap<usize, LocTyp>,
     found_javascript: &mut bool,
@@ -2162,7 +2302,16 @@ fn decl_walk(
     let s = &d.span.clone();
     match &d.node.clone() {
         Decl::Val(x, n, t, e, settings_s) => {
-            let ne = exp_walk(&[], e, st, settings, nameds, some_ts, found_javascript);
+            let ne = exp_walk(
+                &[],
+                e,
+                st,
+                settings,
+                errors,
+                nameds,
+                some_ts,
+                found_javascript,
+            );
             Located::new(
                 Decl::Val(x.clone(), *n, t.clone(), ne, settings_s.clone()),
                 s.clone(),
@@ -2172,7 +2321,16 @@ fn decl_walk(
             let new_vis: Vec<_> = vis
                 .iter()
                 .map(|(x, n, t, e, settings_s)| {
-                    let ne = exp_walk(&[], e, st, settings, nameds, some_ts, found_javascript);
+                    let ne = exp_walk(
+                        &[],
+                        e,
+                        st,
+                        settings,
+                        errors,
+                        nameds,
+                        some_ts,
+                        found_javascript,
+                    );
                     (x.clone(), *n, t.clone(), ne, settings_s.clone())
                 })
                 .collect();
@@ -2189,7 +2347,7 @@ fn decl_walk(
 fn process(
     file: &crate::monomorphized::File,
     settings: &Settings,
-    _errors: &mut crate::error_types::ErrorReporter,
+    errors: &mut crate::error_types::ErrorReporter,
 ) -> (crate::monomorphized::File, Option<String>) {
     // Pass 1: build `some_ts` and `nameds` maps
     let mut some_ts: HashMap<usize, LocTyp> = HashMap::new();
@@ -2234,6 +2392,7 @@ fn process(
             d,
             &mut st,
             settings,
+            errors,
             &nameds,
             &some_ts,
             &mut found_javascript,
@@ -2249,58 +2408,56 @@ fn process(
     }
 
     // Build JavaScript output
-    let script = if found_javascript {
-        // Try to read the urweb.js library file
-        let lib_js = {
-            let lib_path = if settings.config_lib.is_empty() {
-                std::path::PathBuf::from("lib").join("js").join("urweb.js")
-            } else {
-                std::path::PathBuf::from(&settings.config_lib)
-                    .join("js")
-                    .join("urweb.js")
+    let script = match found_javascript {
+        true => {
+            // Try to read the urweb.js library file
+            let lib_js = {
+                let lib_path = match settings.config_lib.is_empty() {
+                    true => std::path::PathBuf::from("lib").join("js").join("urweb.js"),
+                    false => std::path::PathBuf::from(&settings.config_lib)
+                        .join("js")
+                        .join("urweb.js"),
+                };
+                std::fs::read_to_string(&lib_path).unwrap_or_else(|_| {
+                    // Fallback: empty string (no runtime library available at compile time)
+                    String::new()
+                })
             };
-            std::fs::read_to_string(&lib_path).unwrap_or_else(|_| {
-                // Fallback: empty string (no runtime library available at compile time)
-                String::new()
-            })
-        };
 
-        // Build URL rules JS
-        let url_rules = settings
-            .url_rules
-            .iter()
-            .rev()
-            .fold("null".to_string(), |acc, r| {
-                let allow = if r.action == crate::settings::Action::Allow {
-                    "true"
-                } else {
-                    "false"
-                };
-                let prefix = if r.kind == crate::settings::PatternKind::Prefix {
-                    "true"
-                } else {
-                    "false"
-                };
-                let pattern = &r.pattern;
-                format!("cons({{allow:{allow},prefix:{prefix},pattern:\"{pattern}\"}},{acc})")
-            });
-        let url_rules_js = format!("urlRules = {url_rules};\n\n");
+            // Build URL rules JS
+            let url_rules = settings
+                .url_rules
+                .iter()
+                .rev()
+                .fold("null".to_string(), |acc, r| {
+                    let allow = match r.action == crate::settings::Action::Allow {
+                        true => "true",
+                        false => "false",
+                    };
+                    let prefix = match r.kind == crate::settings::PatternKind::Prefix {
+                        true => "true",
+                        false => "false",
+                    };
+                    let pattern = &r.pattern;
+                    format!("cons({{allow:{allow},prefix:{prefix},pattern:\"{pattern}\"}},{acc})")
+                });
+            let url_rules_js = format!("urlRules = {url_rules};\n\n");
 
-        // Join accumulated script fragments (they were pushed in order, so reverse)
-        let accumulated: String = st.script.iter().rev().cloned().collect::<Vec<_>>().join("");
+            // Join accumulated script fragments (they were pushed in order, so reverse)
+            let accumulated: String = st.script.iter().rev().cloned().collect::<Vec<_>>().join("");
 
-        let time_format = &settings.time_format;
-        // Escape for JS string: replace \ with \\ and " with \"
-        let tf_escaped = time_format.replace('\\', "\\\\").replace('"', "\\\"");
+            let time_format = &settings.time_format;
+            // Escape for JS string: replace \ with \\ and " with \"
+            let tf_escaped = time_format.replace('\\', "\\\\").replace('"', "\\\"");
 
-        let main_script =
-            format!("{lib_js}{url_rules_js}{accumulated}\ntime_format = \"{tf_escaped}\";\n");
+            let main_script =
+                format!("{lib_js}{url_rules_js}{accumulated}\ntime_format = \"{tf_escaped}\";\n");
 
-        // Include any extra JS files referenced in settings
-        // (mirrors `Settings.listJsFiles()` in SML — we don't have that in Rust yet)
-        Some(main_script)
-    } else {
-        None
+            // Include any extra JS files referenced in settings
+            // (mirrors `Settings.listJsFiles()` in SML — we don't have that in Rust yet)
+            Some(main_script)
+        }
+        false => None,
     };
 
     // Collect any pre-existing Decl::JavaScript strings from the input file
@@ -2368,7 +2525,7 @@ pub fn js_compile(
 mod tests {
     use super::*;
     use crate::datatype_kind::DatatypeKind;
-    use crate::error_types::Located;
+    use crate::error_types::{ErrorReporter, Located};
     use crate::monomorphized::{DatatypeDef, DatatypeRef};
     use std::sync::{Arc, Mutex};
 
@@ -2434,9 +2591,10 @@ mod tests {
     #[test]
     fn strcat_exp_zero_one_many() {
         let s = span();
+        let mut reporter = ErrorReporter::new_silent();
 
         // len 0 -> empty string literal (exact to kill return-value mutants)
-        let e0 = strcat_exp(&s, vec![]);
+        let e0 = strcat_exp(&mut reporter, &s, vec![]);
         match &e0.node {
             Exp::Prim(Prim::String(StringMode::Normal, v)) => assert_eq!(v.as_str(), ""),
             _ => panic!("len 0 must produce empty string Prim"),
@@ -2444,7 +2602,7 @@ mod tests {
 
         // len 1 -> same expression (exact)
         let one = str_lit(&s, "x");
-        let e1 = strcat_exp(&s, vec![one.clone()]);
+        let e1 = strcat_exp(&mut reporter, &s, vec![one.clone()]);
         match &e1.node {
             Exp::Prim(Prim::String(StringMode::Normal, v)) => assert_eq!(v.as_str(), "x"),
             _ => panic!("len 1 must return the single expr"),
@@ -2454,7 +2612,7 @@ mod tests {
         let a = str_lit(&s, "a");
         let b = str_lit(&s, "b");
         let c = str_lit(&s, "c");
-        let e3 = strcat_exp(&s, vec![a.clone(), b.clone(), c.clone()]);
+        let e3 = strcat_exp(&mut reporter, &s, vec![a.clone(), b.clone(), c.clone()]);
         // Expect Strcat(a, Strcat(b, c)) up to associativity
         fn collect(e: &LocExp, out: &mut Vec<String>) {
             match &e.node {

@@ -1,14 +1,14 @@
-//! Semantic LSP helpers: symbols, hover, completion, and token highlighting.
+//! Language-server features built on elaborated sources: symbols, hover, completion, semantic highlighting.
 
+use std::borrow::Cow;
+use std::collections::HashSet;
 use std::path::Path;
 
 use lsp_types::{
-    CompletionItem, CompletionItemKind, CompletionResponse, DocumentChanges, DocumentHighlight,
-    DocumentHighlightKind, DocumentSymbol, DocumentSymbolResponse, FoldingRange, FoldingRangeKind,
-    InlayHint, InlayHintLabel, Location, MarkupContent, MarkupKind, OneOf,
+    CompletionItem, CompletionItemKind, DocumentChanges, FoldingRange, FoldingRangeKind, InlayHint,
+    InlayHintLabel, Location, MarkupContent, MarkupKind, OneOf,
     OptionalVersionedTextDocumentIdentifier, Position, Range, SelectionRange, SemanticToken,
-    SemanticTokenType, SemanticTokens, SignatureHelp, SignatureInformation, SymbolKind,
-    TextDocumentEdit, TextEdit, Uri, WorkspaceEdit,
+    SemanticTokenType, SemanticTokens, TextDocumentEdit, TextEdit, Uri, WorkspaceEdit,
 };
 
 use crate::elaborated::type_display::format_constructor;
@@ -20,22 +20,39 @@ fn is_ident_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || c == '_' || c == '\''
 }
 
-/// Extract identifier or `M.x.y` at LSP position (0-based line; UTF-16/byte OK for ASCII Ur).
+/// Extract a module-qualified identifier (`M.x.y`) or plain name at a zero-based line and column.
+///
+/// `col0` is a zero-based **character** index into the Unicode scalar sequence of that line (not a UTF-8 byte offset).
+///
+/// # Arguments
+///
+/// * `text` — Full document source.
+/// * `line0` — Zero-based line index.
+/// * `col0` — Zero-based column as character index within the line.
+///
+/// # Returns
+///
+/// Identifier string under/near the cursor, or `None` if the position is out of range or not on a word.
 pub fn word_at_cursor(text: &str, line0: u32, col0: u32) -> Option<String> {
-    let lines: Vec<&str> = text.lines().collect();
     let line_idx = line0 as usize;
-    let l = *lines.get(line_idx)?;
+    let l = text.lines().nth(line_idx)?;
     let col = col0 as usize;
     let chars: Vec<char> = l.chars().collect();
     if col > chars.len() {
         return None;
     }
     let mut start = col;
-    while start > 0 && is_ident_char(chars[start - 1]) {
+    for _ in 0..col {
+        if start == 0 || !is_ident_char(chars[start - 1]) {
+            break;
+        }
         start -= 1;
     }
     let mut end = col;
-    while end < chars.len() {
+    for _ in 0..chars.len() {
+        if end >= chars.len() {
+            break;
+        }
         if is_ident_char(chars[end]) {
             end += 1;
             continue;
@@ -52,9 +69,19 @@ pub fn word_at_cursor(text: &str, line0: u32, col0: u32) -> Option<String> {
     if start == end {
         return None;
     }
+    debug_assert!(start <= end && end <= chars.len());
     Some(chars[start..end].iter().collect())
 }
 
+/// Map a compiler [`Span`] to a Language Server Protocol [`Range`] (zero-based lines).
+///
+/// # Arguments
+///
+/// * `span` — One-based lines and columns as stored in [`Span`].
+///
+/// # Returns
+///
+/// [`Range`] with lines decremented by one; columns copied as stored.
 pub fn span_to_range(span: &Span) -> Range {
     Range {
         start: Position::new(span.first.line.saturating_sub(1), span.first.col),
@@ -62,24 +89,162 @@ pub fn span_to_range(span: &Span) -> Range {
     }
 }
 
+/// Whether a workspace-relative open key refers to the same file as an elaborated declaration path.
+///
+/// # Arguments
+///
+/// * `open_key` — Path from [`crate::lsp_workspace::file_key_relative_to_root`].
+/// * `decl_file` — Path string stored on a declaration from elaboration.
+///
+/// # Returns
+///
+/// `true` when normalized strings denote the same file for navigation purposes.
 pub fn compiler_paths_match(open_key: &str, decl_file: &str) -> bool {
-    let o = open_key.replace('\\', "/");
-    let d = decl_file.replace('\\', "/");
-    d == o || d.ends_with(&format!("/{o}")) || o.ends_with(&d)
+    let o = slash_normalized_cow(open_key);
+    paths_match_given_open_normalized(o.as_ref(), decl_file)
+}
+
+/// Slash-normalize a path key once, then compare to many `decl_file` values (avoids re-scanning `open_key`).
+///
+/// # Arguments
+///
+/// * `open_norm` — Return value from [`slash_normalized_cow`] for the workspace/open file key.
+/// * `decl_file` — Path string from a declaration span (may use backslashes).
+///
+/// # Returns
+///
+/// Same as [`compiler_paths_match`] for this pair.
+pub(crate) fn paths_match_given_open_normalized(open_norm: &str, decl_file: &str) -> bool {
+    let d = slash_normalized_cow(decl_file);
+    paths_match_normalized_pair(open_norm, d.as_ref())
+}
+
+/// Normalize backslashes to slashes when needed; borrows the input if it is already fine.
+///
+/// # Arguments
+///
+/// * `s` — A file path or workspace-relative key string.
+///
+/// # Returns
+///
+/// [`Cow::Borrowed`] when `s` contains no `\\`; otherwise an owned copy with slashes.
+pub(crate) fn slash_normalized_cow(s: &str) -> Cow<'_, str> {
+    if s.contains('\\') {
+        Cow::Owned(s.replace('\\', "/"))
+    } else {
+        Cow::Borrowed(s)
+    }
+}
+
+/// Compare two path keys that are already slash-normalized (internal helper).
+fn paths_match_normalized_pair(oref: &str, dref: &str) -> bool {
+    if dref == oref {
+        return true;
+    }
+    let slash_then_o = !oref.is_empty()
+        && dref.len() > oref.len()
+        && dref.as_bytes()[dref.len() - oref.len() - 1] == b'/'
+        && dref.ends_with(oref);
+    let empty_o_slash_suffix = oref.is_empty() && dref.ends_with('/');
+    if slash_then_o || empty_o_slash_suffix {
+        return true;
+    }
+    oref.ends_with(dref)
 }
 
 /// Top-level value / rec binding in one source file (by `Span::file` path key).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct ValBinding {
     pub name: String,
     pub type_str: String,
     pub name_span: Span,
 }
 
+/// Portable hover payload (`Default` exists so `cargo-mutants` can compile `Some(Default::default())` replacements).
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct SemanticsHoverMarkdown {
+    /// When true, use [`MarkupKind::Markdown`]; otherwise plain text.
+    pub markdown: bool,
+    /// Body text shown in the editor hover widget.
+    pub value: String,
+}
+
+impl SemanticsHoverMarkdown {
+    /// Converts this value into an LSP [`MarkupContent`].
+    pub fn into_lsp_markup(self) -> MarkupContent {
+        MarkupContent {
+            kind: if self.markdown {
+                MarkupKind::Markdown
+            } else {
+                MarkupKind::PlainText
+            },
+            value: self.value,
+        }
+    }
+}
+
+/// File URI string plus range (`Default` supports mutation-test replacements for goto-definition-style results).
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct SemanticsLocation {
+    /// Uniform resource identifier string (typically `file:`).
+    pub uri_str: String,
+    /// Editor range in LSP zero-based coordinates.
+    pub range: Range,
+}
+
+impl SemanticsLocation {
+    /// Builds an LSP [`Location`] when `uri_str` parses as a [`Uri`].
+    pub fn try_lsp_location(self) -> Option<Location> {
+        let uri: Uri = self.uri_str.parse().ok()?;
+        Some(Location {
+            uri,
+            range: self.range,
+        })
+    }
+}
+
+/// One outline row for document symbols (converted to [`lsp_types::DocumentSymbol`] in the LSP binary).
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct SemanticsDocumentSymbol {
+    /// Binding name shown in the symbol list.
+    pub name: String,
+    /// Optional detail line (pretty-printed type); empty means omit in LSP.
+    pub detail: String,
+    /// Whole-symbol span.
+    pub range: Range,
+    /// Name selection span (same as `range` for value bindings here).
+    pub selection_range: Range,
+}
+
+/// One workspace-wide symbol with a resolvable `file:` URI string.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct SemanticsWorkspaceSymbol {
+    /// Binding name.
+    pub name: String,
+    /// Pretty-printed type string (shown as container/detail).
+    pub type_str: String,
+    /// `file:` URI as a string (must parse for client delivery).
+    pub uri_str: String,
+    /// Span within the declared file.
+    pub range: Range,
+}
+
+/// Collect value and `val rec` bindings defined in `file_key` within an elaborated file list.
+///
+/// # Arguments
+///
+/// * `elab` — Elaborated top-level declarations.
+/// * `file_key` — Workspace-relative path key to match against each declaration’s `span.file`.
+///
+/// # Returns
+///
+/// Bindings with name, pretty-printed type, and name span.
 pub fn index_file_bindings(elab: &ElabFile, file_key: &str) -> Vec<ValBinding> {
     let mut out = Vec::new();
+    let open_norm = slash_normalized_cow(file_key);
+    let oref = open_norm.as_ref();
     for d in elab {
-        if !compiler_paths_match(file_key, &d.span.file) {
+        if !paths_match_given_open_normalized(oref, &d.span.file) {
             continue;
         }
         match &d.node {
@@ -133,21 +298,34 @@ fn all_val_bindings(elab: &ElabFile) -> Vec<(String, String, Span, Span)> {
     out
 }
 
+/// Build Markdown hover content for the identifier at `(line, character)` when elaboration is available.
+///
+/// # Arguments
+///
+/// * `elab` — Optional elaborated program; hover needs `Some`.
+/// * `file_key` — Current buffer’s path key.
+/// * `text` — Buffer source for [`word_at_cursor`].
+/// * `line` — Zero-based line.
+/// * `character` — Zero-based column (character index into the line, same as [`word_at_cursor`]).
+///
+/// # Returns
+///
+/// Portable hover content, or `None` if nothing matches.
 pub fn hover_markdown(
     elab: Option<&ElabFile>,
     file_key: &str,
     text: &str,
     line: u32,
     character: u32,
-) -> Option<MarkupContent> {
+) -> Option<SemanticsHoverMarkdown> {
     let word = word_at_cursor(text, line, character)?;
     let simple = word.rsplit('.').next()?.to_string();
     let idx = index_file_bindings(elab?, file_key);
     for b in &idx {
         if b.name == simple {
             let md = format!("**`{}`** : `{}`", b.name, b.type_str);
-            return Some(MarkupContent {
-                kind: MarkupKind::Markdown,
+            return Some(SemanticsHoverMarkdown {
+                markdown: true,
                 value: md,
             });
         }
@@ -155,6 +333,19 @@ pub fn hover_markdown(
     None
 }
 
+/// Definition location for the identifier at `(line, character)` in the current file.
+///
+/// # Arguments
+///
+/// * `elab` — Elaborated program; required to resolve bindings.
+/// * `file_key` — Workspace-relative path for the open buffer.
+/// * `uri_str` — Same document as `text`, as a `file:` uniform resource identifier string.
+/// * `text` — Buffer source.
+/// * `line` / `character` — Zero-based cursor position (character column; see [`word_at_cursor`]).
+///
+/// # Returns
+///
+/// Location descriptor at the binding’s name span, or `None`.
 pub fn goto_definition(
     elab: Option<&ElabFile>,
     file_key: &str,
@@ -162,15 +353,15 @@ pub fn goto_definition(
     text: &str,
     line: u32,
     character: u32,
-) -> Option<Location> {
+) -> Option<SemanticsLocation> {
     let word = word_at_cursor(text, line, character)?;
     let simple = word.rsplit('.').next()?.to_string();
     let idx = index_file_bindings(elab?, file_key);
     for b in &idx {
         if b.name == simple {
-            let uri: lsp_types::Uri = uri_str.parse().ok()?;
-            return Some(Location {
-                uri,
+            uri_str.parse::<Uri>().ok()?;
+            return Some(SemanticsLocation {
+                uri_str: uri_str.to_string(),
                 range: span_to_range(&b.name_span),
             });
         }
@@ -178,13 +369,25 @@ pub fn goto_definition(
     None
 }
 
+/// Completion items at `(line, character)` from local bindings and global values when elaboration exists.
+///
+/// # Arguments
+///
+/// * `elab` — Optional elaborated file list (empty completion when `None`).
+/// * `file_key` — Current file path key.
+/// * `text` — Buffer source.
+/// * `line` / `character` — Zero-based cursor (see [`word_at_cursor`]).
+///
+/// # Returns
+///
+/// Completion items (wrap in [`lsp_types::CompletionResponse`] at the protocol edge).
 pub fn completion_at_point(
     elab: Option<&ElabFile>,
     file_key: &str,
     text: &str,
     line: u32,
     character: u32,
-) -> CompletionResponse {
+) -> Vec<CompletionItem> {
     let prefix = word_at_cursor(text, line, character).unwrap_or_default();
     let mut items: Vec<CompletionItem> = Vec::new();
     if let Some(e) = elab {
@@ -217,12 +420,15 @@ pub fn completion_at_point(
                 }
             }
         }
-        // Globals from project
+        // Globals from project (HashSet avoids O(n²) label scans over completion items).
+        let mut global_labels: HashSet<String> =
+            items.iter().map(|item| item.label.clone()).collect();
         for (name, ty, _, _) in all_val_bindings(e) {
-            if items.iter().any(|i| i.label == name) {
+            if global_labels.contains(&name) {
                 continue;
             }
             if prefix.is_empty() || name.starts_with(&prefix) {
+                global_labels.insert(name.clone());
                 items.push(CompletionItem {
                     label: name,
                     kind: Some(CompletionItemKind::VALUE),
@@ -232,10 +438,20 @@ pub fn completion_at_point(
             }
         }
     }
-    CompletionResponse::Array(items)
+    items
 }
 
-pub fn document_highlights(text: &str, line: u32, character: u32) -> Vec<DocumentHighlight> {
+/// Textual highlights of every occurrence of the word at `(line, character)` in `text`.
+///
+/// # Arguments
+///
+/// * `text` — Full buffer.
+/// * `line` / `character` — Zero-based cursor (character column).
+///
+/// # Returns
+///
+/// Highlight ranges per match (may be empty); the LSP binary adds [`lsp_types::DocumentHighlightKind`].
+pub fn document_highlights(text: &str, line: u32, character: u32) -> Vec<Range> {
     let Some(word) = word_at_cursor(text, line, character) else {
         return vec![];
     };
@@ -243,66 +459,82 @@ pub fn document_highlights(text: &str, line: u32, character: u32) -> Vec<Documen
     if simple.is_empty() {
         return vec![];
     }
-    let mut hi = Vec::new();
+    let mut ranges = Vec::new();
     for (i, l) in text.lines().enumerate() {
         let mut start = 0usize;
-        while let Some(pos) = find_word(l, &simple, start) {
-            hi.push(DocumentHighlight {
-                range: Range {
-                    start: Position::new(i as u32, pos as u32),
-                    end: Position::new(i as u32, (pos + simple.len()) as u32),
-                },
-                kind: Some(DocumentHighlightKind::TEXT),
+        let line_scan_budget = l.len().saturating_add(1);
+        for _ in 0..line_scan_budget {
+            let Some(pos) = find_word(l, &simple, start) else {
+                break;
+            };
+            ranges.push(Range {
+                start: Position::new(i as u32, pos as u32),
+                end: Position::new(i as u32, (pos + simple.len()) as u32),
             });
             start = pos + simple.len();
         }
     }
-    hi
+    ranges
 }
 
-fn find_word(hay: &str, needle: &str, start_byte: usize) -> Option<usize> {
-    let h = hay.get(start_byte..)?;
-    let idx = h.find(needle)?;
-    let abs = start_byte + idx;
-    // word boundary: char before not ident
-    if abs > 0 {
-        let c = hay.as_bytes()[abs - 1] as char;
-        if is_ident_char(c) {
-            return find_word(hay, needle, abs + needle.len());
-        }
+fn find_word(hay: &str, needle: &str, mut start_byte: usize) -> Option<usize> {
+    if needle.is_empty() {
+        return None;
     }
-    let after = abs + needle.len();
-    if after < hay.len() {
-        let c = hay.as_bytes()[after] as char;
-        if is_ident_char(c) {
-            return find_word(hay, needle, after);
+    let round_limit = hay.len().saturating_add(1);
+    for _ in 0..round_limit {
+        let h = hay.get(start_byte..)?;
+        let idx = h.find(needle)?;
+        let abs = start_byte + idx;
+        if abs > 0 {
+            let c = hay.as_bytes()[abs - 1] as char;
+            if is_ident_char(c) {
+                start_byte = abs + needle.len();
+                continue;
+            }
         }
+        let after = abs + needle.len();
+        if after < hay.len() {
+            let c = hay.as_bytes()[after] as char;
+            if is_ident_char(c) {
+                start_byte = after;
+                continue;
+            }
+        }
+        return Some(abs);
     }
-    Some(abs)
+    debug_assert!(false, "find_word iteration bound exceeded");
+    None
 }
 
-#[allow(deprecated)]
-pub fn document_symbols(elab: Option<&ElabFile>, file_key: &str) -> DocumentSymbolResponse {
+/// Document outline: value bindings in `file_key` when elaboration is present.
+///
+/// # Arguments
+///
+/// * `elab` — Optional elaborated program.
+/// * `file_key` — File to list symbols for.
+///
+/// # Returns
+///
+/// Flat symbol rows (nested as [`lsp_types::DocumentSymbolResponse::Nested`] in the LSP binary).
+pub fn document_symbols(elab: Option<&ElabFile>, file_key: &str) -> Vec<SemanticsDocumentSymbol> {
     let mut syms = Vec::new();
     let Some(e) = elab else {
-        return DocumentSymbolResponse::Nested(syms);
+        return syms;
     };
     for b in index_file_bindings(e, file_key) {
-        syms.push(DocumentSymbol {
+        let r = span_to_range(&b.name_span);
+        syms.push(SemanticsDocumentSymbol {
             name: b.name,
-            detail: Some(b.type_str.clone()),
-            kind: SymbolKind::FUNCTION,
-            tags: None,
-            deprecated: None,
-            range: span_to_range(&b.name_span),
-            selection_range: span_to_range(&b.name_span),
-            children: None,
+            detail: b.type_str.clone(),
+            range: r,
+            selection_range: r,
         });
     }
-    DocumentSymbolResponse::Nested(syms)
+    syms
 }
 
-fn file_uri_for_workspace_path(workspace_root: &Path, rel_decl_path: &str) -> Option<Uri> {
+fn file_uri_for_workspace_path(workspace_root: &Path, rel_decl_path: &str) -> Option<String> {
     let rel = rel_decl_path.replace('\\', "/");
     let p = workspace_root.join(rel);
     let p = p.canonicalize().unwrap_or(p);
@@ -310,55 +542,89 @@ fn file_uri_for_workspace_path(workspace_root: &Path, rel_decl_path: &str) -> Op
     #[cfg(windows)]
     {
         let rest = s.trim_start_matches('\\');
-        format!("file:///{}", rest.replace('\\', "/")).parse().ok()
+        let st = format!("file:///{}", rest.replace('\\', "/"));
+        st.parse::<Uri>().ok()?;
+        Some(st)
     }
     #[cfg(not(windows))]
     {
-        format!("file://{s}").parse().ok()
+        let st = format!("file://{s}");
+        st.parse::<Uri>().ok()?;
+        Some(st)
     }
 }
 
-#[allow(deprecated)]
+/// Workspace-wide symbols (all value bindings) with `file:` locations under `workspace_root`.
+///
+/// # Arguments
+///
+/// * `elab` — Optional elaborated program.
+/// * `workspace_root` — Absolute workspace path for building `file:` URIs.
+///
+/// # Returns
+///
+/// Workspace symbol rows (map to [`lsp_types::SymbolInformation`] in the LSP binary).
 pub fn workspace_symbol(
     elab: Option<&ElabFile>,
     workspace_root: &Path,
-) -> Vec<lsp_types::SymbolInformation> {
+) -> Vec<SemanticsWorkspaceSymbol> {
     let mut out = Vec::new();
     let Some(e) = elab else {
         return out;
     };
     for (name, ty, span, _) in all_val_bindings(e) {
-        let Some(uri) = file_uri_for_workspace_path(workspace_root, &span.file) else {
+        let Some(uri_str) = file_uri_for_workspace_path(workspace_root, &span.file) else {
             continue;
         };
-        out.push(lsp_types::SymbolInformation {
+        out.push(SemanticsWorkspaceSymbol {
             name,
-            kind: SymbolKind::FUNCTION,
-            tags: None,
-            deprecated: None,
-            location: Location {
-                uri,
-                range: span_to_range(&span),
-            },
-            container_name: Some(ty),
+            type_str: ty,
+            uri_str,
+            range: span_to_range(&span),
         });
     }
     out
 }
 
-pub fn references_in_file(text: &str, line: u32, character: u32, uri_str: &str) -> Vec<Location> {
+/// Same-buffer reference locations as [`document_highlights`], packaged as [`Location`] with `uri_str`.
+///
+/// # Arguments
+///
+/// * `text`, `line`, `character` — Same as [`document_highlights`].
+/// * `uri_str` — Parseable [`Uri`] string for this document.
+///
+/// # Returns
+///
+/// One [`SemanticsLocation`] per highlight range (same `uri_str` repeated).
+pub fn references_in_file(
+    text: &str,
+    line: u32,
+    character: u32,
+    uri_str: &str,
+) -> Vec<SemanticsLocation> {
+    if uri_str.parse::<Uri>().is_err() {
+        return Vec::new();
+    }
     document_highlights(text, line, character)
         .into_iter()
-        .filter_map(|h| {
-            let uri: lsp_types::Uri = uri_str.parse().ok()?;
-            Some(Location {
-                uri,
-                range: h.range,
-            })
+        .map(|range| SemanticsLocation {
+            uri_str: uri_str.to_string(),
+            range,
         })
         .collect()
 }
 
+/// Build a single-file rename [`WorkspaceEdit`] replacing `range` with `new_name`.
+///
+/// # Arguments
+///
+/// * `uri_str` — Target document uniform resource identifier.
+/// * `range` — Span to overwrite.
+/// * `new_name` — Replacement identifier text.
+///
+/// # Returns
+///
+/// `Some(edit)` when `uri_str` parses; unknown schemes yield `None`.
 pub fn workspace_edit_rename(uri_str: &str, range: Range, new_name: &str) -> Option<WorkspaceEdit> {
     let uri: Uri = uri_str.parse().ok()?;
     Some(WorkspaceEdit {
@@ -374,6 +640,15 @@ pub fn workspace_edit_rename(uri_str: &str, range: Range, new_name: &str) -> Opt
     })
 }
 
+/// Selection range hierarchy (stub: one level) from [`prepare_rename`].
+///
+/// # Arguments
+///
+/// * `text`, `line`, `character` — Buffer and zero-based cursor.
+///
+/// # Returns
+///
+/// [`SelectionRange`] or `None` when rename preparation fails.
 pub fn selection_range_at(text: &str, line: u32, character: u32) -> Option<SelectionRange> {
     let r = prepare_rename(text, line, character)?;
     Some(SelectionRange {
@@ -382,19 +657,34 @@ pub fn selection_range_at(text: &str, line: u32, character: u32) -> Option<Selec
     })
 }
 
+/// Valid rename range for the identifier at the cursor, if it matches the parsed word.
+///
+/// # Arguments
+///
+/// * `text` — Buffer source.
+/// * `line` / `character` — Zero-based position (character column).
+///
+/// # Returns
+///
+/// [`Range`] covering the simple name, or `None`.
 pub fn prepare_rename(text: &str, line: u32, character: u32) -> Option<Range> {
     let w = word_at_cursor(text, line, character)?;
     let simple = w.rsplit('.').next()?.to_string();
-    let lines: Vec<&str> = text.lines().collect();
-    let l = *lines.get(line as usize)?;
+    let l = text.lines().nth(line as usize)?;
     let chars: Vec<char> = l.chars().collect();
     let col = character as usize;
     let mut start = col;
-    while start > 0 && is_ident_char(chars[start - 1]) {
+    for _ in 0..col {
+        if start == 0 || !is_ident_char(chars[start - 1]) {
+            break;
+        }
         start -= 1;
     }
     let mut end = col;
-    while end < chars.len() && is_ident_char(chars[end]) {
+    for _ in 0..chars.len() {
+        if end >= chars.len() || !is_ident_char(chars[end]) {
+            break;
+        }
         end += 1;
     }
     if chars.get(start..end).map(|s| s.iter().collect::<String>()) != Some(simple.clone()) {
@@ -406,15 +696,26 @@ pub fn prepare_rename(text: &str, line: u32, character: u32) -> Option<Range> {
     })
 }
 
+/// Best-effort signature help when the cursor is immediately after `(` on a callee name.
+///
+/// # Arguments
+///
+/// * `elab` — Elaborated bindings (required).
+/// * `file_key` — Current file path key.
+/// * `text` — Buffer lines.
+/// * `line` / `character` — Zero-based cursor after the opening parenthesis.
+///
+/// # Returns
+///
+/// Signature label lines (typically one: `name : type`); the LSP binary wraps them in [`lsp_types::SignatureHelp`].
 pub fn signature_help(
     elab: Option<&ElabFile>,
     file_key: &str,
     text: &str,
     line: u32,
     character: u32,
-) -> Option<SignatureHelp> {
-    let lines: Vec<&str> = text.lines().collect();
-    let l = *lines.get(line as usize)?;
+) -> Option<Vec<String>> {
+    let l = text.lines().nth(line as usize)?;
     let col = character as usize;
     if col == 0
         || !l
@@ -428,11 +729,17 @@ pub fn signature_help(
     let prefix = l.get(..col - 1)?;
     let chars: Vec<char> = prefix.chars().collect();
     let mut pos = chars.len();
-    while pos > 0 && chars[pos - 1].is_ascii_whitespace() {
+    for _ in 0..chars.len() {
+        if pos == 0 || !chars[pos - 1].is_ascii_whitespace() {
+            break;
+        }
         pos -= 1;
     }
     let mut start = pos;
-    while start > 0 && is_ident_char(chars[start - 1]) {
+    for _ in 0..pos {
+        if start == 0 || !is_ident_char(chars[start - 1]) {
+            break;
+        }
         start -= 1;
     }
     let fname: String = chars[start..pos].iter().collect();
@@ -440,22 +747,23 @@ pub fn signature_help(
     let idx = index_file_bindings(elab?, file_key);
     for b in idx {
         if b.name == simple {
-            return Some(SignatureHelp {
-                signatures: vec![SignatureInformation {
-                    label: format!("{} : {}", b.name, b.type_str),
-                    documentation: None,
-                    parameters: None,
-                    active_parameter: Some(0),
-                }],
-                active_signature: Some(0),
-                active_parameter: Some(0),
-            });
+            return Some(vec![format!("{} : {}", b.name, b.type_str)]);
         }
     }
     None
 }
 
-/// Inlay hints: type as suffix on lines with `val` bindings (best-effort, same file).
+/// Inlay hints: print inferred types after `val` binding names in `file_key` (same file, best-effort).
+///
+/// # Arguments
+///
+/// * `elab` — Optional elaborated program.
+/// * `file_key` — Path key for filtering bindings.
+/// * `_text` — Reserved for future context-aware placement.
+///
+/// # Returns
+///
+/// Zero or more [`InlayHint`] values.
 pub fn inlay_hints(elab: Option<&ElabFile>, file_key: &str, _text: &str) -> Vec<InlayHint> {
     let mut hints = Vec::new();
     let Some(e) = elab else {
@@ -511,8 +819,17 @@ fn token_type_index(tok: &Token) -> Option<u32> {
     })
 }
 
-/// Build semantic tokens from the **document buffer** (same coordinates as the editor).
-/// If lexing fails (rare constructs), returns empty token data.
+/// Build semantic tokens from the document buffer (editor coordinates).
+///
+/// If lexing fails on exotic input, returns token data with an empty `data` vec.
+///
+/// # Arguments
+///
+/// * `text` — Full source to tokenize.
+///
+/// # Returns
+///
+/// Always `Some`; inner `data` may be empty on lex failure.
 pub fn semantic_tokens(text: &str) -> Option<SemanticTokens> {
     let tokens = match tokenize_xml_aware(text) {
         Ok(t) => t,
@@ -565,11 +882,22 @@ pub fn semantic_tokens(text: &str) -> Option<SemanticTokens> {
     })
 }
 
-/// Folding regions from elaborated top-level `val` / `val rec` spans (compiler path keys).
+/// Folding regions from elaborated top-level `val` / `val rec` spans that live in `file_key`.
+///
+/// # Arguments
+///
+/// * `elab` — Elaborated declarations.
+/// * `file_key` — Workspace-relative path key.
+///
+/// # Returns
+///
+/// Ranges for multi-line bindings (may be empty).
 pub fn folding_ranges_from_elab(elab: &ElabFile, file_key: &str) -> Vec<FoldingRange> {
     let mut out = Vec::new();
+    let open_norm = slash_normalized_cow(file_key);
+    let oref = open_norm.as_ref();
     for d in elab {
-        if !compiler_paths_match(file_key, &d.span.file) {
+        if !paths_match_given_open_normalized(oref, &d.span.file) {
             continue;
         }
         match &d.node {
@@ -593,8 +921,17 @@ pub fn folding_ranges_from_elab(elab: &ElabFile, file_key: &str) -> Vec<FoldingR
     out
 }
 
-/// Prefer elaborated [`Declaration::Val`] / [`Declaration::ValRec`] folding when analysis is available;
-/// otherwise [`folding_ranges`]. If elaboration yields no multi-line regions, falls back to the heuristic.
+/// Prefer elaboration-based [`folding_ranges_from_elab`]; fall back to [`folding_ranges`] when missing or empty.
+///
+/// # Arguments
+///
+/// * `elab` — Optional elaborated file list.
+/// * `file_key` — Current file key when `elab` is `Some`.
+/// * `text` — Raw source for the heuristic fallback.
+///
+/// # Returns
+///
+/// [`FoldingRange`] list.
 pub fn folding_ranges_with_analysis(
     elab: Option<&ElabFile>,
     file_key: Option<&str>,
@@ -609,17 +946,32 @@ pub fn folding_ranges_with_analysis(
     folding_ranges(text)
 }
 
-/// Heuristic folding: one region per top-level `fun` / `val` block.
+/// Heuristic folding: one region per top-level `fun` / `val` block (no elaboration).
+///
+/// # Arguments
+///
+/// * `text` — Full buffer source lines.
+///
+/// # Returns
+///
+/// Best-effort [`FoldingRange`] list.
 pub fn folding_ranges(text: &str) -> Vec<FoldingRange> {
     let mut out = Vec::new();
     let lines: Vec<&str> = text.lines().collect();
+    let line_count = lines.len();
     let mut i = 0usize;
-    while i < lines.len() {
+    for _ in 0..line_count {
+        if i >= lines.len() {
+            break;
+        }
         let t = lines[i].trim_start();
         if t.starts_with("fun ") || t.starts_with("val ") {
             let start_line = i as u32;
             let mut j = i + 1;
-            while j < lines.len() {
+            for _ in 0..line_count {
+                if j >= lines.len() {
+                    break;
+                }
                 let t2 = lines[j].trim_start();
                 if t2.starts_with("fun ") || t2.starts_with("val ") {
                     break;
@@ -708,5 +1060,164 @@ mod folding_tests {
             "heuristic should not see a top-level val/fun block"
         );
         assert_eq!(w.len(), 1);
+    }
+}
+
+/// Fast checks for language-server helpers listed in `mutants.out/timeout.txt` (`word_at_cursor`, `completion_at_point`, …).
+#[cfg(test)]
+mod semantic_api_mutation_guards {
+    use super::*;
+    use crate::elaborated::{Constructor, Expression};
+    use crate::error_types::{Located, Pos, Span};
+    use lsp_types::DocumentChanges;
+
+    fn loc_span(file: &str) -> Span {
+        Span {
+            file: file.into(),
+            first: Pos { line: 1, col: 0 },
+            last: Pos { line: 1, col: 3 },
+        }
+    }
+
+    fn val_binding(name: &str, file: &str) -> crate::elaborated::LocatedDeclaration {
+        let ty = Located::dummy(Constructor::Error);
+        let ex = Located::dummy(Expression::Error);
+        Located::new(Declaration::Val(name.into(), 0, ty, ex), loc_span(file))
+    }
+
+    #[test]
+    fn word_at_cursor_extracts_identifiers() {
+        assert_eq!(word_at_cursor("val abc = 1", 0, 4).as_deref(), Some("abc"));
+        assert_eq!(
+            word_at_cursor("open Mod.Sub\n", 0, 7).as_deref(),
+            Some("Mod.Sub")
+        );
+        assert_eq!(word_at_cursor("val x' = 1", 0, 5).as_deref(), Some("x'"));
+        assert!(word_at_cursor("   \n", 0, 1).is_none());
+        assert!(word_at_cursor("a", 0, 5).is_none());
+    }
+
+    #[test]
+    fn span_to_range_shifts_compiler_lines_to_lsp() {
+        let span = Span {
+            file: "f.ur".into(),
+            first: Pos { line: 2, col: 1 },
+            last: Pos { line: 3, col: 5 },
+        };
+        let r = span_to_range(&span);
+        assert_eq!(r.start.line, 1);
+        assert_eq!(r.end.line, 2);
+        assert_eq!(r.start.character, 1);
+    }
+
+    #[test]
+    fn compiler_paths_match_accepts_suffix_and_backslash() {
+        assert!(compiler_paths_match("lib/M.ur", "lib/M.ur"));
+        assert!(compiler_paths_match("M.ur", "nested/lib/M.ur"));
+        assert!(compiler_paths_match(r"a\b.ur", "a/b.ur"));
+        assert!(!compiler_paths_match("A.ur", "B.ur"));
+    }
+
+    #[test]
+    fn index_file_bindings_scopes_to_path_key() {
+        let elab: ElabFile = vec![
+            val_binding("in_file", "here.ur"),
+            val_binding("other", "there.ur"),
+        ];
+        let local = index_file_bindings(&elab, "here.ur");
+        assert_eq!(local.len(), 1);
+        assert_eq!(local[0].name, "in_file");
+        let merged = super::all_val_bindings(&elab);
+        assert!(merged.iter().any(|(n, _, _, _)| n == "in_file"));
+        assert!(merged.iter().any(|(n, _, _, _)| n == "other"));
+    }
+
+    #[test]
+    fn hover_markdown_and_goto_definition_resolve_local_val() {
+        let elab: ElabFile = vec![val_binding("fooey", "buf.ur")];
+        let ho = hover_markdown(Some(&elab), "buf.ur", "val fooey = 1\n", 0, 4);
+        assert!(ho.is_some());
+        assert!(ho.unwrap().value.contains("fooey"));
+        let uri = format!("file://{}", std::env::temp_dir().to_string_lossy());
+        let go = goto_definition(Some(&elab), "buf.ur", &uri, "val fooey = 1\n", 0, 4);
+        assert!(go.is_some());
+    }
+
+    #[test]
+    fn completion_response_includes_typed_fields() {
+        let elab: ElabFile = vec![val_binding("foobar", "z.ur")];
+        let items = completion_at_point(Some(&elab), "z.ur", "foo", 0, 0);
+        let item = items
+            .iter()
+            .find(|i| i.label == "foobar")
+            .expect("local val");
+        assert!(item.kind.is_some());
+        assert!(item.detail.as_ref().is_some_and(|d| !d.is_empty()));
+    }
+
+    #[test]
+    fn document_highlights_two_occurrences() {
+        let buf = "val alpha = 1\nval beta = alpha\n";
+        let hi = document_highlights(buf, 0, 4);
+        assert!(
+            hi.len() >= 2,
+            "expected repeated identifier to produce multiple highlight ranges"
+        );
+    }
+
+    #[test]
+    fn workspace_symbol_returns_named_location() {
+        let tmp = tempfile::tempdir().unwrap();
+        let elab: ElabFile = vec![val_binding("globSym", "one.ur")];
+        let syms = workspace_symbol(Some(&elab), tmp.path());
+        assert_eq!(syms.len(), 1);
+        assert_eq!(syms[0].name, "globSym");
+        assert!(syms[0].uri_str.starts_with("file://"));
+    }
+
+    #[test]
+    fn references_in_file_packs_locations() {
+        let locs = references_in_file("val k = 1\nk\n", 0, 4, "file:///tmp/x.ur");
+        assert!(!locs.is_empty());
+    }
+
+    #[test]
+    fn file_uri_for_workspace_path_is_file_scheme() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("only.ur"), "").unwrap();
+        let uri = super::file_uri_for_workspace_path(tmp.path(), "only.ur").expect("uri");
+        assert!(uri.starts_with("file://"), "None mutant loses file: URI");
+    }
+
+    #[test]
+    fn workspace_edit_rename_carries_text_change() {
+        let range = Range {
+            start: Position::new(0, 0),
+            end: Position::new(0, 3),
+        };
+        let edit = workspace_edit_rename("file:///tmp/r.ur", range, "new").expect("edit");
+        let DocumentChanges::Edits(edits) = edit.document_changes.expect("changes") else {
+            panic!("expected text edits");
+        };
+        assert!(!edits.is_empty());
+    }
+
+    #[test]
+    fn selection_range_and_prepare_rename_align_on_word() {
+        let buf = "val renamed =\n  0\n";
+        let sr = selection_range_at(buf, 0, 4).expect("range");
+        assert_eq!(sr.range.start.line, 0);
+        let pr = prepare_rename(buf, 0, 4).expect("rename");
+        assert!(pr.end.character > pr.start.character);
+    }
+
+    #[test]
+    fn signature_help_identifies_callee_before_paren() {
+        let elab: ElabFile = vec![val_binding("callee", "c.ur")];
+        let line = "callee(";
+        let labels = signature_help(Some(&elab), "c.ur", line, 0, line.len() as u32)
+            .expect("signature help");
+        assert!(!labels.is_empty());
+        assert!(labels[0].contains("callee"));
     }
 }

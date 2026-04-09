@@ -2,12 +2,10 @@
 //!
 //! Ports `mono_util.sml`.
 
-#![allow(dead_code, unused_variables, unused_imports)]
-
 use crate::datatype_kind::DatatypeKind;
 use crate::monomorphized::{
-    CaseMeta, DatatypeDef, DatatypeRef, Decl, Exp, JavaScriptMode, LocDecl, LocExp, LocPat, LocTyp,
-    Pat, PatCon, Policy, QueryMeta, Typ,
+    CaseMeta, Decl, Exp, JavaScriptMode, LocDecl, LocExp, LocPat, LocTyp, Pat, Policy, QueryMeta,
+    Typ,
 };
 
 // ---------------------------------------------------------------------------

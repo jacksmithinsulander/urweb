@@ -12,19 +12,19 @@
 //!
 //! Mirrors `especialize.sml`.
 
-#![allow(dead_code)]
-
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
+use crate::compiler_diagnostics::report_core_recovery;
 use crate::core::dead_code_elimination::shake;
 use crate::core::environment::pat_binds_n;
-use crate::core::local_reduction::reduce;
+use crate::core::local_reduction::reduce_with_errors;
 use crate::core::untangling::untangle;
 use crate::core::utilities::constructor as con_util;
 use crate::core::utilities::file as file_util;
 use crate::core::*;
-use crate::error_types::{Located, Span};
+use crate::diagnostics::{DiagnosticId, DiagnosticLocale, DiagnosticPayload};
+use crate::error_types::{ErrorReporter, Located, Span};
 
 // ---------------------------------------------------------------------------
 // Lift / substitution helpers
@@ -826,8 +826,7 @@ fn build_known(file: &File) -> HashSet<usize> {
     // Fixed-point: iterate until stable (bounded to prevent runaway mutants).
     const MAX_BUILD_KNOWN_ITERATIONS: usize = 10_000;
     let mut known: HashSet<usize> = HashSet::new();
-    let mut iterations = 0;
-    loop {
+    for _ in 0..MAX_BUILD_KNOWN_ITERATIONS {
         let mut changed = false;
         for d in file {
             match &d.node {
@@ -853,8 +852,7 @@ fn build_known(file: &File) -> HashSet<usize> {
                 _ => {}
             }
         }
-        iterations += 1;
-        if !changed || iterations >= MAX_BUILD_KNOWN_ITERATIONS {
+        if !changed {
             break;
         }
     }
@@ -895,8 +893,13 @@ fn rewrite_exp(
     e: LocatedExpression,
     known: &HashSet<usize>,
     st: &mut State,
+    errors: &mut Option<&mut ErrorReporter>,
 ) -> LocatedExpression {
-    let _span = e.span.clone();
+    let detail_span = e.span.clone();
+    let locale_fallback = errors
+        .as_ref()
+        .map(|reporter| reporter.diagnostic_locale)
+        .unwrap_or(DiagnosticLocale::En);
 
     // Check if this is an application of a known specialized function.
     match get_app(&e) {
@@ -904,18 +907,20 @@ fn rewrite_exp(
             // Rewrite all args first.
             let xs: Vec<LocatedExpression> = xs
                 .into_iter()
-                .map(|x| rewrite_exp(env, x, known, st))
+                .map(|x| rewrite_exp(env, x, known, st, errors))
                 .collect();
 
             let Some(fi) = st.funcs.get(&f).cloned() else {
-                eprintln!(
-                    "{}",
-                    crate::compiler_diagnostics::internal_compiler_error(
-                        "especialize::rewrite_exp",
-                        "missing specialization metadata for a function that was just in the cache",
-                    )
+                report_core_recovery(
+                    errors,
+                    detail_span,
+                    DiagnosticPayload::new(
+                        DiagnosticId::CoreEspecializeMissingSpecializationMetadata,
+                        vec![format!("name_id={f}")],
+                    ),
+                    locale_fallback,
                 );
-                return rewrite_exp_default(env, e, known, st);
+                return rewrite_exp_default(env, e, known, st, errors);
             };
             let const_args = fi.const_args;
             let typ = fi.typ.clone();
@@ -941,7 +946,7 @@ fn rewrite_exp(
                 .all(|e| matches!(e.node, Expression::Rel(_)));
 
             if all_rel || fxs_prime.is_empty() {
-                return rewrite_exp_default(env, e, known, st);
+                return rewrite_exp_default(env, e, known, st, errors);
             }
 
             let key = CacheKey {
@@ -997,7 +1002,7 @@ fn rewrite_exp(
 
             let sub_result = sub_body(body, typ_fi, &fxs_prime);
             let Some((mut new_body, mut new_typ)) = sub_result else {
-                return rewrite_exp_default(env, e, known, st);
+                return rewrite_exp_default(env, e, known, st, errors);
             };
 
             // Wrap in lambdas for the captured free variables (foldl → increasing order).
@@ -1019,10 +1024,10 @@ fn rewrite_exp(
             // (mirrors ReduceLocal.reduceExp body')
             // We use the file-level reduce on a synthetic file.
             // For now use the expression-level reduce from local_reduction.
-            new_body = crate::core::local_reduction::reduce_exp(new_body);
+            new_body = crate::core::local_reduction::reduce_exp_with_errors(new_body, errors);
 
             // Recursively rewrite the new body.
-            new_body = rewrite_exp(env, new_body, known, st);
+            new_body = rewrite_exp(env, new_body, known, st, errors);
 
             // Emit as new decl.
             st.decls.push((name, f_prime, new_typ, new_body, tag));
@@ -1046,7 +1051,7 @@ fn rewrite_exp(
             }
             result
         }
-        _ => rewrite_exp_default(env, e, known, st),
+        _ => rewrite_exp_default(env, e, known, st, errors),
     }
 }
 
@@ -1056,6 +1061,7 @@ fn rewrite_exp_default(
     e: LocatedExpression,
     known: &HashSet<usize>,
     st: &mut State,
+    errors: &mut Option<&mut ErrorReporter>,
 ) -> LocatedExpression {
     let span = e.span.clone();
     match e.node {
@@ -1066,7 +1072,7 @@ fn rewrite_exp_default(
             Located::new(Expression::Constructor(dk, pc, cs, None), span)
         }
         Expression::Constructor(dk, pc, cs, Some(arg)) => {
-            let arg = rewrite_exp(env, *arg, known, st);
+            let arg = rewrite_exp(env, *arg, known, st, errors);
             Located::new(
                 Expression::Constructor(dk, pc, cs, Some(Box::new(arg))),
                 span,
@@ -1075,64 +1081,64 @@ fn rewrite_exp_default(
         Expression::FfiApp(m, x, es) => {
             let es = es
                 .into_iter()
-                .map(|(e, t)| (rewrite_exp(env, e, known, st), t))
+                .map(|(e, t)| (rewrite_exp(env, e, known, st, errors), t))
                 .collect();
             Located::new(Expression::FfiApp(m, x, es), span)
         }
         Expression::App(f, a) => {
-            let f = rewrite_exp(env, *f, known, st);
-            let a = rewrite_exp(env, *a, known, st);
+            let f = rewrite_exp(env, *f, known, st, errors);
+            let a = rewrite_exp(env, *a, known, st, errors);
             Located::new(Expression::App(Box::new(f), Box::new(a)), span)
         }
         Expression::Abs(x, t, rt, body) => {
             let mut new_env = vec![(x.clone(), t.clone())];
             new_env.extend_from_slice(env);
-            let body = rewrite_exp(&new_env, *body, known, st);
+            let body = rewrite_exp(&new_env, *body, known, st, errors);
             Located::new(Expression::Abs(x, t, rt, Box::new(body)), span)
         }
         Expression::CApp(f, c) => {
-            let f = rewrite_exp(env, *f, known, st);
+            let f = rewrite_exp(env, *f, known, st, errors);
             Located::new(Expression::CApp(Box::new(f), c), span)
         }
         Expression::CAbs(x, k, body) => {
             // CAbs doesn't bind an expression variable.
-            let body = rewrite_exp(env, *body, known, st);
+            let body = rewrite_exp(env, *body, known, st, errors);
             Located::new(Expression::CAbs(x, k, Box::new(body)), span)
         }
         Expression::KAbs(x, body) => {
-            let body = rewrite_exp(env, *body, known, st);
+            let body = rewrite_exp(env, *body, known, st, errors);
             Located::new(Expression::KAbs(x, Box::new(body)), span)
         }
         Expression::KApp(f, k) => {
-            let f = rewrite_exp(env, *f, known, st);
+            let f = rewrite_exp(env, *f, known, st, errors);
             Located::new(Expression::KApp(Box::new(f), k), span)
         }
         Expression::Record(fields) => {
             let fields = fields
                 .into_iter()
-                .map(|(c1, e, c2)| (c1, rewrite_exp(env, e, known, st), c2))
+                .map(|(c1, e, c2)| (c1, rewrite_exp(env, e, known, st, errors), c2))
                 .collect();
             Located::new(Expression::Record(fields), span)
         }
         Expression::Field(e, c, meta) => {
-            let e = rewrite_exp(env, *e, known, st);
+            let e = rewrite_exp(env, *e, known, st, errors);
             Located::new(Expression::Field(Box::new(e), c, meta), span)
         }
         Expression::Concat(e1, c1, e2, c2) => {
-            let e1 = rewrite_exp(env, *e1, known, st);
-            let e2 = rewrite_exp(env, *e2, known, st);
+            let e1 = rewrite_exp(env, *e1, known, st, errors);
+            let e2 = rewrite_exp(env, *e2, known, st, errors);
             Located::new(Expression::Concat(Box::new(e1), c1, Box::new(e2), c2), span)
         }
         Expression::Cut(e, c, meta) => {
-            let e = rewrite_exp(env, *e, known, st);
+            let e = rewrite_exp(env, *e, known, st, errors);
             Located::new(Expression::Cut(Box::new(e), c, meta), span)
         }
         Expression::CutMulti(e, c, meta) => {
-            let e = rewrite_exp(env, *e, known, st);
+            let e = rewrite_exp(env, *e, known, st, errors);
             Located::new(Expression::CutMulti(Box::new(e), c, meta), span)
         }
         Expression::Case(e, arms, rt) => {
-            let e = rewrite_exp(env, *e, known, st);
+            let e = rewrite_exp(env, *e, known, st, errors);
             let arms = arms
                 .into_iter()
                 .map(|(p, body)| {
@@ -1141,34 +1147,34 @@ fn rewrite_exp_default(
                     let mut new_env: Vec<(String, LocatedConstructor)> =
                         pat_binds.into_iter().rev().collect();
                     new_env.extend_from_slice(env);
-                    let body = rewrite_exp(&new_env, body, known, st);
+                    let body = rewrite_exp(&new_env, body, known, st, errors);
                     (p, body)
                 })
                 .collect();
             Located::new(Expression::Case(Box::new(e), arms, rt), span)
         }
         Expression::Write(e) => {
-            let e = rewrite_exp(env, *e, known, st);
+            let e = rewrite_exp(env, *e, known, st, errors);
             Located::new(Expression::Write(Box::new(e)), span)
         }
         Expression::Closure(n, es) => {
             let es = es
                 .into_iter()
-                .map(|e| rewrite_exp(env, e, known, st))
+                .map(|e| rewrite_exp(env, e, known, st, errors))
                 .collect();
             Located::new(Expression::Closure(n, es), span)
         }
         Expression::Let(x, t, e1, e2) => {
-            let e1 = rewrite_exp(env, *e1, known, st);
+            let e1 = rewrite_exp(env, *e1, known, st, errors);
             let mut new_env = vec![(x.clone(), t.clone())];
             new_env.extend_from_slice(env);
-            let e2 = rewrite_exp(&new_env, *e2, known, st);
+            let e2 = rewrite_exp(&new_env, *e2, known, st, errors);
             Located::new(Expression::Let(x, t, Box::new(e1), Box::new(e2)), span)
         }
         Expression::ServerCall(n, es, t, fm) => {
             let es = es
                 .into_iter()
-                .map(|e| rewrite_exp(env, e, known, st))
+                .map(|e| rewrite_exp(env, e, known, st, errors))
                 .collect();
             Located::new(Expression::ServerCall(n, es, t, fm), span)
         }
@@ -1265,6 +1271,7 @@ fn specialize_pass(
     funcs: HashMap<usize, FuncInfo>,
     specialized: HashSet<usize>,
     file: File,
+    errors: &mut Option<&mut ErrorReporter>,
 ) -> (bool, File, HashMap<usize, FuncInfo>, HashSet<usize>) {
     let known = build_known(&file);
     let max_name = file_util::max_name(&file) + 1;
@@ -1314,14 +1321,14 @@ fn specialize_pass(
         } else {
             match d.node.clone() {
                 Declaration::Val(x, n, t, e, s) => {
-                    let e2 = rewrite_exp(&[], e, &known, &mut st);
+                    let e2 = rewrite_exp(&[], e, &known, &mut st, errors);
                     Located::new(Declaration::Val(x, n, t, e2, s), span.clone())
                 }
                 Declaration::ValRec(vis) => {
                     let vis2 = vis
                         .into_iter()
                         .map(|(x, n, t, e, s)| {
-                            let e2 = rewrite_exp(&[], e, &known, &mut st);
+                            let e2 = rewrite_exp(&[], e, &known, &mut st, errors);
                             (x, n, t, e2, s)
                         })
                         .collect();
@@ -1337,8 +1344,8 @@ fn specialize_pass(
                     pk_exp,
                     unique_con,
                 } => {
-                    let exp_b = rewrite_exp(&[], exp, &known, &mut st);
-                    let pk_exp_b = rewrite_exp(&[], pk_exp, &known, &mut st);
+                    let exp_b = rewrite_exp(&[], exp, &known, &mut st, errors);
+                    let pk_exp_b = rewrite_exp(&[], pk_exp, &known, &mut st, errors);
                     Located::new(
                         Declaration::Table {
                             sql_name,
@@ -1354,12 +1361,12 @@ fn specialize_pass(
                     )
                 }
                 Declaration::View(x, n, s, e, t) => {
-                    let eb = rewrite_exp(&[], e, &known, &mut st);
+                    let eb = rewrite_exp(&[], e, &known, &mut st, errors);
                     Located::new(Declaration::View(x, n, s, eb, t), span.clone())
                 }
                 Declaration::Task(e1, e2) => {
-                    let e1b = rewrite_exp(&[], e1, &known, &mut st);
-                    let e2b = rewrite_exp(&[], e2, &known, &mut st);
+                    let e1b = rewrite_exp(&[], e1, &known, &mut st, errors);
+                    let e2b = rewrite_exp(&[], e2, &known, &mut st, errors);
                     Located::new(Declaration::Task(e1b, e2b), span.clone())
                 }
                 other => Located::new(other, span.clone()),
@@ -1434,16 +1441,17 @@ fn especialize_loop(
     specialized: HashSet<usize>,
     file: File,
     iterations: usize,
+    errors: &mut Option<&mut ErrorReporter>,
 ) -> File {
     if iterations >= MAX_ESPECIALIZE_ITERATIONS {
         return file;
     }
-    let file = reduce(file);
-    let (changed, file, funcs, specialized) = specialize_pass(funcs, specialized, file);
+    let file = reduce_with_errors(file, errors);
+    let (changed, file, funcs, specialized) = specialize_pass(funcs, specialized, file, errors);
     if changed {
         let file = untangle(file);
         let file = shake(file);
-        especialize_loop(funcs, specialized, file, iterations + 1)
+        especialize_loop(funcs, specialized, file, iterations + 1, errors)
     } else {
         file
     }
@@ -1455,7 +1463,13 @@ fn especialize_loop(
 
 /// Run the expression specialization pass to a fixed point.
 pub fn especialize(file: File) -> File {
-    especialize_loop(HashMap::new(), HashSet::new(), file, 0)
+    let mut no_errors = None;
+    especialize_with_reporter(file, &mut no_errors)
+}
+
+/// Like [`especialize`] but records recoverable internal diagnostics on `errors` when provided.
+pub fn especialize_with_reporter(file: File, errors: &mut Option<&mut ErrorReporter>) -> File {
+    especialize_loop(HashMap::new(), HashSet::new(), file, 0, errors)
 }
 
 // ---------------------------------------------------------------------------
@@ -1471,16 +1485,8 @@ mod tests {
         Located::dummy(node)
     }
 
-    fn dummy_kind() -> LocatedKind {
-        dummy(Kind::Type)
-    }
-
     fn dummy_con() -> LocatedConstructor {
         dummy(Constructor::Unit)
-    }
-
-    fn dummy_span() -> Span {
-        Span::dummy()
     }
 
     /// Empty file passes through unchanged.

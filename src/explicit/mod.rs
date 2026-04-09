@@ -4,6 +4,8 @@
 //! unification variables. Simplified form before Core.
 //!
 //! Mirrors `expl.sml`.
+//!
+//! **Style:** new/edited Rust here follows [README.md](../../README.md) Rust code style (exceptions documented there).
 
 pub mod corify;
 pub mod environment;

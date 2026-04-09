@@ -2,12 +2,17 @@
 //!
 //! Requires `gdb` on PATH and a trivial debug binary (`target/debug/deeptest`).
 
+mod common;
+
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::OnceLock;
 
 static C_TEST_BIN: OnceLock<PathBuf> = OnceLock::new();
+
+/// Upper bound for DAP framing reads in this test helper; normal paths break on blank line or EOF first.
+const SMOKE_IO_LOOP_MAX_ROUNDS: u64 = u64::MAX;
 
 fn deeptest_executable() -> &'static PathBuf {
     C_TEST_BIN.get_or_init(|| {
@@ -53,13 +58,15 @@ fn framing_write(w: &mut impl Write, v: &serde_json::Value) -> std::io::Result<(
 
 fn framing_read(r: &mut impl BufRead) -> std::io::Result<Option<serde_json::Value>> {
     let mut len: Option<usize> = None;
-    loop {
+    let mut saw_blank_line = false;
+    for _ in 0..SMOKE_IO_LOOP_MAX_ROUNDS {
         let mut line = String::new();
         if r.read_line(&mut line)? == 0 {
             return Ok(None);
         }
         let h = line.trim_end_matches(['\r', '\n']);
         if h.is_empty() {
+            saw_blank_line = true;
             break;
         }
         if let Some(rest) = h.strip_prefix("Content-Length:") {
@@ -69,6 +76,12 @@ fn framing_read(r: &mut impl BufRead) -> std::io::Result<Option<serde_json::Valu
                     .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "length"))?,
             );
         }
+    }
+    if !saw_blank_line {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "DAP framing header lines exceeded iteration bound",
+        ));
     }
     let n = len.ok_or_else(|| {
         std::io::Error::new(std::io::ErrorKind::InvalidData, "missing Content-Length")
@@ -84,14 +97,12 @@ fn dap_initialize_and_launch_smoke() {
         return;
     }
     if !gdb_available() {
-        eprintln!("skip debugger_gdb_smoke: gdb not found");
+        ur::cli_common::writeln_stderr_line("skip debugger_gdb_smoke: gdb not found");
         return;
     }
 
     let exe = deeptest_executable();
-    let ur_dbg = std::env::var_os("CARGO_BIN_EXE_ur_debugger").expect(
-        "run as `cargo test --test debugger_gdb_smoke` so Cargo sets CARGO_BIN_EXE_ur_debugger",
-    );
+    let ur_dbg = common::ur_package_binary("ur-debugger");
     let mut child = Command::new(ur_dbg)
         .arg("--dap")
         .stdin(Stdio::piped())

@@ -1,10 +1,16 @@
-/// Normalize LALRPOP output so `clippy` stays clean without crate-level lint suppressions.
+//! Build script: compile `grammar.lalrpop` and normalize the emitted Rust so the included parser
+//! stays buildable under strict `clippy` for issues we can fix mechanically.
+//!
+//! LALRPOP’s generated `grammar.rs` still carries the compiler attributes it emits (`#[allow(...)]`
+//! on parser submodules). Those are generator output, not project `src/**/*.rs` suppressions.
+
+/// Collapse stray blank lines after outer attributes and apply small mechanical fixes LALRPOP does not emit.
 fn postprocess_grammar_rs(path: &std::path::Path) {
     let Ok(mut s) = std::fs::read_to_string(path) else {
         return;
     };
 
-    // `clippy::empty_line_after_outer_attr`: lalrpop can insert an extra newline after allow attrs.
+    // `clippy::empty_line_after_outer_attr`: lalrpop can insert an extra newline after `#[rustfmt::skip]`.
     for (pat, rep) in [
         (
             "#![allow(clippy::type_complexity, dead_code)]\r\n\r\n",
@@ -31,30 +37,32 @@ fn postprocess_grammar_rs(path: &std::path::Path) {
         "(usize, Vec<(String, Option<LocCon>, LocExp)>, usize)",
         "crate::parse::GrammarConLamTriple",
     );
-    // Nested modules in the generated file use `super::` incorrectly for this path.
     s = s.replace(
         "super::GrammarConLamTriple",
         "crate::parse::GrammarConLamTriple",
     );
-    // `clippy::explicit_auto_deref`
     s = s.replace("(*rest).node", "rest.node");
 
     let _ = std::fs::write(path, s);
 }
 
+/// Run LALRPOP on `src/parse/grammar.lalrpop`, normalize emitted Rust, and print `cargo:` lines for cfg/output.
 fn main() {
-    // Always generate the parser from the LALRPOP grammar. Conflicts are hard
-    // errors (no yacc-style default resolution) — keep the CFG LangSec-strict.
-    println!("cargo::rustc-check-cfg=cfg(generated_parser)");
-    if let Err(e) = lalrpop::Configuration::new()
+    use std::io::Write as _; // `writeln!` to stderr without `eprintln!`.
+
+    println!("cargo::rustc-check-cfg=cfg(generated_parser)"); // Declare `generated_parser` for `cfg` checking.
+    if let Err(lalrpop_error) = lalrpop::Configuration::new() // Parser generation from the LALRPOP grammar file.
         .use_cargo_dir_conventions()
         .process_file("src/parse/grammar.lalrpop")
     {
-        eprintln!(
-            "lalrpop failed to build the parser from src/parse/grammar.lalrpop:\n{e}\n\
+        let mut lock = std::io::stderr().lock(); // Single-writer lock for the failure message.
+        let _ =
+            writeln!( // Surface LALRPOP errors on stderr before exiting.
+            lock,
+            "lalrpop failed to build the parser from src/parse/grammar.lalrpop:\n{lalrpop_error}\n\
              Fix grammar conflicts or errors, then run cargo build again."
         );
-        std::process::exit(1);
+        std::process::exit(1); // Signal failure to Cargo.
     }
 
     postprocess_grammar_rs(

@@ -1,0 +1,8 @@
+# Workspace-level Cargo configuration.
+#
+# `cargo nt` is a shorthand for `cargo nextest run` — the preferred test runner for this workspace.
+# nextest runs test binaries in parallel and provides cleaner output than `cargo test`.
+# Install once with: cargo install cargo-nextest --locked
+
+[alias]
+nt = "nextest run"

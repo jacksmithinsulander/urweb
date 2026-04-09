@@ -19,10 +19,10 @@
 //! mirroring the SML original which builds new record values on each binding.
 //!
 //! Mirrors `elab_env.sml` (1721 lines).
+//!
+//! Public binders and [`hnorm_sgn`] document `# Arguments` / `# Returns`; [`new_named_id`] is thread-safe.
 
-#![allow(dead_code, unused_variables, unused_imports)]
-
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 
 use super::type_operations;
@@ -31,8 +31,7 @@ use crate::elaborated::{
     CaseMeta, Constructor, DatatypeDecl, Declaration, ElaboratedDeclaration, Explicitness,
     Expression, FieldMeta, Kind, LocatedConstructor, LocatedDeclaration,
     LocatedElaboratedDeclaration, LocatedExpression, LocatedKind, LocatedPattern, LocatedSignature,
-    LocatedSignatureItem, LocatedStructure, Pattern, PatternConstructor, RestMeta, Signature,
-    SignatureItem, Structure,
+    LocatedSignatureItem, Pattern, RestMeta, Signature, SignatureItem,
 };
 use crate::error_types::{Located, Span};
 
@@ -46,18 +45,218 @@ use crate::error_types::{Located, Span};
 /// Mirrors `val namedCounter = ref 0` in `elab_env.sml`.
 static NAMED_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
-/// Allocate a fresh globally-unique id. Thread-safe.
+/// Allocate a fresh globally unique id for [`Constructor::Named`], expressions, signatures, structures.
+///
+/// # Returns
+///
+/// Next counter value (monotonic, [`AtomicUsize::fetch_add`]).
 pub fn new_named_id() -> usize {
     NAMED_COUNTER.fetch_add(1, AtomicOrdering::Relaxed)
 }
 
-/// Reset the counter to zero — only intended for isolated unit tests.
+/// Reset the global named-id counter to zero — only for isolated unit tests.
 ///
 /// # Safety
-/// Must not be called while any elaboration is in progress.
+///
+/// Must not run while elaboration that allocates named ids is in progress.
+///
+/// # Returns
+///
+/// Nothing.
 #[cfg(test)]
 pub fn reset_named_counter() {
     NAMED_COUNTER.store(0, AtomicOrdering::Relaxed);
+}
+
+// ---------------------------------------------------------------------------
+// Constructor head normalization with `named_c` (expression typing only)
+// ---------------------------------------------------------------------------
+
+/// Walk the left spine of [`Constructor::App`] / [`Constructor::KApp`] and inline
+/// [`Constructor::Named`] when [`Env::lookup_c_named`] has a body — arguments are not traversed.
+///
+/// # Arguments
+///
+/// * `elaboration_environment` — Holds `named_c` definitions.
+/// * `constructor` — Type at an application / kind-application head.
+///
+/// # Returns
+///
+/// Spine with alias heads replaced by their definition bodies (chained aliases recurse).
+fn expand_named_left_spine_in_constructor(
+    elaboration_environment: &Env,
+    constructor: &LocatedConstructor,
+) -> LocatedConstructor {
+    match &constructor.node {
+        Constructor::Named(id) => {
+            if let Ok((_, _, Some(definition))) = elaboration_environment.lookup_c_named(*id) {
+                expand_named_left_spine_in_constructor(elaboration_environment, definition)
+            } else {
+                constructor.clone()
+            }
+        }
+        Constructor::ModProj(module_id, path, name) => {
+            if let Some(definition) = resolve_modproj_constructor_definition(
+                elaboration_environment,
+                *module_id,
+                path,
+                name,
+            ) {
+                expand_named_left_spine_in_constructor(elaboration_environment, &definition)
+            } else {
+                constructor.clone()
+            }
+        }
+        Constructor::KApp(function_constructor, kind_argument) => {
+            let expanded_head = expand_named_left_spine_in_constructor(
+                elaboration_environment,
+                function_constructor,
+            );
+            Located::new(
+                Constructor::KApp(Box::new(expanded_head), kind_argument.clone()),
+                constructor.span.clone(),
+            )
+        }
+        Constructor::App(function_constructor, argument_constructor) => {
+            let expanded_head = expand_named_left_spine_in_constructor(
+                elaboration_environment,
+                function_constructor,
+            );
+            Located::new(
+                Constructor::App(Box::new(expanded_head), argument_constructor.clone()),
+                constructor.span.clone(),
+            )
+        }
+        _ => constructor.clone(),
+    }
+}
+
+/// [`expand_named_left_spine_in_constructor`] then [`type_operations::hnorm_con`], iterated.
+///
+/// Call sites: expression typing for `f e` / `e[c]` heads only — not [`super::elaborate::unify_cons`].
+///
+/// # Arguments
+///
+/// * `elaboration_environment` — Elaboration environment.
+/// * `constructor` — Inferred type of function or constructor abstraction head.
+///
+/// # Returns
+///
+/// Approximates ML `normCon env` for that head so `KApp(KAbs …, k)` can beta-reduce.
+pub fn hnorm_con_expression_head(
+    elaboration_environment: &Env,
+    mut constructor: LocatedConstructor,
+) -> LocatedConstructor {
+    for _ in 0u32..32u32 {
+        constructor = type_operations::hnorm_con(expand_named_left_spine_in_constructor(
+            elaboration_environment,
+            &constructor,
+        ));
+    }
+    constructor
+}
+
+/// Expand every [`Constructor::Named`] under `App` / `KApp` (including `App` arguments).
+///
+/// For `e[c]` typing only — not for value `f e` (boot regressed when used there).
+fn expand_named_abbrev_in_constructor_full(
+    elaboration_environment: &Env,
+    constructor: &LocatedConstructor,
+) -> LocatedConstructor {
+    match &constructor.node {
+        Constructor::Named(id) => {
+            if let Ok((_, _, Some(definition))) = elaboration_environment.lookup_c_named(*id) {
+                return expand_named_abbrev_in_constructor_full(
+                    elaboration_environment,
+                    definition,
+                );
+            }
+            constructor.clone()
+        }
+        Constructor::ModProj(module_id, path, name) => {
+            if let Some(definition) = resolve_modproj_constructor_definition(
+                elaboration_environment,
+                *module_id,
+                path,
+                name,
+            ) {
+                return expand_named_abbrev_in_constructor_full(
+                    elaboration_environment,
+                    &definition,
+                );
+            }
+            constructor.clone()
+        }
+        Constructor::App(function_constructor, argument_constructor) => {
+            let expanded_head = expand_named_abbrev_in_constructor_full(
+                elaboration_environment,
+                function_constructor,
+            );
+            let expanded_argument = expand_named_abbrev_in_constructor_full(
+                elaboration_environment,
+                argument_constructor,
+            );
+            if let Constructor::Named(named_id) = expanded_head.node {
+                if let Ok((_, _, Some(definition))) =
+                    elaboration_environment.lookup_c_named(named_id)
+                {
+                    return Located::new(
+                        Constructor::App(Box::new(definition.clone()), Box::new(expanded_argument)),
+                        constructor.span.clone(),
+                    );
+                }
+            }
+            Located::new(
+                Constructor::App(Box::new(expanded_head), Box::new(expanded_argument)),
+                constructor.span.clone(),
+            )
+        }
+        Constructor::KApp(function_constructor, kind_argument) => {
+            let expanded_head = expand_named_abbrev_in_constructor_full(
+                elaboration_environment,
+                function_constructor,
+            );
+            if let Constructor::Named(named_id) = expanded_head.node {
+                if let Ok((_, _, Some(definition))) =
+                    elaboration_environment.lookup_c_named(named_id)
+                {
+                    return Located::new(
+                        Constructor::KApp(Box::new(definition.clone()), kind_argument.clone()),
+                        constructor.span.clone(),
+                    );
+                }
+            }
+            Located::new(
+                Constructor::KApp(Box::new(expanded_head), kind_argument.clone()),
+                constructor.span.clone(),
+            )
+        }
+        _ => constructor.clone(),
+    }
+}
+
+/// Full `named_c` unfolding + [`type_operations::hnorm_con`] for [`super::elaborate::elab_exp_inner`]
+/// `Exp::CApp` (matches legacy `hnorm_con_elab` in `elaborate.rs`; do **not** use for `Exp::App`).
+///
+/// # Arguments
+///
+/// * `elaboration_environment` — `named_c` map.
+/// * `constructor` — Type of the head `e` in `e[c]`.
+///
+/// # Returns
+///
+/// Normalized constructor before `TCFun` matching.
+pub fn hnorm_con_constructor_abstraction(
+    elaboration_environment: &Env,
+    mut constructor: LocatedConstructor,
+) -> LocatedConstructor {
+    for _ in 0u32..32u32 {
+        constructor = type_operations::hnorm_con(expand_named_abbrev_in_constructor_full(
+            elaboration_environment,
+            &constructor,
+        ));
+    }
+    constructor
 }
 
 // ---------------------------------------------------------------------------
@@ -96,16 +295,17 @@ impl ClassName {
 // ---------------------------------------------------------------------------
 
 /// A single typeclass resolution rule:
-/// `(num_quantifiers, hypotheses, conclusion_con, witness_exp)`.
+/// `(quantifier_kinds, hypotheses, conclusion_con, witness_exp)`.
 ///
-/// - `num_quantifiers`: number of universally-quantified constructor variables.
+/// - `quantifier_kinds`: kinds of universally-quantified constructor variables, from outermost
+///   binder to innermost binder.
 /// - `hypotheses`: the list of class constraints that must be satisfied.
 /// - `conclusion`: the constructor to which the rule's head matches.
 /// - `witness`: the expression term to inject when the rule fires.
 ///
 /// Mirrors `type rules = (int * con list * con * exp) list`.
 pub type ClassRule = (
-    usize,
+    Vec<LocatedKind>,
     Vec<LocatedConstructor>,
     LocatedConstructor,
     LocatedExpression,
@@ -1220,9 +1420,12 @@ impl Env {
                 let updated_open_rules = rules
                     .open_rules
                     .into_iter()
-                    .map(|(num_quantifiers, hypotheses, conclusion, witness)| {
+                    .map(|(quantifier_kinds, hypotheses, conclusion, witness)| {
                         (
-                            num_quantifiers,
+                            quantifier_kinds
+                                .into_iter()
+                                .map(type_operations::lift_kind_in_kind)
+                                .collect(),
                             hypotheses
                                 .into_iter()
                                 .map(type_operations::lift_kind_in_con)
@@ -1310,7 +1513,7 @@ impl Env {
                     EVarEntry::Rel(index, type_con) => {
                         EVarEntry::Rel(index, type_operations::lift_con_in_con(type_con))
                     }
-                    named_entry => named_entry,
+                    EVarEntry::Named(id, type_con) => EVarEntry::Named(id, type_con),
                 };
                 (exp_name, updated_entry)
             })
@@ -1330,9 +1533,9 @@ impl Env {
                 let updated_open_rules = rules
                     .open_rules
                     .into_iter()
-                    .map(|(num_quantifiers, hypotheses, conclusion, witness)| {
+                    .map(|(quantifier_kinds, hypotheses, conclusion, witness)| {
                         (
-                            num_quantifiers,
+                            quantifier_kinds,
                             hypotheses
                                 .into_iter()
                                 .map(type_operations::lift_con_in_con)
@@ -1508,7 +1711,9 @@ impl Env {
     /// Mirrors `fun pushClass (env : env) n = ...` in `elab_env.sml`.
     pub fn push_class(self, class_id: usize) -> Self {
         let mut new_classes = self.classes;
-        new_classes.insert(ClassName::Named(class_id), ClassRules::empty());
+        new_classes
+            .entry(ClassName::Named(class_id))
+            .or_insert_with(ClassRules::empty);
         Env {
             classes: new_classes,
             ..self
@@ -1564,9 +1769,9 @@ impl Env {
                 let updated_open_rules = rules
                     .open_rules
                     .into_iter()
-                    .map(|(num_quantifiers, hypotheses, conclusion, witness)| {
+                    .map(|(quantifier_kinds, hypotheses, conclusion, witness)| {
                         (
-                            num_quantifiers,
+                            quantifier_kinds,
                             hypotheses,
                             conclusion,
                             lift_exp_in_exp_bound(0, witness),
@@ -1884,24 +2089,24 @@ fn class_head_of(constructor: &LocatedConstructor) -> Option<ClassName> {
 // ---------------------------------------------------------------------------
 
 /// Try to interpret a constructor `c` as a typeclass instance type, returning
-/// `(class_head, num_quantifiers, hypotheses, conclusion)` if successful.
+/// `(class_head, quantifier_kinds, hypotheses, conclusion)` if successful.
 ///
 /// Mirrors `fun rule_in c = ...` in `elab_env.sml`.
 fn rule_in(
     c: &LocatedConstructor,
 ) -> Option<(
     ClassName,
-    usize,
+    Vec<LocatedKind>,
     Vec<LocatedConstructor>,
     LocatedConstructor,
 )> {
     // Peel TCFun quantifiers (counting them), chasing through solved CUnif.
     fn quantifiers(
         c: &LocatedConstructor,
-        nvars: usize,
+        quantifier_kinds: Vec<LocatedKind>,
     ) -> Option<(
         ClassName,
-        usize,
+        Vec<LocatedKind>,
         Vec<LocatedConstructor>,
         LocatedConstructor,
     )> {
@@ -1915,13 +2120,17 @@ fn rule_in(
                     super::CUnif::Known(inner) => {
                         let inner = inner.clone();
                         drop(guard);
-                        quantifiers(&inner, nvars)
+                        quantifiers(&inner, quantifier_kinds)
                     }
                     super::CUnif::Unknown => None,
                 }
             }
-            Constructor::TCFun(_, _, _, body) => quantifiers(body, nvars + 1),
-            _ => clauses(c, nvars, vec![]),
+            Constructor::TCFun(_, _, kind_annotation, body) => {
+                let mut updated_quantifier_kinds = quantifier_kinds;
+                updated_quantifier_kinds.push((**kind_annotation).clone());
+                quantifiers(body, updated_quantifier_kinds)
+            }
+            _ => clauses(c, quantifier_kinds, vec![]),
         }
     }
 
@@ -1929,11 +2138,11 @@ fn rule_in(
     // remaining conclusion has a class head.
     fn clauses(
         c: &LocatedConstructor,
-        nvars: usize,
+        quantifier_kinds: Vec<LocatedKind>,
         hyps: Vec<LocatedConstructor>,
     ) -> Option<(
         ClassName,
-        usize,
+        Vec<LocatedKind>,
         Vec<LocatedConstructor>,
         LocatedConstructor,
     )> {
@@ -1942,68 +2151,100 @@ fn rule_in(
                 if class_head_of(hyp).is_some() {
                     let mut new_hyps = hyps;
                     new_hyps.push(*hyp.clone());
-                    clauses(body, nvars, new_hyps)
+                    clauses(body, quantifier_kinds, new_hyps)
                 } else {
                     None
                 }
             }
-            _ => class_head_of(c).map(|cn| (cn, nvars, hyps, c.clone())),
+            _ => class_head_of(c).map(|cn| (cn, quantifier_kinds, hyps, c.clone())),
         }
     }
 
-    quantifiers(c, 0)
+    quantifiers(c, vec![])
 }
 
 // ---------------------------------------------------------------------------
 // Signature head-normalisation (hnormSgn)
 // ---------------------------------------------------------------------------
 
-/// Head-normalise a signature: chase `SgnVar`, `SgnWhere`, and `SgnProj` forms.
+/// Cap on [`Signature::Var`] alias steps in [`hnorm_sgn`] (Power-of-Ten: no unbounded chase).
+const HNORM_SGN_VAR_CHAIN_MAX_STEPS: usize = 8192;
+
+/// Head-normalize a signature: chase [`Signature::Var`], [`Signature::Proj`], and [`Signature::Where`].
 ///
-/// Mirrors `fun hnormSgn env (all as (sgn, loc)) = ...` in `elab_env.sml`.
-pub fn hnorm_sgn(env: &Env, signature: &LocatedSignature) -> LocatedSignature {
+/// Mirrors `hnormSgn` in `elab_env.sml`. Lookup failures leave the original spine (stuck projection).
+///
+/// # Arguments
+///
+/// * `elaboration_environment` — Elaboration environment for named signature/structure lookup.
+/// * `signature` — Signature to normalize.
+///
+/// # Returns
+///
+/// Head-normal form or unchanged leaf when lookup cannot progress.
+pub fn hnorm_sgn(elaboration_environment: &Env, signature: &LocatedSignature) -> LocatedSignature {
     match &signature.node {
         // Already in head-normal form.
         Signature::Const(_) | Signature::Fun(_, _, _, _) | Signature::Error => signature.clone(),
 
-        // Chase a named signature variable.
-        Signature::Var(id) => match env.lookup_sgn_named(*id) {
-            Ok((_, inner_sgn)) => hnorm_sgn(env, &inner_sgn.clone()),
-            Err(_) => signature.clone(),
-        },
+        // Chase a named signature variable (iteratively: long alias chains must not overflow the stack).
+        Signature::Var(start_signature_id) => {
+            let mut current_signature_id = *start_signature_id;
+            let mut visited_signature_ids: HashSet<usize> = HashSet::new();
+            for _ in 0..HNORM_SGN_VAR_CHAIN_MAX_STEPS {
+                if !visited_signature_ids.insert(current_signature_id) {
+                    // Cycle in signature aliases: treat as stuck, matching a failed lookup.
+                    return signature.clone();
+                }
+                match elaboration_environment.lookup_sgn_named(current_signature_id) {
+                    Ok((_, next_signature)) => match &next_signature.node {
+                        Signature::Var(next_id) => {
+                            current_signature_id = *next_id;
+                        }
+                        _ => return hnorm_sgn(elaboration_environment, next_signature),
+                    },
+                    Err(_) => return signature.clone(),
+                }
+            }
+            signature.clone()
+        }
 
         // SgnProj(m, ms, x) — walk structure `m` through path `ms`, then project out `x`.
         Signature::Proj(m, ms, x) => {
             // Get the signature of structure `m`.
-            let root_sgn = match env.lookup_str_named(*m) {
+            let root_sgn = match elaboration_environment.lookup_str_named(*m) {
                 Ok((_, sgn)) => sgn.clone(),
                 Err(_) => return signature.clone(),
             };
             // Walk through intermediate path components `ms`.
-            let mut cur_sgn = hnorm_sgn(env, &root_sgn);
+            let mut cur_sgn = hnorm_sgn(elaboration_environment, &root_sgn);
             for field in ms {
-                cur_sgn = match project_str_field(env, &cur_sgn, field) {
-                    Some(s) => hnorm_sgn(env, &s),
+                cur_sgn = match project_str_field(elaboration_environment, &cur_sgn, field) {
+                    Some(s) => hnorm_sgn(elaboration_environment, &s),
                     None => return signature.clone(),
                 };
             }
             // Project out the target signature name `x`.
-            match project_sgn_field(env, &cur_sgn, x) {
-                Some(s) => hnorm_sgn(env, &s),
+            match project_sgn_field(elaboration_environment, &cur_sgn, x) {
+                Some(s) => hnorm_sgn(elaboration_environment, &s),
                 None => signature.clone(),
             }
         }
 
         // SgnWhere(inner, ms, x, c) — rewrite SgiConAbs(x) to SgiCon(x, c) at path `ms`.
         Signature::Where(inner, ms, x, c) => {
-            sgn_where_rewrite(env, inner, ms, x, c, &signature.span)
+            sgn_where_rewrite(elaboration_environment, inner, ms, x, c, &signature.span)
         }
     }
 }
 
 /// Walk a `SgnConst` to find sub-structure `field` and return its signature.
-fn project_str_field(env: &Env, sgn: &LocatedSignature, field: &str) -> Option<LocatedSignature> {
-    match &hnorm_sgn(env, sgn).node {
+fn project_str_field(
+    elaboration_environment: &Env,
+    signature: &LocatedSignature,
+    field: &str,
+) -> Option<LocatedSignature> {
+    match &hnorm_sgn(elaboration_environment, signature).node {
         Signature::Const(items) => {
             for item in items {
                 if let SignatureItem::Structure(_, name, _, sub_sgn) = &item.node {
@@ -2014,14 +2255,18 @@ fn project_str_field(env: &Env, sgn: &LocatedSignature, field: &str) -> Option<L
             }
             None
         }
-        Signature::Error => Some(Located::new(Signature::Error, sgn.span.clone())),
+        Signature::Error => Some(Located::new(Signature::Error, signature.span.clone())),
         _ => None,
     }
 }
 
 /// Walk a `SgnConst` to find sub-signature `field` and return it.
-fn project_sgn_field(env: &Env, sgn: &LocatedSignature, field: &str) -> Option<LocatedSignature> {
-    match &hnorm_sgn(env, sgn).node {
+fn project_sgn_field(
+    elaboration_environment: &Env,
+    signature: &LocatedSignature,
+    field: &str,
+) -> Option<LocatedSignature> {
+    match &hnorm_sgn(elaboration_environment, signature).node {
         Signature::Const(items) => {
             for item in items {
                 if let SignatureItem::Signature(name, _, sub_sgn) = &item.node {
@@ -2032,7 +2277,44 @@ fn project_sgn_field(env: &Env, sgn: &LocatedSignature, field: &str) -> Option<L
             }
             None
         }
-        Signature::Error => Some(Located::new(Signature::Error, sgn.span.clone())),
+        Signature::Error => Some(Located::new(Signature::Error, signature.span.clone())),
+        _ => None,
+    }
+}
+
+/// Resolve a constructor definition behind `ModProj(module_id, path, name)` when the structure
+/// signature exposes it as a concrete `SgiCon`/`SignatureItem::Constructor`.
+fn resolve_modproj_constructor_definition(
+    elaboration_environment: &Env,
+    module_id: usize,
+    path: &[String],
+    name: &str,
+) -> Option<LocatedConstructor> {
+    // Start from the root structure signature for the projected module id.
+    let (_, root_signature) = elaboration_environment.lookup_str_named(module_id).ok()?;
+    // Normalize the root signature before walking nested structure projections.
+    let mut current_signature = hnorm_sgn(elaboration_environment, root_signature);
+    for field in path {
+        // Descend into the next nested structure component.
+        current_signature = hnorm_sgn(
+            elaboration_environment,
+            &project_str_field(elaboration_environment, &current_signature, field)?,
+        );
+    }
+    match &hnorm_sgn(elaboration_environment, &current_signature).node {
+        // Search the final signature for a concrete constructor item with this field name.
+        Signature::Const(items) => items.iter().find_map(|item| match &item.node {
+            SignatureItem::Constructor(field_name, _, _, definition) if field_name == name => {
+                Some(definition.clone())
+            }
+            SignatureItem::Class(field_name, _, _, definition) if field_name == name => {
+                Some(definition.clone())
+            }
+            _ => None,
+        }),
+        // Error signatures stay stuck.
+        Signature::Error => None,
+        // Non-constant signatures cannot expose a concrete constructor definition here.
         _ => None,
     }
 }
@@ -2042,18 +2324,19 @@ fn project_sgn_field(env: &Env, sgn: &LocatedSignature, field: &str) -> Option<L
 ///
 /// Mirrors the `rewrite` helper inside `hnormSgn` for the `SgnWhere` case in `elab_env.sml`.
 fn sgn_where_rewrite(
-    env: &Env,
+    elaboration_environment: &Env,
     inner: &LocatedSignature,
     ms: &[String],
     x: &str,
-    c: &LocatedConstructor,
-    loc: &crate::error_types::Span,
+    replacement_constructor: &LocatedConstructor,
+    _loc: &crate::error_types::Span,
 ) -> LocatedSignature {
-    let hn = hnorm_sgn(env, inner);
+    let hn = hnorm_sgn(elaboration_environment, inner);
     match hn.node {
         Signature::Error => Located::new(Signature::Error, hn.span),
         Signature::Const(items) => {
-            let new_items = sgn_where_traverse(items, ms, x, c, hn.span.clone());
+            let new_items =
+                sgn_where_traverse(items, ms, x, replacement_constructor, hn.span.clone());
             Located::new(Signature::Const(new_items), hn.span)
         }
         _ => hn,
@@ -2065,7 +2348,7 @@ fn sgn_where_traverse(
     ms: &[String],
     x: &str,
     c: &LocatedConstructor,
-    loc: crate::error_types::Span,
+    _loc: crate::error_types::Span,
 ) -> Vec<LocatedSignatureItem> {
     let mut result = Vec::with_capacity(items.len());
     for item in items {
@@ -2092,11 +2375,17 @@ fn sgn_where_rewrite_const(
     sgn: &LocatedSignature,
     ms: &[String],
     x: &str,
-    c: &LocatedConstructor,
+    replacement_constructor: &LocatedConstructor,
 ) -> LocatedSignature {
     match &sgn.node {
         Signature::Const(items) => {
-            let new_items = sgn_where_traverse(items.clone(), ms, x, c, sgn.span.clone());
+            let new_items = sgn_where_traverse(
+                items.clone(),
+                ms,
+                x,
+                replacement_constructor,
+                sgn.span.clone(),
+            );
             Located::new(Signature::Const(new_items), sgn.span.clone())
         }
         _ => sgn.clone(),
@@ -2108,13 +2397,18 @@ fn sgn_where_rewrite_const(
 // ---------------------------------------------------------------------------
 
 /// Scan `signature` (bound to structure id `m1` at sub-path `ms`) and add any
-/// `Val` declarations that are class instances as closed rules to `env.classes`.
+/// `Val` declarations that are class instances as closed rules to `elaboration_environment.classes`.
 ///
 /// Mirrors `fun enrichClasses env classes (m1, ms) sgn = ...` in `elab_env.sml`.
-fn enrich_classes(env: &mut Env, m1: usize, ms: &[String], signature: &LocatedSignature) {
+fn enrich_classes(
+    elaboration_environment: &mut Env,
+    structure_numeric_id: usize,
+    structure_path: &[String],
+    signature: &LocatedSignature,
+) {
     let hn = {
-        let env_ref = &*env;
-        hnorm_sgn(env_ref, signature)
+        let elaboration_environment_ref = &*elaboration_environment;
+        hnorm_sgn(elaboration_environment_ref, signature)
     };
     let items = match hn.node {
         Signature::Const(items) => items,
@@ -2124,30 +2418,53 @@ fn enrich_classes(env: &mut Env, m1: usize, ms: &[String], signature: &LocatedSi
         match &item.node {
             SignatureItem::Val(val_name, _val_id, con) => {
                 if let Some((cn, nvs, hyps, conclusion)) = rule_in(con) {
-                    if env.classes.contains_key(&cn) {
+                    if elaboration_environment.classes.contains_key(&cn) {
                         let loc = item.span.clone();
                         let witness = Located::new(
-                            Expression::ModProj(m1, ms.to_vec(), val_name.clone()),
+                            Expression::ModProj(
+                                structure_numeric_id,
+                                structure_path.to_vec(),
+                                val_name.clone(),
+                            ),
                             loc,
                         );
-                        if let Some(class) = env.classes.get_mut(&cn) {
+                        if let Some(class) = elaboration_environment.classes.get_mut(&cn) {
                             class.closed_rules.push((nvs, hyps, conclusion, witness));
                         }
                     }
                 }
             }
             SignatureItem::Structure(super::ImportMode::Import, sub_name, _sub_id, sub_sgn) => {
-                let mut new_ms = ms.to_vec();
-                new_ms.push(sub_name.clone());
-                enrich_classes(env, m1, &new_ms, sub_sgn);
+                let mut new_path = structure_path.to_vec();
+                new_path.push(sub_name.clone());
+                enrich_classes(
+                    elaboration_environment,
+                    structure_numeric_id,
+                    &new_path,
+                    sub_sgn,
+                );
             }
-            SignatureItem::ClassAbs(cls_name, cls_id, _) => {
-                let cn = ClassName::Proj(m1, ms.to_vec(), cls_name.clone());
-                env.classes.entry(cn).or_insert_with(ClassRules::empty);
+            SignatureItem::ClassAbs(cls_name, _cls_id, _) => {
+                let cn = ClassName::Proj(
+                    structure_numeric_id,
+                    structure_path.to_vec(),
+                    cls_name.clone(),
+                );
+                elaboration_environment
+                    .classes
+                    .entry(cn)
+                    .or_insert_with(ClassRules::empty);
             }
-            SignatureItem::Class(cls_name, cls_id, _, _) => {
-                let cn = ClassName::Proj(m1, ms.to_vec(), cls_name.clone());
-                env.classes.entry(cn).or_insert_with(ClassRules::empty);
+            SignatureItem::Class(cls_name, _cls_id, _, _) => {
+                let cn = ClassName::Proj(
+                    structure_numeric_id,
+                    structure_path.to_vec(),
+                    cls_name.clone(),
+                );
+                elaboration_environment
+                    .classes
+                    .entry(cn)
+                    .or_insert_with(ClassRules::empty);
             }
             _ => {}
         }
@@ -2158,115 +2475,169 @@ fn enrich_classes(env: &mut Env, m1: usize, ms: &[String], signature: &LocatedSi
 // pat_binds and decl_binds
 // ---------------------------------------------------------------------------
 
-/// Count the number of expression variables introduced by a pattern.
+/// Count expression variables bound by `pattern` (for arity / stack depth).
 ///
-/// Mirrors `fun patBindsN (p, _) = ...` in `elab_env.sml`.
+/// Mirrors `patBindsN` in `elab_env.sml`.
+///
+/// # Arguments
+///
+/// * `pattern` — Elaborated pattern.
+///
+/// # Returns
+///
+/// Number of `Pattern::Var` leaves (record fields summed).
 pub fn pat_binds_n(pattern: &LocatedPattern) -> usize {
     pattern_binds_count(pattern)
 }
 
-/// Extend `env` with all expression bindings introduced by a pattern.
+/// Extend `elaboration_environment` with relative expression bindings for every `Pattern::Var` in `pattern`.
 ///
-/// Each `Pattern::Var(name, type)` adds a new relative expression binding.
+/// Mirrors `patBinds` in `elab_env.sml`.
 ///
-/// Mirrors `fun patBinds env (p, loc) = ...` in `elab_env.sml`.
-pub fn pat_binds(env: Env, pattern: &LocatedPattern) -> Env {
+/// # Arguments
+///
+/// * `elaboration_environment` — Prior environment.
+/// * `pattern` — Pattern introducing `rel_e` bindings.
+///
+/// # Returns
+///
+/// New [`Env`] (functional update).
+pub fn pat_binds(elaboration_environment: Env, pattern: &LocatedPattern) -> Env {
     match &pattern.node {
-        Pattern::Var(name, type_con) => env.push_e_rel(name.clone(), type_con.clone()),
-        Pattern::Prim(_) => env,
-        Pattern::Constructor(_, _, _, None) => env,
-        Pattern::Constructor(_, _, _, Some(inner_pattern)) => pat_binds(env, inner_pattern),
-        Pattern::Record(fields) => fields
-            .iter()
-            .fold(env, |accumulated_env, (_, sub_pattern, _)| {
-                pat_binds(accumulated_env, sub_pattern)
-            }),
-    }
-}
-
-/// Extend `env` with all expression bindings introduced by an expression-level declaration.
-///
-/// Mirrors `fun edeclBinds env (d, loc) = ...` in `elab_env.sml`.
-pub fn edecl_binds(env: Env, e_decl: &LocatedElaboratedDeclaration) -> Env {
-    match &e_decl.node {
-        ElaboratedDeclaration::Val(pattern, _, _) => pat_binds(env, pattern),
-        ElaboratedDeclaration::ValRec(bindings) => {
-            bindings
-                .iter()
-                .fold(env, |accumulated_env, (name, type_con, _)| {
-                    accumulated_env.push_e_rel(name.clone(), type_con.clone())
-                })
+        Pattern::Var(name, type_con) => {
+            elaboration_environment.push_e_rel(name.clone(), type_con.clone())
         }
+        Pattern::Prim(_) => elaboration_environment,
+        Pattern::Constructor(_, _, _, None) => elaboration_environment,
+        Pattern::Constructor(_, _, _, Some(inner_pattern)) => {
+            pat_binds(elaboration_environment, inner_pattern)
+        }
+        Pattern::Record(fields) => fields.iter().fold(
+            elaboration_environment,
+            |accumulated_env, (_, sub_pattern, _)| pat_binds(accumulated_env, sub_pattern),
+        ),
     }
 }
 
-/// Extend `env` with all bindings introduced by a single signature item.
+/// Extend `elaboration_environment` for one `let`-level [`ElaboratedDeclaration`] (`val` / `val rec`).
 ///
-/// Handles constructors, datatypes, values, nested signatures, and structures.
+/// Mirrors `edeclBinds` in `elab_env.sml`.
 ///
-/// Mirrors `fun sgiBinds env (sgi, loc) = ...` in `elab_env.sml`.
-pub fn sgi_binds(env: Env, sgn_item: &LocatedSignatureItem) -> Env {
+/// # Arguments
+///
+/// * `elaboration_environment` — Prior environment.
+/// * `e_decl` — Inner declaration.
+///
+/// # Returns
+///
+/// [`Env`] with added `rel_e` bindings.
+pub fn edecl_binds(elaboration_environment: Env, e_decl: &LocatedElaboratedDeclaration) -> Env {
+    match &e_decl.node {
+        ElaboratedDeclaration::Val(pattern, _, _) => pat_binds(elaboration_environment, pattern),
+        ElaboratedDeclaration::ValRec(bindings) => bindings.iter().fold(
+            elaboration_environment,
+            |accumulated_env, (name, type_con, _)| {
+                accumulated_env.push_e_rel(name.clone(), type_con.clone())
+            },
+        ),
+    }
+}
+
+/// Extend `elaboration_environment` with bindings for one [`SignatureItem`] (datatype, `val`, substructure, etc.).
+///
+/// Mirrors `sgiBinds` in `elab_env.sml`.
+///
+/// # Arguments
+///
+/// * `elaboration_environment` — Prior environment.
+/// * `sgn_item` — Single signature component.
+///
+/// # Returns
+///
+/// [`Env`] with `named_c` / `named_e` / `named_str` / `named_sgn` updates per item.
+pub fn sgi_binds(elaboration_environment: Env, sgn_item: &LocatedSignatureItem) -> Env {
     let span = sgn_item.span.clone();
     match &sgn_item.node {
         SignatureItem::ConAbs(name, id, kind) => {
-            env.push_c_named_as(name.clone(), *id, kind.clone(), None)
+            elaboration_environment.push_c_named_as(name.clone(), *id, kind.clone(), None)
         }
-        SignatureItem::Constructor(name, id, kind, definition) => {
-            env.push_c_named_as(name.clone(), *id, kind.clone(), Some(definition.clone()))
-        }
+        SignatureItem::Constructor(name, id, kind, definition) => elaboration_environment
+            .push_c_named_as(name.clone(), *id, kind.clone(), Some(definition.clone())),
         SignatureItem::ClassAbs(name, id, kind) => {
-            env.push_c_named_as(name.clone(), *id, kind.clone(), None)
+            elaboration_environment.push_c_named_as(name.clone(), *id, kind.clone(), None)
         }
-        SignatureItem::Class(name, id, kind, definition) => {
-            env.push_c_named_as(name.clone(), *id, kind.clone(), Some(definition.clone()))
-        }
+        SignatureItem::Class(name, id, kind, definition) => elaboration_environment
+            .push_c_named_as(name.clone(), *id, kind.clone(), Some(definition.clone())),
         SignatureItem::Datatype(datatype_decls) => {
             datatype_decls
                 .iter()
-                .fold(env, |accumulated_env, datatype_decl| {
+                .fold(elaboration_environment, |accumulated_env, datatype_decl| {
                     sgi_binds_datatype(accumulated_env, datatype_decl, &span)
                 })
         }
         SignatureItem::DatatypeImp {
             name,
             id,
+            params,
             orig_mod,
             orig_path,
             orig_name,
-            orig_constrs_path,
+            orig_constrs_path: _,
             constrs,
         } => {
             let kind_type = Located::new(Kind::Type, span.clone());
+            let datatype_kind = params
+                .iter()
+                .fold(kind_type.clone(), |accumulated_kind, _| {
+                    Located::new(
+                        Kind::Arrow(Box::new(kind_type.clone()), Box::new(accumulated_kind)),
+                        span.clone(),
+                    )
+                });
             let definition = Located::new(
                 Constructor::ModProj(*orig_mod, orig_path.clone(), orig_name.clone()),
                 span.clone(),
             );
-            let env = env.push_c_named_as(name.clone(), *id, kind_type.clone(), Some(definition));
+            let elaboration_environment = elaboration_environment.push_c_named_as(
+                name.clone(),
+                *id,
+                datatype_kind,
+                Some(definition),
+            );
 
-            constrs
-                .iter()
-                .fold(env, |accumulated_env, (con_name, con_id, arg_type)| {
+            constrs.iter().fold(
+                elaboration_environment,
+                |accumulated_env, (con_name, con_id, arg_type)| {
                     let expression_type =
-                        build_constructor_type(*id, &[], arg_type.as_ref(), span.clone());
+                        build_constructor_type(*id, params, arg_type.as_ref(), span.clone());
                     accumulated_env.push_e_named_as(con_name.clone(), *con_id, expression_type)
-                })
+                },
+            )
         }
         SignatureItem::Val(name, id, con_type) => {
-            env.push_e_named_as(name.clone(), *id, con_type.clone())
+            elaboration_environment.push_e_named_as(name.clone(), *id, con_type.clone())
         }
         SignatureItem::Structure(_, name, id, signature) => {
             // SignatureItem::Str with Import mode uses no-enrich.
-            env.push_str_named_as_no_enrich(name.clone(), *id, signature.clone())
+            elaboration_environment.push_str_named_as_no_enrich(
+                name.clone(),
+                *id,
+                signature.clone(),
+            )
         }
         SignatureItem::Signature(name, id, signature) => {
-            env.push_sgn_named_as(name.clone(), *id, signature.clone())
+            elaboration_environment.push_sgn_named_as(name.clone(), *id, signature.clone())
         }
-        SignatureItem::Constraint(_, _) => env,
+        SignatureItem::Constraint(_, _) => elaboration_environment,
     }
 }
 
-/// Helper: extend env with the bindings from one datatype declaration inside a signature.
-fn sgi_binds_datatype(env: Env, datatype_decl: &DatatypeDecl, span: &Span) -> Env {
+/// Helper: extend `elaboration_environment` with the bindings from one datatype declaration inside a signature.
+fn sgi_binds_datatype(
+    elaboration_environment: Env,
+    datatype_decl: &DatatypeDecl,
+    span: &Span,
+) -> Env {
     let kind_type = Located::new(Kind::Type, span.clone());
     // Build the kind for the datatype: (KType -> ... -> KType) with as many arrows
     // as there are type parameters.
@@ -2281,17 +2652,16 @@ fn sgi_binds_datatype(env: Env, datatype_decl: &DatatypeDecl, span: &Span) -> En
                 )
             });
 
-    let env = env.push_c_named_as(
+    let elaboration_environment = elaboration_environment.push_c_named_as(
         datatype_decl.name.clone(),
         datatype_decl.id,
         datatype_kind,
         None,
     );
 
-    datatype_decl
-        .constrs
-        .iter()
-        .fold(env, |accumulated_env, (con_name, con_id, arg_type)| {
+    datatype_decl.constrs.iter().fold(
+        elaboration_environment,
+        |accumulated_env, (con_name, con_id, arg_type)| {
             let expression_type = build_constructor_type(
                 datatype_decl.id,
                 &datatype_decl.params,
@@ -2299,7 +2669,8 @@ fn sgi_binds_datatype(env: Env, datatype_decl: &DatatypeDecl, span: &Span) -> En
                 span.clone(),
             );
             accumulated_env.push_e_named_as(con_name.clone(), *con_id, expression_type)
-        })
+        },
+    )
 }
 
 /// Build the expression type for a datatype constructor.
@@ -2308,7 +2679,7 @@ fn sgi_binds_datatype(env: Env, datatype_decl: &DatatypeDecl, span: &Span) -> En
 /// `∀ 'a :: * → ∀ 'b :: * → U -> T 'a 'b`
 ///
 /// Mirrors the type-building logic in `sgiBinds` in `elab_env.sml`.
-fn build_constructor_type(
+pub(crate) fn build_constructor_type(
     datatype_id: usize,
     type_params: &[String],
     arg_type: Option<&LocatedConstructor>,
@@ -2360,23 +2731,28 @@ fn build_constructor_type(
         })
 }
 
-/// Extend `env` with all bindings introduced by a top-level declaration.
+/// Extend `elaboration_environment` with bindings introduced by a top-level [`Declaration`] (datatype, FFI, SQL shapes, …).
 ///
-/// Handles constructors, datatypes, values, signatures, structures, tables,
-/// sequences, views, cookies, styles, and FFI declarations.
+/// Mirrors `declBinds` in `elab_env.sml`.
 ///
-/// Mirrors `fun declBinds env (d, loc) = ...` in `elab_env.sml`.
-pub fn decl_binds(env: Env, declaration: &LocatedDeclaration) -> Env {
+/// # Arguments
+///
+/// * `elaboration_environment` — Prior environment.
+/// * `declaration` — Module-level declaration.
+///
+/// # Returns
+///
+/// [`Env`] after pushing all names introduced by `declaration`.
+pub fn decl_binds(elaboration_environment: Env, declaration: &LocatedDeclaration) -> Env {
     let span = declaration.span.clone();
     match &declaration.node {
-        Declaration::Constructor(name, id, kind, definition) => {
-            env.push_c_named_as(name.clone(), *id, kind.clone(), Some(definition.clone()))
-        }
+        Declaration::Constructor(name, id, kind, definition) => elaboration_environment
+            .push_c_named_as(name.clone(), *id, kind.clone(), Some(definition.clone())),
 
         Declaration::Datatype(datatype_decls) => {
             datatype_decls
                 .iter()
-                .fold(env, |accumulated_env, datatype_decl| {
+                .fold(elaboration_environment, |accumulated_env, datatype_decl| {
                     decl_binds_datatype(accumulated_env, datatype_decl, &span)
                 })
         }
@@ -2384,58 +2760,72 @@ pub fn decl_binds(env: Env, declaration: &LocatedDeclaration) -> Env {
         Declaration::DatatypeImp {
             name,
             id,
+            params,
             orig_mod,
             orig_path,
             orig_name,
-            orig_constrs_path,
+            orig_constrs_path: _,
             constrs,
         } => {
             let kind_type = Located::new(Kind::Type, span.clone());
+            let datatype_kind = params
+                .iter()
+                .fold(kind_type.clone(), |accumulated_kind, _| {
+                    Located::new(
+                        Kind::Arrow(Box::new(kind_type.clone()), Box::new(accumulated_kind)),
+                        span.clone(),
+                    )
+                });
             let definition = Located::new(
                 Constructor::ModProj(*orig_mod, orig_path.clone(), orig_name.clone()),
                 span.clone(),
             );
-            let env = env.push_c_named_as(name.clone(), *id, kind_type, Some(definition));
+            let elaboration_environment = elaboration_environment.push_c_named_as(
+                name.clone(),
+                *id,
+                datatype_kind,
+                Some(definition),
+            );
 
-            constrs
-                .iter()
-                .fold(env, |accumulated_env, (con_name, con_id, arg_type)| {
+            constrs.iter().fold(
+                elaboration_environment,
+                |accumulated_env, (con_name, con_id, arg_type)| {
                     let expression_type =
-                        build_constructor_type(*id, &[], arg_type.as_ref(), span.clone());
+                        build_constructor_type(*id, params, arg_type.as_ref(), span.clone());
                     accumulated_env.push_e_named_as(con_name.clone(), *con_id, expression_type)
-                })
+                },
+            )
         }
 
         Declaration::Val(name, id, expression_type, _body) => {
-            env.push_e_named_as(name.clone(), *id, expression_type.clone())
+            elaboration_environment.push_e_named_as(name.clone(), *id, expression_type.clone())
         }
 
         Declaration::ValRec(bindings) => bindings.iter().fold(
-            env,
+            elaboration_environment,
             |accumulated_env, (name, id, expression_type, _body)| {
                 accumulated_env.push_e_named_as(name.clone(), *id, expression_type.clone())
             },
         ),
 
         Declaration::Signature(name, id, signature) => {
-            env.push_sgn_named_as(name.clone(), *id, signature.clone())
+            elaboration_environment.push_sgn_named_as(name.clone(), *id, signature.clone())
         }
 
         Declaration::Structure(name, id, signature, _body) => {
-            env.push_str_named_as(name.clone(), *id, signature.clone())
+            elaboration_environment.push_str_named_as(name.clone(), *id, signature.clone())
         }
 
-        Declaration::FfiStr(name, id, signature) => {
-            env.push_str_named_as_no_enrich(name.clone(), *id, signature.clone())
-        }
+        Declaration::FfiStr(name, id, signature) => elaboration_environment
+            .push_str_named_as_no_enrich(name.clone(), *id, signature.clone()),
 
-        Declaration::Constraint(_, _) => env,
-        Declaration::Export(_, _, _) => env,
-        Declaration::Index(_, _) => env,
-        Declaration::Database(_) => env,
-        Declaration::Task(_, _) => env,
-        Declaration::Policy(_) => env,
-        Declaration::OnError(_, _, _) => env,
+        Declaration::Constraint(_, _) => elaboration_environment,
+        Declaration::Export(_, _, _) => elaboration_environment,
+        Declaration::Index(_, _) => elaboration_environment,
+        Declaration::Database(_) => elaboration_environment,
+        Declaration::Task(_, _) => elaboration_environment,
+        Declaration::Policy(_) => elaboration_environment,
+        Declaration::OnError(_, _, _) => elaboration_environment,
 
         Declaration::Table {
             mod_id,
@@ -2465,7 +2855,7 @@ pub fn decl_binds(env: Env, declaration: &LocatedDeclaration) -> Env {
                 ),
                 span.clone(),
             );
-            env.push_e_named_as(name.clone(), *name_id, combined_type)
+            elaboration_environment.push_e_named_as(name.clone(), *name_id, combined_type)
         }
 
         Declaration::Sequence(mod_id, name, name_id) => {
@@ -2473,7 +2863,7 @@ pub fn decl_binds(env: Env, declaration: &LocatedDeclaration) -> Env {
                 Constructor::ModProj(*mod_id, vec![], "sql_sequence".to_string()),
                 span.clone(),
             );
-            env.push_e_named_as(name.clone(), *name_id, seq_type)
+            elaboration_environment.push_e_named_as(name.clone(), *name_id, seq_type)
         }
 
         Declaration::View(mod_id, name, name_id, _query, view_con) => {
@@ -2485,7 +2875,7 @@ pub fn decl_binds(env: Env, declaration: &LocatedDeclaration) -> Env {
                 Constructor::App(Box::new(sql_view_con), Box::new(view_con.clone())),
                 span.clone(),
             );
-            env.push_e_named_as(name.clone(), *name_id, combined_type)
+            elaboration_environment.push_e_named_as(name.clone(), *name_id, combined_type)
         }
 
         Declaration::Cookie(mod_id, name, name_id, cookie_con) => {
@@ -2497,7 +2887,7 @@ pub fn decl_binds(env: Env, declaration: &LocatedDeclaration) -> Env {
                 Constructor::App(Box::new(cookie_type_con), Box::new(cookie_con.clone())),
                 span.clone(),
             );
-            env.push_e_named_as(name.clone(), *name_id, combined_type)
+            elaboration_environment.push_e_named_as(name.clone(), *name_id, combined_type)
         }
 
         Declaration::Style(mod_id, name, name_id) => {
@@ -2505,19 +2895,23 @@ pub fn decl_binds(env: Env, declaration: &LocatedDeclaration) -> Env {
                 Constructor::ModProj(*mod_id, vec![], "css_class".to_string()),
                 span.clone(),
             );
-            env.push_e_named_as(name.clone(), *name_id, css_class_type)
+            elaboration_environment.push_e_named_as(name.clone(), *name_id, css_class_type)
         }
 
         Declaration::Ffi(name, id, _ffi_modes, ffi_type) => {
-            env.push_e_named_as(name.clone(), *id, ffi_type.clone())
+            elaboration_environment.push_e_named_as(name.clone(), *id, ffi_type.clone())
         }
     }
 }
 
-/// Helper: extend env with the bindings from one datatype declaration (top-level).
-fn decl_binds_datatype(env: Env, datatype_decl: &DatatypeDecl, span: &Span) -> Env {
+/// Helper: extend `elaboration_environment` with the bindings from one datatype declaration (top-level).
+fn decl_binds_datatype(
+    elaboration_environment: Env,
+    datatype_decl: &DatatypeDecl,
+    span: &Span,
+) -> Env {
     let kind_type = Located::new(Kind::Type, span.clone());
-    let num_params = datatype_decl.params.len();
+    let _num_params = datatype_decl.params.len();
 
     // Build the full kind: `(KType -> ... -> KType)` with `num_params` arrows.
     // Also build the partially-applied type `(T rel(n-1) ... rel(0))` for use in
@@ -2533,7 +2927,7 @@ fn decl_binds_datatype(env: Env, datatype_decl: &DatatypeDecl, span: &Span) -> E
                 )
             });
 
-    let env = env.push_c_named_as(
+    let elaboration_environment = elaboration_environment.push_c_named_as(
         datatype_decl.name.clone(),
         datatype_decl.id,
         datatype_kind,
@@ -2541,17 +2935,16 @@ fn decl_binds_datatype(env: Env, datatype_decl: &DatatypeDecl, span: &Span) -> E
     );
 
     // Register the datatype for constructor lookup.
-    let env = env.push_datatype(
+    let elaboration_environment = elaboration_environment.push_datatype(
         datatype_decl.id,
         datatype_decl.params.clone(),
         datatype_decl.constrs.clone(),
     );
 
     // Add each constructor as a named expression.
-    datatype_decl
-        .constrs
-        .iter()
-        .fold(env, |accumulated_env, (con_name, con_id, arg_type)| {
+    datatype_decl.constrs.iter().fold(
+        elaboration_environment,
+        |accumulated_env, (con_name, con_id, arg_type)| {
             let expression_type = build_constructor_type(
                 datatype_decl.id,
                 &datatype_decl.params,
@@ -2559,7 +2952,8 @@ fn decl_binds_datatype(env: Env, datatype_decl: &DatatypeDecl, span: &Span) -> E
                 span.clone(),
             );
             accumulated_env.push_e_named_as(con_name.clone(), *con_id, expression_type)
-        })
+        },
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -2569,6 +2963,7 @@ fn decl_binds_datatype(env: Env, datatype_decl: &DatatypeDecl, span: &Span) -> E
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::elaborated::PatternConstructor;
     use crate::error_types::Span;
 
     fn dummy_span() -> Span {
@@ -2579,16 +2974,89 @@ mod tests {
         Located::new(Kind::Type, dummy_span())
     }
 
-    fn kind_rel(index: usize) -> LocatedKind {
-        Located::new(Kind::Rel(index), dummy_span())
-    }
-
     fn con_rel(index: usize) -> LocatedConstructor {
         Located::new(Constructor::Rel(index), dummy_span())
     }
 
     fn con_named(id: usize) -> LocatedConstructor {
         Located::new(Constructor::Named(id), dummy_span())
+    }
+
+    /// Regression: left-spine named unfolding for optional `f e` use.
+    #[test]
+    fn hnorm_con_expression_head_inlines_named_alias() {
+        let sp = dummy_span();
+        let k = Located::new(Kind::Type, sp.clone());
+        let def = Located::new(Constructor::Unit, sp.clone());
+        let env = Env::empty().push_c_named_as("Ali".into(), 7usize, k, Some(def));
+        let out = hnorm_con_expression_head(&env, con_named(7));
+        assert!(matches!(out.node, Constructor::Unit));
+    }
+
+    /// Regression: full-tree named unfolding for `e[c]` (see [`hnorm_con_constructor_abstraction`]).
+    #[test]
+    fn hnorm_con_constructor_abstraction_inlines_named_alias() {
+        let sp = dummy_span();
+        let k = Located::new(Kind::Type, sp.clone());
+        let def = Located::new(Constructor::Unit, sp.clone());
+        let env = Env::empty().push_c_named_as("B".into(), 3usize, k, Some(def));
+        let out = hnorm_con_constructor_abstraction(&env, con_named(3));
+        assert!(matches!(out.node, Constructor::Unit));
+    }
+
+    #[test]
+    fn hnorm_con_constructor_abstraction_reduces_named_kapp_app_alias() {
+        let sp = dummy_span();
+        let type_kind = Located::new(Kind::Type, sp.clone());
+        let identity_definition = Located::new(
+            Constructor::KAbs(
+                "K".into(),
+                Box::new(Located::new(
+                    Constructor::Abs(
+                        "x".into(),
+                        Box::new(Located::new(Kind::Rel(0), sp.clone())),
+                        Box::new(Located::new(Constructor::Rel(0), sp.clone())),
+                    ),
+                    sp.clone(),
+                )),
+            ),
+            sp.clone(),
+        );
+        let env = Env::empty().push_c_named_as(
+            "PolyIdentity".into(),
+            17usize,
+            Located::new(
+                Kind::Fun(
+                    "K".into(),
+                    Box::new(Located::new(
+                        Kind::Arrow(
+                            Box::new(Located::new(Kind::Rel(0), sp.clone())),
+                            Box::new(Located::new(Kind::Rel(0), sp.clone())),
+                        ),
+                        sp.clone(),
+                    )),
+                ),
+                sp.clone(),
+            ),
+            Some(identity_definition),
+        );
+        let applied_alias = Located::new(
+            Constructor::App(
+                Box::new(Located::new(
+                    Constructor::KApp(Box::new(con_named(17)), Box::new(type_kind)),
+                    sp.clone(),
+                )),
+                Box::new(Located::new(Constructor::Unit, sp.clone())),
+            ),
+            sp.clone(),
+        );
+
+        let out = hnorm_con_constructor_abstraction(&env, applied_alias);
+        assert!(
+            matches!(out.node, Constructor::Unit),
+            "named alias should reduce through KApp/App, got {:?}",
+            out.node
+        );
     }
 
     fn sgn_error() -> LocatedSignature {
@@ -3024,6 +3492,38 @@ mod tests {
         // A different id should not be a class.
         let other_con = Located::new(Constructor::Named(51), dummy_span());
         assert!(!env.is_class(&other_con));
+    }
+
+    /// Re-registering a class during `open` must not discard previously collected rules.
+    #[test]
+    fn push_class_preserves_existing_rules() {
+        let class_name = ClassName::Named(50);
+        let rule_head = Located::new(Constructor::Named(50), dummy_span());
+        let witness = Located::new(Expression::Named(77), dummy_span());
+        let env = Env::empty()
+            .push_c_named_as("Eq".to_string(), 50, kind_type(), None)
+            .push_class(50)
+            .add_class_rule(
+                class_name.clone(),
+                (Vec::new(), Vec::new(), rule_head.clone(), witness),
+            );
+
+        let preserved_env = env.push_class(50);
+        let preserved_rules = preserved_env
+            .classes()
+            .get(&class_name)
+            .expect("class should remain registered");
+
+        assert_eq!(preserved_rules.closed_rules.len(), 1);
+        assert!(preserved_rules.open_rules.is_empty());
+        assert!(matches!(
+            preserved_rules.closed_rules[0].2.node,
+            Constructor::Named(50)
+        ));
+        assert_eq!(
+            preserved_rules.closed_rules[0].2.span.first.line,
+            rule_head.span.first.line
+        );
     }
 
     // -----------------------------------------------------------------------

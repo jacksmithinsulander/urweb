@@ -21,7 +21,8 @@ use crate::c_like_representation::{
     PatCon, QueryMeta, Task, Typ,
 };
 use crate::datatype_kind::DatatypeKind;
-use crate::error_types::{ErrorReporter, Located, Span};
+use crate::diagnostics::{DiagnosticId, DiagnosticPayload};
+use crate::error_types::{CompileError, ErrorReporter, Located, Span};
 use crate::export::ExportKind;
 use crate::monomorphized::{self as mono, DbMode, Sidedness};
 use crate::primitives::{Prim, StringMode};
@@ -445,7 +446,7 @@ fn cify_exp(e: &mono::LocExp, sm: &mut Sm, errors: &mut ErrorReporter) -> LocExp
         mono::Exp::Abs(_, _, _, _) => {
             errors.report_at(
                 loc.clone(),
-                "Anonymous function remains at code generation".to_string(),
+                DiagnosticPayload::new(DiagnosticId::CjrizeAnonymousFunctionRemains, Vec::new()),
             );
             dummy_exp(&loc)
         }
@@ -566,7 +567,7 @@ fn cify_exp(e: &mono::LocExp, sm: &mut Sm, errors: &mut ErrorReporter) -> LocExp
         mono::Exp::Closure(_, _) => {
             errors.report_at(
                 loc.clone(),
-                "Nested closure remains in code generation".to_string(),
+                DiagnosticPayload::new(DiagnosticId::CjrizeNestedClosureRemains, Vec::new()),
             );
             dummy_exp(&loc)
         }
@@ -664,47 +665,78 @@ fn cify_exp(e: &mono::LocExp, sm: &mut Sm, errors: &mut ErrorReporter) -> LocExp
         ),
 
         mono::Exp::JavaScript(_, _) => {
-            errors.report_at(loc.clone(), "Uncompilable JavaScript remains".to_string());
+            errors.report_at_with_hint(
+                loc.clone(),
+                DiagnosticPayload::new(DiagnosticId::CjrizeJavaScriptStillPresent, Vec::new()),
+                DiagnosticId::HintCjrizeJavaScriptStillPresent,
+                Vec::new(),
+            );
             dummy_exp(&loc)
         }
         mono::Exp::SignalReturn(_) => {
-            errors.report_at(
+            errors.report_at_with_hint(
                 loc.clone(),
-                "Signal monad 'return' remains in server-side code".to_string(),
+                DiagnosticPayload::new(DiagnosticId::CjrizeSignalReturnInvalidServer, Vec::new()),
+                DiagnosticId::HintCjrizeSignalReturnInvalidServer,
+                Vec::new(),
             );
             dummy_exp(&loc)
         }
         mono::Exp::SignalBind(_, _) => {
-            errors.report_at(
+            errors.report_at_with_hint(
                 loc.clone(),
-                "Signal monad 'bind' remains in server-side code".to_string(),
+                DiagnosticPayload::new(DiagnosticId::CjrizeSignalBindInvalidServer, Vec::new()),
+                DiagnosticId::HintCjrizeSignalBindInvalidServer,
+                Vec::new(),
             );
             dummy_exp(&loc)
         }
         mono::Exp::SignalSource(_) => {
-            errors.report_at(
+            errors.report_at_with_hint(
                 loc.clone(),
-                "Signal monad 'source' remains in server-side code".to_string(),
+                DiagnosticPayload::new(DiagnosticId::CjrizeSignalSourceInvalidServer, Vec::new()),
+                DiagnosticId::HintCjrizeSignalSourceInvalidServer,
+                Vec::new(),
             );
             dummy_exp(&loc)
         }
         mono::Exp::ServerCall(_, _, _, _) => {
-            errors.report_at(loc.clone(), "RPC in server-side code".to_string());
+            errors.report_at_with_hint(
+                loc.clone(),
+                DiagnosticPayload::new(DiagnosticId::CjrizeRpcStillOnServer, Vec::new()),
+                DiagnosticId::HintCjrizeRpcStillOnServer,
+                Vec::new(),
+            );
             dummy_exp(&loc)
         }
         mono::Exp::Recv(_, _) => {
-            errors.report_at(
+            errors.report_at_with_hint(
                 loc.clone(),
-                "Message receive in server-side code".to_string(),
+                DiagnosticPayload::new(
+                    DiagnosticId::CjrizeChannelRecvUnsupportedServer,
+                    Vec::new(),
+                ),
+                DiagnosticId::HintCjrizeChannelRecvUnsupportedServer,
+                Vec::new(),
             );
             dummy_exp(&loc)
         }
         mono::Exp::Sleep(_) => {
-            errors.report_at(loc.clone(), "Sleep in server-side code".to_string());
+            errors.report_at_with_hint(
+                loc.clone(),
+                DiagnosticPayload::new(DiagnosticId::CjrizeSleepInvalidServer, Vec::new()),
+                DiagnosticId::HintCjrizeSleepInvalidServer,
+                Vec::new(),
+            );
             dummy_exp(&loc)
         }
         mono::Exp::Spawn(_) => {
-            errors.report_at(loc.clone(), "Thread spawn in server-side code".to_string());
+            errors.report_at_with_hint(
+                loc.clone(),
+                DiagnosticPayload::new(DiagnosticId::CjrizeSpawnInvalidServer, Vec::new()),
+                DiagnosticId::HintCjrizeSpawnInvalidServer,
+                Vec::new(),
+            );
             dummy_exp(&loc)
         }
     }
@@ -726,9 +758,14 @@ fn flatten_constraint(e: &mono::LocExp, errors: &mut ErrorReporter) -> Vec<(Stri
             if let mono::Exp::Prim(Prim::String(_, s)) = &val_e.node {
                 vec![(x.clone(), s.clone())]
             } else {
-                errors.report_at(
+                errors.report_at_with_hint(
                     e.span.clone(),
-                    "Constraint has not been fully determined".to_string(),
+                    DiagnosticPayload::new(
+                        DiagnosticId::CjrizeTableConstraintNotSimpleString,
+                        Vec::new(),
+                    ),
+                    DiagnosticId::HintCjrizeTableConstraintNotSimpleString,
+                    Vec::new(),
                 );
                 vec![]
             }
@@ -739,9 +776,14 @@ fn flatten_constraint(e: &mono::LocExp, errors: &mut ErrorReporter) -> Vec<(Stri
             v
         }
         _ => {
-            errors.report_at(
+            errors.report_at_with_hint(
                 e.span.clone(),
-                "Constraint has not been fully determined".to_string(),
+                DiagnosticPayload::new(
+                    DiagnosticId::CjrizeTableConstraintNotSimpleString,
+                    Vec::new(),
+                ),
+                DiagnosticId::HintCjrizeTableConstraintNotSimpleString,
+                Vec::new(),
             );
             vec![]
         }
@@ -855,7 +897,10 @@ fn cify_decl(
                         _ => {
                             errors.report_at(
                                 loc.clone(),
-                                "Function isn't explicit at code generation".to_string(),
+                                DiagnosticPayload::new(
+                                    DiagnosticId::CjrizeFunctionNotExplicitAtCodegen,
+                                    Vec::new(),
+                                ),
                             );
                             (
                                 x.clone(),
@@ -887,10 +932,15 @@ fn cify_decl(
             let pk = match &pe.node {
                 mono::Exp::Prim(Prim::String(_, s)) => s.clone(),
                 _ => {
-                    errors.report_at(
+                    errors.report(CompileError::sql_at_with_hint(
                         pe.span.clone(),
-                        "Primary key has not been fully determined".to_string(),
-                    );
+                        DiagnosticPayload::new(
+                            DiagnosticId::SqlTablePrimaryKeyNotKnownString,
+                            Vec::new(),
+                        ),
+                        DiagnosticId::HintSqlTablePrimaryKeyNotKnownString,
+                        Vec::new(),
+                    ));
                     String::new()
                 }
             };
@@ -919,19 +969,26 @@ fn cify_decl(
                     match &args[0].0.node {
                         mono::Exp::Prim(Prim::String(_, s)) => s.clone(),
                         _ => {
-                            errors.report_at(
+                            errors.report(CompileError::sql_at_with_hint(
                                 e.span.clone(),
-                                "VIEW query has not been fully determined".to_string(),
-                            );
+                                DiagnosticPayload::new(
+                                    DiagnosticId::SqlViewNotPlainString,
+                                    Vec::new(),
+                                ),
+                                DiagnosticId::HintSqlViewNotPlainStringStrcat,
+                                Vec::new(),
+                            ));
                             String::new()
                         }
                     }
                 }
                 _ => {
-                    errors.report_at(
+                    errors.report(CompileError::sql_at_with_hint(
                         e.span.clone(),
-                        "VIEW query has not been fully determined".to_string(),
-                    );
+                        DiagnosticPayload::new(DiagnosticId::SqlViewNotPlainString, Vec::new()),
+                        DiagnosticId::HintSqlViewNotPlainStringLiteral,
+                        Vec::new(),
+                    ));
                     String::new()
                 }
             };
@@ -988,7 +1045,10 @@ fn cify_decl(
                                     _ => {
                                         errors.report_at(
                                             e1.span.clone(),
-                                            "Task kind not fully determined".to_string(),
+                                            DiagnosticPayload::new(
+                                                DiagnosticId::CjrizeTaskKindNotFullyDetermined,
+                                                Vec::new(),
+                                            ),
                                         );
                                         Task::Initialize
                                     }
@@ -997,7 +1057,10 @@ fn cify_decl(
                             _ => {
                                 errors.report_at(
                                     e1.span.clone(),
-                                    "Task kind not fully determined".to_string(),
+                                    DiagnosticPayload::new(
+                                        DiagnosticId::CjrizeTaskKindNotFullyDetermined,
+                                        Vec::new(),
+                                    ),
                                 );
                                 Task::Initialize
                             }
@@ -1014,7 +1077,10 @@ fn cify_decl(
                     _ => {
                         errors.report_at(
                             loc.clone(),
-                            "Initializer has not been fully determined".to_string(),
+                            DiagnosticPayload::new(
+                                DiagnosticId::CjrizeInitializerNotFullyDetermined,
+                                Vec::new(),
+                            ),
                         );
                         (None, None)
                     }
@@ -1022,7 +1088,10 @@ fn cify_decl(
                 _ => {
                     errors.report_at(
                         loc.clone(),
-                        "Initializer has not been fully determined".to_string(),
+                        DiagnosticPayload::new(
+                            DiagnosticId::CjrizeInitializerNotFullyDetermined,
+                            Vec::new(),
+                        ),
                     );
                     (None, None)
                 }

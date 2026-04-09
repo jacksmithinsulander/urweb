@@ -1568,7 +1568,7 @@ fn integration_core_rpcify_rewrites_rpc_call_to_server_call_and_export() {
             sp,
         ),
     ];
-    let mut errors = ur::error_types::ErrorReporter::new();
+    let mut errors = ur::error_types::ErrorReporter::new_silent();
     let settings = ur::settings::Settings::default();
     let result = compiler::core_rpcify(file, &settings, &mut errors);
     let out = result.expect("rpcify must succeed");
@@ -1677,7 +1677,7 @@ fn integration_check_termination_rejects_non_terminating_valrec() {
         body,
         "".into(),
     )]))];
-    let mut errors = ErrorReporter::new();
+    let mut errors = ErrorReporter::new_silent();
     compiler::check_termination(&file, &mut errors);
     assert!(
         errors.has_errors(),
@@ -1710,7 +1710,7 @@ fn integration_check_termination_accepts_terminating_valrec() {
         body,
         "".into(),
     )]))];
-    let mut errors = ErrorReporter::new();
+    let mut errors = ErrorReporter::new_silent();
     compiler::check_termination(&file, &mut errors);
     assert!(
         !errors.has_errors(),
@@ -1892,7 +1892,12 @@ fn integration_export_tagging_tag_minimal() {
     ));
     let file: ur::core::File = vec![decl];
     let mut reported = Vec::new();
-    let out = ur::core::export_tagging::tag(file, &mut |_s, m| reported.push(m.to_string()));
+    let out = ur::core::export_tagging::tag(file, &mut |_s, payload| {
+        reported.push(ur::diagnostics::render_diagnostic_body(
+            &payload,
+            ur::diagnostics::DiagnosticLocale::En,
+        ));
+    });
     assert_eq!(out.len(), 1);
 }
 
@@ -1908,7 +1913,7 @@ fn integration_marshal_check_accepts_prim() {
     ));
     let file: ur::core::File = vec![decl];
     let settings = ur::settings::Settings::new();
-    let mut errors = ur::error_types::ErrorReporter::new();
+    let mut errors = ur::error_types::ErrorReporter::new_silent();
     ur::core::marshal_check::check(&file, &settings, &mut errors);
     assert!(!errors.has_errors());
 }
@@ -2112,7 +2117,7 @@ fn integration_core_rpcify_minimal_val() {
     ));
     let file: ur::core::File = vec![decl];
     let settings = ur::settings::Settings::new();
-    let mut errors = ur::error_types::ErrorReporter::new();
+    let mut errors = ur::error_types::ErrorReporter::new_silent();
     let result = compiler::core_rpcify(file, &settings, &mut errors);
     assert!(result.is_some());
     assert_eq!(result.unwrap().len(), 1);
@@ -2320,7 +2325,7 @@ fn integration_core_rpcify_database() {
     let decl = Located::dummy(Declaration::Database("db".into()));
     let file: ur::core::File = vec![decl];
     let settings = ur::settings::Settings::new();
-    let mut errors = ur::error_types::ErrorReporter::new();
+    let mut errors = ur::error_types::ErrorReporter::new_silent();
     let result = compiler::core_rpcify(file, &settings, &mut errors);
     assert!(result.is_some());
     assert_eq!(result.unwrap().len(), 1);
@@ -2331,7 +2336,7 @@ fn integration_marshal_check_database_ok() {
     let decl = Located::dummy(Declaration::Database("db".into()));
     let file: ur::core::File = vec![decl];
     let settings = ur::settings::Settings::new();
-    let mut errors = ur::error_types::ErrorReporter::new();
+    let mut errors = ur::error_types::ErrorReporter::new_silent();
     ur::core::marshal_check::check(&file, &settings, &mut errors);
     assert!(!errors.has_errors());
 }
@@ -2341,7 +2346,12 @@ fn integration_export_tagging_database() {
     let decl = Located::dummy(Declaration::Database("db".into()));
     let file: ur::core::File = vec![decl];
     let mut reported = Vec::new();
-    let out = ur::core::export_tagging::tag(file, &mut |_s, m| reported.push(m.to_string()));
+    let out = ur::core::export_tagging::tag(file, &mut |_s, payload| {
+        reported.push(ur::diagnostics::render_diagnostic_body(
+            &payload,
+            ur::diagnostics::DiagnosticLocale::En,
+        ));
+    });
     assert_eq!(out.len(), 1);
 }
 
@@ -2693,7 +2703,7 @@ fn integration_termination_check_valrec_non_recursive() {
     )]));
     let file: ur::core::File = vec![decl];
     let _settings = ur::settings::Settings::new();
-    let mut errors = ur::error_types::ErrorReporter::new();
+    let mut errors = ur::error_types::ErrorReporter::new_silent();
     ur::core::termination_check::check(&file, &mut errors);
     assert!(!errors.has_errors());
 }

@@ -1,40 +1,47 @@
-#![allow(dead_code, unused_variables, unused_imports)]
-
 //! Constructor and kind substitution / normalization operations.
 //!
 //! Translated from `elab_ops.sml`.
+//!
+//! Public helpers document `# Arguments`, `# Returns`, and `# Errors` (including [`SubUnif`])
+//! where de Bruijn level conventions are not obvious from types alone.
+//!
+//! **Bounded work:** [`hnorm_con`] uses a thread-local depth counter; solved-[`Constructor::Unif`] peeling
+//! uses [`PEEL_SOLVED_CONSTRUCTOR_UNIF_CHAIN_MAX_STEPS`] so alias chains cannot cycle without bound.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
-use crate::elaborated::{
-    CUnif, CUnifRef, Constructor, Explicitness, KUnif, KUnifRef, Kind, LocatedConstructor,
-    LocatedKind,
-};
-use crate::error_types::{Located, Span};
+use crate::elaborated::{CUnif, CUnifRef, Constructor, Kind, LocatedConstructor, LocatedKind};
+use crate::error_types::Located;
 
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
 
 /// Lift every free `Kind::Rel(n)` with `n >= bound` by `by`.
-fn lift_kind_in_kind_bound(by: usize, bound: usize, k: LocatedKind) -> LocatedKind {
-    let span = k.span.clone();
-    let node = match k.node {
+fn lift_kind_in_kind_bound(by: usize, bound: usize, kind: LocatedKind) -> LocatedKind {
+    let span = kind.span.clone();
+    let node = match kind.node {
         Kind::Rel(n) => {
             if n < bound {
-                Kind::Rel(n)
+                Kind::Rel(n) // bound: not lifted
             } else {
-                Kind::Rel(n + by)
+                // Saturating prevents overflow when n is a sentinel large value from an error path.
+                Kind::Rel(n.saturating_add(by))
             }
         }
-        Kind::Arrow(k1, k2) => Kind::Arrow(
-            Box::new(lift_kind_in_kind_bound(by, bound, *k1)),
-            Box::new(lift_kind_in_kind_bound(by, bound, *k2)),
+        Kind::Arrow(domain_kind, range_kind) => Kind::Arrow(
+            Box::new(lift_kind_in_kind_bound(by, bound, *domain_kind)),
+            Box::new(lift_kind_in_kind_bound(by, bound, *range_kind)),
         ),
-        Kind::Record(k1) => Kind::Record(Box::new(lift_kind_in_kind_bound(by, bound, *k1))),
-        Kind::Tuple(ks) => Kind::Tuple(
-            ks.into_iter()
-                .map(|ki| lift_kind_in_kind_bound(by, bound, ki))
+        Kind::Record(record_element_kind) => Kind::Record(Box::new(lift_kind_in_kind_bound(
+            by,
+            bound,
+            *record_element_kind,
+        ))),
+        Kind::Tuple(components) => Kind::Tuple(
+            components
+                .into_iter()
+                .map(|component_kind| lift_kind_in_kind_bound(by, bound, component_kind))
                 .collect(),
         ),
         Kind::Fun(x, body) => Kind::Fun(x, Box::new(lift_kind_in_kind_bound(by, bound + 1, *body))),
@@ -44,9 +51,14 @@ fn lift_kind_in_kind_bound(by: usize, bound: usize, k: LocatedKind) -> LocatedKi
 }
 
 /// Substitute `rep` for `Kind::Rel(xn)`, adjusting indices.
-fn sub_kind_in_kind_bound(by: usize, xn: usize, rep: &LocatedKind, k: LocatedKind) -> LocatedKind {
-    let span = k.span.clone();
-    let node = match k.node {
+fn sub_kind_in_kind_bound(
+    by: usize,
+    xn: usize,
+    rep: &LocatedKind,
+    kind: LocatedKind,
+) -> LocatedKind {
+    let span = kind.span.clone();
+    let node = match kind.node {
         Kind::Rel(n) => {
             if n == xn {
                 return lift_kind_in_kind_bound(by, 0, rep.clone());
@@ -56,14 +68,20 @@ fn sub_kind_in_kind_bound(by: usize, xn: usize, rep: &LocatedKind, k: LocatedKin
                 Kind::Rel(n)
             }
         }
-        Kind::Arrow(k1, k2) => Kind::Arrow(
-            Box::new(sub_kind_in_kind_bound(by, xn, rep, *k1)),
-            Box::new(sub_kind_in_kind_bound(by, xn, rep, *k2)),
+        Kind::Arrow(domain_kind, range_kind) => Kind::Arrow(
+            Box::new(sub_kind_in_kind_bound(by, xn, rep, *domain_kind)),
+            Box::new(sub_kind_in_kind_bound(by, xn, rep, *range_kind)),
         ),
-        Kind::Record(ki) => Kind::Record(Box::new(sub_kind_in_kind_bound(by, xn, rep, *ki))),
-        Kind::Tuple(ks) => Kind::Tuple(
-            ks.into_iter()
-                .map(|ki| sub_kind_in_kind_bound(by, xn, rep, ki))
+        Kind::Record(record_element_kind) => Kind::Record(Box::new(sub_kind_in_kind_bound(
+            by,
+            xn,
+            rep,
+            *record_element_kind,
+        ))),
+        Kind::Tuple(components) => Kind::Tuple(
+            components
+                .into_iter()
+                .map(|component_kind| sub_kind_in_kind_bound(by, xn, rep, component_kind))
                 .collect(),
         ),
         Kind::Fun(x, body) => Kind::Fun(
@@ -76,30 +94,33 @@ fn sub_kind_in_kind_bound(by: usize, xn: usize, rep: &LocatedKind, k: LocatedKin
 }
 
 /// Lift `Kind::Rel(n)` for `n >= bound` by 1 within a constructor.
-fn lift_kind_in_con_bound(bound: usize, c: LocatedConstructor) -> LocatedConstructor {
-    let span = c.span.clone();
-    let node = match c.node {
-        Constructor::TFun(a, b) => Constructor::TFun(
-            Box::new(lift_kind_in_con_bound(bound, *a)),
-            Box::new(lift_kind_in_con_bound(bound, *b)),
+fn lift_kind_in_con_bound(bound: usize, constructor: LocatedConstructor) -> LocatedConstructor {
+    let span = constructor.span.clone();
+    let node = match constructor.node {
+        Constructor::TFun(domain, codomain) => Constructor::TFun(
+            Box::new(lift_kind_in_con_bound(bound, *domain)),
+            Box::new(lift_kind_in_con_bound(bound, *codomain)),
         ),
         Constructor::TCFun(exp, x, k, body) => Constructor::TCFun(
             exp,
             x,
             Box::new(lift_kind_in_kind_bound(1, bound, *k)),
-            Box::new(lift_kind_in_con_bound(bound + 1, *body)),
+            // TCFun is a constructor binder (not kind), so `bound` for kind variables is unchanged.
+            Box::new(lift_kind_in_con_bound(bound, *body)),
         ),
-        Constructor::TRecord(r) => {
-            Constructor::TRecord(Box::new(lift_kind_in_con_bound(bound, *r)))
+        Constructor::TRecord(row) => {
+            Constructor::TRecord(Box::new(lift_kind_in_con_bound(bound, *row)))
         }
-        Constructor::TDisjoint(a, b, c2) => Constructor::TDisjoint(
-            Box::new(lift_kind_in_con_bound(bound, *a)),
-            Box::new(lift_kind_in_con_bound(bound, *b)),
-            Box::new(lift_kind_in_con_bound(bound, *c2)),
-        ),
-        Constructor::App(f, x) => Constructor::App(
-            Box::new(lift_kind_in_con_bound(bound, *f)),
-            Box::new(lift_kind_in_con_bound(bound, *x)),
+        Constructor::TDisjoint(disjoint_left_row, disjoint_right_row, body_constructor) => {
+            Constructor::TDisjoint(
+                Box::new(lift_kind_in_con_bound(bound, *disjoint_left_row)),
+                Box::new(lift_kind_in_con_bound(bound, *disjoint_right_row)),
+                Box::new(lift_kind_in_con_bound(bound, *body_constructor)),
+            )
+        }
+        Constructor::App(functor, argument) => Constructor::App(
+            Box::new(lift_kind_in_con_bound(bound, *functor)),
+            Box::new(lift_kind_in_con_bound(bound, *argument)),
         ),
         Constructor::Abs(x, k, body) => Constructor::Abs(
             x,
@@ -109,39 +130,41 @@ fn lift_kind_in_con_bound(bound: usize, c: LocatedConstructor) -> LocatedConstru
         Constructor::KAbs(x, body) => {
             Constructor::KAbs(x, Box::new(lift_kind_in_con_bound(bound + 1, *body)))
         }
-        Constructor::KApp(c2, k) => Constructor::KApp(
-            Box::new(lift_kind_in_con_bound(bound, *c2)),
-            Box::new(lift_kind_in_kind_bound(1, bound, *k)),
+        Constructor::KApp(functor, kind_argument) => Constructor::KApp(
+            Box::new(lift_kind_in_con_bound(bound, *functor)),
+            Box::new(lift_kind_in_kind_bound(1, bound, *kind_argument)),
         ),
         Constructor::TKFun(x, body) => {
             Constructor::TKFun(x, Box::new(lift_kind_in_con_bound(bound + 1, *body)))
         }
-        Constructor::Record(k, xcs) => Constructor::Record(
-            Box::new(lift_kind_in_kind_bound(1, bound, *k)),
-            xcs.into_iter()
-                .map(|(x, v)| {
+        Constructor::Record(row_kind, field_pairs) => Constructor::Record(
+            Box::new(lift_kind_in_kind_bound(1, bound, *row_kind)),
+            field_pairs
+                .into_iter()
+                .map(|(field_name, field_type)| {
                     (
-                        lift_kind_in_con_bound(bound, x),
-                        lift_kind_in_con_bound(bound, v),
+                        lift_kind_in_con_bound(bound, field_name),
+                        lift_kind_in_con_bound(bound, field_type),
                     )
                 })
                 .collect(),
         ),
-        Constructor::Concat(a, b) => Constructor::Concat(
-            Box::new(lift_kind_in_con_bound(bound, *a)),
-            Box::new(lift_kind_in_con_bound(bound, *b)),
+        Constructor::Concat(left_row, right_row) => Constructor::Concat(
+            Box::new(lift_kind_in_con_bound(bound, *left_row)),
+            Box::new(lift_kind_in_con_bound(bound, *right_row)),
         ),
-        Constructor::Map(k1, k2) => Constructor::Map(
-            Box::new(lift_kind_in_kind_bound(1, bound, *k1)),
-            Box::new(lift_kind_in_kind_bound(1, bound, *k2)),
+        Constructor::Map(map_domain_kind, map_codomain_kind) => Constructor::Map(
+            Box::new(lift_kind_in_kind_bound(1, bound, *map_domain_kind)),
+            Box::new(lift_kind_in_kind_bound(1, bound, *map_codomain_kind)),
         ),
-        Constructor::Tuple(cs) => Constructor::Tuple(
-            cs.into_iter()
-                .map(|ci| lift_kind_in_con_bound(bound, ci))
+        Constructor::Tuple(elements) => Constructor::Tuple(
+            elements
+                .into_iter()
+                .map(|element| lift_kind_in_con_bound(bound, element))
                 .collect(),
         ),
-        Constructor::Proj(c2, n) => {
-            Constructor::Proj(Box::new(lift_kind_in_con_bound(bound, *c2)), n)
+        Constructor::Proj(base, index) => {
+            Constructor::Proj(Box::new(lift_kind_in_con_bound(bound, *base)), index)
         }
         other => other,
     };
@@ -152,12 +175,30 @@ fn lift_kind_in_con_bound(bound: usize, c: LocatedConstructor) -> LocatedConstru
 // Public lifting / substitution API
 // ---------------------------------------------------------------------------
 
-/// Lift every free `Kind::Rel(n)` inside a kind by 1.
+/// Lift every free [`Kind::Rel`] de Bruijn index by 1 (enter one kind binder).
+///
+/// # Arguments
+///
+/// * `kind` — Kind to adjust.
+///
+/// # Returns
+///
+/// Kind with indices `n >= 0` incremented.
 pub fn lift_kind_in_kind(kind: LocatedKind) -> LocatedKind {
     lift_kind_in_kind_bound(1, 0, kind)
 }
 
-/// Substitute `rep` for the outermost kind variable (`KRel xn`) in `k`.
+/// Substitute `replacement` for [`Kind::Rel`] index `kind_index` in `kind`, adjusting other free indices.
+///
+/// # Arguments
+///
+/// * `kind_index` — de Bruijn level of the variable to replace.
+/// * `replacement` — Kind substituted in; lifted across binders as in SML `subKindInKind`.
+/// * `kind` — Kind to transform.
+///
+/// # Returns
+///
+/// Kind after substitution.
 pub fn sub_kind_in_kind(
     kind_index: usize,
     replacement: &LocatedKind,
@@ -166,12 +207,30 @@ pub fn sub_kind_in_kind(
     sub_kind_in_kind_bound(0, kind_index, replacement, kind)
 }
 
-/// Lift every free `Kind::Rel` inside a constructor by 1 (entering one kind binder).
+/// Lift every free [`Kind::Rel`] inside `constructor` by 1 (cross one kind binder in `TCFun`, `Abs`, etc.).
+///
+/// # Arguments
+///
+/// * `constructor` — Constructor whose embedded kinds are adjusted.
+///
+/// # Returns
+///
+/// Constructor with incremented kind indices under those binders.
 pub fn lift_kind_in_con(constructor: LocatedConstructor) -> LocatedConstructor {
     lift_kind_in_con_bound(0, constructor)
 }
 
-/// Substitute `rep` for the outermost kind variable in a constructor.
+/// Substitute `replacement` for [`Kind::Rel`] `kind_index` throughout `constructor`.
+///
+/// # Arguments
+///
+/// * `kind_index` — Variable level to replace.
+/// * `replacement` — Kind to splice in.
+/// * `constructor` — Target constructor.
+///
+/// # Returns
+///
+/// Constructor after kind substitution.
 pub fn sub_kind_in_con(
     kind_index: usize,
     replacement: &LocatedKind,
@@ -184,31 +243,34 @@ fn sub_kind_in_con_inner(
     by: usize,
     xn: usize,
     rep: &LocatedKind,
-    c: LocatedConstructor,
+    constructor: LocatedConstructor,
 ) -> LocatedConstructor {
-    let span = c.span.clone();
-    let node = match c.node {
-        Constructor::TFun(a, b) => Constructor::TFun(
-            Box::new(sub_kind_in_con_inner(by, xn, rep, *a)),
-            Box::new(sub_kind_in_con_inner(by, xn, rep, *b)),
+    let span = constructor.span.clone();
+    let node = match constructor.node {
+        Constructor::TFun(domain, codomain) => Constructor::TFun(
+            Box::new(sub_kind_in_con_inner(by, xn, rep, *domain)),
+            Box::new(sub_kind_in_con_inner(by, xn, rep, *codomain)),
         ),
         Constructor::TCFun(exp, x, k, body) => Constructor::TCFun(
             exp,
             x,
             Box::new(sub_kind_in_kind_bound(by, xn, rep, *k)),
-            Box::new(sub_kind_in_con_inner(by + 1, xn + 1, rep, *body)),
+            // TCFun is a constructor binder (not kind), so kind-variable indices are unchanged.
+            Box::new(sub_kind_in_con_inner(by, xn, rep, *body)),
         ),
-        Constructor::TRecord(r) => {
-            Constructor::TRecord(Box::new(sub_kind_in_con_inner(by, xn, rep, *r)))
+        Constructor::TRecord(row) => {
+            Constructor::TRecord(Box::new(sub_kind_in_con_inner(by, xn, rep, *row)))
         }
-        Constructor::TDisjoint(a, b, c2) => Constructor::TDisjoint(
-            Box::new(sub_kind_in_con_inner(by, xn, rep, *a)),
-            Box::new(sub_kind_in_con_inner(by, xn, rep, *b)),
-            Box::new(sub_kind_in_con_inner(by, xn, rep, *c2)),
-        ),
-        Constructor::App(f, x) => Constructor::App(
-            Box::new(sub_kind_in_con_inner(by, xn, rep, *f)),
-            Box::new(sub_kind_in_con_inner(by, xn, rep, *x)),
+        Constructor::TDisjoint(disjoint_left_row, disjoint_right_row, body_constructor) => {
+            Constructor::TDisjoint(
+                Box::new(sub_kind_in_con_inner(by, xn, rep, *disjoint_left_row)),
+                Box::new(sub_kind_in_con_inner(by, xn, rep, *disjoint_right_row)),
+                Box::new(sub_kind_in_con_inner(by, xn, rep, *body_constructor)),
+            )
+        }
+        Constructor::App(functor, argument) => Constructor::App(
+            Box::new(sub_kind_in_con_inner(by, xn, rep, *functor)),
+            Box::new(sub_kind_in_con_inner(by, xn, rep, *argument)),
         ),
         Constructor::Abs(x, k, body) => Constructor::Abs(
             x,
@@ -219,40 +281,42 @@ fn sub_kind_in_con_inner(
             x,
             Box::new(sub_kind_in_con_inner(by + 1, xn + 1, rep, *body)),
         ),
-        Constructor::KApp(c2, k) => Constructor::KApp(
-            Box::new(sub_kind_in_con_inner(by, xn, rep, *c2)),
-            Box::new(sub_kind_in_kind_bound(by, xn, rep, *k)),
+        Constructor::KApp(functor, kind_argument) => Constructor::KApp(
+            Box::new(sub_kind_in_con_inner(by, xn, rep, *functor)),
+            Box::new(sub_kind_in_kind_bound(by, xn, rep, *kind_argument)),
         ),
         Constructor::TKFun(x, body) => Constructor::TKFun(
             x,
             Box::new(sub_kind_in_con_inner(by + 1, xn + 1, rep, *body)),
         ),
-        Constructor::Record(k, xcs) => Constructor::Record(
-            Box::new(sub_kind_in_kind_bound(by, xn, rep, *k)),
-            xcs.into_iter()
-                .map(|(x, v)| {
+        Constructor::Record(row_kind, field_pairs) => Constructor::Record(
+            Box::new(sub_kind_in_kind_bound(by, xn, rep, *row_kind)),
+            field_pairs
+                .into_iter()
+                .map(|(field_name, field_type)| {
                     (
-                        sub_kind_in_con_inner(by, xn, rep, x),
-                        sub_kind_in_con_inner(by, xn, rep, v),
+                        sub_kind_in_con_inner(by, xn, rep, field_name),
+                        sub_kind_in_con_inner(by, xn, rep, field_type),
                     )
                 })
                 .collect(),
         ),
-        Constructor::Concat(a, b) => Constructor::Concat(
-            Box::new(sub_kind_in_con_inner(by, xn, rep, *a)),
-            Box::new(sub_kind_in_con_inner(by, xn, rep, *b)),
+        Constructor::Concat(left_row, right_row) => Constructor::Concat(
+            Box::new(sub_kind_in_con_inner(by, xn, rep, *left_row)),
+            Box::new(sub_kind_in_con_inner(by, xn, rep, *right_row)),
         ),
-        Constructor::Map(k1, k2) => Constructor::Map(
-            Box::new(sub_kind_in_kind_bound(by, xn, rep, *k1)),
-            Box::new(sub_kind_in_kind_bound(by, xn, rep, *k2)),
+        Constructor::Map(map_domain_kind, map_codomain_kind) => Constructor::Map(
+            Box::new(sub_kind_in_kind_bound(by, xn, rep, *map_domain_kind)),
+            Box::new(sub_kind_in_kind_bound(by, xn, rep, *map_codomain_kind)),
         ),
-        Constructor::Tuple(cs) => Constructor::Tuple(
-            cs.into_iter()
-                .map(|ci| sub_kind_in_con_inner(by, xn, rep, ci))
+        Constructor::Tuple(elements) => Constructor::Tuple(
+            elements
+                .into_iter()
+                .map(|element| sub_kind_in_con_inner(by, xn, rep, element))
                 .collect(),
         ),
-        Constructor::Proj(c2, n) => {
-            Constructor::Proj(Box::new(sub_kind_in_con_inner(by, xn, rep, *c2)), n)
+        Constructor::Proj(base, index) => {
+            Constructor::Proj(Box::new(sub_kind_in_con_inner(by, xn, rep, *base)), index)
         }
         other => other,
     };
@@ -264,36 +328,52 @@ fn sub_kind_in_con_inner(
 // ---------------------------------------------------------------------------
 
 /// Lift every free `Constructor::Rel(n)` inside a constructor by `by`, starting at `bound`.
-fn lift_con_in_con_bound(by: usize, bound: usize, c: LocatedConstructor) -> LocatedConstructor {
-    let span = c.span.clone();
-    let node = match c.node {
+fn lift_con_in_con_bound(
+    by: usize,
+    bound: usize,
+    constructor: LocatedConstructor,
+) -> LocatedConstructor {
+    let span = constructor.span.clone();
+    let node = match constructor.node {
         Constructor::Rel(n) => {
             if n < bound {
-                Constructor::Rel(n)
+                Constructor::Rel(n) // bound: not lifted
             } else {
-                Constructor::Rel(n + by)
+                // Use saturating_add: if `n` is a sentinel (e.g. usize::MAX from a failed lookup),
+                // adding `by` would overflow; saturating keeps it large (still "unbound") safely.
+                Constructor::Rel(n.saturating_add(by))
             }
         }
-        // Unification variables track their nesting level
-        Constructor::Unif(nl, s, k, name, r) => Constructor::Unif(nl + by, s, k, name, r),
-        Constructor::TFun(a, b) => Constructor::TFun(
-            Box::new(lift_con_in_con_bound(by, bound, *a)),
-            Box::new(lift_con_in_con_bound(by, bound, *b)),
+        // Unification variables track their nesting level; saturating prevents overflow on error paths.
+        Constructor::Unif(nl, s, k, name, r) => {
+            Constructor::Unif(nl.saturating_add(by), s, k, name, r)
+        }
+        Constructor::TFun(domain, codomain) => Constructor::TFun(
+            Box::new(lift_con_in_con_bound(by, bound, *domain)),
+            Box::new(lift_con_in_con_bound(by, bound, *codomain)),
         ),
         Constructor::TCFun(exp, x, k, body) => {
-            Constructor::TCFun(exp, x, k, Box::new(lift_con_in_con_bound(by, bound, *body)))
+            // TCFun introduces a constructor binder, so increment `bound` so local Rel(0) is not lifted.
+            Constructor::TCFun(
+                exp,
+                x,
+                k,
+                Box::new(lift_con_in_con_bound(by, bound + 1, *body)),
+            )
         }
-        Constructor::TRecord(r) => {
-            Constructor::TRecord(Box::new(lift_con_in_con_bound(by, bound, *r)))
+        Constructor::TRecord(row) => {
+            Constructor::TRecord(Box::new(lift_con_in_con_bound(by, bound, *row)))
         }
-        Constructor::TDisjoint(a, b, c2) => Constructor::TDisjoint(
-            Box::new(lift_con_in_con_bound(by, bound, *a)),
-            Box::new(lift_con_in_con_bound(by, bound, *b)),
-            Box::new(lift_con_in_con_bound(by, bound, *c2)),
-        ),
-        Constructor::App(f, x) => Constructor::App(
-            Box::new(lift_con_in_con_bound(by, bound, *f)),
-            Box::new(lift_con_in_con_bound(by, bound, *x)),
+        Constructor::TDisjoint(disjoint_left_row, disjoint_right_row, body_constructor) => {
+            Constructor::TDisjoint(
+                Box::new(lift_con_in_con_bound(by, bound, *disjoint_left_row)),
+                Box::new(lift_con_in_con_bound(by, bound, *disjoint_right_row)),
+                Box::new(lift_con_in_con_bound(by, bound, *body_constructor)),
+            )
+        }
+        Constructor::App(functor, argument) => Constructor::App(
+            Box::new(lift_con_in_con_bound(by, bound, *functor)),
+            Box::new(lift_con_in_con_bound(by, bound, *argument)),
         ),
         Constructor::Abs(x, k, body) => {
             Constructor::Abs(x, k, Box::new(lift_con_in_con_bound(by, bound + 1, *body)))
@@ -301,56 +381,219 @@ fn lift_con_in_con_bound(by: usize, bound: usize, c: LocatedConstructor) -> Loca
         Constructor::KAbs(x, body) => {
             Constructor::KAbs(x, Box::new(lift_con_in_con_bound(by, bound, *body)))
         }
-        Constructor::KApp(c2, k) => {
-            Constructor::KApp(Box::new(lift_con_in_con_bound(by, bound, *c2)), k)
-        }
+        Constructor::KApp(functor, kind_argument) => Constructor::KApp(
+            Box::new(lift_con_in_con_bound(by, bound, *functor)),
+            kind_argument,
+        ),
         Constructor::TKFun(x, body) => {
             Constructor::TKFun(x, Box::new(lift_con_in_con_bound(by, bound, *body)))
         }
-        Constructor::Record(k, xcs) => Constructor::Record(
-            k,
-            xcs.into_iter()
-                .map(|(x, v)| {
+        Constructor::Record(row_kind, field_pairs) => Constructor::Record(
+            row_kind,
+            field_pairs
+                .into_iter()
+                .map(|(field_name, field_type)| {
                     (
-                        lift_con_in_con_bound(by, bound, x),
-                        lift_con_in_con_bound(by, bound, v),
+                        lift_con_in_con_bound(by, bound, field_name),
+                        lift_con_in_con_bound(by, bound, field_type),
                     )
                 })
                 .collect(),
         ),
-        Constructor::Concat(a, b) => Constructor::Concat(
-            Box::new(lift_con_in_con_bound(by, bound, *a)),
-            Box::new(lift_con_in_con_bound(by, bound, *b)),
+        Constructor::Concat(left_row, right_row) => Constructor::Concat(
+            Box::new(lift_con_in_con_bound(by, bound, *left_row)),
+            Box::new(lift_con_in_con_bound(by, bound, *right_row)),
         ),
-        Constructor::Tuple(cs) => Constructor::Tuple(
-            cs.into_iter()
-                .map(|ci| lift_con_in_con_bound(by, bound, ci))
+        Constructor::Tuple(elements) => Constructor::Tuple(
+            elements
+                .into_iter()
+                .map(|element| lift_con_in_con_bound(by, bound, element))
                 .collect(),
         ),
-        Constructor::Proj(c2, n) => {
-            Constructor::Proj(Box::new(lift_con_in_con_bound(by, bound, *c2)), n)
+        Constructor::Proj(base, index) => {
+            Constructor::Proj(Box::new(lift_con_in_con_bound(by, bound, *base)), index)
         }
         other => other,
     };
     Located { node, span }
 }
 
-/// Lift every free `Constructor::Rel(n)` inside `c` by 1.
+/// Lift every free [`Constructor::Rel`] inside `constructor` by 1 (one constructor binder).
+///
+/// # Arguments
+///
+/// * `constructor` — Elaborated constructor.
+///
+/// # Returns
+///
+/// Constructor with de Bruijn indices adjusted.
 pub fn lift_con_in_con(constructor: LocatedConstructor) -> LocatedConstructor {
     lift_con_in_con_bound(1, 0, constructor)
+}
+
+// ---------------------------------------------------------------------------
+// Squish: inverse of mlift_con_in_con (mirrors SML `squish`)
+// ---------------------------------------------------------------------------
+
+/// Shift all free [`Constructor::Rel`] indices down by `by`, raising on in-scope locals or Unif.
+///
+/// Mirrors `squish by` in `elaborate.sml`.  Used when storing a constructor solution into a
+/// [`Constructor::Unif`] cell that has been lifted `by` times since creation — the inverse of
+/// [`mlift_con_in_con`].  Any [`Constructor::Rel`] in `[0, by)` (local variables that would be
+/// lost after squishing) and any [`Constructor::Unif`] node raise [`CantSquish`].
+///
+/// # Arguments
+///
+/// * `by` — Number of binder levels to squish out (the Unif's nesting level `nl`).
+/// * `constructor` — Constructor computed at depth `by`; indices ≥ `by` are shifted down.
+///
+/// # Errors
+///
+/// [`CantSquish`] when a free [`Constructor::Rel`] in `[0, by)` or a [`Constructor::Unif`] is encountered.
+///
+/// # Returns
+///
+/// `Ok(constructor_at_depth_0)` on success.
+pub fn squish_con(
+    by: usize,
+    constructor: LocatedConstructor,
+) -> Result<LocatedConstructor, CantSquish> {
+    if by == 0 {
+        // Identity: no binders to squish.
+        return Ok(constructor);
+    }
+    squish_con_bound(by, 0, constructor)
+}
+
+/// Raised when [`squish_con`] encounters a constructor that cannot be squished.
+///
+/// Mirrors `exception CantSquish` in `elaborate.sml`.
+#[derive(Debug)]
+pub struct CantSquish;
+
+/// Recursive body of [`squish_con`]: `bound` tracks locally-bound constructor variables.
+///
+/// # Arguments
+///
+/// * `by` — Fixed: number of binders being squished.
+/// * `bound` — Current depth of locally-bound constructor variables; increments inside binders.
+/// * `constructor` — Sub-constructor to squish.
+fn squish_con_bound(
+    by: usize,
+    bound: usize,
+    constructor: LocatedConstructor,
+) -> Result<LocatedConstructor, CantSquish> {
+    let span = constructor.span.clone();
+    let node = match constructor.node {
+        Constructor::Rel(n) => {
+            if n < bound {
+                // Local variable (bound within this constructor's own binders): keep as-is.
+                Constructor::Rel(n)
+            } else if n < bound + by {
+                // Free variable referencing one of the `by` binders being squished away: cannot squish.
+                return Err(CantSquish);
+            } else {
+                // Outer variable beyond the squished range: shift index down by `by`.
+                Constructor::Rel(n - by)
+            }
+        }
+        Constructor::Unif(_, _, _, _, _) => {
+            // Any unification variable blocks squishing (it might solve to a local reference).
+            return Err(CantSquish);
+        }
+        Constructor::TFun(domain, codomain) => Constructor::TFun(
+            Box::new(squish_con_bound(by, bound, *domain)?),
+            Box::new(squish_con_bound(by, bound, *codomain)?),
+        ),
+        Constructor::TCFun(exp, x, k, body) => {
+            // TCFun introduces a constructor binder: increment `bound` for the body.
+            Constructor::TCFun(exp, x, k, Box::new(squish_con_bound(by, bound + 1, *body)?))
+        }
+        Constructor::TRecord(row) => {
+            Constructor::TRecord(Box::new(squish_con_bound(by, bound, *row)?))
+        }
+        Constructor::TDisjoint(left_row, right_row, body_con) => Constructor::TDisjoint(
+            Box::new(squish_con_bound(by, bound, *left_row)?),
+            Box::new(squish_con_bound(by, bound, *right_row)?),
+            Box::new(squish_con_bound(by, bound, *body_con)?),
+        ),
+        Constructor::App(functor, argument) => Constructor::App(
+            Box::new(squish_con_bound(by, bound, *functor)?),
+            Box::new(squish_con_bound(by, bound, *argument)?),
+        ),
+        Constructor::Abs(x, k, body) => {
+            // Abs introduces a constructor binder: increment `bound` for the body.
+            Constructor::Abs(x, k, Box::new(squish_con_bound(by, bound + 1, *body)?))
+        }
+        Constructor::KAbs(x, body) => {
+            // KAbs is a kind binder, not a constructor binder: `bound` is unchanged.
+            Constructor::KAbs(x, Box::new(squish_con_bound(by, bound, *body)?))
+        }
+        Constructor::KApp(functor, kind_argument) => Constructor::KApp(
+            Box::new(squish_con_bound(by, bound, *functor)?),
+            kind_argument,
+        ),
+        Constructor::TKFun(x, body) => {
+            // TKFun is a kind binder, not a constructor binder: `bound` is unchanged.
+            Constructor::TKFun(x, Box::new(squish_con_bound(by, bound, *body)?))
+        }
+        Constructor::Record(row_kind, field_pairs) => {
+            let mut squished_pairs = Vec::with_capacity(field_pairs.len());
+            for (field_name, field_type) in field_pairs {
+                // Squish both the field name constructor and the field type constructor.
+                squished_pairs.push((
+                    squish_con_bound(by, bound, field_name)?,
+                    squish_con_bound(by, bound, field_type)?,
+                ));
+            }
+            Constructor::Record(row_kind, squished_pairs)
+        }
+        Constructor::Concat(left_row, right_row) => Constructor::Concat(
+            Box::new(squish_con_bound(by, bound, *left_row)?),
+            Box::new(squish_con_bound(by, bound, *right_row)?),
+        ),
+        Constructor::Tuple(elements) => {
+            let mut squished = Vec::with_capacity(elements.len());
+            for element in elements {
+                squished.push(squish_con_bound(by, bound, element)?);
+            }
+            Constructor::Tuple(squished)
+        }
+        Constructor::Proj(base, index) => {
+            Constructor::Proj(Box::new(squish_con_bound(by, bound, *base)?), index)
+        }
+        // All other constructor forms (Named, ModProj, Unit, Map, Name, Error, etc.) have no
+        // free constructor Rel indices and cannot contain CantSquish-triggering sub-terms.
+        other => other,
+    };
+    Ok(Located { node, span })
 }
 
 // ---------------------------------------------------------------------------
 // Con-in-Con substitution
 // ---------------------------------------------------------------------------
 
-/// Error sentinel: a unification variable with nesting level -1 (sentinel ~1 from SML).
+/// Substitution stopped at a forbidden unification-variable site (SML `SubUnif`).
+///
+/// See [`sub_con_in_con`].
 #[derive(Debug)]
 pub struct SubUnif;
 
-/// Substitute `rep` for `Constructor::Rel(xn)` in `c`, adjusting all free de Bruijn indices.
-/// Returns `Err(SubUnif)` if a `CUnif` with `nl == 0` at the substitution depth
-/// is encountered (mirrors SML's `SubUnif` exception for `CUnif(~1, …)`).
+/// Substitute `replacement` for [`Constructor::Rel`] `con_index` in `constructor`.
+///
+/// # Arguments
+///
+/// * `con_index` — de Bruijn index to replace.
+/// * `replacement` — Constructor spliced in (lifted across intervening binders).
+/// * `constructor` — Subject.
+///
+/// # Errors
+///
+/// [`SubUnif`] if a [`Constructor::Unif`] sentinel blocks substitution (mirrors `CUnif(~1, …)` in SML).
+///
+/// # Returns
+///
+/// `Ok(updated)` on success.
 pub fn sub_con_in_con(
     con_index: usize,
     replacement: &LocatedConstructor,
@@ -363,10 +606,10 @@ fn sub_con_in_con_inner(
     by: usize,
     xn: usize,
     rep: &LocatedConstructor,
-    c: LocatedConstructor,
+    constructor: LocatedConstructor,
 ) -> Result<LocatedConstructor, SubUnif> {
-    let span = c.span.clone();
-    let node = match c.node {
+    let span = constructor.span.clone();
+    let node = match constructor.node {
         Constructor::Rel(n) => {
             if n == xn {
                 return Ok(lift_con_in_con_bound(by, 0, rep.clone()));
@@ -376,26 +619,30 @@ fn sub_con_in_con_inner(
                 Constructor::Rel(n)
             }
         }
-        // SML: CUnif(~1, …) => raise SubUnif
-        // We represent the ~1 sentinel as nl == 0 at depth 0 with the real
-        // depth tracked via `by`.  The SML code uses nl = -1 to mean
-        // "can't substitute here"; we mirror that by treating nl == 0 at
-        // the actual substitution depth (by == 0) as the sentinel.
-        Constructor::Unif(nl, s, k, name, r) => {
-            // Check if this is the SubUnif sentinel: nl wraps around in SML as
-            // ~1 which we represent as `usize::MAX` after a saturating subtraction.
-            if nl == usize::MAX {
-                return Err(SubUnif);
+        // SML `subConInCon'`: `CUnif(~1, ...) → raise SubUnif; CUnif(n, ...) → CUnif(n-1, ...)`.
+        // We represent SML's `-1` sentinel as `usize::MAX` (wrapping underflow from 0).
+        // `wrapping_sub(1)` matches the SML decrement exactly: nl=0 → usize::MAX (= -1 sentinel),
+        // and usize::MAX (already -1) is caught first and raises SubUnif.
+        Constructor::Unif(nl, s, k, name, r) => match read_cunif(&r) {
+            Some(known_constructor) => {
+                // Keep parity with SML `ElabUtil.Con.mapB`, which traverses through solved constructor unifiers.
+                let lifted_known_constructor = mlift_con_in_con(nl, known_constructor);
+                // Continue substitution through the solved constructor instead of treating the cell as opaque.
+                return sub_con_in_con_inner(by, xn, rep, lifted_known_constructor);
             }
-            if nl == 0 {
-                Constructor::Unif(0, s, k, name, r)
-            } else {
-                Constructor::Unif(nl - 1, s, k, name, r)
+            None => {
+                if nl == usize::MAX {
+                    // This Unif already holds the ~1 sentinel: block substitution.
+                    return Err(SubUnif);
+                }
+                // Decrement nesting level by 1; nl=0 wraps to usize::MAX (the ~1 sentinel),
+                // matching SML's CUnif(0) → CUnif(0-1) = CUnif(~1) behavior.
+                Constructor::Unif(nl.wrapping_sub(1), s, k, name, r)
             }
-        }
-        Constructor::TFun(a, b) => Constructor::TFun(
-            Box::new(sub_con_in_con_inner(by, xn, rep, *a)?),
-            Box::new(sub_con_in_con_inner(by, xn, rep, *b)?),
+        },
+        Constructor::TFun(domain, codomain) => Constructor::TFun(
+            Box::new(sub_con_in_con_inner(by, xn, rep, *domain)?),
+            Box::new(sub_con_in_con_inner(by, xn, rep, *codomain)?),
         ),
         Constructor::TCFun(exp, x, k, body) => Constructor::TCFun(
             exp,
@@ -404,17 +651,19 @@ fn sub_con_in_con_inner(
             // TCFun introduces a constructor binder, so increment by and xn
             Box::new(sub_con_in_con_inner(by + 1, xn + 1, rep, *body)?),
         ),
-        Constructor::TRecord(r) => {
-            Constructor::TRecord(Box::new(sub_con_in_con_inner(by, xn, rep, *r)?))
+        Constructor::TRecord(row) => {
+            Constructor::TRecord(Box::new(sub_con_in_con_inner(by, xn, rep, *row)?))
         }
-        Constructor::TDisjoint(a, b, c2) => Constructor::TDisjoint(
-            Box::new(sub_con_in_con_inner(by, xn, rep, *a)?),
-            Box::new(sub_con_in_con_inner(by, xn, rep, *b)?),
-            Box::new(sub_con_in_con_inner(by, xn, rep, *c2)?),
-        ),
-        Constructor::App(f, x) => Constructor::App(
-            Box::new(sub_con_in_con_inner(by, xn, rep, *f)?),
-            Box::new(sub_con_in_con_inner(by, xn, rep, *x)?),
+        Constructor::TDisjoint(disjoint_left_row, disjoint_right_row, body_constructor) => {
+            Constructor::TDisjoint(
+                Box::new(sub_con_in_con_inner(by, xn, rep, *disjoint_left_row)?),
+                Box::new(sub_con_in_con_inner(by, xn, rep, *disjoint_right_row)?),
+                Box::new(sub_con_in_con_inner(by, xn, rep, *body_constructor)?),
+            )
+        }
+        Constructor::App(functor, argument) => Constructor::App(
+            Box::new(sub_con_in_con_inner(by, xn, rep, *functor)?),
+            Box::new(sub_con_in_con_inner(by, xn, rep, *argument)?),
         ),
         Constructor::Abs(x, k, body) => Constructor::Abs(
             x,
@@ -424,35 +673,36 @@ fn sub_con_in_con_inner(
         Constructor::KAbs(x, body) => {
             Constructor::KAbs(x, Box::new(sub_con_in_con_inner(by, xn, rep, *body)?))
         }
-        Constructor::KApp(c2, k) => {
-            Constructor::KApp(Box::new(sub_con_in_con_inner(by, xn, rep, *c2)?), k)
-        }
+        Constructor::KApp(functor, kind_argument) => Constructor::KApp(
+            Box::new(sub_con_in_con_inner(by, xn, rep, *functor)?),
+            kind_argument,
+        ),
         Constructor::TKFun(x, body) => {
             Constructor::TKFun(x, Box::new(sub_con_in_con_inner(by, xn, rep, *body)?))
         }
-        Constructor::Record(k, xcs) => {
-            let mut new_xcs = Vec::with_capacity(xcs.len());
-            for (x, v) in xcs {
-                new_xcs.push((
-                    sub_con_in_con_inner(by, xn, rep, x)?,
-                    sub_con_in_con_inner(by, xn, rep, v)?,
+        Constructor::Record(row_kind, field_pairs) => {
+            let mut new_field_pairs = Vec::with_capacity(field_pairs.len());
+            for (field_name, field_type) in field_pairs {
+                new_field_pairs.push((
+                    sub_con_in_con_inner(by, xn, rep, field_name)?,
+                    sub_con_in_con_inner(by, xn, rep, field_type)?,
                 ));
             }
-            Constructor::Record(k, new_xcs)
+            Constructor::Record(row_kind, new_field_pairs)
         }
-        Constructor::Concat(a, b) => Constructor::Concat(
-            Box::new(sub_con_in_con_inner(by, xn, rep, *a)?),
-            Box::new(sub_con_in_con_inner(by, xn, rep, *b)?),
+        Constructor::Concat(left_row, right_row) => Constructor::Concat(
+            Box::new(sub_con_in_con_inner(by, xn, rep, *left_row)?),
+            Box::new(sub_con_in_con_inner(by, xn, rep, *right_row)?),
         ),
-        Constructor::Tuple(cs) => {
-            let mut new_cs = Vec::with_capacity(cs.len());
-            for ci in cs {
-                new_cs.push(sub_con_in_con_inner(by, xn, rep, ci)?);
+        Constructor::Tuple(elements) => {
+            let mut new_elements = Vec::with_capacity(elements.len());
+            for element in elements {
+                new_elements.push(sub_con_in_con_inner(by, xn, rep, element)?);
             }
-            Constructor::Tuple(new_cs)
+            Constructor::Tuple(new_elements)
         }
-        Constructor::Proj(c2, n) => {
-            Constructor::Proj(Box::new(sub_con_in_con_inner(by, xn, rep, *c2)?), n)
+        Constructor::Proj(base, index) => {
+            Constructor::Proj(Box::new(sub_con_in_con_inner(by, xn, rep, *base)?), index)
         }
         other => other,
     };
@@ -463,58 +713,102 @@ fn sub_con_in_con_inner(
 // Occurs check
 // ---------------------------------------------------------------------------
 
-/// Returns `true` if `Constructor::Rel(n)` appears free in `c` (at de Bruijn depth `bound`).
-fn occurs_at(n: usize, bound: usize, c: &LocatedConstructor) -> bool {
-    match &c.node {
-        Constructor::Rel(m) => *m == n + bound,
-        Constructor::TFun(a, b) => occurs_at(n, bound, a) || occurs_at(n, bound, b),
-        Constructor::TCFun(_, _, _, body) => occurs_at(n, bound, body),
-        Constructor::TRecord(r) => occurs_at(n, bound, r),
-        Constructor::TDisjoint(a, b, c2) => {
-            occurs_at(n, bound, a) || occurs_at(n, bound, b) || occurs_at(n, bound, c2)
+/// Returns `true` if `Constructor::Rel(n)` appears free in `constructor` (at de Bruijn depth `bound`).
+fn occurs_at(debruijn_index: usize, bound: usize, constructor: &LocatedConstructor) -> bool {
+    match &constructor.node {
+        Constructor::Rel(m) => *m == debruijn_index + bound,
+        Constructor::TFun(domain, codomain) => {
+            occurs_at(debruijn_index, bound, domain) || occurs_at(debruijn_index, bound, codomain)
         }
-        Constructor::App(f, x) => occurs_at(n, bound, f) || occurs_at(n, bound, x),
-        Constructor::Abs(_, _, body) => occurs_at(n, bound + 1, body),
-        Constructor::KAbs(_, body) => occurs_at(n, bound, body),
-        Constructor::KApp(c2, _) => occurs_at(n, bound, c2),
-        Constructor::TKFun(_, body) => occurs_at(n, bound, body),
-        Constructor::Record(_, xcs) => xcs
+        // TCFun introduces a constructor binder: increment `bound` so the bound variable is not treated as free.
+        Constructor::TCFun(_, _, _, body) => occurs_at(debruijn_index, bound + 1, body),
+        Constructor::TRecord(row) => occurs_at(debruijn_index, bound, row),
+        Constructor::TDisjoint(disjoint_left_row, disjoint_right_row, body_constructor) => {
+            occurs_at(debruijn_index, bound, disjoint_left_row)
+                || occurs_at(debruijn_index, bound, disjoint_right_row)
+                || occurs_at(debruijn_index, bound, body_constructor)
+        }
+        Constructor::App(functor, argument) => {
+            occurs_at(debruijn_index, bound, functor) || occurs_at(debruijn_index, bound, argument)
+        }
+        Constructor::Abs(_, _, body) => occurs_at(debruijn_index, bound + 1, body),
+        Constructor::KAbs(_, body) => occurs_at(debruijn_index, bound, body),
+        Constructor::KApp(functor, _) => occurs_at(debruijn_index, bound, functor),
+        Constructor::TKFun(_, body) => occurs_at(debruijn_index, bound, body),
+        Constructor::Record(_, field_pairs) => {
+            field_pairs.iter().any(|(field_name, field_type)| {
+                occurs_at(debruijn_index, bound, field_name)
+                    || occurs_at(debruijn_index, bound, field_type)
+            })
+        }
+        Constructor::Concat(left_row, right_row) => {
+            occurs_at(debruijn_index, bound, left_row)
+                || occurs_at(debruijn_index, bound, right_row)
+        }
+        Constructor::Tuple(elements) => elements
             .iter()
-            .any(|(x, v)| occurs_at(n, bound, x) || occurs_at(n, bound, v)),
-        Constructor::Concat(a, b) => occurs_at(n, bound, a) || occurs_at(n, bound, b),
-        Constructor::Tuple(cs) => cs.iter().any(|ci| occurs_at(n, bound, ci)),
-        Constructor::Proj(c2, _) => occurs_at(n, bound, c2),
+            .any(|element| occurs_at(debruijn_index, bound, element)),
+        Constructor::Proj(base, _) => occurs_at(debruijn_index, bound, base),
         _ => false,
     }
 }
 
-/// Returns `true` if de Bruijn variable 0 occurs free in `c`.
+/// Returns whether de Bruijn variable 0 occurs free in `constructor` (occurs-check helper).
+///
+/// # Arguments
+///
+/// * `constructor` — Constructor at the current binding depth.
+///
+/// # Returns
+///
+/// `true` if `Constructor::Rel(0)` appears free at the current binding depth.
 pub fn occurs(constructor: &LocatedConstructor) -> bool {
     occurs_at(0, 0, constructor)
 }
 
-/// Returns `true` if the unification variable `r` appears anywhere in `c`.
-/// Used for the occurs check when solving Unif variables.
-pub fn occurs_cunif(r: &CUnifRef, c: &LocatedConstructor) -> bool {
-    match &c.node {
-        Constructor::Unif(_, _, _, _, r2) => Arc::ptr_eq(r, r2),
-        Constructor::TFun(a, b) => occurs_cunif(r, a) || occurs_cunif(r, b),
-        Constructor::TCFun(_, _, _, body) => occurs_cunif(r, body),
-        Constructor::TRecord(rc) => occurs_cunif(r, rc),
-        Constructor::TDisjoint(a, b, c2) => {
-            occurs_cunif(r, a) || occurs_cunif(r, b) || occurs_cunif(r, c2)
+/// Returns whether constructor unification `unification_cell` occurs anywhere in `constructor`.
+///
+/// # Arguments
+///
+/// * `unification_cell` — [`CUnif`] reference cell (identity compared with [`Arc::ptr_eq`]).
+/// * `constructor` — Constructor to search.
+///
+/// # Returns
+///
+/// `true` if any [`Constructor::Unif`] in `c` shares `r`.
+pub fn occurs_cunif(unification_cell: &CUnifRef, constructor: &LocatedConstructor) -> bool {
+    match &constructor.node {
+        Constructor::Unif(_, _, _, _, other_cell) => Arc::ptr_eq(unification_cell, other_cell),
+        Constructor::TFun(domain, codomain) => {
+            occurs_cunif(unification_cell, domain) || occurs_cunif(unification_cell, codomain)
         }
-        Constructor::App(f, x) => occurs_cunif(r, f) || occurs_cunif(r, x),
-        Constructor::Abs(_, _, body) => occurs_cunif(r, body),
-        Constructor::KAbs(_, body) => occurs_cunif(r, body),
-        Constructor::KApp(c2, _) => occurs_cunif(r, c2),
-        Constructor::TKFun(_, body) => occurs_cunif(r, body),
-        Constructor::Record(_, xcs) => xcs
+        Constructor::TCFun(_, _, _, body) => occurs_cunif(unification_cell, body),
+        Constructor::TRecord(row) => occurs_cunif(unification_cell, row),
+        Constructor::TDisjoint(disjoint_left_row, disjoint_right_row, body_constructor) => {
+            occurs_cunif(unification_cell, disjoint_left_row)
+                || occurs_cunif(unification_cell, disjoint_right_row)
+                || occurs_cunif(unification_cell, body_constructor)
+        }
+        Constructor::App(functor, argument) => {
+            occurs_cunif(unification_cell, functor) || occurs_cunif(unification_cell, argument)
+        }
+        Constructor::Abs(_, _, body) => occurs_cunif(unification_cell, body),
+        Constructor::KAbs(_, body) => occurs_cunif(unification_cell, body),
+        Constructor::KApp(functor, _) => occurs_cunif(unification_cell, functor),
+        Constructor::TKFun(_, body) => occurs_cunif(unification_cell, body),
+        Constructor::Record(_, field_pairs) => {
+            field_pairs.iter().any(|(field_name, field_type)| {
+                occurs_cunif(unification_cell, field_name)
+                    || occurs_cunif(unification_cell, field_type)
+            })
+        }
+        Constructor::Concat(left_row, right_row) => {
+            occurs_cunif(unification_cell, left_row) || occurs_cunif(unification_cell, right_row)
+        }
+        Constructor::Tuple(elements) => elements
             .iter()
-            .any(|(x, v)| occurs_cunif(r, x) || occurs_cunif(r, v)),
-        Constructor::Concat(a, b) => occurs_cunif(r, a) || occurs_cunif(r, b),
-        Constructor::Tuple(cs) => cs.iter().any(|ci| occurs_cunif(r, ci)),
-        Constructor::Proj(c2, _) => occurs_cunif(r, c2),
+            .any(|element| occurs_cunif(unification_cell, element)),
+        Constructor::Proj(base, _) => occurs_cunif(unification_cell, base),
         _ => false,
     }
 }
@@ -529,20 +823,19 @@ static IDENTITY: AtomicUsize = AtomicUsize::new(0);
 static DISTRIBUTE: AtomicUsize = AtomicUsize::new(0);
 static FUSE: AtomicUsize = AtomicUsize::new(0);
 
+/// Reset internal normalisation counters (`identity` / `distribute` / `fuse` mirrors of SML refs).
+///
+/// # Returns
+///
+/// Nothing. Intended for tests or debugging.
 pub fn reset_stats() {
     IDENTITY.store(0, Ordering::Relaxed);
     DISTRIBUTE.store(0, Ordering::Relaxed);
     FUSE.store(0, Ordering::Relaxed);
 }
 
-fn inc_identity() {
-    IDENTITY.fetch_add(1, Ordering::Relaxed);
-}
 fn inc_distribute() {
     DISTRIBUTE.fetch_add(1, Ordering::Relaxed);
-}
-fn inc_fuse() {
-    FUSE.fetch_add(1, Ordering::Relaxed);
 }
 
 // ---------------------------------------------------------------------------
@@ -558,7 +851,43 @@ fn read_cunif(r: &CUnifRef) -> Option<LocatedConstructor> {
     }
 }
 
-/// Lift all free `Constructor::Rel` indices in `c` by `nl` levels.
+/// Upper bound on solved kind-unifier links peeled in one call.
+const PEEL_SOLVED_KIND_UNIF_CHAIN_MAX_STEPS: usize = 8192;
+
+/// Follow solved [`Kind::Unif`] / [`Kind::TupleUnif`] cells to a stable head.
+fn hnorm_kind(mut kind: LocatedKind) -> LocatedKind {
+    for _ in 0..PEEL_SOLVED_KIND_UNIF_CHAIN_MAX_STEPS {
+        let reference = match &kind.node {
+            Kind::Unif(_, _, reference) | Kind::TupleUnif(_, _, reference) => reference,
+            _ => return kind,
+        };
+        let guard = crate::compiler_diagnostics::lock_for_compile(
+            reference.as_ref(),
+            "type operations KUnif cell",
+        );
+        if let crate::elaborated::KUnif::Known(inner) = &*guard {
+            let next = *inner.clone();
+            drop(guard);
+            kind = next;
+        } else {
+            drop(guard);
+            return kind;
+        }
+    }
+    let span = kind.span.clone();
+    Located::new(Kind::Error, span)
+}
+
+/// Lift all free [`Constructor::Rel`] indices in `constructor` by `binder_count` (multi-binder `mlift`).
+///
+/// # Arguments
+///
+/// * `binder_count` — Number of constructor binders entered.
+/// * `constructor` — Subject.
+///
+/// # Returns
+///
+/// Constructor with adjusted indices.
 pub fn mlift_con_in_con(
     binder_count: usize,
     constructor: LocatedConstructor,
@@ -566,11 +895,52 @@ pub fn mlift_con_in_con(
     lift_con_in_con_bound(binder_count, 0, constructor)
 }
 
-/// Head-normalise a constructor: reduce the outermost redex if possible.
+/// Upper bound on solved [`Constructor::Unif`] indirections peeled in one call.
 ///
-/// This is a direct translation of `hnormCon` from `elab_ops.sml`.
-/// We do not carry an environment here; callers that need named/modproj
-/// lookup can extend this function or layer their own normalization.
+/// Cycles or pathological chains must not spin without stack growth (LangSec / bounded work per request).
+const PEEL_SOLVED_CONSTRUCTOR_UNIF_CHAIN_MAX_STEPS: usize = 8192;
+
+/// Peel a chain of solved [`Constructor::Unif`] heads in one go (no one-frame-per-link recursion).
+///
+/// Long `Known` pointer chains from constructor unification can otherwise exhaust the stack before
+/// [`hnorm_con`]'s depth counter runs out. Step cap returns [`Constructor::Error`] like excessive
+/// [`hnorm_con`] depth (bad or cyclic instantiation graph).
+///
+/// # Arguments
+///
+/// * `constructor` — Elaborated constructor whose outermost nodes may be solved unifiers.
+///
+/// # Returns
+///
+/// First non-`Unif`, or the first `Unif` whose cell is still [`CUnif::Unknown`].
+fn peel_solved_constructor_unif_chain(mut constructor: LocatedConstructor) -> LocatedConstructor {
+    for _ in 0..PEEL_SOLVED_CONSTRUCTOR_UNIF_CHAIN_MAX_STEPS {
+        match &constructor.node {
+            Constructor::Unif(binder_count, _, _, _, reference) => match read_cunif(reference) {
+                Some(inner) => {
+                    constructor = mlift_con_in_con(*binder_count, inner); // Lift through `binder_count` binders.
+                }
+                None => return constructor,
+            },
+            _ => return constructor,
+        }
+    }
+    let span = constructor.span.clone();
+    Located::new(Constructor::Error, span)
+}
+
+/// Head-normalize a constructor: peel solved [`Constructor::Unif`], beta/eta, `KApp`/`Map`/`Concat`/`Proj` rules.
+///
+/// Translation of `hnormCon` from `elab_ops.sml`. No [`crate::elaborated::environment::Env`]:
+/// [`Constructor::Named`] / [`Constructor::ModProj`] are not expanded to definitions here.
+///
+/// # Arguments
+///
+/// * `constructor` — Elaborated constructor.
+///
+/// # Returns
+///
+/// Head-normal form, or [`Constructor::Error`] if recursion depth exceeds 200 (guards cyclic unifiers).
 pub fn hnorm_con(constructor: LocatedConstructor) -> LocatedConstructor {
     use std::cell::Cell;
     thread_local! {
@@ -586,6 +956,8 @@ pub fn hnorm_con(constructor: LocatedConstructor) -> LocatedConstructor {
         let span = constructor.span.clone();
         return Located::new(Constructor::Error, span);
     }
+    // Collapse solved-unifier prefixes iteratively so depth-200 only limits beta/eta steps, not chain length.
+    let constructor = peel_solved_constructor_unif_chain(constructor);
     let result = hnorm_con_inner(constructor);
     HNORM_DEPTH.with(|c| c.set(d));
     result
@@ -645,6 +1017,10 @@ fn hnorm_con_inner(constructor: LocatedConstructor) -> LocatedConstructor {
                         }
                     }
                 }
+                // NOTE: SML `hnormCon` only beta-reduces `App(CAbs, c2)`; `App(TCFun, c2)` falls
+                // through to the default `c1' => (CApp((c1', loc), hnormCon env c2), loc)` arm.
+                // TCFun is a universal constructor quantifier (∀ x :: K. body), NOT a lambda;
+                // beta-reducing it here was incorrect and caused spurious constructor substitutions.
                 Constructor::App(c1p, f) => {
                     // Map fusion / distributivity / identity
                     let c2_norm = hnorm_con(*c2);
@@ -913,17 +1289,18 @@ fn hnorm_con_inner(constructor: LocatedConstructor) -> LocatedConstructor {
 // Full reduction (reduceCon)
 // ---------------------------------------------------------------------------
 
-/// Fully reduce a constructor: recursively normalise all sub-terms.
+/// Reduce a constructor by repeated head [`hnorm_con`] plus beta on `App(Abs(…), _)`.
 ///
-/// Mirrors `reduceCon` from `elab_ops.sml`.  Named / module-projected
-/// constructor bodies are not looked up here because we have no environment;
-/// callers can extend as needed.
-/// Reduce a constructor by one head beta-reduction step.
+/// Mirrors SML `reduceCon` without a full structural normalizer (avoids non-termination on cyclic unifiers).
+/// Named / module-projected bodies are not loaded from the environment.
 ///
-/// Mirrors SML `reduceCon`: first head-normalizes with `hnorm_con`, then
-/// if the result is `App(Abs(...), arg)` performs one beta step and recurses.
-/// Does NOT structurally recurse into all sub-constructors (unlike a full
-/// normalizer) — that avoids infinite loops on cyclic unification variables.
+/// # Arguments
+///
+/// * `constructor` — Starting constructor.
+///
+/// # Returns
+///
+/// Constructor after head reduction steps succeed; otherwise the last stable head-normal form.
 pub fn reduce_con(constructor: LocatedConstructor) -> LocatedConstructor {
     // Head-normalize first (follows Unif chains, beta/eta at the head).
     let r = hnorm_con(constructor);
@@ -1229,60 +1606,131 @@ fn reduce_con_inner_legacy(constructor: LocatedConstructor) -> LocatedConstructo
 // consEqSimple
 // ---------------------------------------------------------------------------
 
-/// Structurally compare two constructors up to head-normalisation, without
-/// unifying.  Returns `true` if they are definitionally equal by simple rules.
+/// Cheap structural equality after [`hnorm_con`] (no unification; skips some kind checks in `Abs`).
 ///
 /// Mirrors `consEqSimple` from `elab_ops.sml`.
-pub fn cons_eq_simple(c1: &LocatedConstructor, c2: &LocatedConstructor) -> bool {
-    let n1 = hnorm_con(c1.clone());
-    let n2 = hnorm_con(c2.clone());
-    cons_eq_simple_normed(&n1, &n2)
+///
+/// # Arguments
+///
+/// * `left_constructor`, `right_constructor` — Constructors to compare.
+///
+/// # Returns
+///
+/// `true` when the simplified rules deem them equal (including same [`Constructor::Unif`] cell).
+pub fn cons_eq_simple(
+    left_constructor: &LocatedConstructor,
+    right_constructor: &LocatedConstructor,
+) -> bool {
+    let left_normalized = hnorm_con(left_constructor.clone());
+    let right_normalized = hnorm_con(right_constructor.clone());
+    cons_eq_simple_normed(&left_normalized, &right_normalized)
 }
 
-fn cons_eq_simple_normed(c1: &LocatedConstructor, c2: &LocatedConstructor) -> bool {
-    match (&c1.node, &c2.node) {
-        (Constructor::Rel(n1), Constructor::Rel(n2)) => n1 == n2,
-        (Constructor::Named(n1), Constructor::Named(n2)) => n1 == n2,
-        (Constructor::ModProj(n1, ms1, x1), Constructor::ModProj(n2, ms2, x2)) => {
-            n1 == n2 && ms1 == ms2 && x1 == x2
+fn kinds_eq_simple(left_kind: &LocatedKind, right_kind: &LocatedKind) -> bool {
+    let left_normalized = hnorm_kind(left_kind.clone());
+    let right_normalized = hnorm_kind(right_kind.clone());
+    match (&left_normalized.node, &right_normalized.node) {
+        (Kind::Rel(left_index), Kind::Rel(right_index)) => left_index == right_index,
+        (Kind::Type, Kind::Type) => true,
+        (Kind::Name, Kind::Name) => true,
+        (Kind::Record(left_row_kind), Kind::Record(right_row_kind)) => {
+            kinds_eq_simple(left_row_kind.as_ref(), right_row_kind.as_ref())
         }
-        (Constructor::App(f1, x1), Constructor::App(f2, x2)) => {
-            cons_eq_simple(f1, f2) && cons_eq_simple(x1, x2)
+        (Kind::Arrow(left_domain, left_range), Kind::Arrow(right_domain, right_range)) => {
+            kinds_eq_simple(left_domain.as_ref(), right_domain.as_ref())
+                && kinds_eq_simple(left_range.as_ref(), right_range.as_ref())
         }
-        (Constructor::Abs(_, k1, b1), Constructor::Abs(_, _k2, b2)) => {
-            // k1 == k2 would require kind equality; we skip that for simplicity
-            cons_eq_simple(b1, b2)
+        (Kind::Tuple(left_elements), Kind::Tuple(right_elements)) => {
+            left_elements.len() == right_elements.len()
+                && left_elements.iter().zip(right_elements.iter()).all(
+                    |(left_element, right_element)| kinds_eq_simple(left_element, right_element),
+                )
         }
-        (Constructor::Name(s1), Constructor::Name(s2)) => s1 == s2,
-        (Constructor::Record(_, xts1), Constructor::Record(_, xts2)) => {
-            xts1.len() == xts2.len()
-                && xts1
-                    .iter()
-                    .zip(xts2.iter())
-                    .all(|((x1, t1), (x2, t2))| cons_eq_simple(x1, x2) && cons_eq_simple(t1, t2))
+        (Kind::Fun(_, left_body), Kind::Fun(_, right_body)) => {
+            kinds_eq_simple(left_body.as_ref(), right_body.as_ref())
         }
-        (Constructor::Concat(x1, y1), Constructor::Concat(x2, y2)) => {
-            cons_eq_simple(x1, x2) && cons_eq_simple(y1, y2)
+        (Kind::Unif(_, _, left_cell), Kind::Unif(_, _, right_cell)) => {
+            Arc::ptr_eq(&left_cell, &right_cell)
+        }
+        (Kind::Error, Kind::Error) => true,
+        _ => false,
+    }
+}
+
+fn cons_eq_simple_normed(left: &LocatedConstructor, right: &LocatedConstructor) -> bool {
+    match (&left.node, &right.node) {
+        (Constructor::Rel(left_index), Constructor::Rel(right_index)) => left_index == right_index,
+        (Constructor::Named(left_id), Constructor::Named(right_id)) => left_id == right_id,
+        (Constructor::ModProj(m1, path1, name1), Constructor::ModProj(m2, path2, name2)) => {
+            m1 == m2 && path1 == path2 && name1 == name2
+        }
+        (Constructor::App(left_functor, left_arg), Constructor::App(right_functor, right_arg)) => {
+            cons_eq_simple(left_functor, right_functor) && cons_eq_simple(left_arg, right_arg)
+        }
+        (
+            Constructor::Abs(_, _left_kind, left_body),
+            Constructor::Abs(_, _right_kind, right_body),
+        ) => cons_eq_simple(left_body, right_body),
+        (Constructor::KAbs(_, left_body), Constructor::KAbs(_, right_body)) => {
+            cons_eq_simple(left_body, right_body)
+        }
+        (
+            Constructor::KApp(left_functor, left_kind),
+            Constructor::KApp(right_functor, right_kind),
+        ) => cons_eq_simple(left_functor, right_functor) && kinds_eq_simple(left_kind, right_kind),
+        (
+            Constructor::TCFun(left_explicitness, _, left_kind, left_body),
+            Constructor::TCFun(right_explicitness, _, right_kind, right_body),
+        ) => {
+            left_explicitness == right_explicitness
+                && kinds_eq_simple(left_kind, right_kind)
+                && cons_eq_simple(left_body, right_body)
+        }
+        (Constructor::Name(left_name), Constructor::Name(right_name)) => left_name == right_name,
+        (Constructor::Record(_, left_fields), Constructor::Record(_, right_fields)) => {
+            left_fields.len() == right_fields.len()
+                && left_fields.iter().zip(right_fields.iter()).all(
+                    |((left_field_name, left_field_type), (right_field_name, right_field_type))| {
+                        cons_eq_simple(left_field_name, right_field_name)
+                            && cons_eq_simple(left_field_type, right_field_type)
+                    },
+                )
+        }
+        (Constructor::Concat(left_a, left_b), Constructor::Concat(right_a, right_b)) => {
+            cons_eq_simple(left_a, right_a) && cons_eq_simple(left_b, right_b)
         }
         (Constructor::Map(_, _), Constructor::Map(_, _)) => true,
         (Constructor::Unit, Constructor::Unit) => true,
-        (Constructor::Tuple(cs1), Constructor::Tuple(cs2)) => {
-            cs1.len() == cs2.len()
-                && cs1
-                    .iter()
-                    .zip(cs2.iter())
-                    .all(|(a, b)| cons_eq_simple(a, b))
+        (Constructor::Tuple(left_elements), Constructor::Tuple(right_elements)) => {
+            left_elements.len() == right_elements.len()
+                && left_elements.iter().zip(right_elements.iter()).all(
+                    |(left_element, right_element)| cons_eq_simple(left_element, right_element),
+                )
         }
-        (Constructor::Proj(c1, n1), Constructor::Proj(c2, n2)) => {
-            n1 == n2 && cons_eq_simple(c1, c2)
+        (Constructor::Proj(left_base, left_index), Constructor::Proj(right_base, right_index)) => {
+            left_index == right_index && cons_eq_simple(left_base, right_base)
         }
-        (Constructor::Unif(_, _, _, _, r1), Constructor::Unif(_, _, _, _, r2)) => {
-            Arc::ptr_eq(r1, r2)
+        (Constructor::Unif(_, _, _, _, left_cell), Constructor::Unif(_, _, _, _, right_cell)) => {
+            Arc::ptr_eq(left_cell, right_cell)
         }
-        (Constructor::TFun(d1, r1), Constructor::TFun(d2, r2)) => {
-            cons_eq_simple(d1, d2) && cons_eq_simple(r1, r2)
+        (Constructor::TFun(left_dom, left_rng), Constructor::TFun(right_dom, right_rng)) => {
+            cons_eq_simple(left_dom, right_dom) && cons_eq_simple(left_rng, right_rng)
         }
-        (Constructor::TRecord(c1), Constructor::TRecord(c2)) => cons_eq_simple(c1, c2),
+        (
+            Constructor::TDisjoint(left_a, left_b, left_body),
+            Constructor::TDisjoint(right_a, right_b, right_body),
+        ) => {
+            cons_eq_simple(left_a, right_a)
+                && cons_eq_simple(left_b, right_b)
+                && cons_eq_simple(left_body, right_body)
+        }
+        (Constructor::TRecord(left_row), Constructor::TRecord(right_row)) => {
+            cons_eq_simple(left_row, right_row)
+        }
+        (Constructor::TKFun(_, left_body), Constructor::TKFun(_, right_body)) => {
+            cons_eq_simple(left_body, right_body)
+        }
+        (Constructor::Error, Constructor::Error) => true,
         _ => false,
     }
 }
@@ -1294,8 +1742,9 @@ fn cons_eq_simple_normed(c1: &LocatedConstructor, c2: &LocatedConstructor) -> bo
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::elaborated::{Constructor, Kind};
+    use crate::elaborated::{Constructor, Explicitness, Kind};
     use crate::error_types::Located;
+    use std::sync::{Arc, Mutex};
 
     fn dummy<T>(node: T) -> Located<T> {
         Located::dummy(node)
@@ -1419,6 +1868,31 @@ mod tests {
     }
 
     #[test]
+    fn sub_con_in_con_peels_known_unif_before_sentinel_check() {
+        // Build a solved constructor unifier whose stored constructor still contains the target Rel(0).
+        let known_constructor = dummy(Constructor::Rel(0));
+        // Store the solved constructor in the unification cell so substitution must traverse through it.
+        let reference = Arc::new(Mutex::new(CUnif::Known(Box::new(known_constructor))));
+        // Use a zero nesting level so a non-parity implementation would wrap to the ~1 sentinel on this node.
+        let constructor = dummy(Constructor::Unif(
+            0,
+            crate::error_types::Span::dummy(),
+            Box::new(dummy(Kind::Type)),
+            "known".into(),
+            reference,
+        ));
+        // Substitute a concrete constructor for Rel(0).
+        let replacement = dummy(Constructor::Named(7));
+        // The solved unifier should be traversed first, so substitution succeeds instead of producing SubUnif.
+        let substituted_constructor = sub_con_in_con(0, &replacement, constructor).unwrap();
+        // The inner Rel(0) should be replaced by the requested constructor.
+        assert!(matches!(
+            substituted_constructor.node,
+            Constructor::Named(7)
+        ));
+    }
+
+    #[test]
     fn cons_eq_simple_tfun_same() {
         let u = dummy(Constructor::Unit);
         let tfun = dummy(Constructor::TFun(Box::new(u.clone()), Box::new(u)));
@@ -1441,6 +1915,33 @@ mod tests {
             vec![(dummy(Constructor::Name("x".into())), u)],
         ));
         assert!(cons_eq_simple(&r, &r));
+    }
+
+    #[test]
+    fn hnorm_does_not_beta_reduce_app_of_tcfun() {
+        // SML hnormCon only beta-reduces App(CAbs, c), NOT App(TCFun, c).
+        // TCFun is a forall/pi type (∀ x :: K. body); CApp(TCFun, c) is NOT
+        // reducible in hnorm — the ECApp elaboration handles TCFun via substitution.
+        // Constructor::Abs (CAbs in SML) is the constructor lambda; TCFun is the forall.
+        let k = dummy(Kind::Type);
+        let body = dummy(Constructor::Rel(0));
+        let head = dummy(Constructor::TCFun(
+            Explicitness::Implicit,
+            "a".into(),
+            Box::new(k),
+            Box::new(body),
+        ));
+        let arg = dummy(Constructor::Unit);
+        let app = dummy(Constructor::App(
+            Box::new(head.clone()),
+            Box::new(arg.clone()),
+        ));
+        let out = hnorm_con(app);
+        // App(TCFun(...), Unit) should remain as App(...) — TCFun does not beta-reduce.
+        assert!(
+            matches!(&out.node, Constructor::App(h, _) if matches!(&h.node, Constructor::TCFun(..))),
+            "App(TCFun, c) should not beta-reduce in hnorm_con (only App(Abs, c) does)"
+        );
     }
 
     #[test]

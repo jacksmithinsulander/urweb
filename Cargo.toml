@@ -7,6 +7,12 @@ name = "ur"
 version = "0.1.0"
 edition = "2021"
 
+[profile.test]
+# opt-level 1 gives meaningful optimizations with only a modest compile-time cost.
+# Corpus elaboration tests recurse deeply through the Basis standard library;
+# debug (opt-level 0) is 5-10x slower than opt-level 1 for this workload.
+opt-level = 1
+
 [profile.mutants]
 inherits = "test"
 debug = false  # Faster builds for cargo-mutants
@@ -48,12 +54,12 @@ name = "dump_output"
 path = "examples/dump_output.rs"
 
 [dev-dependencies]
+anyhow = "1"
 tempfile = "3"
 
 [dependencies]
 logos     = "0.14"
 lalrpop-util = { version = "0.20", features = ["lexer"] }
-thiserror = "2"
 anyhow    = "1"
 toml      = "0.8"
 lsp-server = "0.7"
@@ -61,6 +67,13 @@ lsp-types = "0.97"
 crossbeam-channel = "0.5"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = [
+    "ansi",
+    "env-filter",
+    "fmt",
+    "std",
+] }
 
 [build-dependencies]
 lalrpop = "0.20"

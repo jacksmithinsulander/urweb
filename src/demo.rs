@@ -12,6 +12,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Result};
 
+use crate::cli_common::cli_diagnostic_text;
+use crate::diagnostics::DiagnosticId;
 use crate::settings::Settings;
 use crate::urp_parser::parse_urp;
 
@@ -81,8 +83,17 @@ pub fn make(prefix: &str, dirname: &str, settings: &mut Settings, guided: bool) 
 
     // Read prose file
     let prose_path = dir.join("prose");
-    let prose = fs::read_to_string(&prose_path)
-        .map_err(|e| anyhow::anyhow!("Cannot read {}: {}", prose_path.display(), e))?;
+    let prose_locale = settings.diagnostic_locale;
+    let prose = fs::read_to_string(&prose_path).map_err(|read_error| {
+        anyhow::anyhow!(
+            "{}",
+            cli_diagnostic_text(
+                DiagnosticId::CliFileReadFailed,
+                vec![prose_path.display().to_string(), read_error.to_string()],
+                prose_locale,
+            )
+        )
+    })?;
 
     // Combined job state (mirrors combiner in demo.sml)
     let mut combined_database: Option<String> = None;
@@ -372,8 +383,8 @@ pub fn make(prefix: &str, dirname: &str, settings: &mut Settings, guided: bool) 
             // Pretty-print source files (no-op when noEmacs is set — handled by caller)
             Ok(true)
         }
-        Err(e) => {
-            eprintln!("{}", e);
+        Err(compiler_error) => {
+            crate::cli_common::writeln_stderr_display(compiler_error);
             Ok(false)
         }
     }

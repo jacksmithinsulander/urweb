@@ -1,21 +1,109 @@
-//! Workspace discovery and `file:` URI handling for ur-lsp (LangSec: validate before use).
+//! Workspace roots and `file:` uniform resource identifiers for `ur-lsp`.
 //!
-//! **Untrusted input:** [`InitializeParams`] JSON, `DocumentUri` strings. Deserialization is the
-//! schema boundary; paths are normalized to the local filesystem only when the scheme is `file:`.
+//! Treat editor payloads as untrusted: validate before opening paths (language-based security style).
+//! [`lsp_types::InitializeParams`] and document uniform resource identifier strings deserialize through `serde_json`;
+//! only `file:` schemes become local filesystem paths here.
 //!
-//! ## LangSec inventory (ur-lsp)
+//! ## Input surfaces
 //!
-//! | Input | Recognizer | Notes |
-//! |-------|------------|--------|
-//! | `InitializeParams` workspace URIs | [`workspace_root_from_initialize`] → [`uri_to_file_path`] | Non-`file:` roots rejected (no path mapping). |
-//! | `textDocument/*` document URIs | [`uri_to_file_path`], [`uri_local_path_for_tooling`] | Analysis and formatting use **only** local paths derived from `file:` URIs; other schemes are ignored or yield empty results. |
-//! | Workspace `.urp` discovery | [`discover_unique_urp`] | Reads only directory entries; reports errors instead of panicking. |
+//! - Workspace folder / root uniform resource identifiers: [`workspace_root_from_initialize`] then [`uri_to_file_path`];
+//!   non-`file:` roots are not mapped to disk.
+//! - Open document identifiers (`textDocument/*`): [`uri_to_file_path`] and [`uri_local_path_for_tooling`];
+//!   analysis and formatting use paths derived from `file:` resources only.
+//! - Discovering the project file: [`discover_unique_urp`] reads one directory level and returns an error instead of panicking.
 
 use std::path::{Path, PathBuf};
 
 use lsp_types::{InitializeParams, Uri};
 
-/// Convert a `file:` LSP URI to a local path. Non-`file:` schemes return `None`.
+use crate::cli_common::cli_diagnostic_text;
+use crate::diagnostics::{DiagnosticId, DiagnosticLocale};
+
+/// Failed to find exactly one `.urp` in a workspace root after a non-recursive directory scan.
+#[derive(Debug, Clone)]
+pub enum WorkspaceProjectDiscoveryError {
+    /// Reading the workspace directory itself failed (`read_dir`).
+    ReadDir {
+        /// Workspace root that could not be opened for listing.
+        root: PathBuf,
+        /// Operating-system or I/O error detail.
+        detail: String,
+    },
+    /// Reading one directory entry during the scan failed.
+    DirEntry {
+        /// Workspace root being scanned.
+        root: PathBuf,
+        /// Operating-system or I/O error detail.
+        detail: String,
+    },
+    /// No file with extension `.urp` exists directly under the root.
+    NoUrProject {
+        /// Workspace root directory.
+        root: PathBuf,
+    },
+    /// Invariant violation: one match was counted but `pop()` returned nothing.
+    MissingPopulatedPath {
+        /// Workspace root directory.
+        root: PathBuf,
+    },
+    /// More than one `.urp` file exists directly under the root.
+    MultipleUrProjects {
+        /// Workspace root directory.
+        root: PathBuf,
+        /// Every `.urp` path found (non-recursive).
+        paths: Vec<PathBuf>,
+    },
+}
+
+impl WorkspaceProjectDiscoveryError {
+    /// Render this error with [`cli_diagnostic_text`] for `locale` using workspace discovery catalog IDs.
+    pub fn to_diagnostic_text(&self, locale: DiagnosticLocale) -> String {
+        match self {
+            WorkspaceProjectDiscoveryError::ReadDir { root, detail } => cli_diagnostic_text(
+                DiagnosticId::CliLspWorkspaceReadDirFailed,
+                vec![root.display().to_string(), detail.clone()],
+                locale,
+            ),
+            WorkspaceProjectDiscoveryError::DirEntry { root, detail } => cli_diagnostic_text(
+                DiagnosticId::CliLspWorkspaceDirEntryFailed,
+                vec![root.display().to_string(), detail.clone()],
+                locale,
+            ),
+            WorkspaceProjectDiscoveryError::NoUrProject { root } => cli_diagnostic_text(
+                DiagnosticId::CliLspWorkspaceNoUrProjectFile,
+                vec![root.display().to_string()],
+                locale,
+            ),
+            WorkspaceProjectDiscoveryError::MissingPopulatedPath { root } => cli_diagnostic_text(
+                DiagnosticId::CliLspWorkspaceUrpPathInternal,
+                vec![root.display().to_string()],
+                locale,
+            ),
+            WorkspaceProjectDiscoveryError::MultipleUrProjects { root, paths } => {
+                let list = paths
+                    .iter()
+                    .map(|path| path.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                cli_diagnostic_text(
+                    DiagnosticId::CliLspWorkspaceMultipleUrProjectFiles,
+                    vec![root.display().to_string(), list],
+                    locale,
+                )
+            }
+        }
+    }
+}
+
+/// Convert a `file:` Language Server Protocol [`Uri`] to a local path; other schemes yield `None`.
+///
+/// # Arguments
+///
+/// * `uri` — Editor-supplied uniform resource identifier.
+///
+/// # Returns
+///
+/// Local [`PathBuf`] when the scheme is `file:` and the path decodes; `None` for other schemes or parse failure.
 pub fn uri_to_file_path(uri: &Uri) -> Option<PathBuf> {
     let scheme = uri.scheme()?;
     if !scheme.as_str().eq_ignore_ascii_case("file") {
@@ -33,13 +121,30 @@ pub fn uri_to_file_path(uri: &Uri) -> Option<PathBuf> {
     }
 }
 
-/// Local filesystem path string for `file:` URIs only — used for formatting and virtual parse paths.
-/// Non-`file:` schemes return `None` (LangSec: do not treat `Uri::path()` as a local path for arbitrary schemes).
+/// Local filesystem path string for `file:` resources only (formatting and virtual parse labels).
+///
+/// Returns `None` for other schemes so arbitrary uniform resource identifiers never become implicit disk paths.
+///
+/// # Arguments
+///
+/// * `uri` — Document or workspace uniform resource identifier.
+///
+/// # Returns
+///
+/// Lossy UTF-8 path string for `file:` locations; `None` if not a local `file:` URL.
 pub fn uri_local_path_for_tooling(uri: &Uri) -> Option<String> {
     uri_to_file_path(uri).map(|p| p.to_string_lossy().into_owned())
 }
 
-/// Prefer first workspace folder, then `rootUri` (LSP 3.17 workspace folders).
+/// Workspace root path: first entry in `workspaceFolders`, else deprecated `rootUri` when folders are absent.
+///
+/// # Arguments
+///
+/// * `params` — Payload from the `initialize` request after JSON deserialization.
+///
+/// # Returns
+///
+/// First folder’s path, else `rootUri`, converted with [`uri_to_file_path`]; `None` if neither yields a `file:` path.
 pub fn workspace_root_from_initialize(params: &InitializeParams) -> Option<PathBuf> {
     if let Some(folders) = &params.workspace_folders {
         if let Some(f) = folders.first() {
@@ -53,35 +158,113 @@ pub fn workspace_root_from_initialize(params: &InitializeParams) -> Option<PathB
     }
 }
 
-/// List `*.urp` in a single directory (non-recursive), like the legacy SML LSP.
-pub fn discover_unique_urp(root: &Path) -> Result<PathBuf, String> {
+/// Find exactly one `*.urp` in `root` (non-recursive), matching the legacy Standard ML language server behaviour.
+///
+/// # Arguments
+///
+/// * `root` — Workspace directory to scan (not recursive).
+///
+/// # Returns
+///
+/// The single `.urp` [`PathBuf`] when exactly one exists.
+///
+/// # Errors
+///
+/// [`WorkspaceProjectDiscoveryError`] when the directory cannot be scanned or the `.urp` count is not exactly one.
+pub fn discover_unique_urp(root: &Path) -> Result<PathBuf, WorkspaceProjectDiscoveryError> {
     let mut found: Vec<PathBuf> = Vec::new();
-    let rd = std::fs::read_dir(root).map_err(|e| format!("read workspace directory: {e}"))?;
-    for ent in rd {
-        let ent = ent.map_err(|e| format!("workspace dir entry: {e}"))?;
-        let p = ent.path();
-        if p.extension().and_then(|x| x.to_str()) == Some("urp") {
-            found.push(p);
+    let rd =
+        std::fs::read_dir(root).map_err(|io_error| WorkspaceProjectDiscoveryError::ReadDir {
+            root: root.to_path_buf(),
+            detail: format!("{io_error:#}"),
+        })?;
+    for dir_entry_result in rd {
+        let directory_entry =
+            dir_entry_result.map_err(|io_error| WorkspaceProjectDiscoveryError::DirEntry {
+                root: root.to_path_buf(),
+                detail: format!("{io_error:#}"),
+            })?;
+        let path = directory_entry.path();
+        if path.extension().and_then(|extension| extension.to_str()) == Some("urp") {
+            found.push(path);
         }
     }
     match found.len() {
-        0 => Err(
-            "no .urp file in the workspace root (open a folder that contains exactly one .urp)"
-                .into(),
-        ),
+        0 => Err(WorkspaceProjectDiscoveryError::NoUrProject {
+            root: root.to_path_buf(),
+        }),
         1 => found
             .pop()
-            .ok_or_else(|| "workspace scan: missing .urp path".to_string()),
-        _ => Err(
-            "multiple .urp files in the workspace root; use a folder with a single project".into(),
-        ),
+            .ok_or_else(|| WorkspaceProjectDiscoveryError::MissingPopulatedPath {
+                root: root.to_path_buf(),
+            }),
+        _ => Err(WorkspaceProjectDiscoveryError::MultipleUrProjects {
+            root: root.to_path_buf(),
+            paths: found,
+        }),
     }
 }
 
-/// Path relative to workspace using `/`, for comparing with [`Span::file`](crate::error_types::Span).
+/// Path of `disk` relative to `root` with forward slashes, for comparing with [`crate::error_types::Span`] paths.
+///
+/// # Arguments
+///
+/// * `root` — Workspace root directory.
+/// * `disk` — Absolute or rooted path under (or beside) that workspace.
+///
+/// # Returns
+///
+/// Relative path using `/` separators; if `disk` is not under `root`, returns `disk` unchanged (lossy, normalized slashes).
 pub fn file_key_relative_to_root(root: &Path, disk: &Path) -> String {
     disk.strip_prefix(root)
         .unwrap_or(disk)
         .to_string_lossy()
         .replace('\\', "/")
+}
+
+/// Workspace-relative path key for a `file:` document [`Uri`] (for semantic lookup against [`Span::file`](crate::error_types::Span)).
+///
+/// # Arguments
+///
+/// * `workspace_root` — Editor workspace folder from initialize; `None` when no root is open.
+/// * `uri` — Document uniform resource identifier.
+///
+/// # Returns
+///
+/// Forward-slash key under the root, or `None` when the root or local path is missing.
+pub fn relative_file_key_for_uri(workspace_root: Option<&Path>, uri: &Uri) -> Option<String> {
+    let root = workspace_root?;
+    let disk = uri_to_file_path(uri)?;
+    Some(file_key_relative_to_root(root, &disk))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn relative_file_key_none_without_workspace() {
+        let uri: Uri = "file:///tmp/a.ur".parse().expect("uri");
+        assert!(relative_file_key_for_uri(None, &uri).is_none());
+    }
+
+    #[test]
+    fn relative_file_key_under_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let only = tmp.path().join("Only.ur");
+        std::fs::write(&only, "").unwrap();
+        let path_for_uri = only.to_string_lossy().replace('\\', "/");
+        let uri: Uri = format!("file://{path_for_uri}").parse().expect("uri");
+        assert_eq!(
+            relative_file_key_for_uri(Some(tmp.path()), &uri).as_deref(),
+            Some("Only.ur")
+        );
+    }
+
+    #[test]
+    fn relative_file_key_non_file_uri() {
+        let root = std::path::Path::new("/proj");
+        let uri: Uri = "https://ex/x.ur".parse().expect("uri");
+        assert!(relative_file_key_for_uri(Some(root), &uri).is_none());
+    }
 }

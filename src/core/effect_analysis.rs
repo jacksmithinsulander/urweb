@@ -6,8 +6,6 @@
 //!
 //! Mirrors `effectize.sml`.
 
-#![allow(dead_code)]
-
 use std::collections::HashMap;
 
 use crate::core::utilities::expression as exp_util;
@@ -207,8 +205,7 @@ fn analyze_decl(
                 .collect();
             // Fixed-point: iterate until no new additions (bounded to prevent runaway mutants).
             const MAX_VALREC_ITERATIONS: usize = 10_000;
-            let mut iterations = 0;
-            loop {
+            for _ in 0..MAX_VALREC_ITERATIONS {
                 let mut changed = false;
                 for (n, e_dejs, e, s) in &precomputed {
                     if exp_has_write(e_dejs, writers, settings) && !writers.contains_key(n) {
@@ -224,8 +221,7 @@ fn analyze_decl(
                         changed = true;
                     }
                 }
-                iterations += 1;
-                if !changed || iterations >= MAX_VALREC_ITERATIONS {
+                if !changed {
                     break;
                 }
             }

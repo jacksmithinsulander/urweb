@@ -24,8 +24,6 @@
 //!
 //! Mirrors `termination.sml`.
 
-#![allow(dead_code)]
-
 use std::collections::{HashMap, HashSet};
 
 use crate::core::*;
@@ -534,9 +532,14 @@ fn check_val_rec(
     }
 
     if !search(&ns, &[], &recursive_calls) {
-        errors.report_at(
+        errors.report_type_at_with_hint(
             decl_span.clone(),
-            "Can't prove termination of recursive function(s)".to_string(),
+            crate::diagnostics::DiagnosticPayload::new(
+                crate::diagnostics::DiagnosticId::TerminationValRecNotProved,
+                vec![],
+            ),
+            crate::diagnostics::DiagnosticId::HintTerminationValRecNotProved,
+            vec![],
         );
     }
 }

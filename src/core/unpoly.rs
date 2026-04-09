@@ -8,8 +8,6 @@
 //!
 //! Mirrors `unpoly.sml`.
 
-#![allow(dead_code)]
-
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
@@ -436,51 +434,6 @@ struct State {
 }
 
 // ---------------------------------------------------------------------------
-// trim — peel TCFun/CAbs pairs while substituting cargs
-// ---------------------------------------------------------------------------
-
-/// Strips `len(cargs)` leading `TCFun`/`CAbs` binders from `(t, e)` while
-/// substituting each constructor argument.  Returns `None` if the structure
-/// does not match (e.g. not enough binders, or type/expr don't line up).
-fn trim(
-    mut t: LocatedConstructor,
-    mut e: LocatedExpression,
-    cargs: &[LocatedConstructor],
-) -> Option<(LocatedConstructor, LocatedExpression)> {
-    for carg in cargs {
-        match (t.node.clone(), e.node.clone()) {
-            (Constructor::TCFun(_, _, t_body), Expression::CAbs(_, _, e_body)) => {
-                // The depth to substitute is (remaining cargs - 1) — but since
-                // the SML uses a simple mapCon on the entire term after each
-                // peel, and the depth is determined by how many binders are
-                // still left to peel, we substitute at depth = cargs.len() - 1
-                // *after* we have already peeled some binders.
-                //
-                // Actually the SML passes `length cargs` as the de Bruijn
-                // level to substitute, where `cargs` shrinks as we peel.
-                // At the first iteration cargs has all args; after peeling one
-                // binder the remaining cargs list is used.  The substitution
-                // replaces `CRel(length remaining_cargs)`.
-                //
-                // Let remaining = cargs from this element onwards (exclusive)
-                // i.e. the ones NOT yet substituted.
-                // In SML: `subConInCon (length cargs, carg) t`
-                // where cargs at that point is the *tail* (cargs after this one).
-                // We'll compute remaining_depth as the index into the tail.
-                t = sub_con_in_con(cargs.len() - 1, carg, *t_body);
-                e = sub_con_in_exp(cargs.len() - 1, carg, *e_body);
-            }
-            (_, _) if cargs.is_empty() => {
-                // No more to substitute — should not be reached inside loop
-                break;
-            }
-            _ => return None,
-        }
-    }
-    Some((t, e))
-}
-
-// ---------------------------------------------------------------------------
 // trim (iterative, correct depth tracking)
 // ---------------------------------------------------------------------------
 
@@ -524,13 +477,10 @@ fn trim_iter(
             let e_new = sub_con_in_exp(depth, carg, *e_body);
             trim_iter(t_new, e_new, remaining)
         }
-        _ => {
-            if cargs.is_empty() {
-                Some((t, e))
-            } else {
-                None
-            }
-        }
+        _ => match cargs.is_empty() {
+            true => Some((t, e)),
+            false => None,
+        },
     }
 }
 
@@ -656,18 +606,8 @@ fn recurse_irregular_exp(
 }
 
 // ---------------------------------------------------------------------------
-// de_abs — strip nargs outer CAbs binders from an expression
+// de_abs_ref — strip outer CAbs binders (by reference)
 // ---------------------------------------------------------------------------
-
-fn de_abs(e: LocatedExpression, cargs: &[LocatedKind]) -> LocatedExpression {
-    if cargs.is_empty() {
-        return e;
-    }
-    match e.node {
-        Expression::CAbs(_, _, body) => de_abs(*body, &cargs[1..]),
-        _ => e,
-    }
-}
 
 fn de_abs_ref<'a>(e: &'a LocatedExpression, cargs: &[LocatedKind]) -> &'a LocatedExpression {
     if cargs.is_empty() {
@@ -1088,13 +1028,22 @@ fn walk_decl(d: LocatedDeclaration, state: &mut State) -> LocatedDeclaration {
     }
 }
 
+/// Maximum outer [`Expression::CAbs`] binders walked by [`collect_cabs_kinds`].
+const MAX_COLLECT_CABS_KINDS_DEPTH: usize = 65_536;
+
 /// Collect the sequence of outer `CAbs` binder kinds from an expression.
 fn collect_cabs_kinds(e: &LocatedExpression) -> Vec<LocatedKind> {
     let mut kinds = Vec::new();
     let mut cur = e;
-    while let Expression::CAbs(_, k, body) = &cur.node {
+    for _binder_step in 0..MAX_COLLECT_CABS_KINDS_DEPTH {
+        let Expression::CAbs(_, k, body) = &cur.node else {
+            break;
+        };
         kinds.push(*k.clone());
         cur = body;
+    }
+    if matches!(&cur.node, Expression::CAbs(..)) {
+        panic!("collect_cabs_kinds exceeded {MAX_COLLECT_CABS_KINDS_DEPTH} (internal limit)");
     }
     kinds
 }
@@ -1140,11 +1089,7 @@ pub fn unpoly(file: File) -> File {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::error_types::{Located, Span};
-
-    fn dummy_span() -> Span {
-        Span::dummy()
-    }
+    use crate::error_types::Located;
 
     fn mk_con(c: Constructor) -> LocatedConstructor {
         Located::dummy(c)

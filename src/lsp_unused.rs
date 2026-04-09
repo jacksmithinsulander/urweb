@@ -1,14 +1,15 @@
-//! Unused top-level value warnings for LSP (reachable from export/table/view roots).
+//! Optional warnings for unused top-level bindings in the language server (reachable from export, table, or view roots).
 
 use std::collections::HashSet;
 use std::path::Path;
 
+use crate::diagnostics::{DiagnosticId, DiagnosticPayload};
 use crate::elaborated::{
     Declaration, ElaboratedDeclaration, Expression, File as ElabFile, LocatedExpression,
     LocatedSignature, Signature, SignatureItem, Structure,
 };
-use crate::error_types::{CompileError, ErrorReporter};
-use crate::lsp_semantics::compiler_paths_match;
+use crate::error_types::ErrorReporter;
+use crate::lsp_semantics::{paths_match_given_open_normalized, slash_normalized_cow};
 
 fn collect_named_ids_expr(e: &LocatedExpression, s: &mut HashSet<usize>) {
     match &e.node {
@@ -149,33 +150,36 @@ fn collect_named_from_declaration_roots(decl: &Declaration, s: &mut HashSet<usiz
 }
 
 fn expand_used_from_roots(elab: &ElabFile, roots: &mut HashSet<usize>) {
-    let mut changed = true;
-    while changed {
-        changed = false;
+    let fixpoint_round_cap = elab.len().saturating_mul(64).max(512);
+    for _fixpoint_round in 0..fixpoint_round_cap {
+        let mut expanded_reachable_named_ids = false;
         for d in elab {
             match &d.node {
                 Declaration::Val(_, id, _, e) => {
                     if roots.contains(id) {
-                        let before = roots.len();
+                        let named_id_count_before = roots.len();
                         collect_named_ids_expr(e, roots);
-                        if roots.len() > before {
-                            changed = true;
+                        if roots.len() > named_id_count_before {
+                            expanded_reachable_named_ids = true;
                         }
                     }
                 }
                 Declaration::ValRec(recs) => {
                     for (_, id, _, e) in recs {
                         if roots.contains(id) {
-                            let before = roots.len();
+                            let named_id_count_before = roots.len();
                             collect_named_ids_expr(e, roots);
-                            if roots.len() > before {
-                                changed = true;
+                            if roots.len() > named_id_count_before {
+                                expanded_reachable_named_ids = true;
                             }
                         }
                     }
                 }
                 _ => {}
             }
+        }
+        if !expanded_reachable_named_ids {
+            break;
         }
     }
 }
@@ -192,27 +196,35 @@ pub fn report_unused_top_level_values(
     }
     expand_used_from_roots(elab, &mut used);
 
+    let open_norm = slash_normalized_cow(open_file_key);
+    let oref = open_norm.as_ref();
     for d in elab {
         match &d.node {
             Declaration::Val(name, id, _, _) => {
-                if compiler_paths_match(open_file_key, &d.span.file) && !used.contains(id) {
-                    errors.report(CompileError::warning_at(
+                if paths_match_given_open_normalized(oref, &d.span.file) && !used.contains(id) {
+                    errors.report_warning_at_with_hint(
                         d.span.clone(),
-                        format!(
-                            "unused value `{name}` (not reachable from exports, tables, views, or other entry declarations)"
+                        DiagnosticPayload::new(
+                            DiagnosticId::LspUnusedValueNeverUsedFromEntry,
+                            vec![name.clone()],
                         ),
-                    ));
+                        DiagnosticId::HintLspUnusedValueNeverUsedFromEntry,
+                        vec![],
+                    );
                 }
             }
             Declaration::ValRec(recs) => {
                 for (name, id, _, _) in recs {
-                    if compiler_paths_match(open_file_key, &d.span.file) && !used.contains(id) {
-                        errors.report(CompileError::warning_at(
+                    if paths_match_given_open_normalized(oref, &d.span.file) && !used.contains(id) {
+                        errors.report_warning_at_with_hint(
                             d.span.clone(),
-                            format!(
-                                "unused value `{name}` in this `val rec` group (not reachable from entry declarations)"
+                            DiagnosticPayload::new(
+                                DiagnosticId::LspUnusedValRecNotReachable,
+                                vec![name.clone()],
                             ),
-                        ));
+                            DiagnosticId::HintLspUnusedValRecNotReachable,
+                            vec![],
+                        );
                     }
                 }
             }

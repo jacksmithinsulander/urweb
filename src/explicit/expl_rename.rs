@@ -467,16 +467,15 @@ fn rename_str(st: &St, ls: expl::LocatedStructure) -> expl::LocatedStructure {
 // ---------------------------------------------------------------------------
 
 fn from_arity(n: usize, loc: &Span) -> expl::LocatedKind {
-    if n == 0 {
-        Located::new(expl::Kind::Type, loc.clone())
-    } else {
-        Located::new(
+    match n == 0 {
+        true => Located::new(expl::Kind::Type, loc.clone()),
+        false => Located::new(
             expl::Kind::Arrow(
                 Box::new(Located::new(expl::Kind::Type, loc.clone())),
                 Box::new(from_arity(n - 1, loc)),
             ),
             loc.clone(),
-        )
+        ),
     }
 }
 
@@ -916,16 +915,23 @@ pub fn rename(
             // Compute a unique name for the formal that doesn't clash with
             // any DStr in the output.
             let mut formal_name_munged = formal_name.to_string();
-            loop {
+            const MAX_FORMAL_NAME_MUNGE_ROUNDS: usize = 65_536;
+            for _ in 0..MAX_FORMAL_NAME_MUNGE_ROUNDS {
                 let clashes = new_ds.iter().any(|d| {
                     matches!(&d.node,
                     expl::Declaration::Structure(x, _, _, _) if x == &formal_name_munged)
                 });
-                if clashes {
-                    formal_name_munged = format!("?{}", formal_name_munged);
-                } else {
+                if !clashes {
                     break;
                 }
+                formal_name_munged = format!("?{}", formal_name_munged);
+            }
+            let still_clashes = new_ds.iter().any(|d| {
+                matches!(&d.node,
+                expl::Declaration::Structure(x, _, _, _) if x == &formal_name_munged)
+            });
+            if still_clashes {
+                panic!("rename: formal name munge exceeded {MAX_FORMAL_NAME_MUNGE_ROUNDS}");
             }
 
             // Prepend: DStr(formal_name_munged, fresh_formal_id, SgnConst([]), StrVar(formal_id))
