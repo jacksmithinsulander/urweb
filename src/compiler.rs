@@ -817,6 +817,132 @@ fn parse_sources_inner(
     Some(decls)
 }
 
+/// Parse only the boot library sources (Basis + Top) for a given checkout root, without any user modules.
+///
+/// Callers can cache the returned [`crate::source::File`] and clone it for each test invocation,
+/// combining it with user-module declarations to avoid re-parsing the Basis on every test.
+///
+/// # Parameters
+///
+/// * `boot_root` — Ur/Web checkout root; must contain `lib/ur/basis.urs` and `lib/ur/top.ur`.
+/// * `settings` — Compiler settings (database, FFI paths); only the Basis-relevant fields are used.
+/// * `errors` — Diagnostic sink for parse errors.
+///
+/// # Returns
+///
+/// `Some(file)` with the Basis + Top declarations when parsing succeeds; `None` on I/O or parse error.
+pub fn parse_basis_sources(
+    boot_root: &Path,
+    settings: &Settings,
+    errors: &mut ErrorReporter,
+) -> Option<crate::source::File> {
+    let boot_job = Job {
+        basis_lib_dir: Some(boot_root.join("lib/ur")), // Point at the boot library directory.
+        sources: vec![],                               // No user modules — basis only.
+        database: None,                                // No user database for a basis-only parse.
+        ..Default::default()                           // All other job fields at default values.
+    };
+    parse_sources(&boot_job, settings, errors) // Delegate to the standard parser, which reads Basis and Top.
+}
+
+/// Elaborate one in-memory Ur/Web module (and optional signature) on top of pre-parsed boot sources.
+///
+/// Intended for test harnesses that elaborate many small modules against the same Basis. By
+/// accepting a pre-parsed `cached_boot` (from [`parse_basis_sources`]) the caller avoids the
+/// Basis file I/O and parse cost on every invocation, paying it only once.
+///
+/// The function:
+/// 1. Clones `cached_boot` to produce the combined source file.
+/// 2. Parses `ur_text` with [`crate::parse::parse_ur`] (no disk I/O).
+/// 3. Optionally parses `urs_text` with [`crate::parse::parse_urs`].
+/// 4. Appends the module and an auto-export declaration.
+/// 5. Calls [`elaborate`].
+///
+/// # Parameters
+///
+/// * `cached_boot` — Pre-parsed Basis + Top declarations (from [`parse_basis_sources`]).
+/// * `module_name` — Module name used for the generated structure declaration (e.g. `"CoreMod"`).
+/// * `ur_text` — Source text of the implementation module.
+/// * `urs_text` — Optional source text of the module signature. `None` means no explicit signature.
+/// * `settings` — Compilation settings; `boot_linking` does not need to be set (Basis already in file).
+/// * `errors` — Diagnostic sink; hard errors are reported here.
+///
+/// # Returns
+///
+/// `Ok(())` on success. `Err(String)` carrying a human-readable message on parse, elaboration, or
+/// diagnostic failure.
+pub fn elaborate_module_on_cached_boot(
+    cached_boot: &crate::source::File,
+    module_name: &str,
+    ur_text: &str,
+    urs_text: Option<&str>,
+    settings: &Settings,
+    errors: &mut ErrorReporter,
+) -> Result<(), String> {
+    use crate::error_types::{Located, Span};
+    use crate::source;
+
+    // Clone the cached Basis+Top to produce the combined source file for this elaboration.
+    let mut file = cached_boot.clone(); // Each test gets its own independent copy of the boot declarations.
+
+    // Parse the optional module signature from text (no disk I/O).
+    let sgn_opt = match urs_text {
+        None => None, // No signature requested — elaborator will infer the interface.
+        Some(text) => {
+            let mut sgn_errors = ErrorReporter::new_silent(); // Separate reporter so parse errors appear in the Err message.
+            match crate::parse::parse_urs(&format!("{module_name}.urs"), text, &mut sgn_errors) {
+                None => return Err(format!("parse_urs failed: {sgn_errors:?}")), // Surface parse failure.
+                Some(sgis) => {
+                    let sig_span = Span {
+                        file: format!("{module_name}.urs"), // Synthetic filename for error messages.
+                        ..Span::dummy()
+                    };
+                    Some(Located::new(source::Sgn::Const(sgis), sig_span)) // Wrap signature items in a Sgn node.
+                }
+            }
+        }
+    };
+
+    // Parse the module implementation text (no disk I/O).
+    let mut ur_errors = ErrorReporter::new_silent(); // Separate reporter for parse-phase errors.
+    let impl_span = Span {
+        file: format!("{module_name}.ur"), // Synthetic filename for parse error spans.
+        ..Span::dummy()
+    };
+    let Some(user_decls) = crate::parse::parse_ur(
+        &impl_span.file,
+        ur_text,
+        &mut ur_errors,
+        crate::db::ProjectDb::default(), // Default project DB: no database configured.
+    ) else {
+        return Err(format!("parse_ur failed: {ur_errors:?}")); // Surface parse failure.
+    };
+
+    // Wrap user declarations in a top-level structure declaration matching parse_sources_inner behavior.
+    let str_node = Located::new(source::Str::Const(user_decls), impl_span.clone()); // Body of the module structure.
+    file.push(Located::new(
+        source::Decl::Str(module_name.to_string(), sgn_opt, None, str_node, false),
+        impl_span.clone(),
+    )); // Append the user module as a top-level Str declaration.
+
+    // Auto-export the module, matching the export appended by parse_sources_inner for the last source.
+    let export_span = Span::dummy(); // No source location for the synthetic export.
+    let export_ref = Located::new(
+        source::Str::Var(module_name.to_string()),
+        export_span.clone(),
+    ); // Reference to the module being exported.
+    file.push(Located::new(source::Decl::Export(export_ref), export_span)); // Append the export declaration.
+
+    // Elaborate the combined source file.
+    let Some(_elab) = elaborate(file, settings, errors) else {
+        return Err(format!("elaborate returned None: {errors:?}")); // Elaboration produced no output; surface diagnostics.
+    };
+    if errors.has_hard_errors() {
+        return Err(format!("elaborate errors: {errors:?}")); // Hard errors prevent further compilation.
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Phase 3: Elaborate
 // ---------------------------------------------------------------------------

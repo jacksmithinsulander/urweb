@@ -18,6 +18,7 @@ use ur::compiler;
 use ur::diagnostics::DiagnosticId;
 use ur::error_types::{CompileError, ErrorReporter};
 use ur::settings::Settings;
+use ur::source::File as SourceFile;
 
 /// Stack size for threads that run `corpus_core_*` elaboration checks.
 ///
@@ -52,6 +53,28 @@ fn corpus_workspace_root() -> Option<&'static std::path::PathBuf> {
         .as_ref() // Borrow the stored Option<PathBuf> as Option<&PathBuf>.
 }
 
+/// Basis + Top source declarations parsed once and shared across all corpus elaboration tests.
+///
+/// Caching avoids reading and parsing `lib/ur/basis.urs` / `lib/ur/top.ur` from disk on every test
+/// invocation. Each test clones this and appends its own module declarations before calling
+/// [`compiler::elaborate`]. `OnceLock` guarantees the parse runs exactly once even under parallel test execution.
+static CACHED_BASIS_SOURCES: OnceLock<Option<SourceFile>> = OnceLock::new();
+
+/// Return a reference to the cached Basis+Top source declarations, or `None` when the Basis is absent.
+///
+/// Initialises [`CACHED_BASIS_SOURCES`] on first call by calling [`compiler::parse_basis_sources`].
+/// All subsequent calls return immediately without any I/O or locking.
+fn get_cached_basis_sources() -> Option<&'static SourceFile> {
+    CACHED_BASIS_SOURCES
+        .get_or_init(|| {
+            let root = corpus_workspace_root()?; // Use the same workspace root as other corpus helpers.
+            let settings = Settings::new(); // Default settings for Basis-only parse.
+            let mut errors = ErrorReporter::new_silent(); // Discard parse errors (None return signals failure).
+            compiler::parse_basis_sources(root, &settings, &mut errors) // Parse Basis+Top once.
+        })
+        .as_ref() // Borrow the stored Option<SourceFile> as Option<&SourceFile>.
+}
+
 /// Run `body` on a fresh OS thread with [`ELABORATION_TEST_STACK_BYTES`] and propagate its result.
 ///
 /// # Errors
@@ -78,36 +101,18 @@ fn try_elaborate_named_module(module_name: &str, ur_src: &str) -> Result<(), Str
     let module_name_owned = module_name.to_string(); // Clone for the spawned thread's closure.
     let implementation_text = ur_src.to_string(); // Clone for the spawned thread's closure.
     run_with_elaboration_stack(move || {
-        let dir = tempdir().map_err(|tempfile_error| tempfile_error.to_string())?; // Isolated temp dir per test invocation.
-        let project_root = dir.path(); // Short-lived alias for the temp directory path.
-        fs::write(
-            project_root.join("app.urp"),
-            format!("{module_name_owned}\n"),
-        )
-        .map_err(|io_error| io_error.to_string())?; // Project descriptor listing the single module.
-        fs::write(
-            project_root.join(format!("{module_name_owned}.ur")),
-            &implementation_text,
-        )
-        .map_err(|io_error| io_error.to_string())?; // Implementation source.
-        let urp = project_root.join("app.urp"); // Path to the project descriptor.
-        let mut job = compiler::parse_urp(&urp).map_err(|parse_error| parse_error.to_string())?; // Parse project descriptor into a Job.
-        let mut settings = Settings::new(); // Default settings; boot_linking toggled below.
-        settings.boot_linking = true; // Enable Basis linking so the standard library is available.
-        let boot_root = corpus_workspace_root()
-            .ok_or_else(|| "corpus boot root not found (lib/ur/basis.urs missing)".to_string())?; // Use the once-computed workspace root; fail fast when Basis is absent.
-        compiler::apply_boot_settings_with_explicit_root(&mut job, &mut settings, boot_root)?; // Apply boot paths without env-var mutation — safe for concurrent tests.
+        let cached_boot = get_cached_basis_sources()
+            .ok_or_else(|| "corpus boot root not found (lib/ur/basis.urs missing)".to_string())?; // Fail fast when Basis is absent.
+        let settings = Settings::new(); // Default settings; Basis is already in cached_boot.
         let mut errors = ErrorReporter::new_silent(); // Silent reporter: errors are returned as Err strings.
-        let Some(file) = compiler::parse_sources(&job, &settings, &mut errors) else {
-            return Err(format!("parse_sources: {errors:?}")); // Source parsing failed; surface diagnostics.
-        };
-        let Some(_elab) = compiler::elaborate(file, &settings, &mut errors) else {
-            return Err(format!("elaborate returned None: {errors:?}")); // Elaboration produced no output; surface diagnostics.
-        };
-        if errors.has_hard_errors() {
-            return Err(format!("elaborate errors: {errors:?}")); // Elaboration completed but emitted hard errors.
-        }
-        Ok(())
+        compiler::elaborate_module_on_cached_boot(
+            cached_boot,          // Pre-parsed Basis+Top — no re-parsing or disk I/O.
+            &module_name_owned,   // Caller-supplied module name.
+            &implementation_text, // Implementation source text.
+            None,                 // No explicit signature.
+            &settings,
+            &mut errors,
+        )
     })
     .flatten()
 }
@@ -208,81 +213,55 @@ fn try_elaborate_project(
     .flatten()
 }
 
-/// Elaborate one synthetic module in a temp dir (larger stack supplied by caller).
+/// Elaborate one synthetic anonymous module using cached Basis sources (larger stack supplied by caller).
 ///
-/// No global lock is acquired: each invocation creates its own temp directory and applies the
-/// pre-computed workspace root via [`compiler::apply_boot_settings_with_explicit_root`], so
-/// multiple elaboration threads can run concurrently.
+/// Uses [`get_cached_basis_sources`] to avoid re-parsing Basis/Top from disk, and
+/// [`compiler::elaborate_module_on_cached_boot`] to build the combined source file in memory.
+/// No temp directory, disk I/O, or global lock is used.
 ///
 /// # Errors
 ///
-/// I/O, parse, boot settings, `parse_sources`, elaboration, or reported hard errors as `String`.
+/// Missing Basis, parse failure, elaboration failure, or reported hard errors as `String`.
 fn try_elaborate_single_module_on_thread(ur_src: &str) -> Result<(), String> {
-    let dir = tempdir().map_err(|tempfile_error| tempfile_error.to_string())?; // Isolated temp dir per test invocation.
-    let project_root = dir.path(); // Short-lived alias for the temp directory path.
-    fs::write(project_root.join("app.urp"), "CoreMod\n")
-        .map_err(|io_error| io_error.to_string())?; // Minimal single-module project file.
-    fs::write(project_root.join("CoreMod.ur"), ur_src).map_err(|io_error| io_error.to_string())?; // Write the source under test.
-    let urp = project_root.join("app.urp"); // Path to the project descriptor parsed next.
-    let mut job = compiler::parse_urp(&urp).map_err(|parse_error| parse_error.to_string())?; // Parse project descriptor into a Job.
-    let mut settings = Settings::new(); // Default settings; boot_linking toggled below.
-    settings.boot_linking = true; // Enable Basis linking so the standard library is available.
-    let boot_root = corpus_workspace_root()
-        .ok_or_else(|| "corpus boot root not found (lib/ur/basis.urs missing)".to_string())?; // Use the once-computed workspace root; fail fast when Basis is absent.
-    compiler::apply_boot_settings_with_explicit_root(&mut job, &mut settings, boot_root)?; // Apply boot paths without touching env vars — safe for concurrent tests.
+    let cached_boot = get_cached_basis_sources()
+        .ok_or_else(|| "corpus boot root not found (lib/ur/basis.urs missing)".to_string())?; // Fail fast when Basis is absent.
+    let settings = Settings::new(); // Default settings; Basis is already in cached_boot, boot_linking not needed.
     let mut errors = ErrorReporter::new_silent(); // Silent reporter: errors are returned as Err strings.
-    let Some(file) = compiler::parse_sources(&job, &settings, &mut errors) else {
-        return Err(format!("parse_sources: {errors:?}")); // Source parsing failed; surface diagnostics.
-    };
-    let Some(_elab) = compiler::elaborate(file, &settings, &mut errors) else {
-        return Err(format!("elaborate returned None: {errors:?}")); // Elaboration produced no output; surface diagnostics.
-    };
-    if errors.has_hard_errors() {
-        return Err(format!("elaborate errors: {errors:?}")); // Elaboration completed but emitted hard errors.
-    }
-    Ok(())
+    compiler::elaborate_module_on_cached_boot(
+        cached_boot, // Pre-parsed Basis+Top — no re-parsing or disk I/O.
+        "CoreMod",   // Synthetic module name for anonymous single-module tests.
+        ur_src,      // Implementation source text.
+        None,        // No explicit signature; elaborator infers the interface.
+        &settings,
+        &mut errors,
+    )
 }
 
-/// Elaborate one synthetic named module/signature pair in a temp dir (larger stack supplied by caller).
+/// Elaborate one synthetic named module/signature pair using cached Basis sources (larger stack supplied by caller).
 ///
-/// No global lock is acquired. Concurrent invocations are safe because each writes to its own
-/// temp directory and uses the pre-computed workspace root via
-/// [`compiler::apply_boot_settings_with_explicit_root`].
+/// Uses [`get_cached_basis_sources`] and [`compiler::elaborate_module_on_cached_boot`] to avoid
+/// re-parsing Basis/Top on every invocation. No temp directory, disk I/O, or global lock is used.
 ///
 /// # Errors
 ///
-/// I/O, parse, boot settings, `parse_sources`, elaboration, or reported hard errors as `String`.
+/// Missing Basis, parse failure, elaboration failure, or reported hard errors as `String`.
 fn try_elaborate_named_module_pair_on_thread(
     module_name: &str,
     ur_src: &str,
     urs_src: &str,
 ) -> Result<(), String> {
-    let dir = tempdir().map_err(|tempfile_error| tempfile_error.to_string())?; // Isolated temp dir per test invocation.
-    let project_root = dir.path(); // Short-lived alias for the temp directory path.
-    fs::write(project_root.join("app.urp"), format!("{module_name}\n"))
-        .map_err(|io_error| io_error.to_string())?; // Project descriptor listing the single module.
-    fs::write(project_root.join(format!("{module_name}.ur")), ur_src)
-        .map_err(|io_error| io_error.to_string())?; // Implementation source.
-    fs::write(project_root.join(format!("{module_name}.urs")), urs_src)
-        .map_err(|io_error| io_error.to_string())?; // Signature source.
-    let urp = project_root.join("app.urp"); // Path to the project descriptor.
-    let mut job = compiler::parse_urp(&urp).map_err(|parse_error| parse_error.to_string())?; // Parse project descriptor into a Job.
-    let mut settings = Settings::new(); // Default settings; boot_linking toggled below.
-    settings.boot_linking = true; // Enable Basis linking so the standard library is available.
-    let boot_root = corpus_workspace_root()
-        .ok_or_else(|| "corpus boot root not found (lib/ur/basis.urs missing)".to_string())?; // Use the once-computed workspace root; fail fast when Basis is absent.
-    compiler::apply_boot_settings_with_explicit_root(&mut job, &mut settings, boot_root)?; // Apply boot paths without env-var mutation — safe for concurrent tests.
+    let cached_boot = get_cached_basis_sources()
+        .ok_or_else(|| "corpus boot root not found (lib/ur/basis.urs missing)".to_string())?; // Fail fast when Basis is absent.
+    let settings = Settings::new(); // Default settings; Basis is already in cached_boot.
     let mut errors = ErrorReporter::new_silent(); // Silent reporter: errors are returned as Err strings.
-    let Some(file) = compiler::parse_sources(&job, &settings, &mut errors) else {
-        return Err(format!("parse_sources: {errors:?}")); // Source parsing failed; surface diagnostics.
-    };
-    let Some(_elab) = compiler::elaborate(file, &settings, &mut errors) else {
-        return Err(format!("elaborate returned None: {errors:?}")); // Elaboration produced no output; surface diagnostics.
-    };
-    if errors.has_hard_errors() {
-        return Err(format!("elaborate errors: {errors:?}")); // Elaboration completed but emitted hard errors.
-    }
-    Ok(())
+    compiler::elaborate_module_on_cached_boot(
+        cached_boot,   // Pre-parsed Basis+Top — no re-parsing or disk I/O.
+        module_name,   // Caller-supplied module name.
+        ur_src,        // Implementation source text.
+        Some(urs_src), // Signature source text — present for impl/sig pair tests.
+        &settings,
+        &mut errors,
+    )
 }
 
 fn corpus_enabled() -> bool {

@@ -7,6 +7,12 @@ name = "ur"
 version = "0.1.0"
 edition = "2021"
 
+[profile.test]
+# opt-level 1 gives meaningful optimizations with only a modest compile-time cost.
+# Corpus elaboration tests recurse deeply through the Basis standard library;
+# debug (opt-level 0) is 5-10x slower than opt-level 1 for this workload.
+opt-level = 1
+
 [profile.mutants]
 inherits = "test"
 debug = false  # Faster builds for cargo-mutants

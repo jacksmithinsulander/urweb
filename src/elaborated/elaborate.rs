@@ -38,8 +38,8 @@ use crate::elaborated::environment::{
     hnorm_con_expression_head, hnorm_sgn, new_named_id, ConstructorInfo, Env, VarLookup,
 };
 use crate::elaborated::type_operations::{
-    cons_eq_simple, hnorm_con, occurs_cunif, reduce_con, squish_con, sub_con_in_con,
-    sub_kind_in_con, sub_kind_in_kind, CantSquish,
+    cons_eq_simple, hnorm_con, lift_kind_in_con, mlift_con_in_con, occurs_cunif, reduce_con,
+    squish_con, sub_con_in_con, sub_kind_in_con, sub_kind_in_kind, CantSquish,
 };
 use crate::error_types::{ErrorReporter, Located, Span};
 use crate::primitives::Prim;
@@ -1994,6 +1994,8 @@ fn realize_signature_constructor_named_ids_inner(
     constructor: &elab::LocatedConstructor,
     realization_map: &HashMap<usize, elab::LocatedConstructor>,
     seen_named_ids: &mut HashSet<usize>,
+    constructor_binder_depth: usize,
+    kind_binder_depth: usize,
     remaining_steps: usize,
 ) -> elab::LocatedConstructor {
     if remaining_steps == 0 {
@@ -2004,10 +2006,17 @@ fn realize_signature_constructor_named_ids_inner(
     match &constructor.node {
         elab::Constructor::Named(id) => match realization_map.get(id) {
             Some(replacement) if seen_named_ids.insert(*id) => {
+                let mut lifted_replacement =
+                    mlift_con_in_con(constructor_binder_depth, replacement.clone());
+                for _ in 0usize..kind_binder_depth {
+                    lifted_replacement = lift_kind_in_con(lifted_replacement);
+                }
                 let realized = realize_signature_constructor_named_ids_inner(
-                    replacement,
+                    &lifted_replacement,
                     realization_map,
                     seen_named_ids,
+                    constructor_binder_depth,
+                    kind_binder_depth,
                     next_steps,
                 );
                 seen_named_ids.remove(id);
@@ -2021,12 +2030,16 @@ fn realize_signature_constructor_named_ids_inner(
                     domain,
                     realization_map,
                     seen_named_ids,
+                    constructor_binder_depth,
+                    kind_binder_depth,
                     next_steps,
                 )),
                 Box::new(realize_signature_constructor_named_ids_inner(
                     codomain,
                     realization_map,
                     seen_named_ids,
+                    constructor_binder_depth,
+                    kind_binder_depth,
                     next_steps,
                 )),
             ),
@@ -2041,6 +2054,8 @@ fn realize_signature_constructor_named_ids_inner(
                     body,
                     realization_map,
                     seen_named_ids,
+                    constructor_binder_depth + 1usize,
+                    kind_binder_depth,
                     next_steps,
                 )),
             ),
@@ -2051,6 +2066,8 @@ fn realize_signature_constructor_named_ids_inner(
                 row,
                 realization_map,
                 seen_named_ids,
+                constructor_binder_depth,
+                kind_binder_depth,
                 next_steps,
             ))),
             span,
@@ -2061,18 +2078,24 @@ fn realize_signature_constructor_named_ids_inner(
                     left_row,
                     realization_map,
                     seen_named_ids,
+                    constructor_binder_depth,
+                    kind_binder_depth,
                     next_steps,
                 )),
                 Box::new(realize_signature_constructor_named_ids_inner(
                     right_row,
                     realization_map,
                     seen_named_ids,
+                    constructor_binder_depth,
+                    kind_binder_depth,
                     next_steps,
                 )),
                 Box::new(realize_signature_constructor_named_ids_inner(
                     body,
                     realization_map,
                     seen_named_ids,
+                    constructor_binder_depth,
+                    kind_binder_depth,
                     next_steps,
                 )),
             ),
@@ -2084,12 +2107,16 @@ fn realize_signature_constructor_named_ids_inner(
                     function_constructor,
                     realization_map,
                     seen_named_ids,
+                    constructor_binder_depth,
+                    kind_binder_depth,
                     next_steps,
                 )),
                 Box::new(realize_signature_constructor_named_ids_inner(
                     argument_constructor,
                     realization_map,
                     seen_named_ids,
+                    constructor_binder_depth,
+                    kind_binder_depth,
                     next_steps,
                 )),
             ),
@@ -2103,6 +2130,8 @@ fn realize_signature_constructor_named_ids_inner(
                     body,
                     realization_map,
                     seen_named_ids,
+                    constructor_binder_depth + 1usize,
+                    kind_binder_depth,
                     next_steps,
                 )),
             ),
@@ -2115,6 +2144,8 @@ fn realize_signature_constructor_named_ids_inner(
                     body,
                     realization_map,
                     seen_named_ids,
+                    constructor_binder_depth,
+                    kind_binder_depth + 1usize,
                     next_steps,
                 )),
             ),
@@ -2126,6 +2157,8 @@ fn realize_signature_constructor_named_ids_inner(
                     function_constructor,
                     realization_map,
                     seen_named_ids,
+                    constructor_binder_depth,
+                    kind_binder_depth,
                     next_steps,
                 )),
                 kind_argument.clone(),
@@ -2139,6 +2172,8 @@ fn realize_signature_constructor_named_ids_inner(
                     body,
                     realization_map,
                     seen_named_ids,
+                    constructor_binder_depth,
+                    kind_binder_depth,
                     next_steps,
                 )),
             ),
@@ -2153,12 +2188,16 @@ fn realize_signature_constructor_named_ids_inner(
                             field_name,
                             realization_map,
                             seen_named_ids,
+                            constructor_binder_depth,
+                            kind_binder_depth,
                             next_steps,
                         ),
                         realize_signature_constructor_named_ids_inner(
                             field_type,
                             realization_map,
                             seen_named_ids,
+                            constructor_binder_depth,
+                            kind_binder_depth,
                             next_steps,
                         ),
                     )
@@ -2175,12 +2214,16 @@ fn realize_signature_constructor_named_ids_inner(
                     left_row,
                     realization_map,
                     seen_named_ids,
+                    constructor_binder_depth,
+                    kind_binder_depth,
                     next_steps,
                 )),
                 Box::new(realize_signature_constructor_named_ids_inner(
                     right_row,
                     realization_map,
                     seen_named_ids,
+                    constructor_binder_depth,
+                    kind_binder_depth,
                     next_steps,
                 )),
             ),
@@ -2195,6 +2238,8 @@ fn realize_signature_constructor_named_ids_inner(
                             element,
                             realization_map,
                             seen_named_ids,
+                            constructor_binder_depth,
+                            kind_binder_depth,
                             next_steps,
                         )
                     })
@@ -2208,6 +2253,8 @@ fn realize_signature_constructor_named_ids_inner(
                     base,
                     realization_map,
                     seen_named_ids,
+                    constructor_binder_depth,
+                    kind_binder_depth,
                     next_steps,
                 )),
                 *index,
@@ -2227,8 +2274,167 @@ fn realize_signature_constructor_named_ids(
         constructor,
         realization_map,
         &mut seen_named_ids,
+        0usize,
+        0usize,
         SIGNATURE_REALIZATION_MAX_STEPS,
     )
+}
+
+fn realize_signature_datatype_decl_named_ids(
+    datatype_decl: &elab::DatatypeDecl,
+    realization_map: &HashMap<usize, elab::LocatedConstructor>,
+) -> elab::DatatypeDecl {
+    let realized_constructors = datatype_decl
+        .constrs
+        .iter()
+        .map(|(constructor_name, constructor_id, constructor_type)| {
+            let realized_constructor_type = constructor_type.as_ref().map(|constructor| {
+                realize_signature_constructor_named_ids(constructor, realization_map)
+            });
+            (
+                constructor_name.clone(),
+                *constructor_id,
+                realized_constructor_type,
+            )
+        })
+        .collect();
+    elab::DatatypeDecl {
+        name: datatype_decl.name.clone(),
+        id: datatype_decl.id,
+        params: datatype_decl.params.clone(),
+        constrs: realized_constructors,
+    }
+}
+
+fn realize_signature_item_named_ids(
+    signature_item: &elab::LocatedSignatureItem,
+    realization_map: &HashMap<usize, elab::LocatedConstructor>,
+) -> elab::LocatedSignatureItem {
+    let span = signature_item.span.clone();
+    let realized_item = match &signature_item.node {
+        elab::SignatureItem::ConAbs(name, id, kind) => {
+            elab::SignatureItem::ConAbs(name.clone(), *id, kind.clone())
+        }
+        elab::SignatureItem::Constructor(name, id, kind, constructor) => {
+            elab::SignatureItem::Constructor(
+                name.clone(),
+                *id,
+                kind.clone(),
+                realize_signature_constructor_named_ids(constructor, realization_map),
+            )
+        }
+        elab::SignatureItem::Datatype(datatypes) => elab::SignatureItem::Datatype(
+            datatypes
+                .iter()
+                .map(|datatype| {
+                    realize_signature_datatype_decl_named_ids(datatype, realization_map)
+                })
+                .collect(),
+        ),
+        elab::SignatureItem::DatatypeImp {
+            name,
+            id,
+            params,
+            orig_mod,
+            orig_path,
+            orig_name,
+            orig_constrs_path,
+            constrs,
+        } => {
+            let realized_constructors = constrs
+                .iter()
+                .map(|(constructor_name, constructor_id, constructor_type)| {
+                    let realized_constructor_type = constructor_type.as_ref().map(|constructor| {
+                        realize_signature_constructor_named_ids(constructor, realization_map)
+                    });
+                    (
+                        constructor_name.clone(),
+                        *constructor_id,
+                        realized_constructor_type,
+                    )
+                })
+                .collect();
+            elab::SignatureItem::DatatypeImp {
+                name: name.clone(),
+                id: *id,
+                params: params.clone(),
+                orig_mod: *orig_mod,
+                orig_path: orig_path.clone(),
+                orig_name: orig_name.clone(),
+                orig_constrs_path: orig_constrs_path.clone(),
+                constrs: realized_constructors,
+            }
+        }
+        elab::SignatureItem::Val(name, id, constructor) => elab::SignatureItem::Val(
+            name.clone(),
+            *id,
+            realize_signature_constructor_named_ids(constructor, realization_map),
+        ),
+        elab::SignatureItem::Structure(import_mode, name, id, signature) => {
+            elab::SignatureItem::Structure(
+                *import_mode,
+                name.clone(),
+                *id,
+                realize_signature_named_ids(signature, realization_map),
+            )
+        }
+        elab::SignatureItem::Signature(name, id, signature) => elab::SignatureItem::Signature(
+            name.clone(),
+            *id,
+            realize_signature_named_ids(signature, realization_map),
+        ),
+        elab::SignatureItem::Constraint(left_constructor, right_constructor) => {
+            elab::SignatureItem::Constraint(
+                realize_signature_constructor_named_ids(left_constructor, realization_map),
+                realize_signature_constructor_named_ids(right_constructor, realization_map),
+            )
+        }
+        elab::SignatureItem::ClassAbs(name, id, kind) => {
+            elab::SignatureItem::ClassAbs(name.clone(), *id, kind.clone())
+        }
+        elab::SignatureItem::Class(name, id, kind, constructor) => elab::SignatureItem::Class(
+            name.clone(),
+            *id,
+            kind.clone(),
+            realize_signature_constructor_named_ids(constructor, realization_map),
+        ),
+    };
+    Located::new(realized_item, span)
+}
+
+fn realize_signature_named_ids(
+    signature: &elab::LocatedSignature,
+    realization_map: &HashMap<usize, elab::LocatedConstructor>,
+) -> elab::LocatedSignature {
+    let span = signature.span.clone();
+    let realized_signature = match &signature.node {
+        elab::Signature::Const(signature_items) => elab::Signature::Const(
+            signature_items
+                .iter()
+                .map(|signature_item| {
+                    realize_signature_item_named_ids(signature_item, realization_map)
+                })
+                .collect(),
+        ),
+        elab::Signature::Var(id) => elab::Signature::Var(*id),
+        elab::Signature::Fun(name, id, domain, range) => elab::Signature::Fun(
+            name.clone(),
+            *id,
+            Box::new(realize_signature_named_ids(domain, realization_map)),
+            Box::new(realize_signature_named_ids(range, realization_map)),
+        ),
+        elab::Signature::Where(signature, modules, name, constructor) => elab::Signature::Where(
+            Box::new(realize_signature_named_ids(signature, realization_map)),
+            modules.clone(),
+            name.clone(),
+            realize_signature_constructor_named_ids(constructor, realization_map),
+        ),
+        elab::Signature::Proj(id, modules, name) => {
+            elab::Signature::Proj(*id, modules.clone(), name.clone())
+        }
+        elab::Signature::Error => elab::Signature::Error,
+    };
+    Located::new(realized_signature, span)
 }
 
 // ---------------------------------------------------------------------------
@@ -7804,12 +8010,14 @@ fn sub_sgi(
         elab::SignatureItem::Structure(_, x, _, sgn2) => {
             if let Some(sgi1) = sgi_find_str(actual_sgis, x) {
                 if let elab::SignatureItem::Structure(_, _, _, sgn1) = sgi1 {
+                    let realized_expected_signature =
+                        realize_signature_named_ids(sgn2, realization_map);
                     sub_sgn(
                         elaboration_context,
                         elaboration_environment,
                         disjointness_environment,
                         sgn1,
-                        sgn2,
+                        &realized_expected_signature,
                         span,
                     );
                 }
@@ -10414,6 +10622,77 @@ mod tests {
     }
 
     #[test]
+    fn unify_cons_treats_kind_polymorphic_folder_application_extensionally() {
+        let span = crate::error_types::Span::dummy();
+        let kind_rel = Located::new(elab::Kind::Rel(0), span.clone());
+        let row_kind = Located::new(elab::Kind::Record(Box::new(kind_rel.clone())), span.clone());
+        let folder_result_kind = Located::new(elab::Kind::Type, span.clone());
+        let folder_kind = Located::new(
+            elab::Kind::Fun(
+                "K".into(),
+                Box::new(Located::new(
+                    elab::Kind::Arrow(
+                        Box::new(row_kind.clone()),
+                        Box::new(folder_result_kind.clone()),
+                    ),
+                    span.clone(),
+                )),
+            ),
+            span.clone(),
+        );
+        let (elaboration_environment, folder_id) =
+            Env::empty().push_c_named("folder".into(), folder_kind, None);
+        let row_constructor = Located::new(
+            elab::Constructor::Record(Box::new(row_kind.clone()), Vec::new()),
+            span.clone(),
+        );
+        let abstract_folder_body = Located::new(
+            elab::Constructor::App(
+                Box::new(Located::new(
+                    elab::Constructor::KApp(
+                        Box::new(Located::new(
+                            elab::Constructor::Named(folder_id),
+                            span.clone(),
+                        )),
+                        Box::new(kind_rel.clone()),
+                    ),
+                    span.clone(),
+                )),
+                Box::new(row_constructor),
+            ),
+            span.clone(),
+        );
+        let mut elaboration_context = ElabCtx::new();
+        let extensional_folder_body = expand_folder_constructor_application(
+            &mut elaboration_context,
+            &elaboration_environment,
+            &abstract_folder_body,
+        )
+        .expect("kind-polymorphic folder application should expand extensionally");
+        let abstract_folder = Located::new(
+            elab::Constructor::KAbs("K".into(), Box::new(abstract_folder_body)),
+            span.clone(),
+        );
+        let extensional_folder = Located::new(
+            elab::Constructor::KAbs("K".into(), Box::new(extensional_folder_body)),
+            span.clone(),
+        );
+
+        let result = unify_cons(
+            &mut elaboration_context,
+            &elaboration_environment,
+            &span,
+            &abstract_folder,
+            &extensional_folder,
+        );
+        assert!(
+            result.is_ok(),
+            "kind-polymorphic abstract folder applications should unify extensionally, got {:?}",
+            result
+        );
+    }
+
+    #[test]
     fn unify_rows_solves_unknown_tail_to_empty_row() {
         let span = crate::error_types::Span::dummy();
         let type_kind = Located::new(elab::Kind::Type, span.clone());
@@ -10608,6 +10887,130 @@ mod tests {
         assert!(
             elaboration_context.errors.is_empty(),
             "expected abstract constructor ids should realize through matching actual items: {:?}",
+            elaboration_context.errors
+        );
+    }
+
+    #[test]
+    fn sub_sgn_realizes_outer_abstract_constructor_ids_inside_nested_structures() {
+        let span = crate::error_types::Span::dummy();
+        let type_kind = Located::new(elab::Kind::Type, span.clone());
+        let unary_type_kind = Located::new(
+            elab::Kind::Arrow(Box::new(type_kind.clone()), Box::new(type_kind.clone())),
+            span.clone(),
+        );
+        let unit_row = Located::new(
+            elab::Constructor::Record(
+                Box::new(Located::new(
+                    elab::Kind::Record(Box::new(type_kind.clone())),
+                    span.clone(),
+                )),
+                Vec::new(),
+            ),
+            span.clone(),
+        );
+        let unit_type = Located::new(elab::Constructor::TRecord(Box::new(unit_row)), span.clone());
+        let actual_constructor_id = 3000;
+        let expected_constructor_id = 3001;
+        let actual_constructor_definition = Located::new(
+            elab::Constructor::Abs(
+                "t".into(),
+                Box::new(type_kind.clone()),
+                Box::new(Located::new(elab::Constructor::Rel(0), span.clone())),
+            ),
+            span.clone(),
+        );
+        let actual_nested_value_type = Located::new(
+            elab::Constructor::App(
+                Box::new(actual_constructor_definition.clone()),
+                Box::new(unit_type.clone()),
+            ),
+            span.clone(),
+        );
+        let expected_nested_value_type = Located::new(
+            elab::Constructor::App(
+                Box::new(Located::new(
+                    elab::Constructor::Named(expected_constructor_id),
+                    span.clone(),
+                )),
+                Box::new(unit_type),
+            ),
+            span.clone(),
+        );
+        let actual_nested_signature = Located::new(
+            elab::Signature::Const(vec![Located::new(
+                elab::SignatureItem::Val("x".into(), 4000, actual_nested_value_type),
+                span.clone(),
+            )]),
+            span.clone(),
+        );
+        let expected_nested_signature = Located::new(
+            elab::Signature::Const(vec![Located::new(
+                elab::SignatureItem::Val("x".into(), 4001, expected_nested_value_type),
+                span.clone(),
+            )]),
+            span.clone(),
+        );
+        let actual_signature = Located::new(
+            elab::Signature::Const(vec![
+                Located::new(
+                    elab::SignatureItem::Constructor(
+                        "Wrap".into(),
+                        actual_constructor_id,
+                        unary_type_kind.clone(),
+                        actual_constructor_definition,
+                    ),
+                    span.clone(),
+                ),
+                Located::new(
+                    elab::SignatureItem::Structure(
+                        elab::ImportMode::Skip,
+                        "Inner".into(),
+                        5000,
+                        actual_nested_signature,
+                    ),
+                    span.clone(),
+                ),
+            ]),
+            span.clone(),
+        );
+        let expected_signature = Located::new(
+            elab::Signature::Const(vec![
+                Located::new(
+                    elab::SignatureItem::ConAbs(
+                        "Wrap".into(),
+                        expected_constructor_id,
+                        unary_type_kind,
+                    ),
+                    span.clone(),
+                ),
+                Located::new(
+                    elab::SignatureItem::Structure(
+                        elab::ImportMode::Skip,
+                        "Inner".into(),
+                        5001,
+                        expected_nested_signature,
+                    ),
+                    span.clone(),
+                ),
+            ]),
+            span.clone(),
+        );
+
+        let elaboration_environment = Env::empty();
+        let disjointness_environment = disjoint::empty_env();
+        let mut elaboration_context = ElabCtx::new();
+        sub_sgn(
+            &mut elaboration_context,
+            &elaboration_environment,
+            &disjointness_environment,
+            &actual_signature,
+            &expected_signature,
+            &span,
+        );
+        assert!(
+            elaboration_context.errors.is_empty(),
+            "outer abstract constructor ids should realize inside nested structures: {:?}",
             elaboration_context.errors
         );
     }
