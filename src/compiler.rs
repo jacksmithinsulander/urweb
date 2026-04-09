@@ -3384,7 +3384,7 @@ db = "sqlite"
         let user_module = source_file
             .iter()
             .find(|d| d.span.file.ends_with("x.ur"))
-            .expect("x.ur Str decl");
+            .ok_or_else(|| anyhow!("x.ur Str decl missing from parse_sources output"))?; // find the user x.ur declaration
         assert!(
             user_module.span.file.ends_with("x.ur"),
             "span.file must be set to source path (catches delete field file mutant): {}",
@@ -3406,13 +3406,12 @@ db = "sqlite"
         let settings = Settings::new();
         let result =
             with_parse_test_cwd(dir.path(), || parse_sources(&job, &settings, &mut errors));
-        let source_file = result.unwrap_or_else(|| {
-            panic!("parse_sources: {:?}", errors);
-        });
+        let source_file =
+            result.ok_or_else(|| anyhow!("parse_sources returned None: {:?}", errors))?; // extract the parsed source file
         let user_module = source_file
             .iter()
             .find(|d| d.span.file.ends_with("x.ur"))
-            .expect("x.ur Str decl");
+            .ok_or_else(|| anyhow!("x.ur Str decl missing from parse_sources output"))?; // find the user x.ur declaration
         let crate::source::Decl::Str(_, Some(sgn), _, _, _) = &user_module.node else {
             panic!(
                 "expected Str decl with signature, got {:?}",
@@ -3550,12 +3549,9 @@ db = "sqlite"
         );
         let mut errors = ErrorReporter::new();
         let result = mono_sqlcache(file.clone(), &settings, &mut errors);
-        assert!(
-            result.is_some(),
-            "mono_sqlcache must return Some(file) when sqlcache=false (catches replace with None mutant)"
-        );
         // The file should be structurally unchanged.
-        let (decls, _) = result.unwrap();
+        let (decls, _) =
+            result.ok_or_else(|| anyhow!("mono_sqlcache must return Some when sqlcache=false"))?; // extract the file tuple from the Option
         assert_eq!(
             decls.len(),
             1,

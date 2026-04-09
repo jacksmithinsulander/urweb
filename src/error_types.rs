@@ -541,7 +541,7 @@ fn format_compile_error_for_terminal_inner(
         }
         CompileError::Io(io_error) => write_io_error_colored_to_string(&mut out, io_error, locale),
     };
-    write_result.expect("writing to String cannot fail");
+    let _ = write_result; // discard the always-Ok String write result (String::write_fmt is infallible)
     out
 }
 
@@ -668,27 +668,27 @@ pub fn format_compile_error_for_user(error: &CompileError, locale: DiagnosticLoc
     let localized = error.localized_body(locale);
     match error {
         CompileError::Plain(_) => {
-            write_plain_diagnostic(&mut buf, "ERROR", localized.as_str()).expect("String write");
+            write_plain_diagnostic(&mut buf, "ERROR", localized.as_str()).ok(); // String writes are infallible; discard the always-Ok result
         }
         CompileError::AtSpan { span, .. } => {
-            write_located_diagnostic(&mut buf, "ERROR", span, localized.as_str())
-                .expect("String write");
+            write_located_diagnostic(&mut buf, "ERROR", span, localized.as_str()).ok();
+            // String writes are infallible; discard the always-Ok result
         }
         CompileError::ParseError { span, .. } => {
-            write_located_diagnostic(&mut buf, "PARSE", span, localized.as_str())
-                .expect("String write");
+            write_located_diagnostic(&mut buf, "PARSE", span, localized.as_str()).ok();
+            // String writes are infallible; discard the always-Ok result
         }
         CompileError::TypeError { span, .. } => {
-            write_located_diagnostic(&mut buf, "TYPE", span, localized.as_str())
-                .expect("String write");
+            write_located_diagnostic(&mut buf, "TYPE", span, localized.as_str()).ok();
+            // String writes are infallible; discard the always-Ok result
         }
         CompileError::SqlError { span, .. } => {
-            write_located_diagnostic(&mut buf, "SQL", span, localized.as_str())
-                .expect("String write");
+            write_located_diagnostic(&mut buf, "SQL", span, localized.as_str()).ok();
+            // String writes are infallible; discard the always-Ok result
         }
         CompileError::XmlError { span, .. } => {
-            write_located_diagnostic(&mut buf, "XML", span, localized.as_str())
-                .expect("String write");
+            write_located_diagnostic(&mut buf, "XML", span, localized.as_str()).ok();
+            // String writes are infallible; discard the always-Ok result
         }
         CompileError::WarningAt { span, .. } => {
             let (main_text, hint) = split_message_and_hint(localized.as_str());
@@ -702,27 +702,27 @@ pub fn format_compile_error_for_user(error: &CompileError, locale: DiagnosticLoc
                 "{}",
                 format_diagnostic_banner_line("WARNING", banner_suffix.as_str())
             )
-            .expect("String write");
-            writeln!(buf).expect("String write");
-            write_wrapped_explanation(&mut buf, main_text).expect("String write");
-            writeln!(buf).expect("String write");
-            writeln!(buf).expect("String write");
-            writeln!(buf, "    --> {}", span).expect("String write");
+            .ok(); // String writes are infallible; discard the always-Ok result
+            writeln!(buf).ok(); // String writes are infallible; discard the always-Ok result
+            write_wrapped_explanation(&mut buf, main_text).ok(); // String writes are infallible; discard the always-Ok result
+            writeln!(buf).ok(); // String writes are infallible; discard the always-Ok result
+            writeln!(buf).ok(); // String writes are infallible; discard the always-Ok result
+            writeln!(buf, "    --> {}", span).ok(); // String writes are infallible; discard the always-Ok result
             if let Some(hint_text) = hint {
-                writeln!(buf).expect("String write");
-                writeln!(buf, "Hint: {}", hint_text).expect("String write");
+                writeln!(buf).ok(); // String writes are infallible; discard the always-Ok result
+                writeln!(buf, "Hint: {}", hint_text).ok(); // String writes are infallible; discard the always-Ok result
             }
         }
         CompileError::Io(io_error) => {
-            writeln!(buf, "{}", format_diagnostic_banner_line("IO", "")).expect("String write");
-            writeln!(buf).expect("String write");
+            writeln!(buf, "{}", format_diagnostic_banner_line("IO", "")).ok(); // String writes are infallible; discard the always-Ok result
+            writeln!(buf).ok(); // String writes are infallible; discard the always-Ok result
             let intro = format_diagnostic_payload_for_user(
                 &DiagnosticPayload::new(DiagnosticId::IoSomethingWrongReadingWriting, Vec::new()),
                 locale,
             );
-            writeln!(buf, "{intro}").expect("String write");
-            writeln!(buf).expect("String write");
-            writeln!(buf, "    {}", io_error).expect("String write");
+            writeln!(buf, "{intro}").ok(); // String writes are infallible; discard the always-Ok result
+            writeln!(buf).ok(); // String writes are infallible; discard the always-Ok result
+            writeln!(buf, "    {}", io_error).ok(); // String writes are infallible; discard the always-Ok result
         }
     }
     buf
@@ -795,8 +795,8 @@ pub fn format_tool_diagnostic_banner_and_body(tool_banner_label: &str, body: &st
         "{}",
         format_diagnostic_banner_line(tool_banner_label, "")
     )
-    .expect("writing to String cannot fail");
-    writeln!(out).expect("writing to String cannot fail");
+    .ok(); // String writes are infallible; discard the always-Ok result
+    writeln!(out).ok(); // String writes are infallible; discard the always-Ok result
     out.push_str(body.trim());
     out
 }

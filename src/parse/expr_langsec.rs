@@ -570,18 +570,24 @@ fn parse_test_primary(cur: &mut TokenCursor<'_>) -> Result<LocExp, ExprRecognize
 #[cfg(test)]
 mod tests {
     use super::*;
+    use anyhow::Context as _; // .with_context() on Result in tests
     use crate::parse::lexical_analyzer::{tokenize_xml_aware, Token};
+    use anyhow::Context as _;
 
     fn lex_all(src: &str) -> Vec<(usize, Token, usize)> {
-        tokenize_xml_aware(src).expect("lex")
+        match tokenize_xml_aware(src) {
+            Ok(tokens) => tokens,
+            Err(err) => panic!("lex failed: {err}"),
+        }
     }
 
     #[test]
-    fn mul_binds_tighter_than_add() {
+    fn mul_binds_tighter_than_add() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let src = "a + b * c";
         let toks = lex_all(src);
         let mut cur = TokenCursor::new(&toks, &[], "");
-        let e = parse_cmp_app_spine(&mut cur, parse_test_primary).expect("parse");
+        let e = parse_cmp_app_spine(&mut cur, parse_test_primary).with_context(|| "parse")?;
         match &e.node {
             Exp::Infix(op, l, r) if op == "+" => {
                 assert!(matches!(r.node, Exp::Infix(ref o, _, _) if o == "*"));
@@ -589,14 +595,16 @@ mod tests {
             }
             other => panic!("expected + at root, got {:?}", other),
         }
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn app_left_associative() {
+    fn app_left_associative() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let src = "f g h";
         let toks = lex_all(src);
         let mut cur = TokenCursor::new(&toks, &[], "");
-        let e = parse_cmp_app_spine(&mut cur, parse_test_primary).expect("parse");
+        let e = parse_cmp_app_spine(&mut cur, parse_test_primary).with_context(|| "parse")?;
         match &e.node {
             Exp::App(f, x) => {
                 assert!(matches!(f.node, Exp::App(_, _)));
@@ -604,14 +612,16 @@ mod tests {
             }
             other => panic!("expected App at root: {:?}", other),
         }
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn app_tighter_than_mul() {
+    fn app_tighter_than_mul() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let src = "f x * y";
         let toks = lex_all(src);
         let mut cur = TokenCursor::new(&toks, &[], "");
-        let e = parse_cmp_app_spine(&mut cur, parse_test_primary).expect("parse");
+        let e = parse_cmp_app_spine(&mut cur, parse_test_primary).with_context(|| "parse")?;
         match &e.node {
             Exp::Infix(op, l, r) if op == "*" => {
                 assert!(matches!(l.node, Exp::App(_, _)));
@@ -619,14 +629,16 @@ mod tests {
             }
             other => panic!("expected * at root: {:?}", other),
         }
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn cons_is_right_associative() {
+    fn cons_is_right_associative() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let src = "a :: b :: c";
         let toks = lex_all(src);
         let mut cur = TokenCursor::new(&toks, &[], "");
-        let e = parse_cmp_app_spine(&mut cur, parse_test_primary).expect("parse");
+        let e = parse_cmp_app_spine(&mut cur, parse_test_primary).with_context(|| "parse")?;
         match &e.node {
             Exp::Infix(op1, l, r) if op1 == "::" => {
                 assert!(matches!(l.node, Exp::Var(_, ref n, _) if n == "a"));
@@ -640,15 +652,17 @@ mod tests {
             }
             other => panic!("expected :: at root: {:?}", other),
         }
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn add_tighter_than_cons() {
+    fn add_tighter_than_cons() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // Grammar: additive tighter than ::, so (a + b) :: c
         let src = "a + b :: c";
         let toks = lex_all(src);
         let mut cur = TokenCursor::new(&toks, &[], "");
-        let e = parse_cmp_app_spine(&mut cur, parse_test_primary).expect("parse");
+        let e = parse_cmp_app_spine(&mut cur, parse_test_primary).with_context(|| "parse")?;
         match &e.node {
             Exp::Infix(op, l, r) if op == "::" => {
                 assert!(matches!(
@@ -659,14 +673,16 @@ mod tests {
             }
             other => panic!("expected :: at root: {:?}", other),
         }
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn strcat_caret_desugars_like_grammar() {
+    fn strcat_caret_desugars_like_grammar() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let src = "a ^ b";
         let toks = lex_all(src);
         let mut cur = TokenCursor::new(&toks, &[], "");
-        let e = parse_cmp_app_spine(&mut cur, parse_test_primary).expect("parse");
+        let e = parse_cmp_app_spine(&mut cur, parse_test_primary).with_context(|| "parse")?;
         match &e.node {
             Exp::App(outer, y) => {
                 assert!(matches!(y.node, Exp::Var(_, ref n, _) if n == "b"));
@@ -685,5 +701,6 @@ mod tests {
             }
             other => panic!("expected App strcat: {:?}", other),
         }
+        Ok(()) // return success to the test harness
     }
 }

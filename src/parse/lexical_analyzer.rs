@@ -120,6 +120,14 @@ impl LexError {
     }
 }
 
+impl std::fmt::Display for LexError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for LexError {}
+
 // ---------------------------------------------------------------------------
 // Token enum
 // ---------------------------------------------------------------------------
@@ -1719,6 +1727,8 @@ pub fn tokenize_xml_aware(src: &str) -> Result<Vec<(usize, Token, usize)>, LexEr
 #[cfg(test)]
 mod tests {
     use super::*;
+    use anyhow::Context as _; // .with_context() on Result in tests
+    use anyhow::Context as _;
 
     fn lex_all(input: &str) -> Vec<Token> {
         Token::lexer(input)
@@ -1728,7 +1738,8 @@ mod tests {
     }
 
     #[test]
-    fn token_display_uses_friendly_phrases_not_token_enum_debug() {
+    fn token_display_uses_friendly_phrases_not_token_enum_debug() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let keyword = format!("{}", Token::Fun);
         assert!(
             keyword.contains('`') && keyword.contains("fun"),
@@ -1740,20 +1751,24 @@ mod tests {
         );
         let id = format!("{}", Token::Ident("counter".into()));
         assert!(id.contains("counter"), "{id}");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn xml_aware_lexer_fuses_at_inference_paths() {
-        let toks = tokenize_xml_aware("@@x @y @Foo.bar").expect("lex");
+    fn xml_aware_lexer_fuses_at_inference_paths() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
+        let toks = tokenize_xml_aware("@@x @y @Foo.bar").with_context(|| "lex")?;
         assert_eq!(toks.len(), 3);
         assert_eq!(toks[0].1, Token::AtDontInferPath("x".into()));
         assert_eq!(toks[1].1, Token::AtTypesOnlyPath("y".into()));
         assert_eq!(toks[2].1, Token::AtTypesOnlyPath("Foo.bar".into()));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn xml_aware_lexer_at_before_keyword_does_not_fuse() {
-        let toks = tokenize_xml_aware("@fn @ x").expect("lex");
+    fn xml_aware_lexer_at_before_keyword_does_not_fuse() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
+        let toks = tokenize_xml_aware("@fn @ x").with_context(|| "lex")?;
         assert!(
             matches!(&toks[0].1, Token::At),
             "expected bare `@` before keyword `fn`, got {:?}",
@@ -1762,10 +1777,12 @@ mod tests {
         assert_eq!(toks[1].1, Token::Fn);
         assert_eq!(toks[2].1, Token::At);
         assert_eq!(toks[3].1, Token::Ident("x".into()));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn keywords() {
+    fn keywords() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let toks = lex_all("fun val rec let in end");
         assert_eq!(toks[0], Token::Fun);
         assert_eq!(toks[1], Token::Val);
@@ -1773,95 +1790,121 @@ mod tests {
         assert_eq!(toks[3], Token::Let);
         assert_eq!(toks[4], Token::In);
         assert_eq!(toks[5], Token::End);
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn integer_literal() {
+    fn integer_literal() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let toks = lex_all("42");
         assert_eq!(toks[0], Token::Int(42));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn negative_integer() {
+    fn negative_integer() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let toks = lex_all("-7");
         assert_eq!(toks[0], Token::Int(-7));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn float_literal() {
+    fn float_literal() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let toks = lex_all("1.375");
         match &toks[0] {
             Token::Float(f) => assert!((f - 1.375).abs() < 1e-10),
             other => panic!("expected Float, got {:?}", other),
         }
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn string_literal() {
+    fn string_literal() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let toks = lex_all(r#""hello""#);
         assert_eq!(toks[0], Token::String("hello".into()));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn operators_multi() {
+    fn operators_multi() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let toks = lex_all("-> => ++ --");
         assert_eq!(toks[0], Token::Arrow);
         assert_eq!(toks[1], Token::Darrow);
         assert_eq!(toks[2], Token::Plusplus);
         assert_eq!(toks[3], Token::Minusminus);
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn three_char_ops() {
+    fn three_char_ops() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let toks = lex_all("--- :::");
         assert_eq!(toks[0], Token::Minusminusminus);
         assert_eq!(toks[1], Token::Tcolonwild);
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn identifiers() {
+    fn identifiers() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let toks = lex_all("Foo bar");
         assert_eq!(toks[0], Token::UpperIdent("Foo".into()));
         assert_eq!(toks[1], Token::Ident("bar".into()));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn unit_token() {
+    fn unit_token() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let toks = lex_all("()");
         assert_eq!(toks[0], Token::Unit);
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn paren_open_close() {
+    fn paren_open_close() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let toks = lex_all("( x )");
         assert_eq!(toks[0], Token::Lparen);
         assert_eq!(toks[1], Token::Ident("x".into()));
         assert_eq!(toks[2], Token::Rparen);
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn keyword_not_ident() {
+    fn keyword_not_ident() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // "fun" should be Fun, not Ident
         let toks = lex_all("fun");
         assert_eq!(toks.len(), 1);
         assert_eq!(toks[0], Token::Fun);
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn dotdotdot() {
+    fn dotdotdot() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let toks = lex_all("...");
         assert_eq!(toks[0], Token::Dotdotdot);
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn backtick_path() {
+    fn backtick_path() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let toks = lex_all("`Basis.alert`");
         assert_eq!(toks[0], Token::BacktickPath("Basis.alert".into()));
+        Ok(()) // return success to the test harness
     }
 
     /// Catches Lexer::next mutant (return None) - Lexer iterator must yield tokens.
     #[test]
-    fn lexer_iterator_yields_tokens() {
+    fn lexer_iterator_yields_tokens() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let mut lexer = Lexer::new("val x = 1");
         let first = lexer.next();
         assert!(
@@ -1870,5 +1913,6 @@ mod tests {
         );
         let rest: Vec<_> = lexer.collect();
         assert!(!rest.is_empty(), "Lexer must yield multiple tokens");
+        Ok(()) // return success to the test harness
     }
 }

@@ -2555,6 +2555,8 @@ pub fn monoize(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use anyhow::Context as _; // .with_context() on Result in tests
+    use anyhow::Context as _;
     use crate::core::Constructor as CC;
 
     fn loc() -> Span {
@@ -2562,50 +2564,64 @@ mod tests {
     }
 
     #[test]
-    fn empty_file_monoizes_to_empty() {
+    fn empty_file_monoizes_to_empty() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let settings = Settings::default();
         let mut errors = crate::error_types::ErrorReporter::new();
         let result = monoize(Vec::new(), &settings, &mut errors);
         assert!(result.is_some());
-        let (decls, ps) = result.unwrap();
+        let (decls, ps) = result.context("expected monoize to succeed for an empty file")?;
         assert!(decls.is_empty());
         assert!(ps.is_empty());
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn mono_name_extracts_name() {
+    fn mono_name_extracts_name() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let c = Located::new(CC::Name("foo".into()), loc());
         assert_eq!(mono_name(&c), "foo");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn mono_name_fallback_for_non_name() {
+    fn mono_name_fallback_for_non_name() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let c = Located::new(CC::Ffi("Basis".into(), "int".into()), loc());
         assert_eq!(mono_name(&c), "?");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn mono_type_ffi_basis_unit() {
+    fn mono_type_ffi_basis_unit() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let t = mono_type_ffi("Basis", "unit", &loc());
         assert!(matches!(&t.node, Typ::Record(fs) if fs.is_empty()));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn mono_type_ffi_basis_int() {
+    fn mono_type_ffi_basis_int() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let t = mono_type_ffi("Basis", "int", &loc());
         assert!(matches!(&t.node, Typ::Ffi(m, x) if m == "Basis" && x == "int"));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn mono_type_ffi_non_basis_passthrough() {
+    fn mono_type_ffi_non_basis_passthrough() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let t = mono_type_ffi("Other", "foo", &loc());
         assert!(matches!(&t.node, Typ::Ffi(m, x) if m == "Other" && x == "foo"));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn fm_fresh_name_increments() {
+    fn fm_fresh_name_increments() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let mut fm = Fm::empty(10);
         assert_eq!(fm.fresh_name(), 10);
         assert_eq!(fm.fresh_name(), 11);
+        Ok(()) // return success to the test harness
     }
 }

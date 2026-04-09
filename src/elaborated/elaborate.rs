@@ -2479,6 +2479,14 @@ pub fn format_failed_to_unify_kinds_message(failure: &FailedToUnifyKinds) -> Str
     }
 }
 
+impl std::fmt::Display for FailedToUnifyKinds {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&format_failed_to_unify_kinds_message(self))
+    }
+}
+
+impl std::error::Error for FailedToUnifyKinds {}
+
 /// Format [`FailedToUnifyConstructors`] for [`DiagnosticId::ElabTypeMismatch`] and similar payloads.
 ///
 /// # Arguments
@@ -2513,6 +2521,14 @@ pub fn format_failed_to_unify_constructors_message(failure: &FailedToUnifyConstr
         }
     }
 }
+
+impl std::fmt::Display for FailedToUnifyConstructors {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&format_failed_to_unify_constructors_message(self))
+    }
+}
+
+impl std::error::Error for FailedToUnifyConstructors {}
 
 fn debug_constructor_head_name(
     elaboration_environment: &Env,
@@ -10419,13 +10435,74 @@ pub fn elab_file(
 /// Frozen post-boot elaboration state used to elaborate user modules without re-processing
 /// `Basis` and `Top` on every call.
 #[derive(Debug, Clone)]
+pub enum BootSeedStep {
+    Structure {
+        name: String,
+        id: usize,
+        signature: elab::LocatedSignature,
+    },
+    Open {
+        root_id: usize,
+        path: Vec<String>,
+        items: Vec<elab::LocatedSignatureItem>,
+    },
+}
+
+#[derive(Debug, Clone)]
 pub struct BootElaborationSnapshot {
     pub basis_structure_id: usize,
     pub basis_signature: elab::LocatedSignature,
     pub top_structure_id: usize,
     pub top_signature: elab::LocatedSignature,
+    pub seed_steps: Vec<BootSeedStep>,
     pub environment: Env,
+    pub seeded_environment: Env,
     pub disjointness_environment: disjoint::DisjointEnv,
+}
+
+fn record_boot_seed_step(
+    seed_steps: &mut Vec<BootSeedStep>,
+    decl: &crate::source::LocDecl,
+    elaboration_environment: &Env,
+) {
+    match &decl.node {
+        crate::source::Decl::FfiStr(structure_name, _, _)
+        | crate::source::Decl::Str(structure_name, _, _, _, _) => {
+            if let Some((structure_id, signature)) =
+                elaboration_environment.lookup_str(structure_name)
+            {
+                seed_steps.push(BootSeedStep::Structure {
+                    name: structure_name.clone(),
+                    id: *structure_id,
+                    signature: signature.clone(),
+                });
+            }
+        }
+        crate::source::Decl::Open(first, rest) => {
+            let mut path = vec![first.clone()];
+            path.extend(rest.iter().cloned());
+            if let Some(open_step) = snapshot_open_step(elaboration_environment, &path) {
+                seed_steps.push(open_step);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn snapshot_open_step(elaboration_environment: &Env, path: &[String]) -> Option<BootSeedStep> {
+    let mut elaboration_context = ElabCtx::new();
+    let open_span = Span::dummy();
+    let (root_id, items) = resolve_module_path(
+        &mut elaboration_context,
+        elaboration_environment,
+        path,
+        &open_span,
+    )?;
+    Some(BootSeedStep::Open {
+        root_id,
+        path: path.to_vec(),
+        items,
+    })
 }
 
 fn auto_open_basis_and_top(
@@ -10484,6 +10561,7 @@ pub fn elab_boot_file_to_snapshot(
     let mut elaboration_environment = Env::empty();
     let mut disjointness_environment = disjoint::empty_env();
     let mut all_decls: Vec<elab::LocatedDeclaration> = Vec::new();
+    let mut seed_steps = Vec::new();
 
     for decl in file {
         let (ds, new_env, new_denv) = elab_decl(
@@ -10496,6 +10574,7 @@ pub fn elab_boot_file_to_snapshot(
         disjointness_environment = new_denv;
         solve_constraints(&mut elaboration_context, &elaboration_environment);
         all_decls.extend(ds);
+        record_boot_seed_step(&mut seed_steps, decl, &elaboration_environment);
         auto_open_basis_and_top(
             &mut elaboration_context,
             &mut elaboration_environment,
@@ -10503,6 +10582,23 @@ pub fn elab_boot_file_to_snapshot(
             &mut all_decls,
             decl,
         );
+        match &decl.node {
+            crate::source::Decl::FfiStr(structure_name, _, _) if structure_name == "Basis" => {
+                if let Some(open_step) =
+                    snapshot_open_step(&elaboration_environment, &["Basis".to_string()])
+                {
+                    seed_steps.push(open_step);
+                }
+            }
+            crate::source::Decl::Str(structure_name, _, _, _, _) if structure_name == "Top" => {
+                if let Some(open_step) =
+                    snapshot_open_step(&elaboration_environment, &["Top".to_string()])
+                {
+                    seed_steps.push(open_step);
+                }
+            }
+            _ => {}
+        }
     }
 
     for (span, payload) in elaboration_context.errors {
@@ -10514,23 +10610,127 @@ pub fn elab_boot_file_to_snapshot(
 
     let (basis_structure_id, basis_signature) = elaboration_environment
         .lookup_str("Basis")
-        .map(|(id, signature)| (*id, hnorm_sgn(&elaboration_environment, signature)))?;
+        .map(|(id, signature)| (*id, signature.clone()))?;
     let (top_structure_id, top_signature) = elaboration_environment
         .lookup_str("Top")
-        .map(|(id, signature)| (*id, hnorm_sgn(&elaboration_environment, signature)))?;
+        .map(|(id, signature)| (*id, signature.clone()))?;
+    let seeded_environment = build_seeded_environment(
+        basis_structure_id,
+        &basis_signature,
+        top_structure_id,
+        &top_signature,
+        &seed_steps,
+    );
 
     Some(BootElaborationSnapshot {
         basis_structure_id,
         basis_signature,
         top_structure_id,
         top_signature,
+        seed_steps,
         environment: elaboration_environment,
+        seeded_environment,
         disjointness_environment,
     })
 }
 
+fn seed_env_from_open_items(
+    elaboration_environment: Env,
+    root_id: usize,
+    path: &[String],
+    items: &[elab::LocatedSignatureItem],
+) -> Env {
+    if path.is_empty() {
+        return elaboration_environment;
+    }
+
+    let mut new_environment = elaboration_environment;
+    let module_name = &path[path.len() - 1];
+    let prefix = &path[..path.len() - 1];
+    for signature_item in items {
+        new_environment = enrich_env_from_sgi(
+            new_environment,
+            &signature_item.node,
+            root_id,
+            prefix,
+            module_name,
+        );
+    }
+
+    new_environment
+}
+
+fn seed_env_from_structure_signature(
+    mut elaboration_environment: Env,
+    structure_name: &str,
+    structure_id: usize,
+    structure_signature: &elab::LocatedSignature,
+) -> Env {
+    elaboration_environment = elaboration_environment.push_str_named_as(
+        structure_name.to_string(),
+        structure_id,
+        structure_signature.clone(),
+    );
+
+    let elab::Signature::Const(signature_items) = &structure_signature.node else {
+        return elaboration_environment;
+    };
+
+    for signature_item in signature_items {
+        elaboration_environment = enrich_env_from_sgi(
+            elaboration_environment,
+            &signature_item.node,
+            structure_id,
+            &[],
+            structure_name,
+        );
+    }
+
+    elaboration_environment
+}
+
+fn build_seeded_environment(
+    basis_structure_id: usize,
+    basis_signature: &elab::LocatedSignature,
+    top_structure_id: usize,
+    top_signature: &elab::LocatedSignature,
+    seed_steps: &[BootSeedStep],
+) -> Env {
+    if seed_steps.is_empty() {
+        let env_after_basis = seed_env_from_structure_signature(
+            Env::empty(),
+            "Basis",
+            basis_structure_id,
+            basis_signature,
+        );
+        return seed_env_from_structure_signature(
+            env_after_basis,
+            "Top",
+            top_structure_id,
+            top_signature,
+        );
+    }
+
+    let mut elaboration_environment = Env::empty();
+    for seed_step in seed_steps {
+        elaboration_environment = match seed_step {
+            BootSeedStep::Structure {
+                name,
+                id,
+                signature,
+            } => seed_env_from_structure_signature(elaboration_environment, name, *id, signature),
+            BootSeedStep::Open {
+                root_id,
+                path,
+                items,
+            } => seed_env_from_open_items(elaboration_environment, *root_id, path, items),
+        };
+    }
+    elaboration_environment
+}
+
 fn seed_env_from_boot_snapshot(snapshot: &BootElaborationSnapshot) -> Env {
-    snapshot.environment.clone()
+    snapshot.seeded_environment.clone()
 }
 
 /// Elaborate a user source file against a frozen boot snapshot.
@@ -10584,6 +10784,158 @@ pub fn elab_file_from_boot_snapshot(
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct StructurePrefixCheckpoint {
+    pub declaration_count: usize,
+    pub ascribed_signature: Option<crate::source::LocSgn>,
+}
+
+fn validate_structure_prefix_checkpoint(
+    outer_environment: &Env,
+    outer_disjointness_environment: &disjoint::DisjointEnv,
+    current_environment: &Env,
+    elaboration_context: &ElabCtx,
+    elaborated_declarations: &[elab::LocatedDeclaration],
+    checkpoint: &StructurePrefixCheckpoint,
+    checkpoint_span: &Span,
+) -> Result<(), String> {
+    if !elaboration_context.errors.is_empty() {
+        return Err(format!(
+            "structure prefix elaboration errors: {:?}",
+            elaboration_context.errors
+        ));
+    }
+
+    let inferred_signature = decls_to_sgn(elaborated_declarations, checkpoint_span);
+    match &checkpoint.ascribed_signature {
+        None => Ok(()),
+        Some(ascribed_signature_source) => {
+            let mut ascription_context = ElabCtx::new();
+            let ascribed_signature = elab_sgn(
+                &mut ascription_context,
+                outer_environment,
+                outer_disjointness_environment,
+                ascribed_signature_source,
+            );
+            if !ascription_context.errors.is_empty() {
+                return Err(format!(
+                    "structure prefix ascribed signature errors: {:?}",
+                    ascription_context.errors
+                ));
+            }
+
+            let ascription_environment =
+                build_ascription_environment(current_environment, Some(&ascribed_signature));
+            sub_sgn(
+                &mut ascription_context,
+                &ascription_environment,
+                outer_disjointness_environment,
+                &inferred_signature,
+                &ascribed_signature,
+                checkpoint_span,
+            );
+            if !ascription_context.errors.is_empty() {
+                return Err(format!(
+                    "structure prefix signature mismatch: {:?}",
+                    ascription_context.errors
+                ));
+            }
+
+            Ok(())
+        }
+    }
+}
+
+pub fn elab_structure_prefix_checkpoints_from_boot_snapshot(
+    snapshot: &BootElaborationSnapshot,
+    declarations: &[crate::source::LocDecl],
+    checkpoints: &[StructurePrefixCheckpoint],
+) -> Vec<Result<(), String>> {
+    let mut results =
+        vec![Err("structure prefix checkpoint was not reached".to_string()); checkpoints.len()];
+    if checkpoints.is_empty() {
+        return results;
+    }
+
+    let mut indexed_checkpoints: Vec<(usize, StructurePrefixCheckpoint)> =
+        checkpoints.iter().cloned().enumerate().collect();
+    indexed_checkpoints.sort_by_key(|(_, checkpoint)| checkpoint.declaration_count);
+
+    let outer_environment = snapshot.seeded_environment.clone();
+    let outer_disjointness_environment = snapshot.disjointness_environment.clone();
+    let mut elaboration_context = ElabCtx::new();
+    let mut current_environment = outer_environment.clone();
+    let mut current_disjointness_environment = outer_disjointness_environment.clone();
+    let mut elaborated_declarations: Vec<elab::LocatedDeclaration> = Vec::new();
+    let mut next_checkpoint_index = 0usize;
+    let zero_span = Span::dummy();
+
+    while next_checkpoint_index < indexed_checkpoints.len()
+        && indexed_checkpoints[next_checkpoint_index]
+            .1
+            .declaration_count
+            == 0
+    {
+        let (result_index, checkpoint) = &indexed_checkpoints[next_checkpoint_index];
+        results[*result_index] = validate_structure_prefix_checkpoint(
+            &outer_environment,
+            &outer_disjointness_environment,
+            &current_environment,
+            &elaboration_context,
+            &elaborated_declarations,
+            checkpoint,
+            &zero_span,
+        );
+        next_checkpoint_index += 1;
+    }
+
+    for (declaration_index, declaration) in declarations.iter().enumerate() {
+        let (new_declarations, new_environment, new_disjointness_environment) = elab_decl(
+            &mut elaboration_context,
+            &current_environment,
+            &current_disjointness_environment,
+            declaration,
+        );
+        current_environment = new_environment;
+        current_disjointness_environment = new_disjointness_environment;
+        solve_constraints(&mut elaboration_context, &current_environment);
+        elaborated_declarations.extend(new_declarations);
+
+        while next_checkpoint_index < indexed_checkpoints.len()
+            && indexed_checkpoints[next_checkpoint_index]
+                .1
+                .declaration_count
+                == declaration_index + 1
+        {
+            let (result_index, checkpoint) = &indexed_checkpoints[next_checkpoint_index];
+            results[*result_index] = validate_structure_prefix_checkpoint(
+                &outer_environment,
+                &outer_disjointness_environment,
+                &current_environment,
+                &elaboration_context,
+                &elaborated_declarations,
+                checkpoint,
+                &declaration.span,
+            );
+            next_checkpoint_index += 1;
+        }
+    }
+
+    while next_checkpoint_index < indexed_checkpoints.len() {
+        let (result_index, checkpoint) = &indexed_checkpoints[next_checkpoint_index];
+        if checkpoint.declaration_count > declarations.len() {
+            results[*result_index] = Err(format!(
+                "structure prefix checkpoint {} exceeds declaration count {}",
+                checkpoint.declaration_count,
+                declarations.len()
+            ));
+        }
+        next_checkpoint_index += 1;
+    }
+
+    results
+}
+
 // ---------------------------------------------------------------------------
 // Elaboration regression tests
 // ---------------------------------------------------------------------------
@@ -10594,11 +10946,93 @@ mod tests {
     use crate::diagnostics::DiagnosticId; // public re-export path used by the rest of this module
     use crate::error_types::{CompileError, ErrorReporter};
     use crate::settings::Settings;
+    use anyhow::{anyhow, Context as _}; // error construction and chaining in tests
     use std::path::PathBuf;
+    use std::sync::OnceLock;
+
+    #[derive(Clone)]
+    struct BasisOpenFixture {
+        basis_decl_span: crate::error_types::Span,
+        elaboration_environment: Env,
+        disjointness_environment: disjoint::DisjointEnv,
+    }
+
+    static CACHED_TEST_BOOT_SOURCE_FILE: OnceLock<Option<crate::source::File>> = OnceLock::new();
+    static CACHED_TEST_BASIS_OPEN_FIXTURE: OnceLock<Option<BasisOpenFixture>> = OnceLock::new();
+
+    fn cached_test_boot_source_file() -> Option<&'static crate::source::File> {
+        CACHED_TEST_BOOT_SOURCE_FILE
+            .get_or_init(|| {
+                let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+                let lib_dir = manifest_dir.join("lib/ur");
+                if !lib_dir.join("basis.urs").is_file() {
+                    return None;
+                }
+                let job = crate::compiler::Job {
+                    sources: vec![],
+                    basis_lib_dir: Some(lib_dir),
+                    ..Default::default()
+                };
+                let settings = Settings::new();
+                let mut parse_errors = ErrorReporter::new_silent();
+                crate::compiler::parse_sources(&job, &settings, &mut parse_errors)
+            })
+            .as_ref()
+    }
+
+    fn cached_test_basis_decl() -> Option<&'static crate::source::LocDecl> {
+        cached_test_boot_source_file()?.first().filter(|located_decl| {
+            matches!(&located_decl.node, crate::source::Decl::FfiStr(name, _, _) if name == "Basis")
+        })
+    }
+
+    fn cached_test_top_decls() -> Option<&'static Vec<crate::source::LocDecl>> {
+        let source_file = cached_test_boot_source_file()?;
+        let top_decl = source_file.iter().find(|decl| {
+            matches!(&decl.node, crate::source::Decl::Str(name, _, _, _, _) if name == "Top")
+        })?;
+        let crate::source::Decl::Str(_, _, _, top_body, _) = &top_decl.node else {
+            return None;
+        };
+        let crate::source::Str::Const(top_decls) = &top_body.node else {
+            return None;
+        };
+        Some(top_decls)
+    }
+
+    fn cached_test_basis_open_fixture() -> Option<&'static BasisOpenFixture> {
+        CACHED_TEST_BASIS_OPEN_FIXTURE
+            .get_or_init(|| {
+                let basis_decl = cached_test_basis_decl()?;
+                let mut elaboration_context = ElabCtx::new();
+                let elaboration_environment = Env::empty();
+                let disjointness_environment = disjoint::empty_env();
+                let (_decls, env_after_basis, denv_after_basis) = elab_decl(
+                    &mut elaboration_context,
+                    &elaboration_environment,
+                    &disjointness_environment,
+                    basis_decl,
+                );
+                let (_open_decls, env_open, d_open) = elab_open(
+                    &mut elaboration_context,
+                    &env_after_basis,
+                    &denv_after_basis,
+                    &["Basis".to_string()],
+                    &basis_decl.span,
+                );
+                Some(BasisOpenFixture {
+                    basis_decl_span: basis_decl.span.clone(),
+                    elaboration_environment: env_open,
+                    disjointness_environment: d_open,
+                })
+            })
+            .as_ref()
+    }
 
     /// Surface `@@x` is [`source::Exp::Var`] with [`source::Inference::DontInfer`] (no `TDisjoint` check).
     #[test]
-    fn dont_infer_var_does_not_force_tdisjoint_check() {
+    fn dont_infer_var_does_not_force_tdisjoint_check() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let span = crate::error_types::Span::dummy();
         let x_ty = Located::new(elab::Constructor::Unit, span.clone());
         let elaboration_environment = Env::empty().push_e_rel("x".into(), x_ty);
@@ -10620,10 +11054,12 @@ mod tests {
         );
         assert!(matches!(ee.node, elab::Expression::Rel(0)));
         assert!(matches!(et.node, elab::Constructor::Unit));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn unify_cons_treats_all_unit_kind_constructors_as_equal() {
+    fn unify_cons_treats_all_unit_kind_constructors_as_equal() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let span = crate::error_types::Span::dummy();
         let unit_kind = Located::new(elab::Kind::Unit, span.clone());
         let left_constructor = Located::new(elab::Constructor::Rel(0), span.clone());
@@ -10642,10 +11078,12 @@ mod tests {
             "Unit-kinded constructors should unify extensionally, got {:?}",
             result
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn unify_kinds_treats_rel_and_unit_as_compatible() {
+    fn unify_kinds_treats_rel_and_unit_as_compatible() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let span = crate::error_types::Span::dummy();
         let left_kind = Located::new(elab::Kind::Rel(0), span.clone());
         let right_kind = Located::new(elab::Kind::Unit, span.clone());
@@ -10656,10 +11094,12 @@ mod tests {
             "kind variable and Unit should unify for folder parity, got {:?}",
             result
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn unify_cons_treats_closed_numeric_records_as_tuples() {
+    fn unify_cons_treats_closed_numeric_records_as_tuples() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let span = crate::error_types::Span::dummy();
         let type_kind = Located::new(elab::Kind::Type, span.clone());
         let row_kind = Located::new(
@@ -10709,10 +11149,12 @@ mod tests {
             "closed numeric records should unify with tuples, got {:?}",
             result
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn unify_cons_unifies_map_constructors_by_kind() {
+    fn unify_cons_unifies_map_constructors_by_kind() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let span = crate::error_types::Span::dummy();
         let type_kind = Located::new(elab::Kind::Type, span.clone());
         let row_kind = Located::new(
@@ -10741,10 +11183,12 @@ mod tests {
             "map constructors with equal domain/range kinds should unify, got {:?}",
             result
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn unify_cons_treats_abstract_folder_application_extensionally() {
+    fn unify_cons_treats_abstract_folder_application_extensionally() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let span = crate::error_types::Span::dummy();
         let type_kind = Located::new(elab::Kind::Type, span.clone());
         let row_kind = Located::new(
@@ -10777,7 +11221,7 @@ mod tests {
             &elaboration_environment,
             &abstract_folder_application,
         )
-        .expect("folder application should expand extensionally");
+        .with_context(|| "folder application should expand extensionally")?; // expand the abstract folder constructor application
 
         let result = unify_cons(
             &mut elaboration_context,
@@ -10791,10 +11235,12 @@ mod tests {
             "abstract folder applications should unify with their extensional shape, got {:?}",
             result
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn unify_cons_treats_kind_polymorphic_folder_application_extensionally() {
+    fn unify_cons_treats_kind_polymorphic_folder_application_extensionally() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let span = crate::error_types::Span::dummy();
         let kind_rel = Located::new(elab::Kind::Rel(0), span.clone());
         let row_kind = Located::new(elab::Kind::Record(Box::new(kind_rel.clone())), span.clone());
@@ -10840,7 +11286,7 @@ mod tests {
             &elaboration_environment,
             &abstract_folder_body,
         )
-        .expect("kind-polymorphic folder application should expand extensionally");
+        .with_context(|| "kind-polymorphic folder application should expand extensionally")?; // expand the kind-polymorphic folder constructor application
         let abstract_folder = Located::new(
             elab::Constructor::KAbs("K".into(), Box::new(abstract_folder_body)),
             span.clone(),
@@ -10862,10 +11308,12 @@ mod tests {
             "kind-polymorphic abstract folder applications should unify extensionally, got {:?}",
             result
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn unify_rows_solves_unknown_tail_to_empty_row() {
+    fn unify_rows_solves_unknown_tail_to_empty_row() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let span = crate::error_types::Span::dummy();
         let type_kind = Located::new(elab::Kind::Type, span.clone());
         let row_kind = Located::new(elab::Kind::Record(Box::new(type_kind)), span.clone());
@@ -10902,10 +11350,12 @@ mod tests {
             "unknown tail should normalize to the empty row, got {}",
             crate::elaborated::type_display::format_constructor(&solved)
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn unify_rows_solves_rigid_row_against_unknown_concat_tails() {
+    fn unify_rows_solves_rigid_row_against_unknown_concat_tails() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let span = crate::error_types::Span::dummy();
         let type_kind = Located::new(elab::Kind::Type, span.clone());
         let row_kind = Located::new(
@@ -10958,10 +11408,13 @@ mod tests {
             "second tail should normalize to the empty row, got {}",
             crate::elaborated::type_display::format_constructor(&solved_second_tail)
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn sub_sgn_realizes_expected_abstract_constructor_ids_through_actual_items() {
+    fn sub_sgn_realizes_expected_abstract_constructor_ids_through_actual_items(
+    ) -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let span = crate::error_types::Span::dummy();
         let type_kind = Located::new(elab::Kind::Type, span.clone());
         let unary_type_kind = Located::new(
@@ -11061,10 +11514,13 @@ mod tests {
             "expected abstract constructor ids should realize through matching actual items: {:?}",
             elaboration_context.errors
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn sub_sgn_realizes_outer_abstract_constructor_ids_inside_nested_structures() {
+    fn sub_sgn_realizes_outer_abstract_constructor_ids_inside_nested_structures(
+    ) -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let span = crate::error_types::Span::dummy();
         let type_kind = Located::new(elab::Kind::Type, span.clone());
         let unary_type_kind = Located::new(
@@ -11185,10 +11641,12 @@ mod tests {
             "outer abstract constructor ids should realize inside nested structures: {:?}",
             elaboration_context.errors
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn deep_normalize_constructor_reduces_rebuilt_kapp_then_app_redex() {
+    fn deep_normalize_constructor_reduces_rebuilt_kapp_then_app_redex() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let span = crate::error_types::Span::dummy();
         let type_kind = Located::new(elab::Kind::Type, span.clone());
         let identity_constructor = Located::new(
@@ -11235,110 +11693,50 @@ mod tests {
             "deep normalization should contract rebuilt kind/app redexes, got {}",
             crate::elaborated::type_display::format_constructor(&normalized)
         );
+        Ok(()) // return success to the test harness
     }
 
     /// After `open Basis`, datatype constructors (`True`, `False`, …) must appear in
     /// [`Env::lookup_constructor`] so patterns and some expression forms resolve.
     #[test]
-    fn basis_open_registers_bool_pattern_constructors() {
-        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let lib_dir = manifest_dir.join("lib/ur");
-        if !lib_dir.join("basis.urs").is_file() {
-            return;
-        }
-        let job = crate::compiler::Job {
-            sources: vec![],
-            basis_lib_dir: Some(lib_dir),
-            ..Default::default()
+    fn basis_open_registers_bool_pattern_constructors() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
+        let Some(fixture) = cached_test_basis_open_fixture() else {
+            return Ok(()); // return early with success
         };
-        let settings = Settings::new();
-        let mut parse_errors = ErrorReporter::new_silent();
-        let Some(source_file) = crate::compiler::parse_sources(&job, &settings, &mut parse_errors)
-        else {
-            return;
-        };
-        let basis_decl = source_file
-            .first()
-            .filter(|located_decl| {
-                matches!(&located_decl.node, crate::source::Decl::FfiStr(name, _, _) if name == "Basis")
-            })
-            .expect("parse_sources boot job must start with Basis FfiStr");
-        let mut elaboration_context = ElabCtx::new();
-        let mut elaboration_environment = Env::empty();
-        let mut disjointness_environment = disjoint::empty_env();
-        let (_decls, env_after_basis, denv_after_basis) = elab_decl(
-            &mut elaboration_context,
-            &elaboration_environment,
-            &disjointness_environment,
-            basis_decl,
-        );
-        elaboration_environment = env_after_basis;
-        disjointness_environment = denv_after_basis;
-        let (_open_decls, env_open, _d_open) = elab_open(
-            &mut elaboration_context,
-            &elaboration_environment,
-            &disjointness_environment,
-            &["Basis".to_string()],
-            &basis_decl.span,
-        );
         assert!(
-            env_open.lookup_constructor("True").is_some(),
+            fixture
+                .elaboration_environment
+                .lookup_constructor("True")
+                .is_some(),
             "open Basis must register True for pattern/expression lookup"
         );
         assert!(
-            env_open.lookup_constructor("False").is_some(),
+            fixture
+                .elaboration_environment
+                .lookup_constructor("False")
+                .is_some(),
             "open Basis must register False for pattern/expression lookup"
         );
+        Ok(()) // return success to the test harness
     }
 
     /// Parser-desugared `if` uses `Pat::Con(["Basis"], True|False, _)`; those patterns must elaborate like `Basis.True` in expressions.
     #[test]
-    fn basis_qualified_bool_patterns_in_case_elaborate() {
-        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let lib_dir = manifest_dir.join("lib/ur");
-        if !lib_dir.join("basis.urs").is_file() {
-            return;
-        }
-        let job = crate::compiler::Job {
-            sources: vec![],
-            basis_lib_dir: Some(lib_dir),
-            ..Default::default()
+    fn basis_qualified_bool_patterns_in_case_elaborate() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
+        let Some(fixture) = cached_test_basis_open_fixture() else {
+            return Ok(()); // return early with success
         };
-        let settings = Settings::new();
-        let mut parse_errors = ErrorReporter::new_silent();
-        let Some(source_file) = crate::compiler::parse_sources(&job, &settings, &mut parse_errors)
-        else {
-            return;
-        };
-        let basis_decl = source_file
-            .first()
-            .filter(|located_decl| {
-                matches!(&located_decl.node, crate::source::Decl::FfiStr(name, _, _) if name == "Basis")
-            })
-            .expect("parse_sources boot job must start with Basis FfiStr");
-        let mut elaboration_context = ElabCtx::new();
-        let mut elaboration_environment = Env::empty();
-        let disjointness_environment = disjoint::empty_env();
-        let (_decls, env_after_basis, denv_after_basis) = elab_decl(
-            &mut elaboration_context,
-            &elaboration_environment,
-            &disjointness_environment,
-            basis_decl,
-        );
-        elaboration_environment = env_after_basis;
-        let (_open_decls, env_open, d_open) = elab_open(
-            &mut elaboration_context,
-            &elaboration_environment,
-            &denv_after_basis,
-            &["Basis".to_string()],
-            &basis_decl.span,
-        );
-        let span = basis_decl.span.clone();
-        let bool_ty = match env_open.lookup_c("bool") {
+        let span = fixture.basis_decl_span.clone();
+        let bool_ty = match fixture.elaboration_environment.lookup_c("bool") {
             VarLookup::Named(id, _) => Located::new(elab::Constructor::Named(id), span.clone()),
             _ => panic!("expected bool in env after open Basis"),
         };
-        let env_b = env_open.push_e_rel("b".into(), bool_ty);
+        let env_b = fixture
+            .elaboration_environment
+            .clone()
+            .push_e_rel("b".into(), bool_ty);
         let cond = Located::new(
             source::Exp::Var(vec![], "b".into(), source::Inference::Infer),
             span.clone(),
@@ -11362,7 +11760,12 @@ mod tests {
             span.clone(),
         );
         let mut ctx2 = ElabCtx::new();
-        let (_e, _t) = elab_exp(&mut ctx2, &env_b, &d_open, &case_exp);
+        let (_e, _t) = elab_exp(
+            &mut ctx2,
+            &env_b,
+            &fixture.disjointness_environment,
+            &case_exp,
+        );
         assert!(
             !ctx2
                 .errors
@@ -11371,63 +11774,28 @@ mod tests {
             "Basis.True/Basis.False case arms must elaborate: {:?}",
             ctx2.errors
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn basis_open_resolves_fieldsof_table_rule_for_unknown_table() {
-        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let lib_dir = manifest_dir.join("lib/ur");
-        if !lib_dir.join("basis.urs").is_file() {
-            return;
-        }
-        let job = crate::compiler::Job {
-            sources: vec![],
-            basis_lib_dir: Some(lib_dir),
-            ..Default::default()
+    fn basis_open_resolves_fieldsof_table_rule_for_unknown_table() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
+        let Some(fixture) = cached_test_basis_open_fixture() else {
+            return Ok(()); // return early with success
         };
-        let settings = Settings::new();
-        let mut parse_errors = ErrorReporter::new_silent();
-        let Some(source_file) = crate::compiler::parse_sources(&job, &settings, &mut parse_errors)
-        else {
-            return;
-        };
-        let basis_decl = source_file
-            .first()
-            .filter(|located_decl| {
-                matches!(&located_decl.node, crate::source::Decl::FfiStr(name, _, _) if name == "Basis")
-            })
-            .expect("parse_sources boot job must start with Basis FfiStr");
-        let mut elaboration_context = ElabCtx::new();
-        let mut elaboration_environment = Env::empty();
-        let disjointness_environment = disjoint::empty_env();
-        let (_decls, env_after_basis, denv_after_basis) = elab_decl(
-            &mut elaboration_context,
-            &elaboration_environment,
-            &disjointness_environment,
-            basis_decl,
-        );
-        elaboration_environment = env_after_basis;
-        let (_open_decls, env_open, _d_open) = elab_open(
-            &mut elaboration_context,
-            &elaboration_environment,
-            &denv_after_basis,
-            &["Basis".to_string()],
-            &basis_decl.span,
-        );
-
-        let span = basis_decl.span.clone();
-        let fields_of_id = match env_open.lookup_c("fieldsOf") {
+        let span = fixture.basis_decl_span.clone();
+        let fields_of_id = match fixture.elaboration_environment.lookup_c("fieldsOf") {
             VarLookup::Named(id, _) => id,
             _ => panic!("expected fieldsOf class in env after open Basis"),
         };
         let table_type = fresh_cunif(
-            &env_open,
+            &fixture.elaboration_environment,
             span.clone(),
             Located::new(elab::Kind::Type, span.clone()),
             "table_type",
         );
         let row_type = fresh_cunif(
-            &env_open,
+            &fixture.elaboration_environment,
             span.clone(),
             Located::new(
                 elab::Kind::Record(Box::new(Located::new(elab::Kind::Type, span.clone()))),
@@ -11453,60 +11821,25 @@ mod tests {
         );
 
         assert!(
-            resolve_class(&env_open, &class_goal, &span).is_some(),
+            resolve_class(&fixture.elaboration_environment, &class_goal, &span).is_some(),
             "fieldsOf_table should resolve fieldsOf ?t ?fs after open Basis"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn basis_open_fields_of_resolution_keeps_matched_unifier_bindings() {
-        let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let lib_dir = manifest_dir.join("lib/ur");
-        if !lib_dir.join("basis.urs").is_file() {
-            return;
-        }
-
-        let job = crate::compiler::Job {
-            sources: vec![],
-            basis_lib_dir: Some(lib_dir),
-            ..Default::default()
+    fn basis_open_fields_of_resolution_keeps_matched_unifier_bindings() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
+        let Some(fixture) = cached_test_basis_open_fixture() else {
+            return Ok(()); // return early with success
         };
-        let settings = Settings::new();
-        let mut parse_errors = ErrorReporter::new_silent();
-        let Some(source_file) = crate::compiler::parse_sources(&job, &settings, &mut parse_errors)
-        else {
-            return;
-        };
-        let basis_decl = source_file
-            .first()
-            .filter(|located_decl| {
-                matches!(&located_decl.node, crate::source::Decl::FfiStr(name, _, _) if name == "Basis")
-            })
-            .expect("parse_sources boot job must start with Basis FfiStr");
-        let mut elaboration_context = ElabCtx::new();
-        let elaboration_environment = Env::empty();
-        let disjointness_environment = disjoint::empty_env();
-        let (_decls, env_after_basis, denv_after_basis) = elab_decl(
-            &mut elaboration_context,
-            &elaboration_environment,
-            &disjointness_environment,
-            basis_decl,
-        );
-        let (_open_decls, env_open, _d_open) = elab_open(
-            &mut elaboration_context,
-            &env_after_basis,
-            &denv_after_basis,
-            &["Basis".to_string()],
-            &basis_decl.span,
-        );
-
-        let span = basis_decl.span.clone();
-        let fields_of_id = match env_open.lookup_c("fieldsOf") {
+        let span = fixture.basis_decl_span.clone();
+        let fields_of_id = match fixture.elaboration_environment.lookup_c("fieldsOf") {
             VarLookup::Named(id, _) => id,
             _ => panic!("expected fieldsOf class in env after open Basis"),
         };
         let table_type = fresh_cunif(
-            &env_open,
+            &fixture.elaboration_environment,
             span.clone(),
             Located::new(elab::Kind::Type, span.clone()),
             "table_type",
@@ -11516,7 +11849,7 @@ mod tests {
             _ => panic!("fresh_cunif should return a constructor unifier"),
         };
         let row_type = fresh_cunif(
-            &env_open,
+            &fixture.elaboration_environment,
             span.clone(),
             Located::new(
                 elab::Kind::Record(Box::new(Located::new(elab::Kind::Type, span.clone()))),
@@ -11545,7 +11878,7 @@ mod tests {
             span.clone(),
         );
 
-        let resolved = resolve_class(&env_open, &class_goal, &span);
+        let resolved = resolve_class(&fixture.elaboration_environment, &class_goal, &span);
         assert!(
             resolved.is_some(),
             "fieldsOf_table should resolve fieldsOf ?t ?fs"
@@ -11570,51 +11903,16 @@ mod tests {
             ),
             "successful fieldsOf resolution should keep the solved row constructor binding",
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn basis_open_fields_of_resolution_survives_outer_constructor_binders() {
-        let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let lib_dir = manifest_dir.join("lib/ur");
-        if !lib_dir.join("basis.urs").is_file() {
-            return;
-        }
-
-        let job = crate::compiler::Job {
-            sources: vec![],
-            basis_lib_dir: Some(lib_dir),
-            ..Default::default()
+    fn basis_open_fields_of_resolution_survives_outer_constructor_binders() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
+        let Some(fixture) = cached_test_basis_open_fixture() else {
+            return Ok(()); // return early with success
         };
-        let settings = Settings::new();
-        let mut parse_errors = ErrorReporter::new_silent();
-        let Some(source_file) = crate::compiler::parse_sources(&job, &settings, &mut parse_errors)
-        else {
-            return;
-        };
-        let basis_decl = source_file
-            .first()
-            .filter(|located_decl| {
-                matches!(&located_decl.node, crate::source::Decl::FfiStr(name, _, _) if name == "Basis")
-            })
-            .expect("parse_sources boot job must start with Basis FfiStr");
-        let mut elaboration_context = ElabCtx::new();
-        let elaboration_environment = Env::empty();
-        let disjointness_environment = disjoint::empty_env();
-        let (_decls, env_after_basis, denv_after_basis) = elab_decl(
-            &mut elaboration_context,
-            &elaboration_environment,
-            &disjointness_environment,
-            basis_decl,
-        );
-        let (_open_decls, env_open, _d_open) = elab_open(
-            &mut elaboration_context,
-            &env_after_basis,
-            &denv_after_basis,
-            &["Basis".to_string()],
-            &basis_decl.span,
-        );
-
-        let span = basis_decl.span.clone();
+        let span = fixture.basis_decl_span.clone();
         let row_kind = Located::new(
             elab::Kind::Record(Box::new(Located::new(elab::Kind::Type, span.clone()))),
             span.clone(),
@@ -11626,7 +11924,8 @@ mod tests {
             ))),
             span.clone(),
         );
-        let env_with_fs = env_open
+        let env_with_fs = fixture
+            .elaboration_environment
             .clone()
             .push_c_rel("fs".to_string(), row_kind.clone());
         let env_with_binders = env_with_fs.push_c_rel("us".to_string(), key_row_kind);
@@ -11683,6 +11982,7 @@ mod tests {
             ),
             span.clone(),
         );
+        let mut elaboration_context = ElabCtx::new();
 
         unify_cons(
             &mut elaboration_context,
@@ -11691,7 +11991,7 @@ mod tests {
             &table_type_unif,
             &table_type,
         )
-        .expect("table type should unify with sql_table fs us");
+        .with_context(|| "table type should unify with sql_table fs us")?; // unify table type with sql_table fields
         unify_cons(
             &mut elaboration_context,
             &env_with_table,
@@ -11699,14 +11999,14 @@ mod tests {
             &row_type_unif,
             &Located::new(elab::Constructor::Rel(1), span.clone()),
         )
-        .expect("row type should unify with outer fs binder");
+        .with_context(|| "row type should unify with outer fs binder")?; // unify row type with outer fs binder
 
         let fields_rules = env_with_table
             .classes()
             .get(&crate::elaborated::environment::ClassName::Named(
                 fields_of_id,
             ))
-            .expect("fieldsOf class should exist");
+            .ok_or_else(|| anyhow!("fieldsOf class must exist in the elaboration environment"))?; // retrieve the fieldsOf class rules
         let all_closed_heads: Vec<String> = fields_rules
             .closed_rules
             .iter()
@@ -11764,20 +12064,24 @@ mod tests {
             "fieldsOf_table should still resolve under outer constructor binders; class_goal={} all_closed_heads={all_closed_heads:?} matched_closed_heads={matched_closed_heads:?} first_head_unify_debug={first_head_unify_debug:?}",
             crate::elaborated::type_display::format_constructor(&class_goal),
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn debug_boot_named_constructor_669_definition_shape() {
+    fn debug_boot_named_constructor_669_definition_shape() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         const DEBUG_BOOT_NAMED_STACK_BYTES: usize = 32 * 1024 * 1024;
         let worker = std::thread::Builder::new()
             .name("debug_boot_named_constructor_669".into())
             .stack_size(DEBUG_BOOT_NAMED_STACK_BYTES);
-        let handle = worker
+        let join_handle = worker
             .spawn(debug_boot_named_constructor_669_definition_shape_body)
-            .expect("spawn named-constructor debug worker");
-        handle
-            .join()
-            .expect("named-constructor debug worker should not panic");
+            .with_context(|| "spawn named-constructor debug worker")?; // launch the debug worker thread
+        match join_handle.join() {
+            Ok(()) => {} // worker thread completed normally
+            Err(panic_payload) => std::panic::resume_unwind(panic_payload), // re-raise thread panic as test failure
+        }
+        Ok(()) // return success to the test harness
     }
 
     fn debug_boot_named_constructor_669_definition_shape_body() {
@@ -11876,48 +12180,30 @@ mod tests {
     /// to `Arrow(Arrow(Type,Type),Type)`.  This produced `IncompatibleKinds(Type, Arrow(Type,Type))`
     /// when checking `show t` and `show (option t)` in `top.urs`.
     #[test]
-    fn elaborate_top_urs_has_no_kind_mismatch_errors() {
+    fn elaborate_top_urs_has_no_kind_mismatch_errors() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // Full boot elaboration is deep; default test thread stacks (~2 MiB) overflow on some hosts.
         const ELAB_TOP_URS_STACK_BYTES: usize = 32 * 1024 * 1024; // 32 MiB for recursion-heavy elaboration
         let worker = std::thread::Builder::new() // configure a dedicated thread for this regression
             .name("elaborate_top_urs_large_stack".into()) // name shows up in stack overflow diagnostics
             .stack_size(ELAB_TOP_URS_STACK_BYTES); // larger stack than the default test harness thread
-        let handle = worker
+        let join_handle = worker
             .spawn(elaborate_top_urs_has_no_kind_mismatch_errors_body) // run heavy work off default stack
-            .expect("spawn elaboration regression thread"); // spawn should not fail in CI
-        handle
-            .join() // propagate panics from worker as test failure
-            .expect("elaboration regression thread should not panic"); // unwrap join result
+            .with_context(|| "spawn elaboration regression thread")?; // launch worker on large stack
+        match join_handle.join() {
+            Ok(()) => {} // worker thread completed without panicking
+            Err(panic_payload) => std::panic::resume_unwind(panic_payload), // re-raise thread panic as test failure
+        }
+        Ok(()) // return success to the test harness
     }
 
     /// Body for [`elaborate_top_urs_has_no_kind_mismatch_errors`], executed on a high-stack thread.
     fn elaborate_top_urs_has_no_kind_mismatch_errors_body() {
-        // Locate the lib/ur directory relative to the workspace root.
-        let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let lib_dir = manifest_dir.join("lib/ur");
         // Skip if the real lib files are not present (e.g. CI without full checkout).
-        if !lib_dir.join("basis.urs").is_file() || !lib_dir.join("top.urs").is_file() {
+        let Some(source_file) = cached_test_boot_source_file().cloned() else {
             return;
-        }
-
-        // Build a Job that points at the real lib/ur directory so parse_sources loads
-        // basis.urs and top.ur/top.urs as the standard boot library.
-        let job = crate::compiler::Job {
-            sources: vec![], // no user modules — only the boot library
-            basis_lib_dir: Some(lib_dir.clone()),
-            ..Default::default()
         };
         let settings = Settings::new();
-        let mut parse_errors = ErrorReporter::new_silent();
-
-        // parse_sources emits FfiStr("Basis") and the Top structure automatically.
-        let source_file = crate::compiler::parse_sources(&job, &settings, &mut parse_errors);
-        let source_file = match source_file {
-            // Parse errors for grammar limitations in top.ur are acceptable here — we only
-            // want to test elaboration, so skip rather than panic on parse failure.
-            None => return,
-            Some(f) => f,
-        };
 
         // Elaborate the source tree and collect all diagnostics into elab_errors.
         let mut elab_errors = ErrorReporter::new_silent();
@@ -11978,15 +12264,19 @@ mod tests {
     /// (paths and lines come from [`crate::parse::parse_ur`] / [`crate::parse::parse_urs`] span repair).
     /// Set `URWEB_TEST_BOOT_ELAB_MAX_ERRORS=N` to assert the boot type-error count stays ≤ `N` (ratchet).
     #[test]
-    fn boot_elab_diagnostic_id_histogram() {
+    fn boot_elab_diagnostic_id_histogram() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         const STACK: usize = 32 * 1024 * 1024;
-        std::thread::Builder::new()
+        let histogram_handle = std::thread::Builder::new()
             .name("boot_elab_histogram".into())
             .stack_size(STACK)
             .spawn(boot_elab_diagnostic_id_histogram_body)
-            .expect("spawn boot_elab_diagnostic_id_histogram")
-            .join()
-            .expect("boot_elab_diagnostic_id_histogram join");
+            .with_context(|| "spawn boot_elab_diagnostic_id_histogram")?; // launch histogram worker thread
+        match histogram_handle.join() {
+            Ok(()) => {} // histogram thread completed normally
+            Err(panic_payload) => std::panic::resume_unwind(panic_payload), // re-raise thread panic
+        }
+        Ok(()) // return success to the test harness
     }
 
     /// Body of [`boot_elab_diagnostic_id_histogram`]: elaborates `lib/ur` boot with an empty user program,
@@ -12001,20 +12291,8 @@ mod tests {
     /// * `URWEB_TEST_BOOT_ELAB_MAX_ERRORS=N` — assert the boot type-error count stays ≤ `N`.
     fn boot_elab_diagnostic_id_histogram_body() {
         use std::collections::HashMap;
-        let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let lib_dir = manifest_dir.join("lib/ur");
-        if !lib_dir.join("basis.urs").is_file() {
-            return;
-        }
-        let job = crate::compiler::Job {
-            sources: vec![],
-            basis_lib_dir: Some(lib_dir),
-            ..Default::default()
-        };
         let settings = Settings::new();
-        let mut parse_errors = ErrorReporter::new_silent();
-        let Some(source_file) = crate::compiler::parse_sources(&job, &settings, &mut parse_errors)
-        else {
+        let Some(source_file) = cached_test_boot_source_file().cloned() else {
             return;
         };
         if std::env::var("URWEB_TEST_BOOT_INCREMENTAL").ok().as_deref() == Some("1") {
@@ -12219,66 +12497,22 @@ mod tests {
     }
 
     #[test]
-    fn boot_top_prefix_through_show_option_decl_elaborates_without_errors() {
+    fn boot_top_prefix_through_show_option_decl_elaborates_without_errors() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         const STACK: usize = 32 * 1024 * 1024;
-        std::thread::Builder::new()
+        let show_option_handle = std::thread::Builder::new()
             .name("boot_top_prefix_show_option".into())
             .stack_size(STACK)
-            .spawn(|| {
-                let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-                let lib_dir = manifest_dir.join("lib/ur");
-                if !lib_dir.join("basis.urs").is_file() {
-                    return;
-                }
-                let job = crate::compiler::Job {
-                    sources: vec![],
-                    basis_lib_dir: Some(lib_dir),
-                    ..Default::default()
+            .spawn(|| -> anyhow::Result<()> {
+                let Some(fixture) = cached_test_basis_open_fixture() else {
+                    return Ok(()); // return early with success
                 };
-                let settings = Settings::new();
-                let mut parse_errors = ErrorReporter::new_silent();
-                let Some(source_file) =
-                    crate::compiler::parse_sources(&job, &settings, &mut parse_errors)
-                else {
-                    return;
+                let Some(top_decls) = cached_test_top_decls() else {
+                    return Ok(()); // return early with success
                 };
-                let Some(crate::error_types::Located {
-                    node: crate::source::Decl::Str(_, _, _, top_body, _),
-                    ..
-                }) = source_file.iter().find(|decl| {
-                    matches!(&decl.node, crate::source::Decl::Str(name, _, _, _, _) if name == "Top")
-                }) else {
-                    return;
-                };
-
                 let mut elaboration_context = ElabCtx::new();
-                let mut elaboration_environment = Env::empty();
-                let mut disjointness_environment = disjoint::empty_env();
-                if let Some(basis_decl) = source_file.iter().find(|decl| {
-                    matches!(&decl.node, crate::source::Decl::FfiStr(name, _, _) if name == "Basis")
-                }) {
-                    let (_basis_decls, basis_env, basis_denv) = elab_decl(
-                        &mut elaboration_context,
-                        &elaboration_environment,
-                        &disjointness_environment,
-                        basis_decl,
-                    );
-                    elaboration_environment = basis_env;
-                    disjointness_environment = basis_denv;
-                    let (_open_decls, open_env, open_denv) = elab_open(
-                        &mut elaboration_context,
-                        &elaboration_environment,
-                        &disjointness_environment,
-                        &["Basis".to_string()],
-                        &basis_decl.span,
-                    );
-                    elaboration_environment = open_env;
-                    disjointness_environment = open_denv;
-                }
-
-                let crate::source::Str::Const(top_decls) = &top_body.node else {
-                    return;
-                };
+                let mut elaboration_environment = fixture.elaboration_environment.clone();
+                let mut disjointness_environment = fixture.disjointness_environment.clone();
                 for decl in top_decls.iter().take(17) {
                     let (_decls, new_env, new_denv) = elab_decl(
                         &mut elaboration_context,
@@ -12295,73 +12529,35 @@ mod tests {
                     "boot Top prefix through show_option recorded errors: {:?}",
                     elaboration_context.errors
                 );
+                Ok(())
             })
-            .expect("spawn boot_top_prefix_through_show_option_decl_elaborates_without_errors")
-            .join()
-            .expect("boot_top_prefix_through_show_option_decl_elaborates_without_errors join");
+            .with_context(|| {
+                "spawn boot_top_prefix_through_show_option_decl_elaborates_without_errors"
+            })?; // launch the show_option prefix elaboration worker
+        match show_option_handle.join() {
+            Ok(result) => result?, // show_option worker completed normally
+            Err(panic_payload) => std::panic::resume_unwind(panic_payload), // re-raise thread panic
+        }
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn boot_top_prefix_through_read_option_decl_elaborates_without_errors() {
+    fn boot_top_prefix_through_read_option_decl_elaborates_without_errors() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         const STACK: usize = 32 * 1024 * 1024;
-        std::thread::Builder::new()
+        let read_option_handle = std::thread::Builder::new()
             .name("boot_top_prefix_read_option".into())
             .stack_size(STACK)
-            .spawn(|| {
-                let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-                let lib_dir = manifest_dir.join("lib/ur");
-                if !lib_dir.join("basis.urs").is_file() {
-                    return;
-                }
-                let job = crate::compiler::Job {
-                    sources: vec![],
-                    basis_lib_dir: Some(lib_dir),
-                    ..Default::default()
+            .spawn(|| -> anyhow::Result<()> {
+                let Some(fixture) = cached_test_basis_open_fixture() else {
+                    return Ok(()); // return early with success
                 };
-                let settings = Settings::new();
-                let mut parse_errors = ErrorReporter::new_silent();
-                let Some(source_file) =
-                    crate::compiler::parse_sources(&job, &settings, &mut parse_errors)
-                else {
-                    return;
+                let Some(top_decls) = cached_test_top_decls() else {
+                    return Ok(()); // return early with success
                 };
-                let Some(crate::error_types::Located {
-                    node: crate::source::Decl::Str(_, _, _, top_body, _),
-                    ..
-                }) = source_file.iter().find(|decl| {
-                    matches!(&decl.node, crate::source::Decl::Str(name, _, _, _, _) if name == "Top")
-                }) else {
-                    return;
-                };
-
                 let mut elaboration_context = ElabCtx::new();
-                let mut elaboration_environment = Env::empty();
-                let mut disjointness_environment = disjoint::empty_env();
-                if let Some(basis_decl) = source_file.iter().find(|decl| {
-                    matches!(&decl.node, crate::source::Decl::FfiStr(name, _, _) if name == "Basis")
-                }) {
-                    let (_basis_decls, basis_env, basis_denv) = elab_decl(
-                        &mut elaboration_context,
-                        &elaboration_environment,
-                        &disjointness_environment,
-                        basis_decl,
-                    );
-                    elaboration_environment = basis_env;
-                    disjointness_environment = basis_denv;
-                    let (_open_decls, open_env, open_denv) = elab_open(
-                        &mut elaboration_context,
-                        &elaboration_environment,
-                        &disjointness_environment,
-                        &["Basis".to_string()],
-                        &basis_decl.span,
-                    );
-                    elaboration_environment = open_env;
-                    disjointness_environment = open_denv;
-                }
-
-                let crate::source::Str::Const(top_decls) = &top_body.node else {
-                    return;
-                };
+                let mut elaboration_environment = fixture.elaboration_environment.clone();
+                let mut disjointness_environment = fixture.disjointness_environment.clone();
                 for decl in top_decls.iter().take(18) {
                     let (_decls, new_env, new_denv) = elab_decl(
                         &mut elaboration_context,
@@ -12378,14 +12574,21 @@ mod tests {
                     "boot Top prefix through read_option recorded errors: {:?}",
                     elaboration_context.errors
                 );
+                Ok(())
             })
-            .expect("spawn boot_top_prefix_through_read_option_decl_elaborates_without_errors")
-            .join()
-            .expect("boot_top_prefix_through_read_option_decl_elaborates_without_errors join");
+            .with_context(|| {
+                "spawn boot_top_prefix_through_read_option_decl_elaborates_without_errors"
+            })?; // launch the read_option prefix elaboration worker
+        match read_option_handle.join() {
+            Ok(result) => result?, // read_option worker completed normally
+            Err(panic_payload) => std::panic::resume_unwind(panic_payload), // re-raise thread panic
+        }
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn parse_fun_argument_annotation_keeps_constructor_application() {
+    fn parse_fun_argument_annotation_keeps_constructor_application() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let mut errors = ErrorReporter::new_silent();
         let Some(file) = crate::parse::parse_ur(
             "parse_fun_argument_annotation_keeps_constructor_application.ur",
@@ -12442,10 +12645,12 @@ mod tests {
             "expected parser repair to remove bogus nested lambda, got {:?}",
             branch_expression
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn parse_nested_case_branch_belongs_to_inner_case() {
+    fn parse_nested_case_branch_belongs_to_inner_case() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let mut errors = ErrorReporter::new_silent();
         let Some(file) = crate::parse::parse_ur(
             "parse_nested_case_branch_belongs_to_inner_case.ur",
@@ -12515,10 +12720,12 @@ mod tests {
             "expected trailing branch to stay with inner case, got {:?}",
             inner_branches
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn parse_field_postfix_binds_tighter_than_application() {
+    fn parse_field_postfix_binds_tighter_than_application() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let mut errors = ErrorReporter::new_silent();
         let Some(file) = crate::parse::parse_ur(
             "parse_field_postfix_binds_tighter_than_application.ur",
@@ -12555,10 +12762,12 @@ mod tests {
             "expected field base to stay as variable, got {:?}",
             field_base
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn local_mapu_constructor_decl_elaborates_without_boot() {
+    fn local_mapu_constructor_decl_elaborates_without_boot() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let mut parse_errors = ErrorReporter::new_silent();
         let Some(file) = crate::parse::parse_ur(
             "local_mapu_constructor_decl_elaborates_without_boot.ur",
@@ -12591,13 +12800,17 @@ mod tests {
             "local mapU constructor elaboration recorded errors: {:?}",
             elaboration_context.errors
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn local_mapu_module_signature_pair_elaborates_without_boot() {
-        let temp_directory = tempfile::tempdir().expect("tempdir");
+    fn local_mapu_module_signature_pair_elaborates_without_boot() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
+        let temp_directory = tempfile::tempdir()
+            .with_context(|| "create temp directory for elaboration test fixture")?; // temp dir for test .ur/.urs files
         let project_root = temp_directory.path();
-        std::fs::write(project_root.join("app.urp"), "CoreMod\n").expect("write urp");
+        std::fs::write(project_root.join("app.urp"), "CoreMod\n")
+            .with_context(|| "write app.urp test fixture")?; // write the project file
         std::fs::write(
             project_root.join("CoreMod.ur"),
             concat!(
@@ -12605,7 +12818,7 @@ mod tests {
                 "con localMap = fn tf1 :: Type => mapU tf1\n",
             ),
         )
-        .expect("write ur");
+        .with_context(|| "write CoreMod.ur test fixture")?; // write the implementation file
         std::fs::write(
             project_root.join("CoreMod.urs"),
             concat!(
@@ -12613,13 +12826,14 @@ mod tests {
                 "con localMap = fn tf1 :: Type => mapU tf1\n",
             ),
         )
-        .expect("write urs");
+        .with_context(|| "write CoreMod.urs test fixture")?; // write the signature file
 
         let urp_path = project_root.join("app.urp");
         let mut settings = Settings::new();
         settings.boot_linking = false;
         let mut errors = ErrorReporter::new_silent();
-        let mut job = crate::compiler::parse_urp(&urp_path).expect("parse urp");
+        let mut job =
+            crate::compiler::parse_urp(&urp_path).with_context(|| "parse app.urp test fixture")?; // parse the test project file
         job.basis_lib_dir = None;
         let Some(source_file) = crate::compiler::parse_sources(&job, &settings, &mut errors) else {
             panic!("parse_sources failed: {errors:?}");
@@ -12629,5 +12843,6 @@ mod tests {
             elaborated_file.is_some() && !errors.has_hard_errors(),
             "local mapU module/signature pair elaboration failed: {errors:?}"
         );
+        Ok(()) // return success to the test harness
     }
 }

@@ -312,6 +312,7 @@ pub fn annotate(file: File) -> File {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use anyhow::anyhow; // anyhow!() macro for error construction in tests
     use crate::c_like_representation::{PreparedQuery, QueryMeta, Typ};
     use crate::error_types::Located;
 
@@ -324,14 +325,17 @@ mod tests {
     }
 
     #[test]
-    fn annotate_empty_file_ok() {
+    fn annotate_empty_file_ok() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let (decls, exports) = annotate((vec![], vec![]));
         assert!(decls.is_empty());
         assert!(exports.is_empty());
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn non_nested_query_gets_false() {
+    fn non_nested_query_gets_false() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // Build an EQuery whose body doesn't use the prepared id.
         let prepared = Some(PreparedQuery {
             id: 42,
@@ -351,15 +355,19 @@ mod tests {
         let e = Located::dummy(Exp::Query(qm));
         let globals = HashMap::new();
         let result = annotate_exp(&globals, e);
-        if let Exp::Query(qm) = result.node {
-            assert!(!qm.prepared.unwrap().nested);
-        } else {
-            panic!("expected Query");
+        match result.node {
+            Exp::Query(qm) => match qm.prepared {
+                Some(prepared) => assert!(!prepared.nested),
+                None => return Err(anyhow!("expected prepared query metadata after annotation")),
+            },
+            _ => return Err(anyhow!("expected Query after annotation")),
         }
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn annotate_val_fun_funrec_contribute_to_globals() {
+    fn annotate_val_fun_funrec_contribute_to_globals() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // Catches mutant: delete match arms Decl::Val, Decl::Fun, Decl::FunRec in annotate.
         // Val 2 uses prepared 7. Val 1's Query body references Named(2). So body uses {7} -> nested.
         let id = 7;
@@ -404,18 +412,26 @@ mod tests {
         let val1_out = &decls[0];
         if let Decl::Val(_, _, _, e) = &val1_out.node {
             if let Exp::Query(qm) = &e.node {
-                assert!(
-                    qm.prepared.as_ref().unwrap().nested,
-                    "body uses Named(2) which uses prepared 7 -> nested (catches delete Val/Fun/FunRec arm)"
-                );
-                return;
+                match qm.prepared.as_ref() {
+                    Some(prepared) => assert!(
+                        prepared.nested,
+                        "body uses Named(2) which uses prepared 7 -> nested (catches delete Val/Fun/FunRec arm)"
+                    ),
+                    None => {
+                        return Err(anyhow!(
+                            "expected prepared query metadata on annotated value declaration"
+                        ));
+                    }
+                }
+                return Ok(()); // return early with success
             }
         }
-        panic!("expected Val with Query");
+        Err(anyhow!("expected Val with Query"))
     }
 
     #[test]
-    fn annotate_fun_contributes_to_globals() {
+    fn annotate_fun_contributes_to_globals() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // Catches mutant: delete match arm Decl::Fun in annotate.
         let id = 10;
         let inner_prepared = Some(PreparedQuery {
@@ -459,18 +475,26 @@ mod tests {
         let val_out = &decls[0];
         if let Decl::Val(_, _, _, e) = &val_out.node {
             if let Exp::Query(qm) = &e.node {
-                assert!(
-                    qm.prepared.as_ref().unwrap().nested,
-                    "body uses Named(3) which uses prepared 10 -> nested (catches delete Fun arm)"
-                );
-                return;
+                match qm.prepared.as_ref() {
+                    Some(prepared) => assert!(
+                        prepared.nested,
+                        "body uses Named(3) which uses prepared 10 -> nested (catches delete Fun arm)"
+                    ),
+                    None => {
+                        return Err(anyhow!(
+                            "expected prepared query metadata on annotated function dependency"
+                        ));
+                    }
+                }
+                return Ok(()); // return early with success
             }
         }
-        panic!("expected Val with Query");
+        Err(anyhow!("expected Val with Query"))
     }
 
     #[test]
-    fn annotate_funrec_contributes_to_globals() {
+    fn annotate_funrec_contributes_to_globals() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // Catches mutant: delete match arm Decl::FunRec in annotate.
         let id = 11;
         let inner_prepared = Some(PreparedQuery {
@@ -520,18 +544,26 @@ mod tests {
         let val_out = &decls[0];
         if let Decl::Val(_, _, _, e) = &val_out.node {
             if let Exp::Query(qm) = &e.node {
-                assert!(
-                    qm.prepared.as_ref().unwrap().nested,
-                    "body uses Named(4) which uses prepared 11 -> nested (catches delete FunRec arm)"
-                );
-                return;
+                match qm.prepared.as_ref() {
+                    Some(prepared) => assert!(
+                        prepared.nested,
+                        "body uses Named(4) which uses prepared 11 -> nested (catches delete FunRec arm)"
+                    ),
+                    None => {
+                        return Err(anyhow!(
+                            "expected prepared query metadata on annotated recursive function dependency"
+                        ));
+                    }
+                }
+                return Ok(()); // return early with success
             }
         }
-        panic!("expected Val with Query");
+        Err(anyhow!("expected Val with Query"))
     }
 
     #[test]
-    fn nested_query_gets_true() {
+    fn nested_query_gets_true() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // Build an EQuery whose body uses a nested EQuery with the same id.
         let id = 7;
         let inner_prepared = Some(PreparedQuery {
@@ -569,10 +601,13 @@ mod tests {
         let e = Located::dummy(Exp::Query(outer_qm));
         let globals = HashMap::new();
         let result = annotate_exp(&globals, e);
-        if let Exp::Query(qm) = result.node {
-            assert!(qm.prepared.unwrap().nested);
-        } else {
-            panic!("expected Query");
+        match result.node {
+            Exp::Query(qm) => match qm.prepared {
+                Some(prepared) => assert!(prepared.nested),
+                None => return Err(anyhow!("expected prepared query metadata after annotation")),
+            },
+            _ => return Err(anyhow!("expected Query after annotation")),
         }
+        Ok(()) // return success to the test harness
     }
 }

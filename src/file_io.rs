@@ -167,57 +167,66 @@ mod tests {
     static FILEIO_STATE_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
-    fn open_text_reads_file() {
+    fn open_text_reads_file() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let _g = lock_for_compile(&FILEIO_STATE_LOCK, "file_io tests (serial)");
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir()?;
         let f = dir.path().join("t.txt");
-        std::fs::write(&f, "hello").unwrap();
-        let s = open_text(&f).unwrap();
+        std::fs::write(&f, "hello")?;
+        let s = open_text(&f)?;
         assert_eq!(s, "hello");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn open_binary_reads_file() {
+    fn open_binary_reads_file() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let _g = lock_for_compile(&FILEIO_STATE_LOCK, "file_io tests (serial)");
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir()?;
         let f = dir.path().join("t.bin");
-        std::fs::write(&f, [1u8, 2, 3]).unwrap();
-        let v = open_binary(&f).unwrap();
+        std::fs::write(&f, [1u8, 2, 3])?;
+        let v = open_binary(&f)?;
         assert_eq!(v, vec![1, 2, 3]);
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn resolve_relative() {
+    fn resolve_relative() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let base = Path::new("/foo/bar");
         let r = resolve(base, "baz");
         assert!(r.ends_with("baz"));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn most_recent_mod_time_updates_on_open() {
+    fn most_recent_mod_time_updates_on_open() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let _g = lock_for_compile(&FILEIO_STATE_LOCK, "file_io tests (serial)");
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir()?;
         let f = dir.path().join("t.txt");
-        std::fs::write(&f, "x").unwrap();
+        std::fs::write(&f, "x")?;
         let t_before = most_recent_mod_time();
-        let _ = open_text(&f).unwrap();
+        let _ = open_text(&f)?;
         let t_after = most_recent_mod_time();
         assert!(t_after >= t_before, "mod time must update after open_text");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn most_recent_mod_time_later_file_wins() {
+    fn most_recent_mod_time_later_file_wins() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let _g = lock_for_compile(&FILEIO_STATE_LOCK, "file_io tests (serial)");
         __reset_for_test();
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir()?;
         let f1 = dir.path().join("a.txt");
         let f2 = dir.path().join("b.txt");
-        std::fs::write(&f1, "1").unwrap();
+        std::fs::write(&f1, "1")?;
         std::thread::sleep(std::time::Duration::from_millis(10));
-        std::fs::write(&f2, "2").unwrap();
-        let _ = open_text(&f1).unwrap();
+        std::fs::write(&f2, "2")?;
+        let _ = open_text(&f1)?;
         let t1 = most_recent_mod_time();
-        let _ = open_text(&f2).unwrap();
+        let _ = open_text(&f2)?;
         let t2 = most_recent_mod_time();
         assert!(t2 > t1, "opening newer file must update mod time");
         assert_eq!(
@@ -225,33 +234,38 @@ mod tests {
             2,
             "two distinct files must update twice"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn update_mod_time_uses_strict_greater_not_ge() {
+    fn update_mod_time_uses_strict_greater_not_ge() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let _g = lock_for_compile(&FILEIO_STATE_LOCK, "file_io tests (serial)");
         // Open same file twice (mtime unchanged). With mtime > prev we do NOT update
         // the second time. With mtime >= prev (mutant) we would. update_count differs.
         __reset_for_test();
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir()?;
         let f = dir.path().join("x.txt");
-        std::fs::write(&f, "x").unwrap();
-        let _ = open_text(&f).unwrap();
-        let _ = open_text(&f).unwrap();
+        std::fs::write(&f, "x")?;
+        let _ = open_text(&f)?;
+        let _ = open_text(&f)?;
         assert_eq!(
             __update_count_for_test(),
             1,
             "opening same file twice must update only once (mtime > prev, not >=)"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn resolve_absolute() {
+    fn resolve_absolute() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         #[cfg(unix)]
         let abs = "/tmp/x";
         #[cfg(windows)]
         let abs = "C:\\tmp\\x";
         let r = resolve(Path::new("/other"), abs);
         assert_eq!(r, PathBuf::from(abs));
+        Ok(()) // return success to the test harness
     }
 }

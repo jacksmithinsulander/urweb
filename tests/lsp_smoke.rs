@@ -8,6 +8,7 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use anyhow::{anyhow, Context as _}; // error construction and chaining in tests
 use serde_json::{json, Value};
 
 /// Wall-clock bound waiting for `textDocument/publishDiagnostics` (CI / loaded hosts).
@@ -32,12 +33,20 @@ fn lsp_smoke_recv_round_limit(wait_deadline: Duration) -> u64 {
 
 use common::ur_package_binary as cargo_bin;
 
-fn write_msg(stdin: &mut impl Write, body: &Value) {
-    let payload = serde_json::to_vec(body).expect("serialize json");
-    let header = format!("Content-Length: {}\r\n\r\n", payload.len());
-    stdin.write_all(header.as_bytes()).expect("write header");
-    stdin.write_all(&payload).expect("write body");
-    stdin.flush().expect("flush");
+/// Write a JSON-RPC message to `stdin` with the correct Content-Length header.
+/// Returns an error if serialization or I/O fails.
+fn write_msg(stdin: &mut impl Write, body: &Value) -> anyhow::Result<()> {
+    let payload =
+        serde_json::to_vec(body).with_context(|| "serialize json body for LSP message")?; // convert Value to bytes
+    let header = format!("Content-Length: {}\r\n\r\n", payload.len()); // build the LSP framing header
+    stdin
+        .write_all(header.as_bytes())
+        .with_context(|| "write LSP content-length header")?; // send the header bytes
+    stdin
+        .write_all(&payload)
+        .with_context(|| "write LSP message body")?; // send the payload bytes
+    stdin.flush().with_context(|| "flush LSP stdin")?; // flush to ensure the message reaches the server
+    Ok(()) // message delivered successfully
 }
 
 fn read_one_message<R: Read>(reader: &mut R) -> Option<Vec<u8>> {
@@ -141,16 +150,23 @@ fn diagnostics_for_uri(body: &[u8], expected_uri: &str) -> Option<Vec<Value>> {
 }
 
 #[test]
-fn ur_lsp_initialize_reports_text_document_sync() {
+fn ur_lsp_initialize_reports_text_document_sync() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let mut child = Command::new(cargo_bin("ur-lsp"))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .expect("spawn ur-lsp");
+        .with_context(|| "spawn ur-lsp process")?; // launch the ur-lsp server;
 
-    let mut stdin = child.stdin.take().expect("stdin");
-    let stdout = child.stdout.take().expect("stdout");
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| anyhow!("failed to capture stdin pipe from spawned process"))?; // extract the stdin handle
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| anyhow!("failed to capture stdout pipe from spawned process"))?; // extract the stdout handle
     let (reader, rx) = spawn_stdout_reader(stdout);
 
     write_msg(
@@ -165,7 +181,7 @@ fn ur_lsp_initialize_reports_text_document_sync() {
                 "clientInfo": {"name": "ur-lsp-test", "version": "0"}
             }
         }),
-    );
+    )?; // send JSON-RPC message to the LSP server
 
     let body = recv_jsonrpc_matching(
         &rx,
@@ -173,11 +189,12 @@ fn ur_lsp_initialize_reports_text_document_sync() {
         LSP_RPC_DEADLINE,
         "initialize response with id=1",
     );
-    let msg: Value = serde_json::from_slice(&body).expect("parse json");
+    let msg: Value =
+        serde_json::from_slice(&body).with_context(|| "parse JSON-RPC response body")?; // deserialize the LSP response
     let caps = msg
         .get("result")
         .and_then(|r| r.get("capabilities"))
-        .expect("initialize result.capabilities");
+        .ok_or_else(|| anyhow!("initialize response missing result.capabilities"))?; // extract the server capabilities
     assert!(
         caps.get("textDocumentSync").is_some(),
         "capabilities must advertise text sync, got {caps:?}"
@@ -198,7 +215,7 @@ fn ur_lsp_initialize_reports_text_document_sync() {
             "method": "initialized",
             "params": {}
         }),
-    );
+    )?; // send JSON-RPC message to the LSP server
 
     write_msg(
         &mut stdin,
@@ -260,19 +277,27 @@ fn ur_lsp_initialize_reports_text_document_sync() {
         saw_diagnostic,
         "expected non-empty publishDiagnostics for invalid Ur source"
     );
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn ur_lsp_did_change_replaces_text_and_clears_diagnostics() {
+fn ur_lsp_did_change_replaces_text_and_clears_diagnostics() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let mut child = Command::new(cargo_bin("ur-lsp"))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .expect("spawn ur-lsp");
+        .with_context(|| "spawn ur-lsp process")?; // launch the ur-lsp server;
 
-    let mut stdin = child.stdin.take().expect("stdin");
-    let stdout = child.stdout.take().expect("stdout");
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| anyhow!("failed to capture stdin pipe from spawned process"))?; // extract the stdin handle
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| anyhow!("failed to capture stdout pipe from spawned process"))?; // extract the stdout handle
     let (reader, rx) = spawn_stdout_reader(stdout);
 
     write_msg(
@@ -287,7 +312,7 @@ fn ur_lsp_did_change_replaces_text_and_clears_diagnostics() {
                 "clientInfo": {"name": "ur-lsp-test", "version": "0"}
             }
         }),
-    );
+    )?; // send JSON-RPC message to the LSP server
     recv_jsonrpc_matching(
         &rx,
         |v| v.get("id") == Some(&json!(1)) && v.get("result").is_some(),
@@ -302,7 +327,7 @@ fn ur_lsp_did_change_replaces_text_and_clears_diagnostics() {
             "method": "initialized",
             "params": {}
         }),
-    );
+    )?; // send JSON-RPC message to the LSP server
 
     let uri = "file:///tmp/ur-lsp-change.ur";
     write_msg(
@@ -359,7 +384,7 @@ fn ur_lsp_did_change_replaces_text_and_clears_diagnostics() {
                 "contentChanges": [{"text": "val x = 1\n"}]
             }
         }),
-    );
+    )?; // send JSON-RPC message to the LSP server
 
     let deadline2 = Instant::now() + LSP_PUBLISH_DIAG_DEADLINE;
     let mut saw_clear = false;
@@ -397,19 +422,27 @@ fn ur_lsp_did_change_replaces_text_and_clears_diagnostics() {
         saw_clear,
         "didChange should re-parse and publish empty diagnostics for valid source (catches delete DidChange arm)"
     );
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn ur_lsp_unknown_method_returns_method_not_found() {
+fn ur_lsp_unknown_method_returns_method_not_found() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let mut child = Command::new(cargo_bin("ur-lsp"))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .expect("spawn ur-lsp");
+        .with_context(|| "spawn ur-lsp process")?; // launch the ur-lsp server;
 
-    let mut stdin = child.stdin.take().expect("stdin");
-    let stdout = child.stdout.take().expect("stdout");
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| anyhow!("failed to capture stdin pipe from spawned process"))?; // extract the stdin handle
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| anyhow!("failed to capture stdout pipe from spawned process"))?; // extract the stdout handle
     let (reader, rx) = spawn_stdout_reader(stdout);
 
     write_msg(
@@ -424,7 +457,7 @@ fn ur_lsp_unknown_method_returns_method_not_found() {
                 "clientInfo": {"name": "ur-lsp-test", "version": "0"}
             }
         }),
-    );
+    )?; // send JSON-RPC message to the LSP server
     recv_jsonrpc_matching(
         &rx,
         |v| v.get("id") == Some(&json!(1)) && v.get("result").is_some(),
@@ -439,7 +472,7 @@ fn ur_lsp_unknown_method_returns_method_not_found() {
             "method": "initialized",
             "params": {}
         }),
-    );
+    )?; // send JSON-RPC message to the LSP server
 
     write_msg(
         &mut stdin,
@@ -452,7 +485,7 @@ fn ur_lsp_unknown_method_returns_method_not_found() {
                 "position": {"line": 0, "character": 0}
             }
         }),
-    );
+    )?; // send JSON-RPC message to the LSP server
 
     let body = recv_jsonrpc_matching(
         &rx,
@@ -460,9 +493,12 @@ fn ur_lsp_unknown_method_returns_method_not_found() {
         LSP_RPC_DEADLINE,
         "JSON-RPC error for unknown method (id=42)",
     );
-    let msg: Value = serde_json::from_slice(&body).expect("parse json");
+    let msg: Value =
+        serde_json::from_slice(&body).with_context(|| "parse JSON-RPC response body")?; // deserialize the LSP response
     assert_eq!(msg.get("id"), Some(&json!(42)));
-    let err = msg.get("error").expect("JSON-RPC error object");
+    let err = msg
+        .get("error")
+        .ok_or_else(|| anyhow!("expected JSON-RPC error object in response"))?; // extract the error field
     assert_eq!(
         err.get("code").and_then(|c| c.as_i64()),
         Some(-32601),
@@ -473,23 +509,28 @@ fn ur_lsp_unknown_method_returns_method_not_found() {
     let _ = child.wait();
     drop(rx);
     let _ = reader.join();
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn ur_lsp_closing_stdin_exits_successfully() {
+fn ur_lsp_closing_stdin_exits_successfully() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let mut child = Command::new(cargo_bin("ur-lsp"))
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()
-        .expect("spawn ur-lsp");
+        .with_context(|| "spawn ur-lsp process")?; // launch the ur-lsp server;
     drop(child.stdin.take());
-    let out = child.wait_with_output().expect("wait");
+    let out = child
+        .wait_with_output()
+        .with_context(|| "wait for ur-lsp process output")?; // collect process output after shutdown
     assert!(
         out.status.success(),
         "clean disconnect should exit 0, stderr={}",
         String::from_utf8_lossy(&out.stderr)
     );
+    Ok(()) // return success to the test harness
 }
 
 /// Keys that `cargo mutants` used to kill via delete-field mutants on [`ServerCapabilities`] in `ur-lsp`.
@@ -520,16 +561,23 @@ fn assert_capabilities_cover_server_surface(capabilities: &Value) {
 }
 
 #[test]
-fn ur_lsp_initialize_advertises_full_capabilities() {
+fn ur_lsp_initialize_advertises_full_capabilities() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let mut child = Command::new(cargo_bin("ur-lsp"))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .expect("spawn ur-lsp");
+        .with_context(|| "spawn ur-lsp process")?; // launch the ur-lsp server;
 
-    let mut stdin = child.stdin.take().expect("stdin");
-    let stdout = child.stdout.take().expect("stdout");
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| anyhow!("failed to capture stdin pipe from spawned process"))?; // extract the stdin handle
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| anyhow!("failed to capture stdout pipe from spawned process"))?; // extract the stdout handle
     let (reader, rx) = spawn_stdout_reader(stdout);
 
     write_msg(
@@ -544,7 +592,7 @@ fn ur_lsp_initialize_advertises_full_capabilities() {
                 "clientInfo": {"name": "ur-lsp-cap-test", "version": "0"}
             }
         }),
-    );
+    )?; // send JSON-RPC message to the LSP server
 
     let body = recv_jsonrpc_matching(
         &rx,
@@ -552,21 +600,24 @@ fn ur_lsp_initialize_advertises_full_capabilities() {
         LSP_RPC_DEADLINE,
         "initialize id=1",
     );
-    let msg: Value = serde_json::from_slice(&body).expect("json");
+    let msg: Value =
+        serde_json::from_slice(&body).with_context(|| "parse JSON-RPC response body")?; // deserialize the LSP response
     let caps = msg
         .get("result")
         .and_then(|r| r.get("capabilities"))
-        .expect("capabilities");
+        .ok_or_else(|| anyhow!("LSP response missing capabilities field"))?; // extract the capabilities object
     assert_capabilities_cover_server_surface(caps);
 
     let _ = child.kill();
     let _ = child.wait();
     drop(rx);
     let _ = reader.join();
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn ur_lsp_formatting_returns_empty_when_buffer_already_canonical() {
+fn ur_lsp_formatting_returns_empty_when_buffer_already_canonical() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let fmt_uri = "file:///tmp/ur-lsp-fmt-nodup.ur";
     let buffer = "val x = 1\n";
     let mut child = Command::new(cargo_bin("ur-lsp"))
@@ -574,9 +625,15 @@ fn ur_lsp_formatting_returns_empty_when_buffer_already_canonical() {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .expect("spawn ur-lsp");
-    let mut stdin = child.stdin.take().expect("stdin");
-    let stdout = child.stdout.take().expect("stdout");
+        .with_context(|| "spawn ur-lsp process")?; // launch the ur-lsp server;
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| anyhow!("failed to capture stdin pipe from spawned process"))?; // extract the stdin handle
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| anyhow!("failed to capture stdout pipe from spawned process"))?; // extract the stdout handle
     let (reader, rx) = spawn_stdout_reader(stdout);
 
     write_msg(
@@ -591,7 +648,7 @@ fn ur_lsp_formatting_returns_empty_when_buffer_already_canonical() {
                 "clientInfo": {"name": "ur-lsp-fmt", "version": "0"}
             }
         }),
-    );
+    )?; // send JSON-RPC message to the LSP server
     recv_jsonrpc_matching(
         &rx,
         |v| v.get("id") == Some(&json!(1)) && v.get("result").is_some(),
@@ -605,7 +662,7 @@ fn ur_lsp_formatting_returns_empty_when_buffer_already_canonical() {
             "method": "initialized",
             "params": {}
         }),
-    );
+    )?; // send JSON-RPC message to the LSP server
     write_msg(
         &mut stdin,
         &json!({
@@ -620,7 +677,7 @@ fn ur_lsp_formatting_returns_empty_when_buffer_already_canonical() {
                 }
             }
         }),
-    );
+    )?; // send JSON-RPC message to the LSP server
     write_msg(
         &mut stdin,
         &json!({
@@ -632,15 +689,18 @@ fn ur_lsp_formatting_returns_empty_when_buffer_already_canonical() {
                 "options": {"tabSize": 4, "insertSpaces": true}
             }
         }),
-    );
+    )?; // send JSON-RPC message to the LSP server
     let body = recv_jsonrpc_matching(
         &rx,
         |v| v.get("id") == Some(&json!(99)) && v.get("result").is_some(),
         LSP_RPC_DEADLINE,
         "formatting response",
     );
-    let msg: Value = serde_json::from_slice(&body).expect("json");
-    let result = msg.get("result").expect("result");
+    let msg: Value =
+        serde_json::from_slice(&body).with_context(|| "parse JSON-RPC response body")?; // deserialize the LSP response
+    let result = msg
+        .get("result")
+        .ok_or_else(|| anyhow!("expected JSON-RPC result in response"))?; // extract the result field
     assert_eq!(
         result,
         &json!([]),
@@ -651,4 +711,5 @@ fn ur_lsp_formatting_returns_empty_when_buffer_already_canonical() {
     let _ = child.wait();
     drop(rx);
     let _ = reader.join();
+    Ok(()) // return success to the test harness
 }

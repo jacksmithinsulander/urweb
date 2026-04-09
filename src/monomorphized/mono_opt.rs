@@ -1777,6 +1777,8 @@ pub fn optimize(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use anyhow::Context as _; // .with_context() on Option/Result in tests
+    use anyhow::Context as _;
     use crate::error_types::Located;
     use crate::settings::Settings;
 
@@ -1807,144 +1809,193 @@ mod tests {
     }
 
     #[test]
-    fn optimize_empty_file() {
+    fn optimize_empty_file() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let mut errors = no_errors();
         let result = optimize((vec![], vec![]), &settings(), &mut errors);
         assert!(result.0.is_empty());
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn attrify_int_positive() {
+    fn attrify_int_positive() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         assert_eq!(attrify_int(42), "42");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn attrify_int_negative() {
+    fn attrify_int_negative() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         assert_eq!(attrify_int(-7), "-7");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn attrify_int_zero_not_negative() {
+    fn attrify_int_zero_not_negative() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // Kills: replace < with == or <= in attrify_int (0 < 0 false => "0"; 0==0 true => "-0")
         assert_eq!(attrify_int(0), "0");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn attrify_char_quote() {
+    fn attrify_char_quote() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         assert_eq!(attrify_char('"'), "&quot;");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn attrify_char_amp() {
+    fn attrify_char_amp() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         assert_eq!(attrify_char('&'), "&amp;");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn htmlify_string_lt() {
+    fn htmlify_string_lt() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         assert_eq!(htmlify_string("<b>"), "&lt;b>");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn urlify_string_empty() {
+    fn urlify_string_empty() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         assert_eq!(urlify_string(""), "_");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn urlify_string_underscore_prefix() {
+    fn urlify_string_underscore_prefix() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // '_' is encoded as ".5F" by urlifyCharAux; prefix "_" is prepended.
         let s = urlify_string("_hello");
         assert!(s.starts_with("_.5F"), "got: {}", s);
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn hex_it_ascii() {
+    fn hex_it_ascii() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         assert_eq!(hex_it('A'), "41");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn fold_strcat_empty() {
+    fn fold_strcat_empty() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let mut errors = no_errors();
         let e1 = dummy(Exp::Prim(Prim::String(StringMode::Normal, "hello".into())));
         let e2 = dummy(Exp::Prim(Prim::String(StringMode::Normal, "".into())));
         let cat = dummy(Exp::Strcat(Box::new(e1.clone()), Box::new(e2)));
         let result = opt_exp(cat, &settings(), &mut errors);
         assert!(matches!(&result.node, Exp::Prim(Prim::String(_, s)) if s == "hello"));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn fold_strcat_two_lits() {
+    fn fold_strcat_two_lits() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let mut errors = no_errors();
         let e1 = dummy(Exp::Prim(Prim::String(StringMode::Normal, "foo".into())));
         let e2 = dummy(Exp::Prim(Prim::String(StringMode::Normal, "bar".into())));
         let cat = dummy(Exp::Strcat(Box::new(e1), Box::new(e2)));
         let result = opt_exp(cat, &settings(), &mut errors);
         assert!(matches!(&result.node, Exp::Prim(Prim::String(_, s)) if s == "foobar"));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn attrify_float_positive() {
+    fn attrify_float_positive() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         assert_eq!(attrify_float(1.5), "1.5");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn attrify_float_negative() {
+    fn attrify_float_negative() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         assert_eq!(attrify_float(-2.0), "-2");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn attrify_float_zero_not_negative() {
+    fn attrify_float_zero_not_negative() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // Kills: replace < with == or <= in attrify_float
         assert_eq!(attrify_float(0.0), "0");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn attrify_string_escape() {
+    fn attrify_string_escape() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         assert_eq!(attrify_string("a&b"), "a&amp;b");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn urlify_char_space() {
+    fn urlify_char_space() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         assert_eq!(urlify_char(' '), "+");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn urlify_char_alphanumeric() {
+    fn urlify_char_alphanumeric() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         assert_eq!(urlify_char('a'), "a");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn urlify_char_underscore_prefix() {
+    fn urlify_char_underscore_prefix() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // '_' gets prefix "_" + aux; aux for '_' is ".5F"
         let s = urlify_char('_');
         assert!(s.starts_with("_.5F") || s.contains("5F"), "got: {}", s);
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn htmlify_special_char_formats_codepoint() {
+    fn htmlify_special_char_formats_codepoint() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         assert_eq!(htmlify_special_char('x'), "&#120;");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn hex_pad_single_digit() {
+    fn hex_pad_single_digit() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         assert_eq!(hex_pad(5), "05");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn hex_pad_zero() {
+    fn hex_pad_zero() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // format!("{:X}", 0) = "0", len 1 => "0" + "0" = "00"
         assert_eq!(hex_pad(0), "00");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn hex_it_two_byte_boundary() {
+    fn hex_it_two_byte_boundary() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // 0x80 = 128: first branch c <= 0x7f is false, second c <= 0x7ff true
-        let s = hex_it(std::char::from_u32(0x80).unwrap());
+        let s = hex_it(
+            std::char::from_u32(0x80).context("0x80 should be a valid Unicode scalar value")?,
+        );
         assert!(s.len() >= 2 && s.chars().all(|c| c.is_ascii_hexdigit()));
+        Ok(()) // return success to the test harness
     }
 
     /// `EWrite(Basis.htmlifyInt)` lowers to `htmlifyInt_w` (writer combinator).
     #[test]
-    fn write_basis_htmlify_int_becomes_writer_suffix() {
+    fn write_basis_htmlify_int_becomes_writer_suffix() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let mut errors = no_errors();
         let arg = dummy(Exp::Prim(Prim::Int(3)));
         let t_int = dummy(Typ::Ffi("Basis".into(), "int".into()));
@@ -1963,11 +2014,13 @@ mod tests {
             "expected htmlifyInt_w, got {:?}",
             result.node
         );
+        Ok(()) // return success to the test harness
     }
 
     /// `htmlifyString(Basis.intToString n)` folds like the legacy nested-match path.
     #[test]
-    fn fold_htmlify_string_via_curried_int_to_string() {
+    fn fold_htmlify_string_via_curried_int_to_string() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let mut errors = no_errors();
         let n = dummy(Exp::Prim(Prim::Int(42)));
         let fn_part = dummy(Exp::Ffi("Basis".into(), "intToString".into()));
@@ -1984,10 +2037,12 @@ mod tests {
             "expected folded HTML string, got {:?}",
             result.node
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn fold_attrify_int() {
+    fn fold_attrify_int() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let mut errors = no_errors();
         let arg = dummy(Exp::Prim(Prim::Int(99)));
         let t = dummy(Typ::Ffi("Basis".into(), "int".into()));
@@ -2001,10 +2056,12 @@ mod tests {
             matches!(&result.node, Exp::Prim(Prim::String(_, s)) if s == "99"),
             "attrifyInt(99) => \"99\""
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn fold_attrify_string() {
+    fn fold_attrify_string() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let mut errors = no_errors();
         let arg = dummy(Exp::Prim(Prim::String(StringMode::Normal, "a&b".into())));
         let t = dummy(Typ::Ffi("Basis".into(), "string".into()));
@@ -2018,10 +2075,12 @@ mod tests {
             matches!(&result.node, Exp::Prim(Prim::String(_, s)) if s == "a&amp;b"),
             "attrifyString(\"a&b\") => \"a&amp;b\""
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn fold_urlify_int() {
+    fn fold_urlify_int() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let mut errors = no_errors();
         let arg = dummy(Exp::Prim(Prim::Int(1)));
         let t = dummy(Typ::Ffi("Basis".into(), "int".into()));
@@ -2035,10 +2094,12 @@ mod tests {
             matches!(&result.node, Exp::Prim(Prim::String(_, s)) if s == "1"),
             "urlifyInt(1) => \"1\""
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn fold_strcat_three_lits() {
+    fn fold_strcat_three_lits() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let mut errors = no_errors();
         let e1 = dummy(Exp::Prim(Prim::String(StringMode::Normal, "a".into())));
         let e2 = dummy(Exp::Prim(Prim::String(StringMode::Normal, "b".into())));
@@ -2047,67 +2108,91 @@ mod tests {
         let cat = dummy(Exp::Strcat(Box::new(cat12), Box::new(e3)));
         let result = opt_exp(cat, &settings(), &mut errors);
         assert!(matches!(&result.node, Exp::Prim(Prim::String(_, s)) if s == "abc"));
+        Ok(()) // return success to the test harness
     }
 
     // --- sqlify_*: exact output so return-value mutants are killed ---
     #[test]
-    fn sqlify_int_postgres_adds_cast() {
+    fn sqlify_int_postgres_adds_cast() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         assert_eq!(sqlify_int(42, &settings_postgres()), "42::int8");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn sqlify_int_mysql_no_cast() {
+    fn sqlify_int_mysql_no_cast() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         assert_eq!(sqlify_int(42, &settings_mysql()), "42");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn sqlify_float_postgres_adds_cast() {
+    fn sqlify_float_postgres_adds_cast() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         assert_eq!(sqlify_float(1.5, &settings_postgres()), "1.5::float8");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn sqlify_float_mysql_no_cast() {
+    fn sqlify_float_mysql_no_cast() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         assert_eq!(sqlify_float(1.5, &settings_mysql()), "1.5");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn sqlify_string_postgres_doubles_quote() {
+    fn sqlify_string_postgres_doubles_quote() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         assert_eq!(sqlify_string("'", &settings_postgres()), "''''");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn sqlify_string_mysql_escapes_backslash() {
+    fn sqlify_string_mysql_escapes_backslash() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         assert_eq!(sqlify_string("\\", &settings_mysql()), "'\\\\'");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn sqlify_char_postgres() {
+    fn sqlify_char_postgres() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         assert_eq!(sqlify_char('x', &settings_postgres()), "'x'");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn sqlify_bool_true_postgres() {
+    fn sqlify_bool_true_postgres() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         assert_eq!(sqlify_bool_true(&settings_postgres()), "TRUE");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn sqlify_bool_true_mysql() {
+    fn sqlify_bool_true_mysql() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         assert_eq!(sqlify_bool_true(&settings_mysql()), "1");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn sqlify_bool_false_postgres() {
+    fn sqlify_bool_false_postgres() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         assert_eq!(sqlify_bool_false(&settings_postgres()), "FALSE");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn sqlify_bool_false_mysql() {
+    fn sqlify_bool_false_mysql() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         assert_eq!(sqlify_bool_false(&settings_mysql()), "0");
+        Ok(()) // return success to the test harness
     }
 
     // --- check_url, check_data, check_atom, check_css_url, check_property ---
     #[test]
-    fn check_url_true_when_rule_allows() {
+    fn check_url_true_when_rule_allows() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let mut s = Settings::default();
         s.url_rules.push(crate::settings::Rule {
             action: crate::settings::Action::Allow,
@@ -2115,69 +2200,91 @@ mod tests {
             pattern: "/foo".into(),
         });
         assert!(check_url("/foo", &s), "allowed URL must be true");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn check_url_false_when_no_rule() {
+    fn check_url_false_when_no_rule() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let s = Settings::default();
         assert!(!check_url("/bar", &s), "no rule => false");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn check_data_allows_alphanumeric_underscore_hyphen() {
+    fn check_data_allows_alphanumeric_underscore_hyphen() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         assert!(check_data("a_1"));
         assert!(check_data("x-y"));
         assert!(!check_data("a b"));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn check_atom_allows_plus_minus_dot() {
+    fn check_atom_allows_plus_minus_dot() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         assert!(check_atom("a+b"));
         assert!(check_atom("1.2"));
         assert!(!check_atom("a!b"));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn check_css_url_allows_slash_colon() {
+    fn check_css_url_allows_slash_colon() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         assert!(check_css_url("https://x/y"));
         assert!(!check_css_url("a<>"));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn hex_pad_two_digits_unchanged() {
+    fn hex_pad_two_digits_unchanged() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // len 2 => no leading zero. Kills "delete match arm 0" and arm 1.
         assert_eq!(hex_pad(0x0A), "0A");
         assert_eq!(hex_pad(0xFF), "FF");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn hex_it_three_byte_utf8() {
+    fn hex_it_three_byte_utf8() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // Codepoint > 0x7ff hits third branch (c <= 0xffff).
-        let ch = std::char::from_u32(0x0800).unwrap();
+        let ch =
+            std::char::from_u32(0x0800).context("0x0800 should be a valid Unicode scalar value")?;
         let s = hex_it(ch);
         assert!(
             s.len() >= 3,
             "three-byte UTF-8 produces at least 3 hex pairs"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn check_data_rejects_space() {
+    fn check_data_rejects_space() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         assert!(!check_data("a b"));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn check_data_allows_hyphen() {
+    fn check_data_allows_hyphen() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         assert!(check_data("a-b"));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn check_atom_rejects_bang() {
+    fn check_atom_rejects_bang() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         assert!(!check_atom("a!b"));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn check_atom_allows_hash() {
+    fn check_atom_allows_hash() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         assert!(check_atom("a#b"));
+        Ok(()) // return success to the test harness
     }
 }

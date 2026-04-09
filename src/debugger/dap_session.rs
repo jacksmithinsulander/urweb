@@ -2,7 +2,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
-use std::io::stdin;
+use std::io::{self, stdin};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
@@ -22,6 +22,10 @@ use crate::diagnostics::DiagnosticId;
 
 /// DAP and GDB session operations share [`CompileError`] with the compiler (catalog-backed).
 type Result<T> = std::result::Result<T, CompileError>;
+
+fn mutex_poison_error(context: &str) -> CompileError {
+    CompileError::Io(io::Error::other(context.to_string()))
+}
 
 const FRAME_FACTOR: i64 = 100_000;
 /// DAP `variablesReference` for expandable locals / MI var-objects (distinct from stack frame ids).
@@ -149,7 +153,10 @@ impl Server {
         let paths = mi_extract_exec_source_file_paths(&pl);
         let mut new_paths = Vec::new();
         {
-            let mut known = self.known_loaded_sources.lock().unwrap();
+            let mut known = self
+                .known_loaded_sources
+                .lock()
+                .map_err(|_| mutex_poison_error("loaded source cache mutex poisoned"))?;
             for p in paths {
                 if known.insert(p.clone()) {
                     new_paths.push(p);
@@ -157,7 +164,10 @@ impl Server {
             }
         }
         for p in new_paths {
-            let mut st = self.dap.lock().unwrap();
+            let mut st = self
+                .dap
+                .lock()
+                .map_err(|_| mutex_poison_error("DAP transport mutex poisoned"))?;
             let body = json!({
                 "reason": "new",
                 "source": { "name": p, "path": p },
@@ -422,7 +432,10 @@ impl Server {
         body: Option<Value>,
         message: Option<&str>,
     ) -> Result<()> {
-        let mut st = self.dap.lock().unwrap();
+        let mut st = self
+            .dap
+            .lock()
+            .map_err(|_| mutex_poison_error("DAP transport mutex poisoned"))?;
         let mut m = Map::new();
         m.insert("seq".into(), json!(bump_seq(&mut st.seq)));
         m.insert("type".into(), json!("response"));
@@ -442,7 +455,10 @@ impl Server {
     }
 
     fn send_event(&mut self, event: &str, body: Value) -> Result<()> {
-        let mut st = self.dap.lock().unwrap();
+        let mut st = self
+            .dap
+            .lock()
+            .map_err(|_| mutex_poison_error("DAP transport mutex poisoned"))?;
         let msg = json!({
             "seq": bump_seq(&mut st.seq),
             "type": "event",
@@ -507,7 +523,10 @@ impl Server {
     }
 
     fn finish_launch(&mut self) -> Result<()> {
-        self.known_loaded_sources.lock().unwrap().clear();
+        self.known_loaded_sources
+            .lock()
+            .map_err(|_| mutex_poison_error("loaded source cache mutex poisoned"))?
+            .clear();
         let cfg = self.launch.clone().ok_or_else(|| {
             CompileError::catalog(
                 DiagnosticId::CliDebuggerDapNoLaunchBeforeConfigurationDone,
@@ -614,7 +633,9 @@ impl Server {
         if cfg.attach_pid.is_none() {
             self.expect_entry_stop = cfg.stop_at_entry;
             let stop = {
-                let g = self.gdb.as_mut().unwrap();
+                let g = self.gdb.as_mut().ok_or_else(|| {
+                    CompileError::catalog(DiagnosticId::CliDebuggerDapGdbSessionMissing, vec![])
+                })?; // return error if gdb session is not present
                 g.exec_run(&cfg.args).map_err(|run_error| {
                     CompileError::catalog(
                         DiagnosticId::CliDebuggerDapRunInferiorFailed,
@@ -626,7 +647,9 @@ impl Server {
             self.sync_loaded_sources()?;
         } else {
             let pl = {
-                let g = self.gdb.as_mut().unwrap();
+                let g = self.gdb.as_mut().ok_or_else(|| {
+                    CompileError::catalog(DiagnosticId::CliDebuggerDapGdbSessionMissing, vec![])
+                })?; // return error if gdb session is not present
                 g.mi_simple("-thread-info").unwrap_or_default()
             };
             self.send_event(
@@ -663,7 +686,9 @@ impl Server {
             }
             return Ok(v);
         }
-        let gdb = self.gdb.as_mut().unwrap();
+        let gdb = self.gdb.as_mut().ok_or_else(|| {
+            CompileError::catalog(DiagnosticId::CliDebuggerDapGdbSessionMissing, vec![])
+        })?; // return error if gdb session is not present
         if let Some(old) = self.bkpt_by_source.remove(source_path) {
             for n in old {
                 gdb.break_delete(&n).ok();
@@ -978,7 +1003,9 @@ impl Server {
                     )?;
                     return Ok(true);
                 }
-                let gdb = self.gdb.as_mut().unwrap();
+                let gdb = self.gdb.as_mut().ok_or_else(|| {
+                    CompileError::catalog(DiagnosticId::CliDebuggerDapGdbSessionMissing, vec![])
+                })?; // return error if gdb session is not present
                 for n in &self.watchpoint_nums {
                     gdb.break_delete(n).ok();
                 }
@@ -1555,7 +1582,10 @@ impl Server {
                     for n in std::mem::take(&mut self.instruction_bp_nums) {
                         gdb.break_delete(&n).ok();
                     }
-                    self.known_loaded_sources.lock().unwrap().clear();
+                    self.known_loaded_sources
+                        .lock()
+                        .map_err(|_| mutex_poison_error("loaded source cache mutex poisoned"))?
+                        .clear();
                     gdb.gdb_exit().ok();
                     gdb.kill().ok();
                 }
@@ -1734,10 +1764,13 @@ fn run_dap_loop(srv: &mut Server, stdin: &mut impl std::io::BufRead) -> Result<(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use anyhow::Context as _; // .context() on Option in tests
+    use anyhow::Context as _;
     use std::collections::HashSet;
 
     #[test]
-    fn parses_stack_vars_and_child_refs() {
+    fn parses_stack_vars_and_child_refs() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let pl = r#"variables=[{name="x",value="42",type="int"},{name="s",value="{}",type="S",numchild="2"}]"#;
         let dap = Arc::new(Mutex::new(DapState {
             seq: 0,
@@ -1751,26 +1784,30 @@ mod tests {
             v[0].get("variablesReference").and_then(|x| x.as_i64()),
             Some(0)
         );
-        assert!(
-            v[1].get("variablesReference")
-                .and_then(|x| x.as_i64())
-                .unwrap()
-                >= super::VAR_REF_BASE
-        );
+        let child_ref = v[1]
+            .get("variablesReference")
+            .and_then(|x| x.as_i64())
+            .context("expected expandable variable to have a variablesReference")?;
+        assert!(child_ref >= super::VAR_REF_BASE);
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn memory_ref_hex() {
+    fn memory_ref_hex() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         assert_eq!(super::dap_memory_ref_to_addr("0x10ff"), Some(0x10ff));
         assert_eq!(super::dap_memory_ref_to_addr("10ff"), Some(0x10ff));
         assert_eq!(super::dap_memory_ref_to_addr(""), None);
+        Ok(()) // return success to the test harness
     }
 
     /// Over-long brace blobs must not scan unbounded UTF-8 (Power-of-Ten style cap).
     #[test]
-    fn brace_close_from_open_respects_scan_cap() {
+    fn brace_close_from_open_respects_scan_cap() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let mut s = String::from('{');
         s.push_str(&"x".repeat(super::BRACE_SCAN_MAX_CHARS + 64));
         assert_eq!(super::brace_close_from_open(&s), None);
+        Ok(()) // return success to the test harness
     }
 }

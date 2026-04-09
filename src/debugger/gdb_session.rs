@@ -1,7 +1,7 @@
 //! Spawn GDB in MI3 mode and exchange commands.
 
 use std::collections::VecDeque;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{self, BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
@@ -19,6 +19,10 @@ const GDB_MI_DRIVER_LOOP_MAX_ROUNDS: u64 = u64::MAX;
 
 /// Result type for GDB/MI helpers: catalog-backed [`CompileError`] (same as compiler / LSP surfaces).
 type Result<T> = std::result::Result<T, CompileError>;
+
+fn debugger_io_error(context: &str) -> CompileError {
+    CompileError::Io(io::Error::other(context.to_string()))
+}
 
 enum GdbLine {
     Line(String),
@@ -64,9 +68,18 @@ impl GdbSession {
                 ],
             )
         })?;
-        let stdin = child.stdin.take().unwrap();
-        let stdout = child.stdout.take().unwrap();
-        let stderr = child.stderr.take().unwrap();
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| debugger_io_error("debugger child missing stdin pipe"))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| debugger_io_error("debugger child missing stdout pipe"))?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| debugger_io_error("debugger child missing stderr pipe"))?;
         thread::spawn(move || {
             let mut br = BufReader::new(stderr);
             let mut line = String::new();
@@ -97,12 +110,18 @@ impl GdbSession {
                 if let Some(ref n) = loaded_notifier {
                     let _ = n.on_mi_line(&s);
                 }
-                let mut q = lines_reader.lock().unwrap();
+                let mut q = match lines_reader.lock() {
+                    Ok(queue) => queue,
+                    Err(_) => break,
+                };
                 q.push_back(GdbLine::Line(s));
                 drop(q);
                 line_cv_reader.notify_one();
             }
-            let mut q = lines_reader.lock().unwrap();
+            let mut q = match lines_reader.lock() {
+                Ok(queue) => queue,
+                Err(_) => return,
+            };
             q.push_back(GdbLine::Eof);
             drop(q);
             line_cv_reader.notify_all();
@@ -117,7 +136,9 @@ impl GdbSession {
     }
 
     fn read_line_raw(&mut self) -> Result<String> {
-        let mut guard = self.lines.lock().unwrap();
+        let mut guard = self.lines.lock().map_err(|_| {
+            CompileError::catalog(DiagnosticId::CliDebuggerGdbLineQueueMutexPoisoned, vec![])
+        })?;
         for _ in 0..GDB_MI_DRIVER_LOOP_MAX_ROUNDS {
             match guard.pop_front() {
                 Some(GdbLine::Line(l)) => {
@@ -604,7 +625,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn escape_simple_path() {
+    fn escape_simple_path() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         assert_eq!(shell_escape("/tmp/a.out"), "/tmp/a.out");
+        Ok(()) // return success to the test harness
     }
 }

@@ -4,10 +4,11 @@
 
 mod common;
 
+use anyhow::{anyhow, Context as _};
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::sync::OnceLock;
+use std::sync::OnceLock; // error construction and chaining in tests
 
 static C_TEST_BIN: OnceLock<PathBuf> = OnceLock::new();
 
@@ -25,14 +26,20 @@ int main(void) {
 }
 "#;
         let c_src = out.with_extension("c");
-        std::fs::write(&c_src, src).expect("write deeptest.c");
+        if let Err(err) = std::fs::write(&c_src, src).with_context(|| "write deeptest.c") {
+            panic!("{err:#}");
+        }
         let cc = std::env::var("CC").unwrap_or_else(|_| "cc".into());
-        let status = Command::new(&cc)
+        let status = match Command::new(&cc)
             .args(["-g", "-o"])
             .arg(&out)
             .arg(&c_src)
             .status()
-            .expect("compile deeptest");
+            .with_context(|| "compile deeptest")
+        {
+            Ok(status) => status,
+            Err(err) => panic!("{err:#}"),
+        };
         assert!(status.success(), "cc -g failed");
         let _ = std::fs::remove_file(&c_src);
         out
@@ -92,13 +99,14 @@ fn framing_read(r: &mut impl BufRead) -> std::io::Result<Option<serde_json::Valu
 }
 
 #[test]
-fn dap_initialize_and_launch_smoke() {
+fn dap_initialize_and_launch_smoke() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     if std::env::var("UR_DEBUGGER_GDB_TEST").ok().as_deref() != Some("1") {
-        return;
+        return Ok(()); // return early with success
     }
     if !gdb_available() {
         ur::cli_common::writeln_stderr_line("skip debugger_gdb_smoke: gdb not found");
-        return;
+        return Ok(()); // return early with success
     }
 
     let exe = deeptest_executable();
@@ -109,7 +117,7 @@ fn dap_initialize_and_launch_smoke() {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .expect("spawn ur-debugger");
+        .with_context(|| "spawn ur-debugger")?;
 
     // take stdin from the child process; None means the child was not started with Stdio::piped()
     let mut sin = match child.stdin.take() {
@@ -194,7 +202,7 @@ fn dap_initialize_and_launch_smoke() {
         Ok(v) => v,
         Err(e) => panic!("framing_read for stopped event failed: {e}"),
     };
-    let ev = ev_option.expect("stopped event");
+    let ev = ev_option.with_context(|| "stopped event")?;
     assert_eq!(ev.get("type").and_then(|t| t.as_str()), Some("event"));
     assert_eq!(ev.get("event").and_then(|t| t.as_str()), Some("stopped"));
 
@@ -209,4 +217,5 @@ fn dap_initialize_and_launch_smoke() {
         Err(e) => panic!("framing_write for disconnect failed: {e}"),
     }
     let _ = child.wait();
+    Ok(()) // return success to the test harness
 }

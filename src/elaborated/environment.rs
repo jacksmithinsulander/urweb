@@ -2965,6 +2965,7 @@ mod tests {
     use super::*;
     use crate::elaborated::PatternConstructor;
     use crate::error_types::Span;
+    use anyhow::{anyhow, Context as _}; // error construction and chaining in tests
 
     fn dummy_span() -> Span {
         Span::dummy()
@@ -2984,28 +2985,33 @@ mod tests {
 
     /// Regression: left-spine named unfolding for optional `f e` use.
     #[test]
-    fn hnorm_con_expression_head_inlines_named_alias() {
+    fn hnorm_con_expression_head_inlines_named_alias() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let sp = dummy_span();
         let k = Located::new(Kind::Type, sp.clone());
         let def = Located::new(Constructor::Unit, sp.clone());
         let env = Env::empty().push_c_named_as("Ali".into(), 7usize, k, Some(def));
         let out = hnorm_con_expression_head(&env, con_named(7));
         assert!(matches!(out.node, Constructor::Unit));
+        Ok(()) // return success to the test harness
     }
 
     /// Regression: full-tree named unfolding for `e[c]` (see [`hnorm_con_constructor_abstraction`]).
     #[test]
-    fn hnorm_con_constructor_abstraction_inlines_named_alias() {
+    fn hnorm_con_constructor_abstraction_inlines_named_alias() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let sp = dummy_span();
         let k = Located::new(Kind::Type, sp.clone());
         let def = Located::new(Constructor::Unit, sp.clone());
         let env = Env::empty().push_c_named_as("B".into(), 3usize, k, Some(def));
         let out = hnorm_con_constructor_abstraction(&env, con_named(3));
         assert!(matches!(out.node, Constructor::Unit));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn hnorm_con_constructor_abstraction_reduces_named_kapp_app_alias() {
+    fn hnorm_con_constructor_abstraction_reduces_named_kapp_app_alias() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let sp = dummy_span();
         let type_kind = Located::new(Kind::Type, sp.clone());
         let identity_definition = Located::new(
@@ -3057,6 +3063,7 @@ mod tests {
             "named alias should reduce through KApp/App, got {:?}",
             out.node
         );
+        Ok(()) // return success to the test harness
     }
 
     fn sgn_error() -> LocatedSignature {
@@ -3069,23 +3076,29 @@ mod tests {
 
     /// Catches mutant: EnvError::fmt returns wrong message.
     #[test]
-    fn env_error_unbound_k_rel_display() {
+    fn env_error_unbound_k_rel_display() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let error = EnvError::UnboundKRel(3);
         assert_eq!(error.to_string(), "unbound kind rel #3");
+        Ok(()) // return success to the test harness
     }
 
     /// Catches mutant: EnvError::UnboundCNamed uses wrong message.
     #[test]
-    fn env_error_unbound_c_named_display() {
+    fn env_error_unbound_c_named_display() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let error = EnvError::UnboundCNamed(42);
         assert_eq!(error.to_string(), "unbound named con [42]");
+        Ok(()) // return success to the test harness
     }
 
     /// Catches mutant: EnvError::UnboundStrNamed uses wrong message.
     #[test]
-    fn env_error_unbound_str_named_display() {
+    fn env_error_unbound_str_named_display() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let error = EnvError::UnboundStrNamed(7);
         assert_eq!(error.to_string(), "unbound named str [7]");
+        Ok(()) // return success to the test harness
     }
 
     // -----------------------------------------------------------------------
@@ -3094,7 +3107,8 @@ mod tests {
 
     /// Catches mutant: push_k_rel doesn't bump existing indices.
     #[test]
-    fn push_k_rel_bumps_existing_indices() {
+    fn push_k_rel_bumps_existing_indices() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let env = Env::empty().push_k_rel("alpha".to_string());
         // alpha is at index 0
         assert_eq!(env.lookup_k("alpha"), Some(0));
@@ -3103,32 +3117,37 @@ mod tests {
         // beta is at 0, alpha is now at 1
         assert_eq!(env2.lookup_k("beta"), Some(0));
         assert_eq!(env2.lookup_k("alpha"), Some(1));
+        Ok(()) // return success to the test harness
     }
 
     /// Catches mutant: lookup_k_rel uses wrong index direction.
     #[test]
-    fn push_k_rel_lookup_by_index() {
+    fn push_k_rel_lookup_by_index() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let env = Env::empty()
             .push_k_rel("outer".to_string())
             .push_k_rel("inner".to_string());
 
         // innermost is at index 0
-        assert_eq!(env.lookup_k_rel(0).unwrap(), "inner");
-        assert_eq!(env.lookup_k_rel(1).unwrap(), "outer");
+        assert_eq!(env.lookup_k_rel(0)?, "inner");
+        assert_eq!(env.lookup_k_rel(1)?, "outer");
         assert!(env.lookup_k_rel(2).is_err());
+        Ok(()) // return success to the test harness
     }
 
     /// Catches mutant: push_k_rel shadows names incorrectly.
     #[test]
-    fn push_k_rel_shadow_same_name() {
+    fn push_k_rel_shadow_same_name() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let env = Env::empty()
             .push_k_rel("k".to_string())
             .push_k_rel("k".to_string());
 
         // The inner binding wins — lookup_k returns 0.
         assert_eq!(env.lookup_k("k"), Some(0));
-        assert_eq!(env.lookup_k_rel(0).unwrap(), "k");
-        assert_eq!(env.lookup_k_rel(1).unwrap(), "k");
+        assert_eq!(env.lookup_k_rel(0)?, "k");
+        assert_eq!(env.lookup_k_rel(1)?, "k");
+        Ok(()) // return success to the test harness
     }
 
     // -----------------------------------------------------------------------
@@ -3137,11 +3156,12 @@ mod tests {
 
     /// Catches mutant: push_c_rel doesn't bump existing relative indices.
     #[test]
-    fn push_c_rel_bumps_existing_relative_indices() {
+    fn push_c_rel_bumps_existing_relative_indices() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let kind = kind_type();
         let env = Env::empty().push_c_rel("a".to_string(), kind.clone());
         // 'a' is at index 0
-        let (_, a_kind) = env.lookup_c_rel(0).unwrap();
+        let (_, a_kind) = env.lookup_c_rel(0)?;
         assert!(matches!(a_kind.node, Kind::Type));
 
         let env2 = env.push_c_rel("b".to_string(), kind);
@@ -3154,14 +3174,16 @@ mod tests {
             VarLookup::Rel(1, _) => {}
             other => panic!("expected Rel(1, ...), got {:?}", other),
         }
+        Ok(()) // return success to the test harness
     }
 
     /// Catches mutant: push_c_named_as stores wrong id.
     #[test]
-    fn push_c_named_as_stores_correct_id() {
+    fn push_c_named_as_stores_correct_id() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let env = Env::empty().push_c_named_as("Foo".to_string(), 99, kind_type(), None);
 
-        let (name, _kind, def) = env.lookup_c_named(99).unwrap();
+        let (name, _kind, def) = env.lookup_c_named(99)?;
         assert_eq!(name, "Foo");
         assert!(def.is_none());
 
@@ -3169,13 +3191,16 @@ mod tests {
             VarLookup::Named(99, _) => {}
             other => panic!("expected Named(99, _), got {:?}", other),
         }
+        Ok(()) // return success to the test harness
     }
 
     /// Catches mutant: lookup_c returns Named when should be NotBound.
     #[test]
-    fn lookup_c_not_bound() {
+    fn lookup_c_not_bound() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let env = Env::empty();
         assert!(env.lookup_c("missing").is_not_bound());
+        Ok(()) // return success to the test harness
     }
 
     // -----------------------------------------------------------------------
@@ -3184,7 +3209,8 @@ mod tests {
 
     /// Catches mutant: push_e_rel doesn't bump existing indices.
     #[test]
-    fn push_e_rel_bumps_existing_indices() {
+    fn push_e_rel_bumps_existing_indices() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let env = Env::empty()
             .push_e_rel("x".to_string(), con_rel(0))
             .push_e_rel("y".to_string(), con_rel(1));
@@ -3197,25 +3223,30 @@ mod tests {
             VarLookup::Rel(0, _) => {}
             other => panic!("expected Rel(0, _), got {:?}", other),
         }
+        Ok(()) // return success to the test harness
     }
 
     /// Catches mutant: push_e_named_as stores wrong id.
     #[test]
-    fn push_e_named_as_stores_correct_id() {
+    fn push_e_named_as_stores_correct_id() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let env = Env::empty().push_e_named_as("foo".to_string(), 77, con_named(5));
 
-        let (name, _type_con) = env.lookup_e_named(77).unwrap();
+        let (name, _type_con) = env.lookup_e_named(77)?;
         assert_eq!(name, "foo");
 
         assert!(env.check_e_named(77));
         assert!(!env.check_e_named(78));
+        Ok(()) // return success to the test harness
     }
 
     /// Catches mutant: lookup_e returns wrong variant.
     #[test]
-    fn lookup_e_not_bound() {
+    fn lookup_e_not_bound() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let env = Env::empty();
         assert!(env.lookup_e("nope").is_not_bound());
+        Ok(()) // return success to the test harness
     }
 
     // -----------------------------------------------------------------------
@@ -3224,28 +3255,38 @@ mod tests {
 
     /// Catches mutant: push_sgn_named_as uses wrong id.
     #[test]
-    fn push_sgn_named_as_and_lookup() {
+    fn push_sgn_named_as_and_lookup() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let signature = sgn_error();
         let env = Env::empty().push_sgn_named_as("MySig".to_string(), 10, signature.clone());
 
-        let (name, _sgn) = env.lookup_sgn_named(10).unwrap();
+        let (name, _sgn) = env.lookup_sgn_named(10)?;
         assert_eq!(name, "MySig");
 
-        let (id, _sgn) = env.lookup_sgn("MySig").unwrap();
+        let (id, _sgn) = match env.lookup_sgn("MySig") {
+            Some(found) => found,
+            None => return Err(anyhow!("expected named signature lookup for MySig")),
+        };
         assert_eq!(*id, 10);
+        Ok(()) // return success to the test harness
     }
 
     /// Catches mutant: push_str_named_as uses wrong id.
     #[test]
-    fn push_str_named_as_and_lookup() {
+    fn push_str_named_as_and_lookup() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let signature = sgn_error();
         let env = Env::empty().push_str_named_as("MyMod".to_string(), 20, signature);
 
-        let (name, _sgn) = env.lookup_str_named(20).unwrap();
+        let (name, _sgn) = env.lookup_str_named(20)?;
         assert_eq!(name, "MyMod");
 
-        let (id, _sgn) = env.lookup_str("MyMod").unwrap();
+        let (id, _sgn) = match env.lookup_str("MyMod") {
+            Some(found) => found,
+            None => return Err(anyhow!("expected named structure lookup for MyMod")),
+        };
         assert_eq!(*id, 20);
+        Ok(()) // return success to the test harness
     }
 
     // -----------------------------------------------------------------------
@@ -3254,24 +3295,29 @@ mod tests {
 
     /// Catches mutant: Pattern::Var doesn't count as 1 binding.
     #[test]
-    fn pat_binds_n_var() {
+    fn pat_binds_n_var() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let pattern = Located::new(Pattern::Var("x".to_string(), con_rel(0)), dummy_span());
         assert_eq!(pat_binds_n(&pattern), 1);
+        Ok(()) // return success to the test harness
     }
 
     /// Catches mutant: Pattern::Prim incorrectly counted as 1.
     #[test]
-    fn pat_binds_n_prim() {
+    fn pat_binds_n_prim() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let pattern = Located::new(
             Pattern::Prim(crate::primitives::Prim::Int(42)),
             dummy_span(),
         );
         assert_eq!(pat_binds_n(&pattern), 0);
+        Ok(()) // return success to the test harness
     }
 
     /// Catches mutant: nested Con pattern doesn't sum correctly.
     #[test]
-    fn pat_binds_n_con_with_inner() {
+    fn pat_binds_n_con_with_inner() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let inner = Located::new(Pattern::Var("y".to_string(), con_rel(0)), dummy_span());
         let pattern = Located::new(
             Pattern::Constructor(
@@ -3283,11 +3329,13 @@ mod tests {
             dummy_span(),
         );
         assert_eq!(pat_binds_n(&pattern), 1);
+        Ok(()) // return success to the test harness
     }
 
     /// Catches mutant: Record sum is wrong.
     #[test]
-    fn pat_binds_n_record_two_vars() {
+    fn pat_binds_n_record_two_vars() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let field_a = Located::new(Pattern::Var("a".to_string(), con_rel(0)), dummy_span());
         let field_b = Located::new(Pattern::Var("b".to_string(), con_rel(0)), dummy_span());
         let pattern = Located::new(
@@ -3298,6 +3346,7 @@ mod tests {
             dummy_span(),
         );
         assert_eq!(pat_binds_n(&pattern), 2);
+        Ok(()) // return success to the test harness
     }
 
     // -----------------------------------------------------------------------
@@ -3306,7 +3355,8 @@ mod tests {
 
     /// Catches mutant: pat_binds doesn't actually push the binding.
     #[test]
-    fn pat_binds_var_pushes_rel_binding() {
+    fn pat_binds_var_pushes_rel_binding() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let pattern = Located::new(
             Pattern::Var("value".to_string(), con_named(5)),
             dummy_span(),
@@ -3317,16 +3367,19 @@ mod tests {
             VarLookup::Rel(0, _) => {}
             other => panic!("expected Rel(0, _), got {:?}", other),
         }
+        Ok(()) // return success to the test harness
     }
 
     /// Catches mutant: pat_binds on Prim changes the env.
     #[test]
-    fn pat_binds_prim_is_identity() {
+    fn pat_binds_prim_is_identity() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let pattern = Located::new(Pattern::Prim(crate::primitives::Prim::Int(0)), dummy_span());
         let env_before = Env::empty();
         let env_after = pat_binds(env_before.clone(), &pattern);
         // No new expression bindings.
         assert_eq!(env_after.dump_expressions().len(), 0);
+        Ok(()) // return success to the test harness
     }
 
     // -----------------------------------------------------------------------
@@ -3335,7 +3388,8 @@ mod tests {
 
     /// Catches mutant: lift doesn't increment free Rel indices.
     #[test]
-    fn lift_exp_in_exp_increments_free_rel() {
+    fn lift_exp_in_exp_increments_free_rel() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let expression = Located::new(Expression::Rel(0), dummy_span());
         let lifted = lift_exp_in_exp_bound(0, expression);
         assert!(
@@ -3343,11 +3397,13 @@ mod tests {
             "expected Rel(1), got {:?}",
             lifted.node
         );
+        Ok(()) // return success to the test harness
     }
 
     /// Catches mutant: lift incorrectly lifts bound indices.
     #[test]
-    fn lift_exp_in_exp_preserves_bound_rel() {
+    fn lift_exp_in_exp_preserves_bound_rel() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // Rel(0) under one Abs binder is bound (exp_bound = 1 inside Abs body).
         let inner = Located::new(Expression::Rel(0), dummy_span());
         let abs_exp = Located::new(
@@ -3365,11 +3421,13 @@ mod tests {
         } else {
             panic!("expected Abs after lifting");
         }
+        Ok(()) // return success to the test harness
     }
 
     /// Catches mutant: lift_exp increments a free index inside Abs (idx > 0).
     #[test]
-    fn lift_exp_in_exp_lifts_free_above_binder() {
+    fn lift_exp_in_exp_lifts_free_above_binder() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // Rel(1) inside an Abs is free when exp_bound for lifting starts at 0:
         // inside the Abs, exp_bound becomes 1, so Rel(1) >= 1 → lifted to Rel(2).
         let inner = Located::new(Expression::Rel(1), dummy_span());
@@ -3387,6 +3445,7 @@ mod tests {
         } else {
             panic!("expected Abs");
         }
+        Ok(()) // return success to the test harness
     }
 
     // -----------------------------------------------------------------------
@@ -3395,7 +3454,8 @@ mod tests {
 
     /// Catches mutant: KAbs body doesn't increment kind_bound.
     #[test]
-    fn lift_kind_in_exp_kabs_increments_kind_bound() {
+    fn lift_kind_in_exp_kabs_increments_kind_bound() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // Kind::Rel(0) inside a KAbs is bound (kind_bound = 1 inside body).
         let inner_kind = Located::new(Kind::Rel(0), dummy_span());
         let inner_exp = Located::new(
@@ -3425,6 +3485,7 @@ mod tests {
         } else {
             panic!("expected KAbs");
         }
+        Ok(()) // return success to the test harness
     }
 
     // -----------------------------------------------------------------------
@@ -3433,7 +3494,8 @@ mod tests {
 
     /// Catches mutant: ClassName::Named and Proj not distinguished in Hash.
     #[test]
-    fn class_name_hash_distinguishes_variants() {
+    fn class_name_hash_distinguishes_variants() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         use std::collections::HashMap;
         let mut map: HashMap<ClassName, i32> = HashMap::new();
         map.insert(ClassName::Named(1), 10);
@@ -3441,6 +3503,7 @@ mod tests {
 
         assert_eq!(map[&ClassName::Named(1)], 10);
         assert_eq!(map[&ClassName::Proj(1, vec![], "x".to_string())], 20);
+        Ok(()) // return success to the test harness
     }
 
     // -----------------------------------------------------------------------
@@ -3449,7 +3512,8 @@ mod tests {
 
     /// Catches mutant: push_datatype doesn't register constructors by name.
     #[test]
-    fn push_datatype_registers_constructor_by_name() {
+    fn push_datatype_registers_constructor_by_name() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let env = Env::empty().push_datatype(
             100,
             vec!["a".to_string()],
@@ -3459,21 +3523,28 @@ mod tests {
             ],
         );
 
-        let none_info = env.lookup_constructor("None").unwrap();
+        let none_info = env
+            .lookup_constructor("None")
+            .context("expected datatype constructor None to be registered")?;
         assert_eq!(none_info.datatype_id, 100);
         assert_eq!(none_info.constructor_id, 200);
         assert!(none_info.arg_type.is_none());
 
-        let some_info = env.lookup_constructor("Some").unwrap();
+        let some_info = env
+            .lookup_constructor("Some")
+            .context("expected datatype constructor Some to be registered")?;
         assert_eq!(some_info.constructor_id, 201);
         assert!(some_info.arg_type.is_some());
+        Ok(()) // return success to the test harness
     }
 
     /// Catches mutant: lookup_constructor for missing name doesn't return None.
     #[test]
-    fn lookup_constructor_missing_returns_none() {
+    fn lookup_constructor_missing_returns_none() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let env = Env::empty();
         assert!(env.lookup_constructor("NoSuchCon").is_none());
+        Ok(()) // return success to the test harness
     }
 
     // -----------------------------------------------------------------------
@@ -3482,7 +3553,8 @@ mod tests {
 
     /// Catches mutant: push_class doesn't add to the class map.
     #[test]
-    fn push_class_makes_is_class_true() {
+    fn push_class_makes_is_class_true() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let env = Env::empty().push_c_named_as("Eq".to_string(), 50, kind_type(), None);
         let env = env.push_class(50);
 
@@ -3492,11 +3564,13 @@ mod tests {
         // A different id should not be a class.
         let other_con = Located::new(Constructor::Named(51), dummy_span());
         assert!(!env.is_class(&other_con));
+        Ok(()) // return success to the test harness
     }
 
     /// Re-registering a class during `open` must not discard previously collected rules.
     #[test]
-    fn push_class_preserves_existing_rules() {
+    fn push_class_preserves_existing_rules() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let class_name = ClassName::Named(50);
         let rule_head = Located::new(Constructor::Named(50), dummy_span());
         let witness = Located::new(Expression::Named(77), dummy_span());
@@ -3512,7 +3586,7 @@ mod tests {
         let preserved_rules = preserved_env
             .classes()
             .get(&class_name)
-            .expect("class should remain registered");
+            .with_context(|| "class should remain registered")?;
 
         assert_eq!(preserved_rules.closed_rules.len(), 1);
         assert!(preserved_rules.open_rules.is_empty());
@@ -3524,6 +3598,7 @@ mod tests {
             preserved_rules.closed_rules[0].2.span.first.line,
             rule_head.span.first.line
         );
+        Ok(()) // return success to the test harness
     }
 
     // -----------------------------------------------------------------------
@@ -3532,7 +3607,8 @@ mod tests {
 
     /// Catches mutant: Env::empty has non-empty fields.
     #[test]
-    fn env_empty_has_no_bindings() {
+    fn env_empty_has_no_bindings() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let env = Env::empty();
         assert!(env.lookup_k("x").is_none());
         assert!(env.lookup_c("x").is_not_bound());
@@ -3541,5 +3617,6 @@ mod tests {
         assert!(env.lookup_str("x").is_none());
         assert!(env.lookup_c_named(0).is_err());
         assert!(env.lookup_e_named(0).is_err());
+        Ok(()) // return success to the test harness
     }
 }

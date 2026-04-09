@@ -898,92 +898,119 @@ mod tests {
     use super::*;
 
     #[test]
-    fn subsumes_same_kind() {
+    fn subsumes_same_kind() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         assert!(subsumes(&PathKind::Table, &PathKind::Table));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn subsumes_any_accepts_all() {
+    fn subsumes_any_accepts_all() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         assert!(subsumes(&PathKind::Url, &PathKind::Any));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn subsumes_relation_accepts_table() {
+    fn subsumes_relation_accepts_table() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         assert!(subsumes(&PathKind::Table, &PathKind::Relation));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn subsumes_relation_rejects_url() {
+    fn subsumes_relation_rejects_url() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         assert!(!subsumes(&PathKind::Url, &PathKind::Relation));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn persistent_true_for_fastcgi() {
+    fn persistent_true_for_fastcgi() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let mut s = Settings::new();
         s.protocol = "fastcgi".into();
         assert!(s.persistent(), "fastcgi must be persistent");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn persistent_true_for_http() {
+    fn persistent_true_for_http() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let mut s = Settings::new();
         s.protocol = "http".into();
         assert!(s.persistent());
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn persistent_false_for_cgi() {
+    fn persistent_false_for_cgi() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let mut s = Settings::new();
         s.protocol = "cgi".into();
         assert!(!s.persistent());
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn subsumes_relation_accepts_sequence_and_view() {
+    fn subsumes_relation_accepts_sequence_and_view() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         assert!(subsumes(&PathKind::Sequence, &PathKind::Relation));
         assert!(subsumes(&PathKind::View, &PathKind::Relation));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn url_prefix_slash() {
+    fn url_prefix_slash() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let mut s = Settings::new();
         s.set_url_prefix("/app");
         assert_eq!(s.url_prefix, "/app/");
         assert_eq!(s.url_pre_prefix, "");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn url_prefix_http() {
+    fn url_prefix_http() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let mut s = Settings::new();
         s.set_url_prefix("http://example.com/app");
         assert_eq!(s.url_pre_prefix, "http://example.com");
         assert_eq!(s.url_prefix, "/app/");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn mangle_sql_table_postgres() {
+    fn mangle_sql_table_postgres() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let mut s = Settings::new();
         s.db_backend = Some(ProjectDb::postgres());
         assert_eq!(s.mangle_sql_table("users"), "uw_Users");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn mangle_sql_table_mysql() {
+    fn mangle_sql_table_mysql() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let mut s = Settings::new();
         s.db_backend = Some(ProjectDb::mysql());
         assert_eq!(s.mangle_sql_table("Users"), "uw_users");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn mangle_no_mangle() {
+    fn mangle_no_mangle() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let mut s = Settings::new();
         s.db_backend = Some(ProjectDb::postgres());
         s.mangle = false;
         assert_eq!(s.mangle_sql_table("FooBar"), "fooBar");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn mangle_sql_mysql_vs_postgres() {
+    fn mangle_sql_mysql_vs_postgres() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let mut s_mysql = Settings::new();
         s_mysql.db_backend = Some(ProjectDb::mysql());
         s_mysql.mangle = true;
@@ -992,34 +1019,44 @@ mod tests {
         s_pg.mangle = true;
         assert_eq!(s_mysql.mangle_sql("Foo"), "uw_foo");
         assert_eq!(s_pg.mangle_sql("Foo"), "uw_Foo");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn is_effectful_false_when_not_in_set() {
+    fn is_effectful_false_when_not_in_set() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let s = Settings::new();
         assert!(!s.is_effectful(&("Other".into(), "fn".into())));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn is_benign_effectful_false_when_empty() {
+    fn is_benign_effectful_false_when_empty() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let s = Settings::new();
         assert!(!s.is_benign_effectful(&("X".into(), "y".into())));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn is_client_only_false_when_empty() {
+    fn is_client_only_false_when_empty() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let s = Settings::new();
         assert!(!s.is_client_only(&("X".into(), "y".into())));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn is_server_only_false_when_empty() {
+    fn is_server_only_false_when_empty() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let s = Settings::new();
         assert!(!s.is_server_only(&("X".into(), "y".into())));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn check_url_with_rules() {
+    fn check_url_with_rules() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let mut s = Settings::new();
         s.url_rules.push(Rule {
             action: Action::Allow,
@@ -1028,10 +1065,12 @@ mod tests {
         });
         assert!(s.check_url("/api"));
         assert!(!s.check_url("/other"));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn check_mime_valid_and_rules() {
+    fn check_mime_valid_and_rules() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let mut s = Settings::new();
         s.mime_rules.push(Rule {
             action: Action::Allow,
@@ -1040,10 +1079,12 @@ mod tests {
         });
         assert!(s.check_mime("text/plain"));
         assert!(!s.check_mime("text/x"));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn check_mime_requires_valid_chars() {
+    fn check_mime_requires_valid_chars() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let mut s = Settings::new();
         s.mime_rules.push(Rule {
             action: Action::Allow,
@@ -1054,22 +1095,28 @@ mod tests {
             !s.check_mime("text/plain!"),
             "invalid mime char ! must fail"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn is_valid_env_rejects_hyphen() {
+    fn is_valid_env_rejects_hyphen() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         assert!(!Settings::is_valid_env("FOO-BAR"));
         assert!(Settings::is_valid_env("FOO_BAR"));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn is_valid_meta_allows_hyphen_rejects_digit() {
+    fn is_valid_meta_allows_hyphen_rejects_digit() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         assert!(Settings::is_valid_meta("content-type"));
         assert!(!Settings::is_valid_meta("meta2"));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn check_request_header_valid() {
+    fn check_request_header_valid() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let mut s = Settings::new();
         s.request_rules.push(Rule {
             action: Action::Allow,
@@ -1077,10 +1124,12 @@ mod tests {
             pattern: "X-Foo".into(),
         });
         assert!(s.check_request_header("X-Foo"));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn check_request_header_invalid_mime_fails() {
+    fn check_request_header_invalid_mime_fails() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let mut s = Settings::new();
         s.request_rules.push(Rule {
             action: Action::Allow,
@@ -1088,10 +1137,12 @@ mod tests {
             pattern: "X-Foo!".into(),
         });
         assert!(!s.check_request_header("X-Foo!"));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn check_response_header_invalid_mime_fails() {
+    fn check_response_header_invalid_mime_fails() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let mut s = Settings::new();
         s.response_rules.push(Rule {
             action: Action::Allow,
@@ -1099,10 +1150,12 @@ mod tests {
             pattern: "X-Bad!".into(),
         });
         assert!(!s.check_response_header("X-Bad!"));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn check_env_var_invalid_chars_fails() {
+    fn check_env_var_invalid_chars_fails() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let mut s = Settings::new();
         s.env_rules.push(Rule {
             action: Action::Allow,
@@ -1110,10 +1163,12 @@ mod tests {
             pattern: "FOO-BAR".into(),
         });
         assert!(!s.check_env_var("FOO-BAR"));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn check_meta_invalid_chars_fails() {
+    fn check_meta_invalid_chars_fails() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let mut s = Settings::new();
         s.meta_rules.push(Rule {
             action: Action::Allow,
@@ -1121,10 +1176,12 @@ mod tests {
             pattern: "meta2".into(),
         });
         assert!(!s.check_meta("meta2"));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn check_response_header_valid() {
+    fn check_response_header_valid() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let mut s = Settings::new();
         s.response_rules.push(Rule {
             action: Action::Allow,
@@ -1132,10 +1189,12 @@ mod tests {
             pattern: "Content-Type".into(),
         });
         assert!(s.check_response_header("Content-Type"));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn check_env_var_valid() {
+    fn check_env_var_valid() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let mut s = Settings::new();
         s.env_rules.push(Rule {
             action: Action::Allow,
@@ -1143,10 +1202,12 @@ mod tests {
             pattern: "FOO_BAR".into(),
         });
         assert!(s.check_env_var("FOO_BAR"));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn check_meta_valid() {
+    fn check_meta_valid() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let mut s = Settings::new();
         s.meta_rules.push(Rule {
             action: Action::Allow,
@@ -1154,10 +1215,12 @@ mod tests {
             pattern: "description".into(),
         });
         assert!(s.check_meta("description"));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn rewrite_exact_match() {
+    fn rewrite_exact_match() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let mut s = Settings::new();
         s.rewrites.push(Rewrite {
             pkind: PathKind::Any,
@@ -1167,48 +1230,62 @@ mod tests {
             hyphenate: false,
         });
         assert_eq!(s.rewrite(&PathKind::Url, "foo"), "bar");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn effectful_sqlcache() {
+    fn effectful_sqlcache() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let s = Settings::new();
         assert!(s.is_effectful(&("Sqlcache".into(), "anything".into())));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn effectful_basis_dml() {
+    fn effectful_basis_dml() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let s = Settings::new();
         assert!(s.is_effectful(&("Basis".into(), "dml".into())));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn client_only_recv() {
+    fn client_only_recv() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let s = Settings::new();
         assert!(s.is_client_only(&("Basis".into(), "recv".into())));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn add_limit_valid() {
+    fn add_limit_valid() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let mut s = Settings::new();
-        s.add_limit("page", 1024).unwrap();
+        s.add_limit("page", 1024).map_err(anyhow::Error::msg)?;
         assert_eq!(s.limits.len(), 1);
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn add_limit_invalid() {
+    fn add_limit_invalid() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let mut s = Settings::new();
         assert!(s.add_limit("bogus", 0).is_err());
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn add_limit_time_sets_deadlines() {
+    fn add_limit_time_sets_deadlines() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let mut s = Settings::new();
-        s.add_limit("time", 30).unwrap();
+        s.add_limit("time", 30).map_err(anyhow::Error::msg)?;
         assert!(s.deadlines);
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn rewrite_prefix() {
+    fn rewrite_prefix() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let mut s = Settings::new();
         s.rewrites.push(Rewrite {
             pkind: PathKind::Any,
@@ -1218,10 +1295,12 @@ mod tests {
             hyphenate: false,
         });
         assert_eq!(s.rewrite(&PathKind::Url, "foobar"), "barbar");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn rewrite_hyphenate() {
+    fn rewrite_hyphenate() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let mut s = Settings::new();
         s.rewrites.push(Rewrite {
             pkind: PathKind::Any,
@@ -1231,10 +1310,12 @@ mod tests {
             hyphenate: true,
         });
         assert_eq!(s.rewrite(&PathKind::Url, "foo_bar"), "foo-bar");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn rule_matches_exact() {
+    fn rule_matches_exact() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let r = Rule {
             action: Action::Allow,
             kind: PatternKind::Exact,
@@ -1242,10 +1323,12 @@ mod tests {
         };
         assert!(r.matches("foo"));
         assert!(!r.matches("foobar"));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn rule_matches_prefix() {
+    fn rule_matches_prefix() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let r = Rule {
             action: Action::Allow,
             kind: PatternKind::Prefix,
@@ -1253,60 +1336,78 @@ mod tests {
         };
         assert!(r.matches("foobar"));
         assert!(!r.matches("bar"));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn sql_type_is_blob() {
+    fn sql_type_is_blob() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         assert!(SqlType::Blob.is_blob());
         assert!(!SqlType::Int.is_blob());
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn sql_type_nullable_blob_is_blob() {
+    fn sql_type_nullable_blob_is_blob() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         assert!(SqlType::Nullable(Box::new(SqlType::Blob)).is_blob());
         assert!(!SqlType::Nullable(Box::new(SqlType::Int)).is_blob());
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn sql_type_is_not_null() {
+    fn sql_type_is_not_null() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         assert!(SqlType::Int.is_not_null());
         assert!(!SqlType::Nullable(Box::new(SqlType::Int)).is_not_null());
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn may_client_to_server() {
+    fn may_client_to_server() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let mut s = Settings::new();
         s.client_to_server.insert(("M".into(), "f".into()));
         assert!(s.may_client_to_server(&("M".into(), "f".into())));
         assert!(!s.may_client_to_server(&("M".into(), "g".into())));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn is_benign_effectful() {
+    fn is_benign_effectful() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let s = Settings::new();
         assert!(s.is_benign_effectful(&("Basis".into(), "get_cookie".into())));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn is_client_only() {
+    fn is_client_only() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let s = Settings::new();
         assert!(s.is_client_only(&("Basis".into(), "recv".into())));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn is_server_only() {
+    fn is_server_only() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let s = Settings::new();
         assert!(s.is_server_only(&("Basis".into(), "dml".into())));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn js_func() {
+    fn js_func() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let s = Settings::new();
         assert_eq!(s.js_func(&("Basis".into(), "alert".into())), Some("alert"));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn check_url_with_rule() {
+    fn check_url_with_rule() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let mut s = Settings::new();
         s.url_rules.push(Rule {
             action: Action::Allow,
@@ -1314,26 +1415,32 @@ mod tests {
             pattern: "foo".into(),
         });
         assert!(s.check_url("foo"));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn mangle_sql_mysql() {
+    fn mangle_sql_mysql() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let mut s = Settings::new();
         s.db_backend = Some(ProjectDb::mysql());
         s.mangle = true;
         assert!(s.mangle_sql("Foo").contains("uw_"));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn is_safe_get() {
+    fn is_safe_get() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let mut s = Settings::new();
         assert!(!s.is_safe_get("/x"));
         s.safe_gets.insert("/x".into());
         assert!(s.is_safe_get("/x"));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn sql_type_c_type() {
+    fn sql_type_c_type() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         assert_eq!(SqlType::Int.c_type(), "uw_Basis_int");
         assert_eq!(
             SqlType::Nullable(Box::new(SqlType::Int)).c_type(),
@@ -1343,5 +1450,6 @@ mod tests {
             SqlType::Nullable(Box::new(SqlType::String)).c_type(),
             "uw_Basis_string"
         );
+        Ok(()) // return success to the test harness
     }
 }

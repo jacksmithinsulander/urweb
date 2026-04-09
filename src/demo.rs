@@ -409,160 +409,211 @@ fn uncapitalize(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use anyhow::{anyhow, Context as _};
     use tempfile::tempdir;
 
     #[test]
-    fn capitalize_title_cases_first_rune() {
+    fn capitalize_title_cases_first_rune() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         assert_eq!(capitalize("hello"), "Hello");
         assert_eq!(capitalize("x"), "X");
         assert_eq!(capitalize(""), "");
+        Ok(()) // return success to the test harness
     }
 
-    fn write_minimal_demo_files(root: &Path) {
-        fs::write(root.join("prose"), "<p>intro</p>\nwidget.urp\n").unwrap();
-        fs::write(root.join("widget.urp"), "m\n").unwrap();
+    fn write_minimal_demo_files(root: &Path) -> anyhow::Result<()> {
+        fs::write(root.join("prose"), "<p>intro</p>\nwidget.urp\n")?;
+        fs::write(root.join("widget.urp"), "m\n")?;
+        Ok(())
+    }
+
+    fn demo_root_str(root: &Path) -> anyhow::Result<&str> {
+        root.to_str()
+            .context("demo temporary directory path is not valid UTF-8")
+    }
+
+    fn make_demo(root: &Path, settings: &mut Settings) -> anyhow::Result<bool> {
+        make("/Demo", demo_root_str(root)?, settings, false)
     }
 
     #[test]
-    fn make_emits_capitalized_demo_name_in_nav() {
-        let dir = tempdir().unwrap();
+    fn make_emits_capitalized_demo_name_in_nav() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
+        let dir = tempdir()?;
         let root = dir.path();
-        write_minimal_demo_files(root);
+        write_minimal_demo_files(root)?;
         let mut settings = Settings::default();
-        let _ = make("/Demo", root.to_str().unwrap(), &mut settings, false);
-        let demos = fs::read_to_string(root.join("out/demos.html")).expect("demos.html");
+        let _ = make_demo(root, &mut settings)?;
+        let demos =
+            fs::read_to_string(root.join("out/demos.html")).with_context(|| "demos.html")?;
         assert!(
             demos.contains(">Widget</a>"),
             "expected capitalized demo title in nav, got {demos:?}"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn make_errors_when_prose_has_no_urp() {
-        let dir = tempdir().unwrap();
+    fn make_errors_when_prose_has_no_urp() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
+        let dir = tempdir()?;
         let root = dir.path();
-        fs::write(root.join("prose"), "nothing here\n").unwrap();
+        fs::write(root.join("prose"), "nothing here\n")?;
         let mut settings = Settings::default();
-        let err = make("/Demo", root.to_str().unwrap(), &mut settings, false).unwrap_err();
+        let err = match make_demo(root, &mut settings) {
+            Ok(_) => {
+                return Err(anyhow!(
+                    "expected make to fail when prose has no .urp entries"
+                ))
+            }
+            Err(error) => error,
+        };
         assert!(err.to_string().contains("No demo applications"), "{err:?}");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn make_rejects_conflicting_subproject_databases() {
-        let dir = tempdir().unwrap();
+    fn make_rejects_conflicting_subproject_databases() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
+        let dir = tempdir()?;
         let root = dir.path();
-        fs::write(root.join("prose"), "x\na.urp\nb.urp\n").unwrap();
-        fs::write(root.join("a.urp"), "database db1\n\nm\n").unwrap();
-        fs::write(root.join("b.urp"), "database db2\n\nm\n").unwrap();
+        fs::write(root.join("prose"), "x\na.urp\nb.urp\n")?;
+        fs::write(root.join("a.urp"), "database db1\n\nm\n")?;
+        fs::write(root.join("b.urp"), "database db2\n\nm\n")?;
         let mut settings = Settings::default();
-        let err = make("/Demo", root.to_str().unwrap(), &mut settings, false).unwrap_err();
+        let err = match make_demo(root, &mut settings) {
+            Ok(_) => {
+                return Err(anyhow!(
+                    "expected make to fail for conflicting subproject databases"
+                ));
+            }
+            Err(error) => error,
+        };
         assert!(err.to_string().contains("different database"), "{err:?}");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn make_accepts_same_database_across_subprojects() {
-        let dir = tempdir().unwrap();
+    fn make_accepts_same_database_across_subprojects() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
+        let dir = tempdir()?;
         let root = dir.path();
-        fs::write(root.join("prose"), "x\na.urp\nb.urp\n").unwrap();
-        fs::write(root.join("a.urp"), "database same\n\nm\n").unwrap();
-        fs::write(root.join("b.urp"), "database same\n\nm\n").unwrap();
+        fs::write(root.join("prose"), "x\na.urp\nb.urp\n")?;
+        fs::write(root.join("a.urp"), "database same\n\nm\n")?;
+        fs::write(root.join("b.urp"), "database same\n\nm\n")?;
         let mut settings = Settings::default();
-        assert!(
-            make("/Demo", root.to_str().unwrap(), &mut settings, false).is_ok(),
-            "duplicate identical database strings should not error"
-        );
+        match make_demo(root, &mut settings) {
+            Ok(_) => {}
+            Err(error) => {
+                return Err(anyhow!(
+                    "duplicate identical database strings should not error: {error}"
+                ));
+            }
+        }
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn make_dedupes_identical_source_entries() {
-        let dir = tempdir().unwrap();
+    fn make_dedupes_identical_source_entries() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
+        let dir = tempdir()?;
         let root = dir.path();
-        fs::write(root.join("prose"), "x\none.urp\n").unwrap();
-        fs::write(root.join("one.urp"), "x\n\nuniq\nuniq\n").unwrap();
+        fs::write(root.join("prose"), "x\none.urp\n")?;
+        fs::write(root.join("one.urp"), "x\n\nuniq\nuniq\n")?;
         let mut settings = Settings::default();
-        let _ = make("/Demo", root.to_str().unwrap(), &mut settings, false);
-        let urp = fs::read_to_string(root.join("demo.urp")).expect("demo.urp");
+        let _ = make_demo(root, &mut settings)?;
+        let urp = fs::read_to_string(root.join("demo.urp")).with_context(|| "demo.urp")?;
         assert_eq!(
             urp.lines().filter(|l| l.ends_with("/uniq")).count(),
             1,
             "combined sources should list each module once, got {urp:?}"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn make_links_existing_ur_sources_in_desc() {
-        let dir = tempdir().unwrap();
+    fn make_links_existing_ur_sources_in_desc() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
+        let dir = tempdir()?;
         let root = dir.path();
-        fs::write(root.join("prose"), "x\napp.urp\n").unwrap();
-        fs::write(root.join("app.urp"), "m\n").unwrap();
-        fs::write(root.join("m.ur"), "fun main () = return <xml/>").unwrap();
+        fs::write(root.join("prose"), "x\napp.urp\n")?;
+        fs::write(root.join("app.urp"), "m\n")?;
+        fs::write(root.join("m.ur"), "fun main () = return <xml/>")?;
         let mut settings = Settings::default();
-        let _ = make("/Demo", root.to_str().unwrap(), &mut settings, false);
-        let desc = fs::read_to_string(root.join("out/app.desc.html")).expect("desc");
+        let _ = make_demo(root, &mut settings)?;
+        let desc = fs::read_to_string(root.join("out/app.desc.html")).with_context(|| "desc")?;
         assert!(
             desc.contains("m.ur"),
             "desc should link to existing .ur file, got {desc:?}"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn make_emits_prefix_star_for_prefix_rewrite() {
-        let dir = tempdir().unwrap();
+    fn make_emits_prefix_star_for_prefix_rewrite() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
+        let dir = tempdir()?;
         let root = dir.path();
-        fs::write(root.join("prose"), "x\nr.urp\n").unwrap();
-        fs::write(root.join("r.urp"), "rewrite all * /\n\nm\n").unwrap();
+        fs::write(root.join("prose"), "x\nr.urp\n")?;
+        fs::write(root.join("r.urp"), "rewrite all * /\n\nm\n")?;
         let mut settings = Settings::default();
-        let _ = make("/Demo", root.to_str().unwrap(), &mut settings, false);
-        let urp = fs::read_to_string(root.join("demo.urp")).expect("demo.urp");
+        let _ = make_demo(root, &mut settings)?;
+        let urp = fs::read_to_string(root.join("demo.urp")).with_context(|| "demo.urp")?;
         assert!(
             urp.lines()
-                .any(|l| l.starts_with("rewrite ") && l.contains('*')),
+                .any(|l: &str| l.starts_with("rewrite ") && l.contains('*')),
             "prefix rewrite should keep `*` marker, got {urp:?}"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn make_emits_prefix_star_for_allow_url_rule() {
-        let dir = tempdir().unwrap();
+    fn make_emits_prefix_star_for_allow_url_rule() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
+        let dir = tempdir()?;
         let root = dir.path();
-        fs::write(root.join("prose"), "x\nf.urp\n").unwrap();
-        fs::write(root.join("f.urp"), "allow url /pub*\n\nm\n").unwrap();
+        fs::write(root.join("prose"), "x\nf.urp\n")?;
+        fs::write(root.join("f.urp"), "allow url /pub*\n\nm\n")?;
         let mut settings = Settings::default();
-        let _ = make("/Demo", root.to_str().unwrap(), &mut settings, false);
-        let urp = fs::read_to_string(root.join("demo.urp")).expect("demo.urp");
+        let _ = make_demo(root, &mut settings)?;
+        let urp = fs::read_to_string(root.join("demo.urp")).with_context(|| "demo.urp")?;
         assert!(
             urp.lines()
-                .any(|l| l.starts_with("allow url ") && l.contains('*')),
+                .any(|l: &str| l.starts_with("allow url ") && l.contains('*')),
             "prefix url allow should emit trailing `*`, got {urp:?}"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn make_emits_prefix_star_for_allow_mime_rule() {
-        let dir = tempdir().unwrap();
+    fn make_emits_prefix_star_for_allow_mime_rule() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
+        let dir = tempdir()?;
         let root = dir.path();
-        fs::write(root.join("prose"), "x\nf.urp\n").unwrap();
-        fs::write(root.join("f.urp"), "allow mime text/plain*\n\nm\n").unwrap();
+        fs::write(root.join("prose"), "x\nf.urp\n")?;
+        fs::write(root.join("f.urp"), "allow mime text/plain*\n\nm\n")?;
         let mut settings = Settings::default();
-        let _ = make("/Demo", root.to_str().unwrap(), &mut settings, false);
-        let urp = fs::read_to_string(root.join("demo.urp")).expect("demo.urp");
+        let _ = make_demo(root, &mut settings)?;
+        let urp = fs::read_to_string(root.join("demo.urp")).with_context(|| "demo.urp")?;
         assert!(
             urp.lines()
-                .any(|l| l.starts_with("allow mime ") && l.contains('*')),
+                .any(|l: &str| l.starts_with("allow mime ") && l.contains('*')),
             "prefix mime allow should emit trailing `*`, got {urp:?}"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn make_writes_max_subproject_timeout() {
-        let dir = tempdir().unwrap();
+    fn make_writes_max_subproject_timeout() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
+        let dir = tempdir()?;
         let root = dir.path();
-        fs::write(root.join("prose"), "x\na.urp\nb.urp\n").unwrap();
-        fs::write(root.join("a.urp"), "timeout 5\n\nm\n").unwrap();
-        fs::write(root.join("b.urp"), "timeout 99\n\nm\n").unwrap();
+        fs::write(root.join("prose"), "x\na.urp\nb.urp\n")?;
+        fs::write(root.join("a.urp"), "timeout 5\n\nm\n")?;
+        fs::write(root.join("b.urp"), "timeout 99\n\nm\n")?;
         let mut settings = Settings::default();
-        let _ = make("/Demo", root.to_str().unwrap(), &mut settings, false);
-        let urp = fs::read_to_string(root.join("demo.urp")).expect("demo.urp");
+        let _ = make_demo(root, &mut settings)?;
+        let urp = fs::read_to_string(root.join("demo.urp")).with_context(|| "demo.urp")?;
         assert!(
             urp.contains("timeout 99"),
             "merged demo should record max timeout, got {urp:?}"
@@ -571,24 +622,27 @@ mod tests {
             !urp.contains("timeout 5"),
             "lower timeout should not win, got {urp:?}"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn make_omits_timeout_directive_when_all_subprojects_use_zero() {
-        let dir = tempdir().unwrap();
+    fn make_omits_timeout_directive_when_all_subprojects_use_zero() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
+        let dir = tempdir()?;
         let root = dir.path();
-        fs::write(root.join("prose"), "x\nonly.urp\n").unwrap();
-        fs::write(root.join("only.urp"), "timeout 0\n\nm\n").unwrap();
+        fs::write(root.join("prose"), "x\nonly.urp\n")?;
+        fs::write(root.join("only.urp"), "timeout 0\n\nm\n")?;
         let mut settings = Settings::default();
-        let _ = make("/Demo", root.to_str().unwrap(), &mut settings, false).expect("make");
-        let urp = fs::read_to_string(root.join("demo.urp")).expect("demo.urp");
+        let _ = make_demo(root, &mut settings).with_context(|| "make")?;
+        let urp = fs::read_to_string(root.join("demo.urp")).with_context(|| "demo.urp")?;
         assert!(
             !urp.contains("timeout 0"),
             "timeout 0 should not be emitted (catches > -> >= on combined_timeout): {urp:?}"
         );
         assert!(
-            !urp.lines().any(|l| l.starts_with("timeout ")),
+            !urp.lines().any(|l: &str| l.starts_with("timeout ")),
             "no timeout line when every subproject timeout is 0: {urp:?}"
         );
+        Ok(()) // return success to the test harness
     }
 }

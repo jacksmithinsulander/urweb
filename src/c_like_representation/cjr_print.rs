@@ -2692,7 +2692,9 @@ fn make_switch_impl(fnums: &BTreeMap<String, usize>, i: usize, indent: &str) -> 
                 cmap.entry(ch).or_default().insert(maybe_str.clone(), *n);
             }
             if cmap.len() == 1 {
-                let (_ch, sub) = cmap.into_iter().next().unwrap();
+                let Some((_ch, sub)) = cmap.into_iter().next() else {
+                    return format!("{indent}return -1;\n");
+                };
                 let mut s = format!("{indent}if (name[{i}] == 0) return -1;\n");
                 s.push_str(&make_switch_impl(&sub, i + 1, indent));
                 s
@@ -3186,7 +3188,8 @@ mod tests {
     }
 
     #[test]
-    fn empty_file_generates_header() {
+    fn empty_file_generates_header() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let settings = Settings::default();
         let result = cjr_print(&(vec![], vec![]), &settings);
         assert!(
@@ -3194,10 +3197,12 @@ mod tests {
             "output must contain #include, got:\n{}",
             result
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn empty_file_generates_uw_app() {
+    fn empty_file_generates_uw_app() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let settings = Settings::default();
         let result = cjr_print(&(vec![], vec![]), &settings);
         assert!(
@@ -3205,11 +3210,13 @@ mod tests {
             "output must contain uw_app struct, got:\n{}",
             result
         );
+        Ok(()) // return success to the test harness
     }
 
     /// `inputs_len` matches SML (`max fnums + 1`, at least 1); no form fields → stub `uw_input_num`.
     #[test]
-    fn uw_app_inputs_len_one_without_form_exports() {
+    fn uw_app_inputs_len_one_without_form_exports() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let settings = Settings::default();
         let result = cjr_print(&(vec![], vec![]), &settings);
         assert!(
@@ -3222,11 +3229,13 @@ mod tests {
             "expected stub uw_input_num, got:\n{}",
             result
         );
+        Ok(()) // return success to the test harness
     }
 
     /// Action export with a 2-field form record → distinct indices and `inputs_len == 2`.
     #[test]
-    fn action_export_uw_input_num_and_inputs_len_from_form_fields() {
+    fn action_export_uw_input_num_and_inputs_len_from_form_fields() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let settings = Settings::default();
         let t_int = dummy(Typ::Ffi("Basis".into(), "int".into()));
         let form_rec = dummy(Typ::Record(99));
@@ -3262,11 +3271,13 @@ mod tests {
             "first uw_app field should be inputs_len 2, got:\n{}",
             result
         );
+        Ok(()) // return success to the test harness
     }
 
     /// ReadCookieWrite adds synthetic `Sig` to the form layer (cookie signature field).
     #[test]
-    fn action_read_cookie_write_includes_sig_in_input_num_trie() {
+    fn action_read_cookie_write_includes_sig_in_input_num_trie() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let settings = Settings::default();
         let t_int = dummy(Typ::Ffi("Basis".into(), "int".into()));
         let form_rec = dummy(Typ::Record(7));
@@ -3288,10 +3299,12 @@ mod tests {
             "expected Sig and field1 in uw_input_num, got:\n{}",
             result
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn struct_generates_c_struct() {
+    fn struct_generates_c_struct() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // DStruct(1, [("x", TFfi("Basis","int"))]) should generate:
         // struct __uws_1 { uw_Basis_int __uwf_x; };
         let settings = Settings::default();
@@ -3313,10 +3326,12 @@ mod tests {
             "must contain __uwf_x, got:\n{}",
             result
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn enum_datatype_generates_c_enum() {
+    fn enum_datatype_generates_c_enum() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let settings = Settings::default();
         let dt = crate::c_like_representation::DatatypeDecl {
             kind: DatatypeKind::Enum,
@@ -3341,10 +3356,12 @@ mod tests {
             "must contain Blue constructor, got:\n{}",
             result
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn val_decl_emits_global_and_initializer() {
+    fn val_decl_emits_global_and_initializer() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let settings = Settings::default();
         let t = dummy(Typ::Ffi("Basis".into(), "int".into()));
         let e = dummy(Exp::Prim(Prim::Int(42)));
@@ -3360,10 +3377,12 @@ mod tests {
             "must contain initializer value, got:\n{}",
             result
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn fun_decl_emits_static_function() {
+    fn fun_decl_emits_static_function() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let settings = Settings::default();
         let ran = dummy(Typ::Ffi("Basis".into(), "int".into()));
         let body = dummy(Exp::Prim(Prim::Int(0)));
@@ -3379,48 +3398,58 @@ mod tests {
             "must contain function name, got:\n{}",
             result
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn prim_int_prints_ll_suffix() {
+    fn prim_int_prints_ll_suffix() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let env = CjrEnv::new();
         let settings = Settings::default();
         let e = dummy(Exp::Prim(Prim::Int(99)));
         let s = p_exp(&env, &e, &settings);
         assert_eq!(s, "99LL");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn prim_string_prints_quoted() {
+    fn prim_string_prints_quoted() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let env = CjrEnv::new();
         let settings = Settings::default();
         let e = dummy(Exp::Prim(Prim::String(StringMode::Normal, "hello".into())));
         let s = p_exp(&env, &e, &settings);
         assert_eq!(s, "\"hello\"");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn none_exp_prints_null() {
+    fn none_exp_prints_null() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let env = CjrEnv::new();
         let settings = Settings::default();
         let t = dummy(Typ::Ffi("Basis".into(), "int".into()));
         let e = dummy(Exp::None(t));
         let s = p_exp(&env, &e, &settings);
         assert_eq!(s, "NULL");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn write_exp_wraps_in_uw_write() {
+    fn write_exp_wraps_in_uw_write() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let env = CjrEnv::new();
         let settings = Settings::default();
         let inner = dummy(Exp::Prim(Prim::String(StringMode::Normal, "hi".into())));
         let e = dummy(Exp::Write(Box::new(inner)));
         let s = p_exp(&env, &e, &settings);
         assert!(s.contains("uw_write"), "got: {}", s);
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn seq_uses_comma_operator() {
+    fn seq_uses_comma_operator() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let env = CjrEnv::new();
         let settings = Settings::default();
         let e1 = dummy(Exp::Prim(Prim::Int(1)));
@@ -3428,19 +3457,23 @@ mod tests {
         let e = dummy(Exp::Seq(Box::new(e1), Box::new(e2)));
         let s = p_exp(&env, &e, &settings);
         assert!(s.contains("1LL") && s.contains("2LL"), "got: {}", s);
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn ffi_exp_formats_correctly() {
+    fn ffi_exp_formats_correctly() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let env = CjrEnv::new();
         let settings = Settings::default();
         let e = dummy(Exp::Ffi("Basis".into(), "strdup".into()));
         let s = p_exp(&env, &e, &settings);
         assert_eq!(s, "uw_Basis_strdup");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn ffi_app_funcall_branches() {
+    fn ffi_app_funcall_branches() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let env = CjrEnv::new();
         let settings = Settings::default();
         let t = dummy(Typ::Ffi("Basis".into(), "int".into()));
@@ -3468,47 +3501,59 @@ mod tests {
             "2-arg FfiApp, got: {}",
             s2
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn field_access_uses_uwf_prefix() {
+    fn field_access_uses_uwf_prefix() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let env = CjrEnv::new();
         let settings = Settings::default();
         let inner = dummy(Exp::Prim(Prim::Int(0)));
         let e = dummy(Exp::Field(Box::new(inner), "myField".into()));
         let s = p_exp(&env, &e, &settings);
         assert!(s.contains("__uwf_myField"), "got: {}", s);
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn p_typ_unit_returns_uw_unit() {
+    fn p_typ_unit_returns_uw_unit() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let env = CjrEnv::new();
         let t = dummy(Typ::Record(0));
         assert_eq!(p_typ(&env, &t), "uw_unit");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn p_typ_record_returns_struct_name() {
+    fn p_typ_record_returns_struct_name() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let env = CjrEnv::new();
         let t = dummy(Typ::Record(3));
         assert_eq!(p_typ(&env, &t), "struct __uws_3");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn p_typ_ffi_formats_correctly() {
+    fn p_typ_ffi_formats_correctly() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let env = CjrEnv::new();
         let t = dummy(Typ::Ffi("Basis".into(), "string".into()));
         assert_eq!(p_typ(&env, &t), "uw_Basis_string");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn ident_replaces_prime() {
+    fn ident_replaces_prime() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         assert_eq!(ident("foo'bar"), "fooQUOTEbar".replace("QUOTE", "PRIME"));
         assert_eq!(ident("foo'"), "fooPRIME");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn javascript_decl_emits_jslib() {
+    fn javascript_decl_emits_jslib() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let settings = Settings::default();
         let d = dummy(Decl::JavaScript("alert(1)".into()));
         let result = cjr_print(&(vec![d], vec![]), &settings);
@@ -3517,19 +3562,23 @@ mod tests {
             "must contain jslib, got:\n{}",
             result
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn is_unboxable_basis_string_and_querystring() {
+    fn is_unboxable_basis_string_and_querystring() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // Catches mutant: delete match arm, wrong guard for Basis string/queryString.
         let t_string = dummy(Typ::Ffi("Basis".into(), "string".into()));
         let t_qs = dummy(Typ::Ffi("Basis".into(), "queryString".into()));
         assert!(is_unboxable(&t_string), "Basis.string must be unboxable");
         assert!(is_unboxable(&t_qs), "Basis.queryString must be unboxable");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn is_unboxable_others_false() {
+    fn is_unboxable_others_false() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // Catches mutant: replace return with true; default/other types.
         let t_int = dummy(Typ::Ffi("Basis".into(), "int".into()));
         let t_other = dummy(Typ::Ffi("Other".into(), "string".into()));
@@ -3538,19 +3587,23 @@ mod tests {
             !is_unboxable(&t_other),
             "Other.string must not be unboxable"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn is_unboxable_default_datatype() {
+    fn is_unboxable_default_datatype() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // Catches mutant: delete match arm Typ::Datatype(DatatypeKind::Default, _, _) in is_unboxable
         use std::sync::{Arc, Mutex};
         let xncs = Arc::new(Mutex::new(vec![("Mk".into(), 0, None)]));
         let t = dummy(Typ::Datatype(DatatypeKind::Default, 1, xncs));
         assert!(is_unboxable(&t), "DatatypeKind::Default must be unboxable");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn cjr_print_database_decl_in_output() {
+    fn cjr_print_database_decl_in_output() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // Catches mutant: cjr_print return with String::new() when file has decls.
         let settings = Settings::default();
         let d = dummy(Decl::Database {
@@ -3564,10 +3617,12 @@ mod tests {
             !result.is_empty() && result.len() > 100,
             "cjr_print must generate substantial output for Database decl"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn table_decl_emits_create_table() {
+    fn table_decl_emits_create_table() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let settings = Settings::default();
         let xts = vec![
             ("id".into(), dummy(Typ::Ffi("Basis".into(), "int".into()))),
@@ -3587,10 +3642,12 @@ mod tests {
             "Table decl must produce output with table name (catches delete Decl::Table arm): {}",
             result
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn datatype_with_option_variant() {
+    fn datatype_with_option_variant() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let settings = Settings::default();
         let dt = crate::c_like_representation::DatatypeDecl {
             kind: DatatypeKind::Option,
@@ -3611,10 +3668,12 @@ mod tests {
             result.contains("uw_app") && result.len() > 100,
             "Option datatype path must be exercised (DatatypeKind::Option branch)"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn datatype_default_generates_struct() {
+    fn datatype_default_generates_struct() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let settings = Settings::default();
         let unit = dummy(Typ::Ffi("Basis".into(), "unit".into()));
         let dt = crate::c_like_representation::DatatypeDecl {
@@ -3629,10 +3688,12 @@ mod tests {
             result.contains("Pair") || result.contains("__uwc_Mk"),
             "Default datatype must emit (catches delete Datatype arm in is_unboxable)"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn funrec_decl_emits_functions() {
+    fn funrec_decl_emits_functions() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let settings = Settings::default();
         let ran = dummy(Typ::Ffi("Basis".into(), "int".into()));
         let body = dummy(Exp::Prim(Prim::Int(0)));
@@ -3642,18 +3703,22 @@ mod tests {
             result.contains("__uwn_f_5") || result.contains("static"),
             "FunRec must emit (catches delete Decl::FunRec arm)"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn sequence_decl_in_output() {
+    fn sequence_decl_in_output() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let settings = Settings::default();
         let d = dummy(Decl::Sequence("seq".into()));
         let result = cjr_print(&(vec![d], vec![]), &settings);
         assert!(!result.is_empty(), "Sequence decl must produce output");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn cookie_decl_in_output() {
+    fn cookie_decl_in_output() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let settings = Settings::default();
         let d = dummy(Decl::Cookie("sess".into()));
         let result = cjr_print(&(vec![d], vec![]), &settings);
@@ -3661,10 +3726,12 @@ mod tests {
             !result.is_empty(),
             "Cookie decl must produce output (catches delete Decl::Cookie arm)"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn datatype_forward_in_output() {
+    fn datatype_forward_in_output() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let settings = Settings::default();
         let d = dummy(Decl::DatatypeForward(DatatypeKind::Enum, "E".into(), 1));
         let result = cjr_print(&(vec![d], vec![]), &settings);
@@ -3672,10 +3739,12 @@ mod tests {
             result.contains("E") || !result.is_empty(),
             "DatatypeForward must produce output"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn con_exp_with_record_constructor() {
+    fn con_exp_with_record_constructor() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let env = CjrEnv::new();
         let settings = Settings::default();
         let _t = dummy(Typ::Record(0));
@@ -3686,10 +3755,12 @@ mod tests {
         ));
         let s = p_exp(&env, &e, &settings);
         assert!(!s.is_empty(), "Con exp must print");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn p_typ_option_prints() {
+    fn p_typ_option_prints() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let env = CjrEnv::new();
         let inner = dummy(Typ::Ffi("Basis".into(), "int".into()));
         let t = dummy(Typ::Option(Box::new(inner)));
@@ -3698,19 +3769,23 @@ mod tests {
             !s.is_empty() && (s.contains("uw_") || s.contains("struct")),
             "Option type must print (catches delete Typ::Option in p_typ)"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn p_typ_list_prints() {
+    fn p_typ_list_prints() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let env = CjrEnv::new();
         let inner = dummy(Typ::Ffi("Basis".into(), "int".into()));
         let t = dummy(Typ::List(Box::new(inner), 1));
         let s = p_typ(&env, &t);
         assert!(!s.is_empty(), "List type must print");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn prim_float_prints() {
+    fn prim_float_prints() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let env = CjrEnv::new();
         let settings = Settings::default();
         let e = dummy(Exp::Prim(Prim::Float(1.25)));
@@ -3719,10 +3794,12 @@ mod tests {
             s.contains(".") || s.contains("e"),
             "float must print with decimal/exp"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn p_exp_binop_comparisons() {
+    fn p_exp_binop_comparisons() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let env = CjrEnv::new();
         let settings = Settings::default();
         let a = dummy(Exp::Prim(Prim::Int(1)));
@@ -3769,19 +3846,23 @@ mod tests {
             p_exp(&env, &or, &settings).contains("||"),
             "Or must print ||"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn prim_char_prints() {
+    fn prim_char_prints() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let env = CjrEnv::new();
         let settings = Settings::default();
         let e = dummy(Exp::Prim(Prim::Char('x')));
         let s = p_exp(&env, &e, &settings);
         assert!(s.contains("'") || !s.is_empty());
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn sql_type_in_basis_string_in_struct() {
+    fn sql_type_in_basis_string_in_struct() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // Catches mutant: delete "string" arm in sql_type_in.
         let settings = Settings::default();
         let t = dummy(Typ::Ffi("Basis".into(), "string".into()));
@@ -3792,10 +3873,12 @@ mod tests {
             "Basis.string must produce uw_Basis_string, got: {}",
             result
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn sql_type_in_basis_bool_in_struct() {
+    fn sql_type_in_basis_bool_in_struct() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // Catches mutant: delete "bool" arm in sql_type_in.
         let settings = Settings::default();
         let t = dummy(Typ::Ffi("Basis".into(), "bool".into()));
@@ -3806,10 +3889,12 @@ mod tests {
             "Basis.bool must produce uw_Basis_bool, got: {}",
             result
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn sql_type_in_basis_clocktime_in_struct() {
+    fn sql_type_in_basis_clocktime_in_struct() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // Catches mutant: delete "clocktime" arm in sql_type_in / p_typ for Basis types.
         let settings = Settings::default();
         let t = dummy(Typ::Ffi("Basis".into(), "clocktime".into()));
@@ -3820,10 +3905,12 @@ mod tests {
             "Basis.clocktime must produce uw_Basis_clocktime, got: {}",
             result
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn p_exp_funcall_empty_and_single_arg() {
+    fn p_exp_funcall_empty_and_single_arg() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // Catches mutant: wrong arm for [] or [(e,_)] in p_funcall.
         let env = CjrEnv::new();
         let settings = Settings::default();
@@ -3841,10 +3928,12 @@ mod tests {
             "1-arg FfiApp => fn(ctx, arg), got: {}",
             s
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn url_handler_registration_in_output() {
+    fn url_handler_registration_in_output() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // Catches mutant: reset_url_handlers/add_url_handler/collect replaced with no-op.
         use crate::export::Effect;
         use crate::export::ExportKind;
@@ -3883,10 +3972,12 @@ mod tests {
                 || result.contains("URL handler"),
             "Export with Datatype URL arg must emit URL handler code, got excerpt: ...",
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn p_exp_binop_ne_prints() {
+    fn p_exp_binop_ne_prints() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // Catches mutant: replace != with == in p_exp.
         let env = CjrEnv::new();
         let settings = Settings::default();
@@ -3897,10 +3988,12 @@ mod tests {
             p_exp(&env, &ne, &settings).contains("!="),
             "Ne must print !="
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn sql_type_in_basis_float_in_struct() {
+    fn sql_type_in_basis_float_in_struct() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // Catches mutant: delete "float" arm in sql_type_in.
         let settings = Settings::default();
         let t = dummy(Typ::Ffi("Basis".into(), "float".into()));
@@ -3911,10 +4004,12 @@ mod tests {
             "Basis.float must produce uw_Basis_float, got: {}",
             result
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn index_decl_emits_struct_or_forward() {
+    fn index_decl_emits_struct_or_forward() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // Index decls are passed through; table+index produce CREATE INDEX in sql_generate.
         let settings = Settings::default();
         use crate::monomorphized::IndexMode;
@@ -3928,10 +4023,12 @@ mod tests {
             result.contains("#include") || !result.is_empty(),
             "Index decl should not break output"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn p_exp_record_with_fields() {
+    fn p_exp_record_with_fields() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // Catches mutant: delete Record arm in p_exp.
         let env = CjrEnv::new();
         let settings = Settings::default();
@@ -3943,10 +4040,12 @@ mod tests {
             "Record must produce output, got: {}",
             s
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn p_exp_division_includes_zero_guard() {
+    fn p_exp_division_includes_zero_guard() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // Kills: replace "/" branch or "division by zero" text.
         let env = CjrEnv::new();
         let settings = Settings::default();
@@ -3961,10 +4060,12 @@ mod tests {
             "Division must emit zero guard, got: {}",
             s
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn p_exp_strcat_three_parts_uses_mstrcat() {
+    fn p_exp_strcat_three_parts_uses_mstrcat() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // flatten_strcat(strcat(a,b), c) has len 3 => mstrcat with NULL.
         let env = CjrEnv::new();
         let settings = Settings::default();
@@ -3988,10 +4089,12 @@ mod tests {
             "Three-part strcat must use mstrcat with NULL, got: {}",
             s
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn p_exp_binop_exact_operators() {
+    fn p_exp_binop_exact_operators() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // Exact string so ==/!= and &&/|| mutants change output.
         let env = CjrEnv::new();
         let settings = Settings::default();
@@ -4021,44 +4124,58 @@ mod tests {
         assert_eq!(p_exp(&env, &ne, &settings), "(1LL != 2LL)");
         assert!(p_exp(&env, &and, &settings).contains("&&"));
         assert!(p_exp(&env, &or, &settings).contains("||"));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn de_star_request_strips_parens() {
+    fn de_star_request_strips_parens() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         assert_eq!(de_star("(*request)"), "request");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn de_star_other_prepends_amp() {
+    fn de_star_other_prepends_amp() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         assert_eq!(de_star("foo"), "&foo");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn capitalize_first_char() {
+    fn capitalize_first_char() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         assert_eq!(capitalize("hello"), "Hello");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn capitalize_empty_unchanged() {
+    fn capitalize_empty_unchanged() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         assert_eq!(capitalize(""), "");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn sql_type_in_basis_int() {
+    fn sql_type_in_basis_int() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         use crate::settings::SqlType;
         let t = dummy(Typ::Ffi("Basis".into(), "int".into()));
         assert!(matches!(sql_type_in(&t), SqlType::Int));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn sql_type_in_basis_string() {
+    fn sql_type_in_basis_string() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         use crate::settings::SqlType;
         let t = dummy(Typ::Ffi("Basis".into(), "string".into()));
         assert!(matches!(sql_type_in(&t), SqlType::String));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn sql_type_in_option_nullable() {
+    fn sql_type_in_option_nullable() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         use crate::settings::SqlType;
         let inner = dummy(Typ::Ffi("Basis".into(), "int".into()));
         let t = dummy(Typ::Option(Box::new(inner)));
@@ -4066,54 +4183,69 @@ mod tests {
             SqlType::Nullable(b) => assert!(matches!(b.as_ref(), SqlType::Int)),
             _ => panic!("Option must yield Nullable"),
         }
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn sql_type_in_basis_char() {
+    fn sql_type_in_basis_char() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         use crate::settings::SqlType;
         let t = dummy(Typ::Ffi("Basis".into(), "char".into()));
         assert!(matches!(sql_type_in(&t), SqlType::Char));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn sql_type_in_basis_time() {
+    fn sql_type_in_basis_time() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         use crate::settings::SqlType;
         let t = dummy(Typ::Ffi("Basis".into(), "time".into()));
         assert!(matches!(sql_type_in(&t), SqlType::Time));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn sql_type_in_basis_blob() {
+    fn sql_type_in_basis_blob() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         use crate::settings::SqlType;
         let t = dummy(Typ::Ffi("Basis".into(), "blob".into()));
         assert!(matches!(sql_type_in(&t), SqlType::Blob));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn sql_type_in_basis_channel() {
+    fn sql_type_in_basis_channel() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         use crate::settings::SqlType;
         let t = dummy(Typ::Ffi("Basis".into(), "channel".into()));
         assert!(matches!(sql_type_in(&t), SqlType::Channel));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn sql_type_in_basis_client() {
+    fn sql_type_in_basis_client() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         use crate::settings::SqlType;
         let t = dummy(Typ::Ffi("Basis".into(), "client".into()));
         assert!(matches!(sql_type_in(&t), SqlType::Client));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn sql_type_in_basis_clocktime() {
+    fn sql_type_in_basis_clocktime() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         use crate::settings::SqlType;
         let t = dummy(Typ::Ffi("Basis".into(), "clocktime".into()));
         assert!(matches!(sql_type_in(&t), SqlType::Clocktime));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn sql_type_in_basis_calendardate() {
+    fn sql_type_in_basis_calendardate() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         use crate::settings::SqlType;
         let t = dummy(Typ::Ffi("Basis".into(), "calendardate".into()));
         assert!(matches!(sql_type_in(&t), SqlType::Calendardate));
+        Ok(()) // return success to the test harness
     }
 }

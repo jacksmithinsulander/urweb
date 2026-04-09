@@ -31,9 +31,10 @@ pub enum SqlJoinKind {
 /// Build [`Exp::Var`] from a dotted path string (`Foo.bar.baz` → quals + final name) after `@` / `@@`.
 pub fn exp_var_from_dotted_at_path(dotted: String, inference: Inference) -> Exp {
     let mut segments: Vec<String> = dotted.split('.').map(String::from).collect();
-    let final_name = segments
-        .pop()
-        .expect("dotted @-path from lexer always has at least one segment");
+    let final_name = match segments.pop() {
+        Some(final_name) => final_name,
+        None => return Exp::Var(Vec::new(), String::new(), inference),
+    };
     Exp::Var(segments, final_name, inference)
 }
 

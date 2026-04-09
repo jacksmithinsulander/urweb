@@ -1021,7 +1021,8 @@ mod folding_tests {
     }
 
     #[test]
-    fn folding_from_elab_maps_span_to_lsp_lines() {
+    fn folding_from_elab_maps_span_to_lsp_lines() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let span = Span {
             file: "lib.ur".into(),
             first: Pos { line: 2, col: 0 },
@@ -1032,19 +1033,23 @@ mod folding_tests {
         assert_eq!(folds.len(), 1);
         assert_eq!(folds[0].start_line, 1);
         assert_eq!(folds[0].end_line, 4);
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn folding_with_analysis_uses_heuristic_without_elab() {
+    fn folding_with_analysis_uses_heuristic_without_elab() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let text = "val a = 1\n\nval b =\n  2\n";
         let h = folding_ranges(text);
         let w = folding_ranges_with_analysis(None, None, text);
         assert_eq!(w, h);
         assert!(!w.is_empty());
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn folding_with_analysis_prefers_elab_when_non_empty() {
+    fn folding_with_analysis_prefers_elab_when_non_empty() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let span = Span {
             file: "m.ur".into(),
             first: Pos { line: 1, col: 0 },
@@ -1060,6 +1065,7 @@ mod folding_tests {
             "heuristic should not see a top-level val/fun block"
         );
         assert_eq!(w.len(), 1);
+        Ok(()) // return success to the test harness
     }
 }
 
@@ -1069,6 +1075,7 @@ mod semantic_api_mutation_guards {
     use super::*;
     use crate::elaborated::{Constructor, Expression};
     use crate::error_types::{Located, Pos, Span};
+    use anyhow::Context as _;
     use lsp_types::DocumentChanges;
 
     fn loc_span(file: &str) -> Span {
@@ -1086,7 +1093,8 @@ mod semantic_api_mutation_guards {
     }
 
     #[test]
-    fn word_at_cursor_extracts_identifiers() {
+    fn word_at_cursor_extracts_identifiers() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         assert_eq!(word_at_cursor("val abc = 1", 0, 4).as_deref(), Some("abc"));
         assert_eq!(
             word_at_cursor("open Mod.Sub\n", 0, 7).as_deref(),
@@ -1095,10 +1103,12 @@ mod semantic_api_mutation_guards {
         assert_eq!(word_at_cursor("val x' = 1", 0, 5).as_deref(), Some("x'"));
         assert!(word_at_cursor("   \n", 0, 1).is_none());
         assert!(word_at_cursor("a", 0, 5).is_none());
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn span_to_range_shifts_compiler_lines_to_lsp() {
+    fn span_to_range_shifts_compiler_lines_to_lsp() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let span = Span {
             file: "f.ur".into(),
             first: Pos { line: 2, col: 1 },
@@ -1108,18 +1118,22 @@ mod semantic_api_mutation_guards {
         assert_eq!(r.start.line, 1);
         assert_eq!(r.end.line, 2);
         assert_eq!(r.start.character, 1);
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn compiler_paths_match_accepts_suffix_and_backslash() {
+    fn compiler_paths_match_accepts_suffix_and_backslash() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         assert!(compiler_paths_match("lib/M.ur", "lib/M.ur"));
         assert!(compiler_paths_match("M.ur", "nested/lib/M.ur"));
         assert!(compiler_paths_match(r"a\b.ur", "a/b.ur"));
         assert!(!compiler_paths_match("A.ur", "B.ur"));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn index_file_bindings_scopes_to_path_key() {
+    fn index_file_bindings_scopes_to_path_key() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let elab: ElabFile = vec![
             val_binding("in_file", "here.ur"),
             val_binding("other", "there.ur"),
@@ -1130,94 +1144,117 @@ mod semantic_api_mutation_guards {
         let merged = super::all_val_bindings(&elab);
         assert!(merged.iter().any(|(n, _, _, _)| n == "in_file"));
         assert!(merged.iter().any(|(n, _, _, _)| n == "other"));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn hover_markdown_and_goto_definition_resolve_local_val() {
+    fn hover_markdown_and_goto_definition_resolve_local_val() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let elab: ElabFile = vec![val_binding("fooey", "buf.ur")];
         let ho = hover_markdown(Some(&elab), "buf.ur", "val fooey = 1\n", 0, 4);
         assert!(ho.is_some());
-        assert!(ho.unwrap().value.contains("fooey"));
+        let ho = ho.context("expected hover_markdown to resolve the local value")?;
+        assert!(ho.value.contains("fooey"));
         let uri = format!("file://{}", std::env::temp_dir().to_string_lossy());
         let go = goto_definition(Some(&elab), "buf.ur", &uri, "val fooey = 1\n", 0, 4);
         assert!(go.is_some());
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn completion_response_includes_typed_fields() {
+    fn completion_response_includes_typed_fields() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let elab: ElabFile = vec![val_binding("foobar", "z.ur")];
         let items = completion_at_point(Some(&elab), "z.ur", "foo", 0, 0);
         let item = items
             .iter()
             .find(|i| i.label == "foobar")
-            .expect("local val");
+            .with_context(|| "local val")?;
         assert!(item.kind.is_some());
         assert!(item.detail.as_ref().is_some_and(|d| !d.is_empty()));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn document_highlights_two_occurrences() {
+    fn document_highlights_two_occurrences() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let buf = "val alpha = 1\nval beta = alpha\n";
         let hi = document_highlights(buf, 0, 4);
         assert!(
             hi.len() >= 2,
             "expected repeated identifier to produce multiple highlight ranges"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn workspace_symbol_returns_named_location() {
-        let tmp = tempfile::tempdir().unwrap();
+    fn workspace_symbol_returns_named_location() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
+        let tmp = tempfile::tempdir()?;
         let elab: ElabFile = vec![val_binding("globSym", "one.ur")];
         let syms = workspace_symbol(Some(&elab), tmp.path());
         assert_eq!(syms.len(), 1);
         assert_eq!(syms[0].name, "globSym");
         assert!(syms[0].uri_str.starts_with("file://"));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn references_in_file_packs_locations() {
+    fn references_in_file_packs_locations() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let locs = references_in_file("val k = 1\nk\n", 0, 4, "file:///tmp/x.ur");
         assert!(!locs.is_empty());
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn file_uri_for_workspace_path_is_file_scheme() {
-        let tmp = tempfile::tempdir().unwrap();
-        std::fs::write(tmp.path().join("only.ur"), "").unwrap();
-        let uri = super::file_uri_for_workspace_path(tmp.path(), "only.ur").expect("uri");
+    fn file_uri_for_workspace_path_is_file_scheme() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
+        let tmp = tempfile::tempdir()?;
+        std::fs::write(tmp.path().join("only.ur"), "")?;
+        let uri =
+            super::file_uri_for_workspace_path(tmp.path(), "only.ur").with_context(|| "uri")?;
         assert!(uri.starts_with("file://"), "None mutant loses file: URI");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn workspace_edit_rename_carries_text_change() {
+    fn workspace_edit_rename_carries_text_change() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let range = Range {
             start: Position::new(0, 0),
             end: Position::new(0, 3),
         };
-        let edit = workspace_edit_rename("file:///tmp/r.ur", range, "new").expect("edit");
-        let DocumentChanges::Edits(edits) = edit.document_changes.expect("changes") else {
+        let edit =
+            workspace_edit_rename("file:///tmp/r.ur", range, "new").with_context(|| "edit")?;
+        let DocumentChanges::Edits(edits) = edit.document_changes.with_context(|| "changes")?
+        else {
             panic!("expected text edits");
         };
         assert!(!edits.is_empty());
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn selection_range_and_prepare_rename_align_on_word() {
+    fn selection_range_and_prepare_rename_align_on_word() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let buf = "val renamed =\n  0\n";
-        let sr = selection_range_at(buf, 0, 4).expect("range");
+        let sr = selection_range_at(buf, 0, 4).with_context(|| "range")?;
         assert_eq!(sr.range.start.line, 0);
-        let pr = prepare_rename(buf, 0, 4).expect("rename");
+        let pr = prepare_rename(buf, 0, 4).with_context(|| "rename")?;
         assert!(pr.end.character > pr.start.character);
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn signature_help_identifies_callee_before_paren() {
+    fn signature_help_identifies_callee_before_paren() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let elab: ElabFile = vec![val_binding("callee", "c.ur")];
         let line = "callee(";
         let labels = signature_help(Some(&elab), "c.ur", line, 0, line.len() as u32)
-            .expect("signature help");
+            .with_context(|| "signature help")?;
         assert!(!labels.is_empty());
         assert!(labels[0].contains("callee"));
+        Ok(()) // return success to the test harness
     }
 }

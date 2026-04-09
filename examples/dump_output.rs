@@ -44,8 +44,20 @@ fn main() {
 
     match ur::compiler::compile_to_outputs(urp_path, &mut settings) {
         Ok((c_code, sql_ddl)) => {
-            fs::write(c_out, c_code).expect("write C output");
-            fs::write(sql_out, sql_ddl).expect("write SQL output");
+            // Write generated C code to the requested output path; exit on I/O failure
+            if let Err(write_error) = fs::write(c_out, &c_code) {
+                writeln_stderr_line(&format!(
+                    "error: could not write C output to {c_out}: {write_error}"
+                ));
+                std::process::exit(1);
+            }
+            // Write generated SQL DDL to the requested output path; exit on I/O failure
+            if let Err(write_error) = fs::write(sql_out, &sql_ddl) {
+                writeln_stderr_line(&format!(
+                    "error: could not write SQL output to {sql_out}: {write_error}"
+                ));
+                std::process::exit(1);
+            }
         }
         Err(pipeline_error) => {
             let msg = cli_diagnostic_text(

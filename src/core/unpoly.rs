@@ -1089,7 +1089,9 @@ pub fn unpoly(file: File) -> File {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use anyhow::Context as _; // .context() on Option in tests
     use crate::error_types::Located;
+    use anyhow::Context as _;
 
     fn mk_con(c: Constructor) -> LocatedConstructor {
         Located::dummy(c)
@@ -1108,42 +1110,52 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn is_open_rel_at_depth_0() {
+    fn is_open_rel_at_depth_0() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // CRel(0) with no enclosing binders => open
         let c = mk_con(Constructor::Rel(0));
         assert!(is_open(&c));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn is_open_rel_inside_tcfun() {
+    fn is_open_rel_inside_tcfun() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // TCFun("a", k, CRel(0)) => CRel(0) is bound by the TCFun => closed
         let k = mk_kind(Kind::Type);
         let body = mk_con(Constructor::Rel(0));
         let c = mk_con(Constructor::TCFun("a".into(), Box::new(k), Box::new(body)));
         assert!(!is_open(&c));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn is_open_named_is_closed() {
+    fn is_open_named_is_closed() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let c = mk_con(Constructor::Named(42));
         assert!(!is_open(&c));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn is_open_rel_escapes_tcfun() {
+    fn is_open_rel_escapes_tcfun() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // TCFun("a", k, CRel(1)) => CRel(1) is free (only CRel(0) is bound)
         let k = mk_kind(Kind::Type);
         let body = mk_con(Constructor::Rel(1));
         let c = mk_con(Constructor::TCFun("a".into(), Box::new(k), Box::new(body)));
         assert!(is_open(&c));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn is_open_tfun_both_closed() {
+    fn is_open_tfun_both_closed() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let a = mk_con(Constructor::Named(1));
         let b = mk_con(Constructor::Named(2));
         let c = mk_con(Constructor::TFun(Box::new(a), Box::new(b)));
         assert!(!is_open(&c));
+        Ok(()) // return success to the test harness
     }
 
     // -----------------------------------------------------------------------
@@ -1151,23 +1163,28 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn sub_con_replaces_matching_rel() {
+    fn sub_con_replaces_matching_rel() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let sub = mk_con(Constructor::Named(99));
         let body = mk_con(Constructor::Rel(0));
         let result = sub_con_in_con(0, &sub, body);
         assert!(matches!(result.node, Constructor::Named(99)));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn sub_con_leaves_nonmatching_rel() {
+    fn sub_con_leaves_nonmatching_rel() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let sub = mk_con(Constructor::Named(99));
         let body = mk_con(Constructor::Rel(1));
         let result = sub_con_in_con(0, &sub, body);
         assert!(matches!(result.node, Constructor::Rel(1)));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn sub_con_in_tfun() {
+    fn sub_con_in_tfun() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let sub = mk_con(Constructor::Named(99));
         let a = mk_con(Constructor::Rel(0));
         let b = mk_con(Constructor::Named(5));
@@ -1180,6 +1197,7 @@ mod tests {
             }
             _ => panic!("Expected TFun"),
         }
+        Ok(()) // return success to the test harness
     }
 
     // -----------------------------------------------------------------------
@@ -1187,17 +1205,20 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn unravel_simple_named() {
+    fn unravel_simple_named() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let e = mk_exp(Expression::Named(10));
         let result = unravel_capp(&e);
         assert!(result.is_some());
-        let (id, cargs) = result.unwrap();
+        let (id, cargs) = result.context("expected unravel_capp to find a named head")?;
         assert_eq!(id, 10);
         assert!(cargs.is_empty());
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn unravel_capp_fails_on_abs() {
+    fn unravel_capp_fails_on_abs() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let body = mk_exp(Expression::Named(1));
         let k = mk_kind(Kind::Type);
         let e = mk_exp(Expression::CAbs("a".into(), Box::new(k), Box::new(body)));
@@ -1205,33 +1226,40 @@ mod tests {
         // Actually CApp wrapping it would fail
         let result = unravel_capp(&e);
         assert!(result.is_none());
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn unravel_capp_single_arg() {
+    fn unravel_capp_single_arg() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let named = mk_exp(Expression::Named(7));
         let c = mk_con(Constructor::Named(42));
         let e = mk_exp(Expression::CApp(Box::new(named), c.clone()));
         let result = unravel_capp(&e);
         assert!(result.is_some());
-        let (id, cargs) = result.unwrap();
+        let (id, cargs) =
+            result.context("expected unravel_capp to keep a single constructor argument")?;
         assert_eq!(id, 7);
         assert_eq!(cargs.len(), 1);
         assert!(matches!(cargs[0].node, Constructor::Named(42)));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn unravel_capp_two_args() {
+    fn unravel_capp_two_args() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let named = mk_exp(Expression::Named(3));
         let c1 = mk_con(Constructor::Named(10));
         let c2 = mk_con(Constructor::Named(20));
         let e1 = mk_exp(Expression::CApp(Box::new(named), c1));
         let e = mk_exp(Expression::CApp(Box::new(e1), c2));
-        let (id, cargs) = unravel_capp(&e).unwrap();
+        let (id, cargs) = unravel_capp(&e)
+            .context("expected unravel_capp to flatten nested constructor application")?;
         assert_eq!(id, 3);
         assert_eq!(cargs.len(), 2);
         assert!(matches!(cargs[0].node, Constructor::Named(10)));
         assert!(matches!(cargs[1].node, Constructor::Named(20)));
+        Ok(()) // return success to the test harness
     }
 
     // -----------------------------------------------------------------------
@@ -1239,19 +1267,23 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn trim_empty_cargs_returns_original() {
+    fn trim_empty_cargs_returns_original() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let _k = mk_kind(Kind::Type);
         let t = mk_con(Constructor::Named(1));
         let e = mk_exp(Expression::Named(1));
         let result = trim_iter(t.clone(), e.clone(), &[]);
         assert!(result.is_some());
-        let (rt, re) = result.unwrap();
+        let (rt, re) =
+            result.context("expected trim_iter to preserve empty constructor arguments")?;
         assert!(matches!(rt.node, Constructor::Named(1)));
         assert!(matches!(re.node, Expression::Named(1)));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn trim_peels_one_binder() {
+    fn trim_peels_one_binder() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // t = TCFun("a", Type, Named(1))  — the body after stripping is Named(1)
         // e = CAbs("a", Type, Named(2))
         let k = mk_kind(Kind::Type);
@@ -1271,14 +1303,16 @@ mod tests {
         let carg = mk_con(Constructor::Named(99));
         let result = trim_iter(t, e, &[carg]);
         assert!(result.is_some());
-        let (rt, re) = result.unwrap();
+        let (rt, re) = result.context("expected trim_iter to peel one constructor binder")?;
         // Body was Named(1)/Named(2) with no Rel references, so substitution is no-op
         assert!(matches!(rt.node, Constructor::Named(1)));
         assert!(matches!(re.node, Expression::Named(2)));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn trim_substitutes_rel() {
+    fn trim_substitutes_rel() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // t = TCFun("a", Type, Rel(0))   — body references the binder
         // e = CAbs("a", Type, Named(5))
         // cargs = [Named(42)]
@@ -1296,12 +1330,14 @@ mod tests {
         let carg = mk_con(Constructor::Named(42));
         let result = trim_iter(t, e, &[carg]);
         assert!(result.is_some());
-        let (rt, _re) = result.unwrap();
+        let (rt, _re) = result.context("expected trim_iter to substitute the bound constructor")?;
         assert!(matches!(rt.node, Constructor::Named(42)));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn trim_fails_on_mismatch() {
+    fn trim_fails_on_mismatch() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // t = Named(1) — not a TCFun, can't peel
         // e = CAbs("a", Type, Named(2))
         // cargs = [Named(99)]
@@ -1313,6 +1349,7 @@ mod tests {
         let carg = mk_con(Constructor::Named(99));
         let result = trim_iter(t, e, &[carg]);
         assert!(result.is_none());
+        Ok(()) // return success to the test harness
     }
 
     // -----------------------------------------------------------------------
@@ -1320,27 +1357,33 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn con_list_ordering_by_length() {
+    fn con_list_ordering_by_length() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let a = ConList(vec![mk_con(Constructor::Named(1))]);
         let b = ConList(vec![
             mk_con(Constructor::Named(1)),
             mk_con(Constructor::Named(2)),
         ]);
         assert_eq!(a.cmp(&b), Ordering::Less);
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn con_list_ordering_same_length_by_content() {
+    fn con_list_ordering_same_length_by_content() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let a = ConList(vec![mk_con(Constructor::Named(1))]);
         let b = ConList(vec![mk_con(Constructor::Named(2))]);
         assert_eq!(a.cmp(&b), Ordering::Less);
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn con_list_equal() {
+    fn con_list_equal() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let a = ConList(vec![mk_con(Constructor::Named(5))]);
         let b = ConList(vec![mk_con(Constructor::Named(5))]);
         assert_eq!(a.cmp(&b), Ordering::Equal);
+        Ok(()) // return success to the test harness
     }
 
     // -----------------------------------------------------------------------
@@ -1348,14 +1391,17 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn collect_cabs_kinds_none() {
+    fn collect_cabs_kinds_none() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let e = mk_exp(Expression::Named(1));
         let kinds = collect_cabs_kinds(&e);
         assert!(kinds.is_empty());
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn collect_cabs_kinds_two() {
+    fn collect_cabs_kinds_two() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let k1 = mk_kind(Kind::Type);
         let k2 = mk_kind(Kind::Name);
         let inner = mk_exp(Expression::Named(1));
@@ -1373,6 +1419,7 @@ mod tests {
         assert_eq!(kinds.len(), 2);
         assert!(matches!(kinds[0].node, Kind::Type));
         assert!(matches!(kinds[1].node, Kind::Name));
+        Ok(()) // return success to the test harness
     }
 
     // -----------------------------------------------------------------------
@@ -1380,7 +1427,8 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn unpoly_passthrough_non_poly() {
+    fn unpoly_passthrough_non_poly() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // A file with a single non-polymorphic Val: val f : int = 42
         let _k = mk_kind(Kind::Type);
         let ty = mk_con(Constructor::Named(0));
@@ -1390,6 +1438,7 @@ mod tests {
         let result = unpoly(file);
         assert_eq!(result.len(), 1);
         assert!(matches!(result[0].node, Declaration::Val(_, 1, _, _, _)));
+        Ok(()) // return success to the test harness
     }
 
     // -----------------------------------------------------------------------
@@ -1397,7 +1446,8 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn unpoly_poly_uncalled() {
+    fn unpoly_poly_uncalled() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // val id : ∀a. a → a = Λa. λx:a. x
         // (simplified as: CAbs("a", Type, Named(99)))
         // No calls to it — should produce same output
@@ -1422,5 +1472,6 @@ mod tests {
         let result = unpoly(file);
         // No specializations should be emitted
         assert_eq!(result.len(), 1);
+        Ok(()) // return success to the test harness
     }
 }
