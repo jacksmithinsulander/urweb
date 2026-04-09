@@ -851,6 +851,33 @@ fn read_cunif(r: &CUnifRef) -> Option<LocatedConstructor> {
     }
 }
 
+/// Upper bound on solved kind-unifier links peeled in one call.
+const PEEL_SOLVED_KIND_UNIF_CHAIN_MAX_STEPS: usize = 8192;
+
+/// Follow solved [`Kind::Unif`] / [`Kind::TupleUnif`] cells to a stable head.
+fn hnorm_kind(mut kind: LocatedKind) -> LocatedKind {
+    for _ in 0..PEEL_SOLVED_KIND_UNIF_CHAIN_MAX_STEPS {
+        let reference = match &kind.node {
+            Kind::Unif(_, _, reference) | Kind::TupleUnif(_, _, reference) => reference,
+            _ => return kind,
+        };
+        let guard = crate::compiler_diagnostics::lock_for_compile(
+            reference.as_ref(),
+            "type operations KUnif cell",
+        );
+        if let crate::elaborated::KUnif::Known(inner) = &*guard {
+            let next = *inner.clone();
+            drop(guard);
+            kind = next;
+        } else {
+            drop(guard);
+            return kind;
+        }
+    }
+    let span = kind.span.clone();
+    Located::new(Kind::Error, span)
+}
+
 /// Lift all free [`Constructor::Rel`] indices in `constructor` by `binder_count` (multi-binder `mlift`).
 ///
 /// # Arguments
@@ -1599,6 +1626,37 @@ pub fn cons_eq_simple(
     cons_eq_simple_normed(&left_normalized, &right_normalized)
 }
 
+fn kinds_eq_simple(left_kind: &LocatedKind, right_kind: &LocatedKind) -> bool {
+    let left_normalized = hnorm_kind(left_kind.clone());
+    let right_normalized = hnorm_kind(right_kind.clone());
+    match (&left_normalized.node, &right_normalized.node) {
+        (Kind::Rel(left_index), Kind::Rel(right_index)) => left_index == right_index,
+        (Kind::Type, Kind::Type) => true,
+        (Kind::Name, Kind::Name) => true,
+        (Kind::Record(left_row_kind), Kind::Record(right_row_kind)) => {
+            kinds_eq_simple(left_row_kind.as_ref(), right_row_kind.as_ref())
+        }
+        (Kind::Arrow(left_domain, left_range), Kind::Arrow(right_domain, right_range)) => {
+            kinds_eq_simple(left_domain.as_ref(), right_domain.as_ref())
+                && kinds_eq_simple(left_range.as_ref(), right_range.as_ref())
+        }
+        (Kind::Tuple(left_elements), Kind::Tuple(right_elements)) => {
+            left_elements.len() == right_elements.len()
+                && left_elements.iter().zip(right_elements.iter()).all(
+                    |(left_element, right_element)| kinds_eq_simple(left_element, right_element),
+                )
+        }
+        (Kind::Fun(_, left_body), Kind::Fun(_, right_body)) => {
+            kinds_eq_simple(left_body.as_ref(), right_body.as_ref())
+        }
+        (Kind::Unif(_, _, left_cell), Kind::Unif(_, _, right_cell)) => {
+            Arc::ptr_eq(&left_cell, &right_cell)
+        }
+        (Kind::Error, Kind::Error) => true,
+        _ => false,
+    }
+}
+
 fn cons_eq_simple_normed(left: &LocatedConstructor, right: &LocatedConstructor) -> bool {
     match (&left.node, &right.node) {
         (Constructor::Rel(left_index), Constructor::Rel(right_index)) => left_index == right_index,
@@ -1612,9 +1670,21 @@ fn cons_eq_simple_normed(left: &LocatedConstructor, right: &LocatedConstructor) 
         (
             Constructor::Abs(_, _left_kind, left_body),
             Constructor::Abs(_, _right_kind, right_body),
-        ) => {
-            // Kind equality would require a kind comparison; we skip that for simplicity.
+        ) => cons_eq_simple(left_body, right_body),
+        (Constructor::KAbs(_, left_body), Constructor::KAbs(_, right_body)) => {
             cons_eq_simple(left_body, right_body)
+        }
+        (
+            Constructor::KApp(left_functor, left_kind),
+            Constructor::KApp(right_functor, right_kind),
+        ) => cons_eq_simple(left_functor, right_functor) && kinds_eq_simple(left_kind, right_kind),
+        (
+            Constructor::TCFun(left_explicitness, _, left_kind, left_body),
+            Constructor::TCFun(right_explicitness, _, right_kind, right_body),
+        ) => {
+            left_explicitness == right_explicitness
+                && kinds_eq_simple(left_kind, right_kind)
+                && cons_eq_simple(left_body, right_body)
         }
         (Constructor::Name(left_name), Constructor::Name(right_name)) => left_name == right_name,
         (Constructor::Record(_, left_fields), Constructor::Record(_, right_fields)) => {
@@ -1646,9 +1716,21 @@ fn cons_eq_simple_normed(left: &LocatedConstructor, right: &LocatedConstructor) 
         (Constructor::TFun(left_dom, left_rng), Constructor::TFun(right_dom, right_rng)) => {
             cons_eq_simple(left_dom, right_dom) && cons_eq_simple(left_rng, right_rng)
         }
+        (
+            Constructor::TDisjoint(left_a, left_b, left_body),
+            Constructor::TDisjoint(right_a, right_b, right_body),
+        ) => {
+            cons_eq_simple(left_a, right_a)
+                && cons_eq_simple(left_b, right_b)
+                && cons_eq_simple(left_body, right_body)
+        }
         (Constructor::TRecord(left_row), Constructor::TRecord(right_row)) => {
             cons_eq_simple(left_row, right_row)
         }
+        (Constructor::TKFun(_, left_body), Constructor::TKFun(_, right_body)) => {
+            cons_eq_simple(left_body, right_body)
+        }
+        (Constructor::Error, Constructor::Error) => true,
         _ => false,
     }
 }

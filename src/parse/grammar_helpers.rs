@@ -356,7 +356,10 @@ pub fn sql_single_field_row(field_name: String, span: &Span) -> LocCon {
     row_record_constructor(
         vec![(
             sql_name_constructor(&field_name, span),
-            Located::new(Con::Wild(Box::new(Located::new(Kind::Type, span.clone()))), span.clone()),
+            Located::new(
+                Con::Wild(Box::new(Located::new(Kind::Type, span.clone()))),
+                span.clone(),
+            ),
         )],
         span,
     )

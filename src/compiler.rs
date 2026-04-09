@@ -351,45 +351,103 @@ fn append_urweb_native_libdir_fallback(link_cmd: &mut std::process::Command) {
 /// Missing boot tree under `-boot` / `boot_linking` — message names `URWEB_BOOT_ROOT` and `lib/ur/basis.urs`.
 pub fn apply_boot_settings(job: &mut Job, settings: &mut Settings) -> Result<(), String> {
     #[cfg(test)]
-    APPLY_BOOT_SETTINGS_CALLS.fetch_add(1, Ordering::SeqCst);
+    APPLY_BOOT_SETTINGS_CALLS.fetch_add(1, Ordering::SeqCst); // Track invocations for mutation tests.
     if !settings.boot_linking {
-        return Ok(());
+        return Ok(()); // Nothing to do when boot linking is disabled.
     }
     let Some(root) = resolve_boot_root() else {
+        // Boot root not found via env, exe parents, or cwd — report a clear error.
         return Err(format!(
             "-boot requires the Ur/Web library tree (lib/ur/basis.urs). Set {} to the checkout root, or run the compiler from that tree.",
             URWEB_BOOT_ROOT_ENV
         ));
     };
-    let lib_ur = root.join("lib/ur");
-    job.basis_lib_dir = Some(lib_ur);
+    apply_boot_settings_from_root(job, settings, &root); // Populate job and settings from the resolved root.
+    Ok(())
+}
+
+/// Apply boot settings using a caller-supplied checkout root, bypassing [`URWEB_BOOT_ROOT_ENV`] lookup.
+///
+/// Identical effect to [`apply_boot_settings`] but accepts an explicit root path instead of reading
+/// the environment variable. This allows concurrent calls from multiple test threads without any
+/// shared global state mutation (no `set_var` / `remove_var` needed).
+///
+/// # Parameters
+///
+/// * `job` — Project job to set `basis_lib_dir` on.
+/// * `settings` — Settings to populate `config_include`, `config_lib`, and library paths on.
+/// * `root` — Path to the Ur/Web checkout root; must contain `lib/ur/basis.urs`.
+///
+/// # Returns
+///
+/// `Ok(())` when `boot_linking` is false (no-op) or when root successfully applied.
+///
+/// # Errors
+///
+/// Returns `Err` when `boot_linking` is true and `root/lib/ur/basis.urs` does not exist.
+pub fn apply_boot_settings_with_explicit_root(
+    job: &mut Job,
+    settings: &mut Settings,
+    root: &Path,
+) -> Result<(), String> {
+    #[cfg(test)]
+    APPLY_BOOT_SETTINGS_CALLS.fetch_add(1, Ordering::SeqCst); // Same mutation-test instrumentation as apply_boot_settings.
+    if !settings.boot_linking {
+        return Ok(()); // Boot linking disabled — nothing to apply.
+    }
+    if !root.join("lib/ur/basis.urs").is_file() {
+        // Explicit root does not contain the expected Basis library — fail clearly.
+        return Err(format!(
+            "-boot requires the Ur/Web library tree (lib/ur/basis.urs) at the provided root: {}",
+            root.display()
+        ));
+    }
+    apply_boot_settings_from_root(job, settings, root); // Populate job and settings from the caller-supplied root.
+    Ok(())
+}
+
+/// Populate `job.basis_lib_dir` and empty `settings.config_*` fields from a verified checkout root.
+///
+/// Shared implementation called by both [`apply_boot_settings`] and
+/// [`apply_boot_settings_with_explicit_root`] after root resolution. Assumes `root/lib/ur/basis.urs`
+/// exists (callers verify before dispatching here).
+///
+/// # Parameters
+///
+/// * `job` — Project job to set `basis_lib_dir` on.
+/// * `settings` — Settings to conditionally fill `config_include`, `config_lib`, and library paths.
+/// * `root` — Verified Ur/Web checkout root.
+fn apply_boot_settings_from_root(job: &mut Job, settings: &mut Settings, root: &Path) {
+    let lib_ur = root.join("lib/ur"); // Basis library directory: always set regardless of prior value.
+    job.basis_lib_dir = Some(lib_ur); // Overwrite any stale basis_lib_dir from the .urp job file.
     if settings.config_include.is_empty() {
-        let inc = root.join("include/urweb");
+        let inc = root.join("include/urweb"); // C header directory for the urweb runtime.
         if inc.exists() {
-            settings.config_include = inc.to_string_lossy().into_owned();
+            settings.config_include = inc.to_string_lossy().into_owned(); // Set only when the directory exists.
         }
     }
     if settings.config_lib.is_empty() {
-        let lib_c = root.join("src/c");
+        let lib_c = root.join("src/c"); // C source/library directory.
         if lib_c.exists() {
-            settings.config_lib = lib_c.to_string_lossy().into_owned();
+            settings.config_lib = lib_c.to_string_lossy().into_owned(); // Set only when the directory exists.
         }
     }
     if settings.config_bearssl_libs.is_empty() {
-        let bear_a = root.join("vendor/BearSSL/build/libbearssl.a");
+        let bear_a = root.join("vendor/BearSSL/build/libbearssl.a"); // Pre-built BearSSL static library.
         if bear_a.exists() {
             settings.config_bearssl_libs = bear_a.to_string_lossy().into_owned();
+            // Set only when the archive exists.
         }
     }
     if settings.config_libunistring_libs.is_empty() {
-        let uni = std::path::Path::new("/opt/homebrew/lib/libunistring.a");
+        let uni = std::path::Path::new("/opt/homebrew/lib/libunistring.a"); // Homebrew static libunistring (macOS).
         if uni.exists() {
             settings.config_libunistring_libs = uni.to_string_lossy().into_owned();
+        // Use static archive when available.
         } else {
-            settings.config_libunistring_libs = "-lunistring".into();
+            settings.config_libunistring_libs = "-lunistring".into(); // Fall back to dynamic linking flag.
         }
     }
-    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -2400,6 +2458,77 @@ mod tests {
             .as_deref()
             .expect("apply_boot_settings sets basis"); // overwritten from boot root
         assert_paths_canonically_equal(configured_basis, basis_dir.as_path()); // canonical root/lib/ur vs temp paths
+    }
+
+    /// [`super::apply_boot_settings_with_explicit_root`] must set `basis_lib_dir` from the supplied root.
+    ///
+    /// Catches mutants: `replace apply_boot_settings_with_explicit_root body with Ok(())`,
+    /// `replace apply_boot_settings_from_root call with ()`, `delete basis_lib_dir assignment`.
+    #[test]
+    fn apply_boot_settings_with_explicit_root_sets_basis_lib_dir() {
+        let tmp = tempfile::tempdir().unwrap(); // Temp checkout root with minimal Basis layout.
+        let basis_dir = tmp.path().join("lib/ur"); // Expected basis_lib_dir after application.
+        std::fs::create_dir_all(&basis_dir).unwrap(); // Create the library directory.
+        std::fs::write(basis_dir.join("basis.urs"), "(* test sig *)").unwrap(); // Required sentinel file.
+        let mut job = Job {
+            basis_lib_dir: None, // Start with no basis — must be populated by the function.
+            ..Default::default()
+        };
+        let mut settings = Settings {
+            boot_linking: true, // Boot linking on — function must apply the root.
+            ..Default::default()
+        };
+        apply_boot_settings_with_explicit_root(&mut job, &mut settings, tmp.path())
+            .expect("explicit root with valid basis.urs must succeed"); // Catches Ok(()) body-replacement mutant.
+        let configured_basis = job
+            .basis_lib_dir
+            .as_deref()
+            .expect("apply_boot_settings_with_explicit_root must set basis_lib_dir"); // Catches no-op body mutant.
+        assert_paths_canonically_equal(configured_basis, basis_dir.as_path()); // Root/lib/ur must match temp path.
+    }
+
+    /// [`super::apply_boot_settings_with_explicit_root`] must no-op when `boot_linking` is false.
+    ///
+    /// Catches `replace !settings.boot_linking with true/false` and
+    /// `replace early return Ok(()) with Err(...)` mutants.
+    #[test]
+    fn apply_boot_settings_with_explicit_root_noop_when_boot_linking_false() {
+        let tmp = tempfile::tempdir().unwrap(); // Root that would be valid, but should not be applied.
+        let basis_dir = tmp.path().join("lib/ur"); // Would be set as basis_lib_dir if applied.
+        std::fs::create_dir_all(&basis_dir).unwrap(); // Create layout just in case function ignores the flag.
+        std::fs::write(basis_dir.join("basis.urs"), "(* test sig *)").unwrap(); // Present but must not be used.
+        let mut job = Job {
+            basis_lib_dir: None, // Must remain None after calling with boot_linking=false.
+            ..Default::default()
+        };
+        let mut settings = Settings {
+            boot_linking: false, // Boot linking off — function must return Ok without modifying job.
+            ..Default::default()
+        };
+        apply_boot_settings_with_explicit_root(&mut job, &mut settings, tmp.path())
+            .expect("boot_linking=false must return Ok(())"); // Catches Err-returning mutant.
+        assert!(
+            job.basis_lib_dir.is_none(),
+            "boot_linking=false must not set basis_lib_dir (catches noop-guard mutant)"
+        ); // Confirms early-return skipped the assignment.
+    }
+
+    /// [`super::apply_boot_settings_with_explicit_root`] must return `Err` when root lacks `basis.urs`.
+    ///
+    /// Catches `replace is_file() check with true` and `replace Err(…) with Ok(())` mutants.
+    #[test]
+    fn apply_boot_settings_with_explicit_root_err_when_basis_absent() {
+        let tmp = tempfile::tempdir().unwrap(); // Root with no lib/ur/basis.urs.
+        let mut job = Job::default(); // Unmodified job; should remain so after error.
+        let mut settings = Settings {
+            boot_linking: true, // Boot linking on — but Basis is missing, so must return Err.
+            ..Default::default()
+        };
+        let result = apply_boot_settings_with_explicit_root(&mut job, &mut settings, tmp.path());
+        assert!(
+            result.is_err(),
+            "missing lib/ur/basis.urs must cause Err (catches always-Ok mutant)"
+        ); // Confirms the is_file guard fires correctly.
     }
 
     /// [`super::ur_disk_paths_same`] is used for LSP overlay selection; `true`/`false` mutants mis-apply editor buffers.

@@ -1,0 +1,19 @@
+# nextest configuration for the ur workspace.
+# Docs: https://nexte.st/book/configuration.html
+#
+# Run with: cargo nextest run --workspace
+# Or via the alias: cargo nt --workspace
+
+[profile.default]
+# Use all available CPUs for test parallelism.
+test-threads = "num-cpus"
+
+# Corpus elaboration tests spawn OS threads with large (16 MiB) stacks internally.
+# Each test takes a few seconds; keep a generous timeout so CI does not flake.
+slow-timeout = { period = "60s", terminate-after = 3 }
+
+[profile.ci]
+# In CI, use the same parallelism but fail fast on first failure to save time.
+test-threads = "num-cpus"
+fail-fast = true
+slow-timeout = { period = "60s", terminate-after = 3 }

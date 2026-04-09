@@ -191,7 +191,10 @@ fn rewrite_parenthesized_sql_forms(source_text: &str) -> String {
                     || starts_with_keyword(bytes, lookahead, b"UPDATE")
                     || starts_with_keyword(bytes, lookahead, b"WHERE")
                     || starts_with_keyword(bytes, lookahead, b"SQL");
-                match (is_sql_form, find_matching_rparen(source_text, bytes, index, byte_length)) {
+                match (
+                    is_sql_form,
+                    find_matching_rparen(source_text, bytes, index, byte_length),
+                ) {
                     (true, Some(close_index)) => {
                         let payload = source_text[lookahead..close_index - 1].trim();
                         output_text.push('(');
@@ -282,7 +285,9 @@ fn parse_constructor_fragment(source_text: &str) -> Result<LocCon, String> {
         return Err(format!("constructor fragment parse failed: {errors:?}"));
     };
     match &file[0].node {
-        Decl::Con(name, _, constructor) if name == SYNTHETIC_SQL_CON_BINDER => Ok(constructor.clone()),
+        Decl::Con(name, _, constructor) if name == SYNTHETIC_SQL_CON_BINDER => {
+            Ok(constructor.clone())
+        }
         _ => Err("constructor fragment wrapper declaration mismatch".to_string()),
     }
 }
@@ -306,7 +311,10 @@ fn trim_wrapping_parens(source_text: &str) -> &str {
 fn is_simple_sql_atom(source_text: &str) -> bool {
     !source_text.chars().any(|ch| {
         ch.is_whitespace()
-            || matches!(ch, '(' | ')' | '\'' | '"' | '+' | '-' | '*' | '/' | '=' | '>' | '<')
+            || matches!(
+                ch,
+                '(' | ')' | '\'' | '"' | '+' | '-' | '*' | '/' | '=' | '>' | '<'
+            )
     })
 }
 
@@ -349,7 +357,10 @@ fn split_top_level(source_text: &str, separator: &str) -> Option<(String, String
                 brace_depth -= 1;
                 index += 1;
             }
-            _ if paren_depth == 0 && brace_depth == 0 && starts_with_keyword(bytes, index, separator.as_bytes()) => {
+            _ if paren_depth == 0
+                && brace_depth == 0
+                && starts_with_keyword(bytes, index, separator.as_bytes()) =>
+            {
                 let left = trimmed[..index].trim().to_string();
                 let right = trimmed[index + separator.len()..].trim().to_string();
                 return Some((left, right));
@@ -425,7 +436,13 @@ fn parse_sql_value(source_text: &str, span: &Span) -> Result<LocExp, String> {
         let left_expression = parse_sql_value(&left, span)?;
         let right_expression = parse_sql_value(&right, span)?;
         return Ok(Located::new(
-            crate::parse::grammar_helpers::sql_binary_expression("or", left_expression, right_expression, span).node,
+            crate::parse::grammar_helpers::sql_binary_expression(
+                "or",
+                left_expression,
+                right_expression,
+                span,
+            )
+            .node,
             span.clone(),
         ));
     }
@@ -433,7 +450,13 @@ fn parse_sql_value(source_text: &str, span: &Span) -> Result<LocExp, String> {
         let left_expression = parse_sql_value(&left, span)?;
         let right_expression = parse_sql_value(&right, span)?;
         return Ok(Located::new(
-            crate::parse::grammar_helpers::sql_binary_expression("and", left_expression, right_expression, span).node,
+            crate::parse::grammar_helpers::sql_binary_expression(
+                "and",
+                left_expression,
+                right_expression,
+                span,
+            )
+            .node,
             span.clone(),
         ));
     }
@@ -465,12 +488,16 @@ fn parse_sql_value(source_text: &str, span: &Span) -> Result<LocExp, String> {
         ));
     }
     if trimmed == "CURRENT_TIMESTAMP" {
-        return Ok(crate::parse::grammar_helpers::sql_current_timestamp_expression(
+        return Ok(crate::parse::grammar_helpers::sql_current_timestamp_expression(span));
+    }
+    if trimmed == "COUNT(sql_star)"
+        || trimmed == "COUNT( sql_star )"
+        || trimmed == "COUNT(*)"
+        || trimmed == "COUNT( * )"
+    {
+        return Ok(crate::parse::grammar_helpers::sql_count_all_expression(
             span,
         ));
-    }
-    if trimmed == "COUNT(sql_star)" || trimmed == "COUNT( sql_star )" || trimmed == "COUNT(*)" || trimmed == "COUNT( * )" {
-        return Ok(crate::parse::grammar_helpers::sql_count_all_expression(span));
     }
     if let Ok(integer_value) = trimmed.parse::<i64>() {
         return Ok(crate::parse::grammar_helpers::sql_integer_expression(
@@ -524,7 +551,10 @@ fn parse_sql_value(source_text: &str, span: &Span) -> Result<LocExp, String> {
             .map(|first_char| first_char.is_ascii_alphabetic())
             .unwrap_or(false)
         {
-            return Ok(sql_default_table_field_expression(trimmed.to_string(), span));
+            return Ok(sql_default_table_field_expression(
+                trimmed.to_string(),
+                span,
+            ));
         }
     }
     if let Ok(expression) = parse_expression_fragment(trimmed) {
@@ -607,9 +637,11 @@ fn parse_from_clause(source_text: &str, span: &Span) -> Result<(Vec<String>, Loc
     let trimmed = source_text.trim();
     let alias_parse = split_top_level(trimmed, "AS");
     match alias_parse {
-        Some((table_name, alias_name)) => {
-            Ok(sql_table_reference_with_alias(table_name, Some(alias_name), span))
-        }
+        Some((table_name, alias_name)) => Ok(sql_table_reference_with_alias(
+            table_name,
+            Some(alias_name),
+            span,
+        )),
         None => Ok(sql_table_reference_with_alias(
             trimmed.to_string(),
             None,
@@ -680,7 +712,9 @@ fn parse_insert_payload(source_text: &str, span: &Span) -> Result<Exp, String> {
     for value_part in split_top_level_commas(value_text) {
         values.push(parse_sql_value(&value_part, span)?);
     }
-    Ok(desugar_sql_insert_expression(table_name, fields, values, span))
+    Ok(desugar_sql_insert_expression(
+        table_name, fields, values, span,
+    ))
 }
 
 fn parse_delete_payload(source_text: &str, span: &Span) -> Result<Exp, String> {
@@ -742,14 +776,17 @@ fn parse_sql_payload(payload: &str, span: &Span) -> Result<Exp, String> {
 
 fn decode_sql_placeholder(expression: &Exp) -> Option<(String, Span)> {
     match expression {
-        Exp::App(function_expression, argument_expression) => match (&function_expression.node, &argument_expression.node) {
-            (Exp::Var(module_path, function_name, Inference::Infer), Exp::Prim(Prim::String(StringMode::Normal, payload)))
-                if module_path.is_empty() && function_name == SQL_PLACEHOLDER_NAME =>
-            {
-                Some((payload.clone(), argument_expression.span.clone()))
+        Exp::App(function_expression, argument_expression) => {
+            match (&function_expression.node, &argument_expression.node) {
+                (
+                    Exp::Var(module_path, function_name, Inference::Infer),
+                    Exp::Prim(Prim::String(StringMode::Normal, payload)),
+                ) if module_path.is_empty() && function_name == SQL_PLACEHOLDER_NAME => {
+                    Some((payload.clone(), argument_expression.span.clone()))
+                }
+                _ => None,
             }
-            _ => None,
-        },
+        }
         _ => None,
     }
 }
@@ -772,9 +809,9 @@ fn repair_expression(expression: &mut LocExp) -> Result<(), String> {
                 repair_expression(field_expression)?;
             }
         }
-        Exp::Field(inner, _)
-        | Exp::Cut(inner, _)
-        | Exp::CutMulti(inner, _) => repair_expression(inner)?,
+        Exp::Field(inner, _) | Exp::Cut(inner, _) | Exp::CutMulti(inner, _) => {
+            repair_expression(inner)?
+        }
         Exp::Concat(left, right) | Exp::Infix(_, left, right) => {
             repair_expression(left)?;
             repair_expression(right)?;
@@ -788,7 +825,9 @@ fn repair_expression(expression: &mut LocExp) -> Result<(), String> {
         Exp::Let(declarations, body) => {
             for declaration in declarations {
                 match &mut declaration.node {
-                    crate::source::EDecl::Val(_, bound_expression) => repair_expression(bound_expression)?,
+                    crate::source::EDecl::Val(_, bound_expression) => {
+                        repair_expression(bound_expression)?
+                    }
                     crate::source::EDecl::ValRec(bindings) => {
                         for (_, _, bound_expression) in bindings {
                             repair_expression(bound_expression)?;
@@ -821,7 +860,8 @@ pub fn repair_sql_placeholders_in_file(file: &mut File) -> Result<(), String> {
                 repair_expression(first_expression)?;
                 repair_expression(second_expression)?;
             }
-            Decl::Index(first_expression, second_expression, _) | Decl::Task(first_expression, second_expression) => {
+            Decl::Index(first_expression, second_expression, _)
+            | Decl::Task(first_expression, second_expression) => {
                 repair_expression(first_expression)?;
                 repair_expression(second_expression)?;
             }

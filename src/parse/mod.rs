@@ -3205,4 +3205,423 @@ con folder = K ==> fn r :: {K} =>
         tracing::debug!(pos, slice = ?pre.get(pos..pos + 1), "top.ur preprocess byte");
         tracing::debug!(pos, context = ?&pre[start..end], "top.ur preprocess context");
     }
+
+    #[test]
+    #[cfg(generated_parser)]
+    fn parse_post_fields_fun_desugars_without_spurious_constructor_annotations() {
+        fn has_suspicious_arg_annotation_in_con(constructor: &crate::source::LocCon) -> bool {
+            match &constructor.node {
+                crate::source::Con::Annot(inner_constructor, _) => {
+                    has_suspicious_arg_annotation_in_con(inner_constructor)
+                }
+                crate::source::Con::App(function_constructor, argument_constructor) => {
+                    matches!(
+                        (&function_constructor.node, &argument_constructor.node),
+                        (
+                            crate::source::Con::Var(module_path, _),
+                            crate::source::Con::Var(argument_module_path, argument_name),
+                        ) if module_path.is_empty()
+                            && argument_module_path.is_empty()
+                            && argument_name == "_arg"
+                    ) || has_suspicious_arg_annotation_in_con(function_constructor)
+                        || has_suspicious_arg_annotation_in_con(argument_constructor)
+                }
+                crate::source::Con::TFun(left, right) | crate::source::Con::Concat(left, right) => {
+                    has_suspicious_arg_annotation_in_con(left)
+                        || has_suspicious_arg_annotation_in_con(right)
+                }
+                crate::source::Con::TDisjoint(left, right, body) => {
+                    has_suspicious_arg_annotation_in_con(left)
+                        || has_suspicious_arg_annotation_in_con(right)
+                        || has_suspicious_arg_annotation_in_con(body)
+                }
+                crate::source::Con::TCFun(_, _, _, body) => {
+                    has_suspicious_arg_annotation_in_con(body)
+                }
+                crate::source::Con::TRecord(inner)
+                | crate::source::Con::KAbs(_, inner)
+                | crate::source::Con::TKFun(_, inner) => {
+                    has_suspicious_arg_annotation_in_con(inner)
+                }
+                crate::source::Con::Record(fields) => {
+                    fields.iter().any(|(field_name, field_type)| {
+                        has_suspicious_arg_annotation_in_con(field_name)
+                            || has_suspicious_arg_annotation_in_con(field_type)
+                    })
+                }
+                crate::source::Con::Proj(inner, _) => has_suspicious_arg_annotation_in_con(inner),
+                _ => false,
+            }
+        }
+
+        fn has_suspicious_arg_annotation_in_pat(pattern: &crate::source::LocPat) -> bool {
+            match &pattern.node {
+                crate::source::Pat::Annot(inner_pattern, annotation_constructor) => {
+                    has_suspicious_arg_annotation_in_pat(inner_pattern)
+                        || has_suspicious_arg_annotation_in_con(annotation_constructor)
+                }
+                crate::source::Pat::Con(_, _, inner_pattern) => {
+                    inner_pattern.as_ref().is_some_and(|inner_pattern| {
+                        has_suspicious_arg_annotation_in_pat(inner_pattern)
+                    })
+                }
+                crate::source::Pat::Record(fields, _) => fields
+                    .iter()
+                    .any(|(_, field_pattern)| has_suspicious_arg_annotation_in_pat(field_pattern)),
+                _ => false,
+            }
+        }
+
+        fn has_suspicious_arg_annotation_in_exp(expression: &crate::source::LocExp) -> bool {
+            match &expression.node {
+                crate::source::Exp::Abs(_, annotation, body) => {
+                    annotation
+                        .as_ref()
+                        .is_some_and(has_suspicious_arg_annotation_in_con)
+                        || has_suspicious_arg_annotation_in_exp(body)
+                }
+                crate::source::Exp::App(left, right)
+                | crate::source::Exp::Concat(left, right)
+                | crate::source::Exp::Infix(_, left, right) => {
+                    has_suspicious_arg_annotation_in_exp(left)
+                        || has_suspicious_arg_annotation_in_exp(right)
+                }
+                crate::source::Exp::CAbs(_, _, _, body) | crate::source::Exp::KAbs(_, body) => {
+                    has_suspicious_arg_annotation_in_exp(body)
+                }
+                crate::source::Exp::CApp(inner_expression, constructor)
+                | crate::source::Exp::Field(inner_expression, constructor)
+                | crate::source::Exp::Cut(inner_expression, constructor)
+                | crate::source::Exp::Annot(inner_expression, constructor) => {
+                    has_suspicious_arg_annotation_in_exp(inner_expression)
+                        || has_suspicious_arg_annotation_in_con(constructor)
+                }
+                crate::source::Exp::Disjoint(_, _, inner_expression)
+                | crate::source::Exp::DisjointApp(inner_expression)
+                | crate::source::Exp::CutMulti(inner_expression, _) => {
+                    has_suspicious_arg_annotation_in_exp(inner_expression)
+                }
+                crate::source::Exp::Case(scrutinee, branches) => {
+                    has_suspicious_arg_annotation_in_exp(scrutinee)
+                        || branches.iter().any(|(pattern, branch_expression)| {
+                            has_suspicious_arg_annotation_in_pat(pattern)
+                                || has_suspicious_arg_annotation_in_exp(branch_expression)
+                        })
+                }
+                crate::source::Exp::Let(declarations, body) => {
+                    declarations
+                        .iter()
+                        .any(|declaration| match &declaration.node {
+                            crate::source::EDecl::Val(pattern, bound_expression) => {
+                                has_suspicious_arg_annotation_in_pat(pattern)
+                                    || has_suspicious_arg_annotation_in_exp(bound_expression)
+                            }
+                            crate::source::EDecl::ValRec(bindings) => {
+                                bindings.iter().any(|(_, annotation, bound_expression)| {
+                                    annotation
+                                        .as_ref()
+                                        .is_some_and(has_suspicious_arg_annotation_in_con)
+                                        || has_suspicious_arg_annotation_in_exp(bound_expression)
+                                })
+                            }
+                        })
+                        || has_suspicious_arg_annotation_in_exp(body)
+                }
+                crate::source::Exp::Record(fields, _) => {
+                    fields.iter().any(|(field_name, field_value)| {
+                        has_suspicious_arg_annotation_in_con(field_name)
+                            || has_suspicious_arg_annotation_in_exp(field_value)
+                    })
+                }
+                _ => false,
+            }
+        }
+
+        let source_text = concat!(
+            "fun postFields pb =\n",
+            "    let\n",
+            "        fun postFields' s =\n",
+            "            case firstFormField s of\n",
+            "                None => []\n",
+            "              | Some f => (fieldName f, fieldValue f) :: postFields' (remainingFields f)\n",
+            "    in\n",
+            "        case postType pb of\n",
+            "            \"application/x-www-form-urlencoded\" => postFields' (postData pb)\n",
+            "          | _ => error <xml>Tried to get POST fields, but MIME type is not \"application/x-www-form-urlencoded\"</xml>\n",
+            "    end\n",
+        );
+        let mut errors = ErrorReporter::new_silent();
+        let parsed = parse_ur(
+            "post_fields.ur",
+            source_text,
+            &mut errors,
+            crate::db::ProjectDb::default(),
+        )
+        .expect("postFields snippet should parse");
+        assert!(!errors.has_errors(), "unexpected parse errors");
+        let crate::source::Decl::ValRec(outer_bindings) = &parsed[0].node else {
+            panic!(
+                "expected outer fun desugaring to ValRec, got {:?}",
+                parsed[0].node
+            );
+        };
+        assert_eq!(outer_bindings.len(), 1);
+        assert_eq!(outer_bindings[0].0, "postFields");
+        assert!(outer_bindings[0].1.is_none());
+        let crate::source::Exp::Abs(_, None, outer_body) = &outer_bindings[0].2.node else {
+            panic!(
+                "expected outer fun body to be an unannotated lambda after desugaring, got {:?}",
+                outer_bindings[0].2.node
+            );
+        };
+        let crate::source::Exp::Let(local_decls, _) = &outer_body.node else {
+            panic!(
+                "expected outer body to start with let for local postFields', got {:?}",
+                outer_body.node
+            );
+        };
+        let crate::source::EDecl::ValRec(inner_bindings) = &local_decls[0].node else {
+            panic!(
+                "expected local fun desugaring to EDecl::ValRec, got {:?}",
+                local_decls[0].node
+            );
+        };
+        assert_eq!(inner_bindings.len(), 1);
+        assert_eq!(inner_bindings[0].0, "postFields'");
+        assert!(inner_bindings[0].1.is_none());
+        assert!(
+            !parsed.iter().any(|declaration| match &declaration.node {
+                crate::source::Decl::Val(pattern, expression) => {
+                    has_suspicious_arg_annotation_in_pat(pattern)
+                        || has_suspicious_arg_annotation_in_exp(expression)
+                }
+                crate::source::Decl::ValRec(bindings) =>
+                    bindings.iter().any(|(_, annotation, expression)| {
+                        annotation
+                            .as_ref()
+                            .is_some_and(has_suspicious_arg_annotation_in_con)
+                            || has_suspicious_arg_annotation_in_exp(expression)
+                    },),
+                _ => false,
+            }),
+            "postFields parse tree should not contain synthesized constructor apps to `_arg`: {:?}",
+            parsed
+        );
+    }
+
+    #[test]
+    #[cfg(generated_parser)]
+    fn parse_parenthesized_annotated_fun_params_stay_direct_lambdas() {
+        let source_text = "fun demo (x : bool) (y : string) = x\n";
+        let mut errors = ErrorReporter::new_silent();
+        let parsed = parse_ur(
+            "annotated_fun_params.ur",
+            source_text,
+            &mut errors,
+            crate::db::ProjectDb::default(),
+        )
+        .expect("annotated fun params should parse");
+        assert!(!errors.has_errors(), "unexpected parse errors");
+        let crate::source::Decl::ValRec(bindings) = &parsed[0].node else {
+            panic!(
+                "expected fun desugaring to ValRec, got {:?}",
+                parsed[0].node
+            );
+        };
+        assert_eq!(bindings.len(), 1);
+        let (_, _, outer_body) = &bindings[0];
+        let crate::source::Exp::Abs(outer_name, Some(outer_annotation), inner_body) =
+            &outer_body.node
+        else {
+            panic!(
+                "expected first parenthesized annotated param to become direct lambda, got {:?}",
+                outer_body.node
+            );
+        };
+        assert_eq!(outer_name, "x");
+        assert!(
+            matches!(outer_annotation.node, crate::source::Con::Var(ref module_path, ref name) if module_path.is_empty() && name == "bool"),
+            "expected bool annotation on first parameter, got {:?}",
+            outer_annotation
+        );
+        let crate::source::Exp::Abs(inner_name, Some(inner_annotation), body) = &inner_body.node
+        else {
+            panic!(
+                "expected second parenthesized annotated param to become direct lambda, got {:?}",
+                inner_body.node
+            );
+        };
+        assert_eq!(inner_name, "y");
+        assert!(
+            matches!(inner_annotation.node, crate::source::Con::Var(ref module_path, ref name) if module_path.is_empty() && name == "string"),
+            "expected string annotation on second parameter, got {:?}",
+            inner_annotation
+        );
+        assert!(
+            !has_suspicious_arg_annotation_in_exp(body),
+            "parenthesized annotated params should not synthesize `_arg` constructor apps: {:?}",
+            parsed
+        );
+
+        fn has_suspicious_arg_annotation_in_con(constructor: &crate::source::LocCon) -> bool {
+            match &constructor.node {
+                crate::source::Con::Annot(inner_constructor, _) => {
+                    has_suspicious_arg_annotation_in_con(inner_constructor)
+                }
+                crate::source::Con::App(function_constructor, argument_constructor) => {
+                    matches!(
+                        (&function_constructor.node, &argument_constructor.node),
+                        (
+                            crate::source::Con::Var(module_path, _),
+                            crate::source::Con::Var(argument_module_path, argument_name),
+                        ) if module_path.is_empty()
+                            && argument_module_path.is_empty()
+                            && argument_name == "_arg"
+                    ) || has_suspicious_arg_annotation_in_con(function_constructor)
+                        || has_suspicious_arg_annotation_in_con(argument_constructor)
+                }
+                crate::source::Con::TFun(left, right) | crate::source::Con::Concat(left, right) => {
+                    has_suspicious_arg_annotation_in_con(left)
+                        || has_suspicious_arg_annotation_in_con(right)
+                }
+                crate::source::Con::TDisjoint(left, right, body) => {
+                    has_suspicious_arg_annotation_in_con(left)
+                        || has_suspicious_arg_annotation_in_con(right)
+                        || has_suspicious_arg_annotation_in_con(body)
+                }
+                crate::source::Con::TCFun(_, _, _, body) => {
+                    has_suspicious_arg_annotation_in_con(body)
+                }
+                crate::source::Con::TRecord(inner)
+                | crate::source::Con::KAbs(_, inner)
+                | crate::source::Con::TKFun(_, inner) => {
+                    has_suspicious_arg_annotation_in_con(inner)
+                }
+                crate::source::Con::Record(fields) => {
+                    fields.iter().any(|(field_name, field_type)| {
+                        has_suspicious_arg_annotation_in_con(field_name)
+                            || has_suspicious_arg_annotation_in_con(field_type)
+                    })
+                }
+                crate::source::Con::Proj(inner, _) => has_suspicious_arg_annotation_in_con(inner),
+                _ => false,
+            }
+        }
+
+        fn has_suspicious_arg_annotation_in_exp(expression: &crate::source::LocExp) -> bool {
+            match &expression.node {
+                crate::source::Exp::Abs(_, annotation, body) => {
+                    annotation
+                        .as_ref()
+                        .is_some_and(has_suspicious_arg_annotation_in_con)
+                        || has_suspicious_arg_annotation_in_exp(body)
+                }
+                crate::source::Exp::App(left, right)
+                | crate::source::Exp::Concat(left, right)
+                | crate::source::Exp::Infix(_, left, right) => {
+                    has_suspicious_arg_annotation_in_exp(left)
+                        || has_suspicious_arg_annotation_in_exp(right)
+                }
+                crate::source::Exp::CAbs(_, _, _, body) | crate::source::Exp::KAbs(_, body) => {
+                    has_suspicious_arg_annotation_in_exp(body)
+                }
+                crate::source::Exp::CApp(inner_expression, constructor)
+                | crate::source::Exp::Field(inner_expression, constructor)
+                | crate::source::Exp::Cut(inner_expression, constructor)
+                | crate::source::Exp::Annot(inner_expression, constructor) => {
+                    has_suspicious_arg_annotation_in_exp(inner_expression)
+                        || has_suspicious_arg_annotation_in_con(constructor)
+                }
+                crate::source::Exp::Disjoint(_, _, inner_expression)
+                | crate::source::Exp::DisjointApp(inner_expression)
+                | crate::source::Exp::CutMulti(inner_expression, _) => {
+                    has_suspicious_arg_annotation_in_exp(inner_expression)
+                }
+                crate::source::Exp::Case(scrutinee, branches) => {
+                    has_suspicious_arg_annotation_in_exp(scrutinee)
+                        || branches.iter().any(|(_, branch_expression)| {
+                            has_suspicious_arg_annotation_in_exp(branch_expression)
+                        })
+                }
+                crate::source::Exp::Let(declarations, body) => {
+                    declarations
+                        .iter()
+                        .any(|declaration| match &declaration.node {
+                            crate::source::EDecl::Val(_, bound_expression) => {
+                                has_suspicious_arg_annotation_in_exp(bound_expression)
+                            }
+                            crate::source::EDecl::ValRec(bindings) => {
+                                bindings.iter().any(|(_, annotation, bound_expression)| {
+                                    annotation
+                                        .as_ref()
+                                        .is_some_and(has_suspicious_arg_annotation_in_con)
+                                        || has_suspicious_arg_annotation_in_exp(bound_expression)
+                                })
+                            }
+                        })
+                        || has_suspicious_arg_annotation_in_exp(body)
+                }
+                crate::source::Exp::Record(fields, _) => {
+                    fields.iter().any(|(field_name, field_value)| {
+                        has_suspicious_arg_annotation_in_con(field_name)
+                            || has_suspicious_arg_annotation_in_exp(field_value)
+                    })
+                }
+                _ => false,
+            }
+        }
+    }
+
+    #[test]
+    #[cfg(generated_parser)]
+    fn parse_parenthesized_sql_table_param_stays_annotated_lambda() {
+        let source_text = concat!("fun nonempty [fs] [us] (t : sql_table fs us) = t\n",);
+        let mut errors = ErrorReporter::new_silent();
+        let parsed = parse_ur(
+            "nonempty_sql_table_param.ur",
+            source_text,
+            &mut errors,
+            crate::db::ProjectDb::default(),
+        )
+        .expect("sql_table parameter should parse");
+        assert!(!errors.has_errors(), "unexpected parse errors");
+        let crate::source::Decl::ValRec(bindings) = &parsed[0].node else {
+            panic!(
+                "expected fun desugaring to ValRec, got {:?}",
+                parsed[0].node
+            );
+        };
+        let (_, _, body) = &bindings[0];
+        let crate::source::Exp::CAbs(_, _, _, body_after_fs) = &body.node else {
+            panic!(
+                "expected first constructor abstraction, got {:?}",
+                body.node
+            );
+        };
+        let crate::source::Exp::CAbs(_, _, _, lambda_body) = &body_after_fs.node else {
+            panic!(
+                "expected second constructor abstraction, got {:?}",
+                body_after_fs.node
+            );
+        };
+        let crate::source::Exp::Abs(parameter_name, Some(parameter_annotation), inner_body) =
+            &lambda_body.node
+        else {
+            panic!(
+                "expected annotated lambda for sql_table parameter, got {:?}",
+                lambda_body.node
+            );
+        };
+        assert_eq!(parameter_name, "t");
+        assert!(
+            matches!(parameter_annotation.node, crate::source::Con::App(_, _)),
+            "expected sql_table fs us to stay as constructor application, got {:?}",
+            parameter_annotation
+        );
+        assert!(
+            !matches!(inner_body.node, crate::source::Exp::Case(_, _)),
+            "sql_table parameter should not desugar through a synthetic case, got {:?}",
+            inner_body.node
+        );
+    }
 }

@@ -32,8 +32,20 @@ pub fn wrap_fun_params(params: Vec<FunParam>, body: LocExp) -> LocExp {
         .fold(body, |acc, param| match param {
             FunParam::Term(p) => {
                 let span = p.span.clone();
-                let (name, inner) = match p.node {
-                    Pat::Var(x) => (x, acc),
+                let (name, annotation, inner) = match p.node {
+                    Pat::Var(x) => (x, None, acc),
+                    Pat::Annot(inner_pattern, annotation_constructor)
+                        if annotated_var_pattern_supports_direct_lambda(
+                            &span,
+                            inner_pattern.as_ref(),
+                            &annotation_constructor,
+                        ) =>
+                    {
+                        match inner_pattern.as_ref().node.clone() {
+                            Pat::Var(name) => (name, Some(annotation_constructor.clone()), acc),
+                            _ => unreachable!("guard only allows variable patterns"),
+                        }
+                    }
                     node => {
                         let fresh = "_arg".to_string();
                         let case_e = Located::dummy(Exp::Case(
@@ -44,10 +56,10 @@ pub fn wrap_fun_params(params: Vec<FunParam>, body: LocExp) -> LocExp {
                             ))),
                             vec![(Located::new(node, span), acc)],
                         ));
-                        (fresh, case_e)
+                        (fresh, None, case_e)
                     }
                 };
-                Located::dummy(Exp::Abs(name, None, Box::new(inner)))
+                Located::dummy(Exp::Abs(name, annotation, Box::new(inner)))
             }
             FunParam::ConArg(exp, nm, opt_k) => {
                 // Constructor/type-level abstraction: `[nm :: K]` or `[nm]` (lowercase).
@@ -61,6 +73,24 @@ pub fn wrap_fun_params(params: Vec<FunParam>, body: LocExp) -> LocExp {
             }
             FunParam::Disjoint(c1, c2) => Located::dummy(Exp::Disjoint(c1, c2, Box::new(acc))),
         })
+}
+
+fn annotated_var_pattern_supports_direct_lambda(
+    pattern_span: &Span,
+    pattern: &LocPat,
+    annotation_constructor: &LocCon,
+) -> bool {
+    match (&pattern.node, &annotation_constructor.node) {
+        (Pat::Var(_), Con::Var(module_path, _)) => {
+            !is_dummy_parser_repair_span(pattern_span) || !module_path.is_empty()
+        }
+        (Pat::Var(_), _) => true,
+        _ => false,
+    }
+}
+
+fn is_dummy_parser_repair_span(span: &Span) -> bool {
+    span.first.line == 0 && span.first.col == 0 && span.last.line == 0 && span.last.col == 0
 }
 
 /// Convert a parsed `Str` to `Decl::Open` (for simple module paths) or

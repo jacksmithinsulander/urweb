@@ -57,8 +57,14 @@ jobs:
           restore-keys: |
             ci-test-${{ runner.os }}-
 
-      - name: cargo test
-        run: cargo test --workspace --all-targets
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
+
+      - name: cargo nextest run (unit + integration tests)
+        run: cargo nextest run --workspace --profile ci
+
+      - name: cargo test --doc (nextest does not run doctests)
+        run: cargo test --doc --workspace
 
   # A full unsharded run is ~6h; GitHub-hosted jobs max out at 6h, so we shard mutants across
   # parallel jobs (each runs ~1/N of mutants). All shards must pass for the job to succeed.
@@ -87,6 +93,9 @@ jobs:
           restore-keys: |
             ci-mutants-${{ runner.os }}-
 
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
+
       - name: Install cargo-mutants
         run: cargo install cargo-mutants
 
@@ -96,6 +105,7 @@ jobs:
           --workspace
           --test-workspace
           --profile mutants
+          --test-tool nextest
           --cap-lints true
           --shard ${{ matrix.shard }}
           -j 3

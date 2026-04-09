@@ -145,6 +145,17 @@ impl Span {
     /// Those spans store UTF-8 **byte offsets** from the start of the preprocessed buffer as
     /// `line == 1`, `col == offset`. Pass the **exact** string the lexer parsed (preprocessed `.ur` / `.urs`).
     pub fn remap_after_lalrpop_parse(&mut self, file_label: &str, preprocessed: &str) {
+        let line_table = Span::newline_byte_indices_in_utf8_source(preprocessed);
+        self.remap_after_lalrpop_parse_with_line_table(file_label, preprocessed, &line_table);
+    }
+
+    /// Same as [`Span::remap_after_lalrpop_parse`], but reuses a precomputed newline table.
+    pub fn remap_after_lalrpop_parse_with_line_table(
+        &mut self,
+        file_label: &str,
+        preprocessed: &str,
+        line_table: &[usize],
+    ) {
         if self.first.line == 0 || self.last.line == 0 {
             self.ensure_file_label(file_label);
             return;
@@ -166,8 +177,7 @@ impl Span {
         let last_byte = preprocessed.len().saturating_sub(1);
         let start_byte = start_byte.min(last_byte);
         let end_byte = end_byte.min(last_byte).max(start_byte);
-        let line_table = Span::newline_byte_indices_in_utf8_source(preprocessed);
-        *self = Span::from_offsets(file_label, start_byte, end_byte, &line_table);
+        *self = Span::from_offsets(file_label, start_byte, end_byte, line_table);
     }
 }
 

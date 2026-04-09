@@ -3520,7 +3520,10 @@ mod tests {
             preserved_rules.closed_rules[0].2.node,
             Constructor::Named(50)
         ));
-        assert_eq!(preserved_rules.closed_rules[0].2.span.first.line, rule_head.span.first.line);
+        assert_eq!(
+            preserved_rules.closed_rules[0].2.span.first.line,
+            rule_head.span.first.line
+        );
     }
 
     // -----------------------------------------------------------------------
