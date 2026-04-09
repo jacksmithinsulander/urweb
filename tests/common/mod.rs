@@ -59,6 +59,37 @@ pub fn compile_to_outputs_bounded(
     }
 }
 
+/// Run [`compiler::elaborate_project`] in a joinable context with a hard timeout.
+///
+/// Preserves `Ok` / `Err` from the compiler; maps hangs to `Err`.
+pub fn elaborate_project_bounded(
+    urp: PathBuf,
+    configure: impl FnOnce(&mut Settings) + Send + 'static,
+) -> anyhow::Result<()> {
+    type R = anyhow::Result<()>;
+    let urp_display = urp.display().to_string();
+    let (tx, rx) = mpsc::channel::<R>();
+    thread::Builder::new()
+        .stack_size(COMPILE_THREAD_STACK_SIZE)
+        .spawn(move || {
+            let mut settings = Settings::new();
+            configure(&mut settings);
+            let r = compiler::elaborate_project(&urp, &mut settings);
+            let _ = tx.send(r);
+        })
+        .map_err(|e| anyhow::anyhow!("failed to spawn elaboration thread: {e}"))?;
+    match rx.recv_timeout(COMPILE_TO_OUTPUTS_TEST_TIMEOUT) {
+        Ok(r) => r,
+        Err(mpsc::RecvTimeoutError::Timeout) => Err(anyhow::anyhow!(
+            "elaborate_project exceeded {:?} (hung or pathologically slow) for {urp_display}",
+            COMPILE_TO_OUTPUTS_TEST_TIMEOUT,
+        )),
+        Err(mpsc::RecvTimeoutError::Disconnected) => Err(anyhow::anyhow!(
+            "elaborate_project panicked or aborted for {urp_display}",
+        )),
+    }
+}
+
 /// Unwrap a `Result` in tests with a contextual panic that keeps the original error visible.
 pub fn require_ok<T, E: std::fmt::Display>(result: Result<T, E>, context: &str) -> T {
     match result {

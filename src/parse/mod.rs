@@ -217,7 +217,7 @@ fn repair_misparsed_lambda_annotation_expression(expression: &mut crate::source:
     }
 
     fn repair_single_branch_lambda_annotation_case(
-        branches: &mut Vec<(crate::source::LocPat, crate::source::LocExp)>,
+        branches: &mut [(crate::source::LocPat, crate::source::LocExp)],
     ) {
         if branches.len() != 1 {
             return;
@@ -262,9 +262,14 @@ fn repair_misparsed_lambda_annotation_expression(expression: &mut crate::source:
         let initial_len = branches.len();
         for _ in 0..initial_len {
             let mut repair_index: Option<usize> = None;
-            for index in 0..branches.len().saturating_sub(1) {
-                if branch_expression_accepts_nested_case_branches(&branches[index].1) {
-                    repair_index = Some(index);
+            for (index, (_, branch_expression)) in branches
+                .iter()
+                .enumerate()
+                .take(branches.len().saturating_sub(1))
+            {
+                // check each branch except the last for nested case acceptance
+                if branch_expression_accepts_nested_case_branches(branch_expression) {
+                    repair_index = Some(index); // record the last matching index
                 }
             }
             let Some(index) = repair_index else {
@@ -2545,9 +2550,11 @@ pub fn parse_urs(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use anyhow::Context as _; // .with_context() on Result/Option in tests
 
     #[test]
-    fn preprocess_urs_low_fuel_appends_remainder_without_panic() {
+    fn preprocess_urs_low_fuel_appends_remainder_without_panic() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let src = "val f : nm :: Type -> int -> int\n";
         test_set_preprocess_urs_fuel_override(Some(8));
         let out = preprocess_urs(src);
@@ -2560,10 +2567,12 @@ mod tests {
             out.contains("nm") || out.contains("val"),
             "output should retain source text: {out:?}"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn parse_ur_returns_none_without_generated_parser() {
+    fn parse_ur_returns_none_without_generated_parser() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let mut errors = ErrorReporter::new_silent();
         let result = parse_ur(
             "test.ur",
@@ -2578,15 +2587,17 @@ mod tests {
         }
         #[cfg(generated_parser)]
         {
-            let file = result.expect("val x = 1 should parse");
+            let file = result.with_context(|| "val x = 1 should parse")?;
             assert_eq!(file.len(), 1, "single top-level val decl");
         }
+        Ok(()) // return success to the test harness
     }
 
     /// LALRPOP actions use empty `Span::file`; post-parse attach must fill it for diagnostics.
     #[test]
     #[cfg(generated_parser)]
-    fn parse_ur_sets_file_on_inner_spans() {
+    fn parse_ur_sets_file_on_inner_spans() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         use crate::source::Decl;
         let mut errors = ErrorReporter::new_silent();
         let path = "dir/Example.ur";
@@ -2596,18 +2607,20 @@ mod tests {
             &mut errors,
             crate::db::ProjectDb::default(),
         )
-        .expect("parse");
+        .with_context(|| "parse")?;
         let Decl::Val(pat, exp) = &file[0].node else {
             panic!("expected Val decl");
         };
         assert_eq!(pat.span.file, path);
         assert_eq!(exp.span.file, path);
         assert_eq!(exp.span.first.line, 1);
+        Ok(()) // return success to the test harness
     }
 
     #[test]
     #[cfg(generated_parser)]
-    fn parse_ur_remapped_spans_track_multiline_line_numbers() {
+    fn parse_ur_remapped_spans_track_multiline_line_numbers() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         use crate::source::Decl;
         let mut errors = ErrorReporter::new_silent();
         let file = parse_ur(
@@ -2616,7 +2629,7 @@ mod tests {
             &mut errors,
             crate::db::ProjectDb::default(),
         )
-        .expect("parse");
+        .with_context(|| "parse")?;
         let Decl::Val(_, exp_b) = &file[1].node else {
             panic!("expected second Val");
         };
@@ -2624,12 +2637,14 @@ mod tests {
             exp_b.span.first.line, 2,
             "second declaration should remap to physical line 2"
         );
+        Ok(()) // return success to the test harness
     }
 
     /// `@@x` lexes to [`Token::AtDontInferPath`] → [`Exp::Var`] with [`Inference::DontInfer`].
     #[test]
     #[cfg(generated_parser)]
-    fn parse_double_at_path_is_dont_infer_var() {
+    fn parse_double_at_path_is_dont_infer_var() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         use crate::source::{Decl, Exp, Inference};
         let mut errors = ErrorReporter::new_silent();
         let file = parse_ur(
@@ -2638,7 +2653,7 @@ mod tests {
             &mut errors,
             crate::db::ProjectDb::default(),
         )
-        .expect("parse");
+        .with_context(|| "parse")?;
         let Decl::Val(_, e) = &file[0].node else {
             panic!("expected Val");
         };
@@ -2646,12 +2661,14 @@ mod tests {
             &e.node,
             Exp::Var(q, n, Inference::DontInfer) if q.is_empty() && n == "x"
         ));
+        Ok(()) // return success to the test harness
     }
 
     /// Qualified `@Foo.bar` is one [`Token::AtTypesOnlyPath`] (ML longest `path`).
     #[test]
     #[cfg(generated_parser)]
-    fn parse_at_qualified_module_path_is_one_var() {
+    fn parse_at_qualified_module_path_is_one_var() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         use crate::source::{Decl, Exp, Inference};
         let mut errors = ErrorReporter::new_silent();
         let file = parse_ur(
@@ -2660,7 +2677,7 @@ mod tests {
             &mut errors,
             crate::db::ProjectDb::default(),
         )
-        .expect("parse");
+        .with_context(|| "parse")?;
         let Decl::Val(_, e) = &file[0].node else {
             panic!("expected Val");
         };
@@ -2669,12 +2686,14 @@ mod tests {
             Exp::Var(q, n, Inference::TypesOnly)
                 if q == &vec!["Foo".to_string()] && n == "bar"
         ));
+        Ok(()) // return success to the test harness
     }
 
     /// Single `@` → [`Inference::TypesOnly`] ([`Token::AtTypesOnlyPath`]).
     #[test]
     #[cfg(generated_parser)]
-    fn parse_single_at_path_is_types_only_var() {
+    fn parse_single_at_path_is_types_only_var() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         use crate::source::{Decl, Exp, Inference};
         let mut errors = ErrorReporter::new_silent();
         let file = parse_ur(
@@ -2683,7 +2702,7 @@ mod tests {
             &mut errors,
             crate::db::ProjectDb::default(),
         )
-        .expect("parse");
+        .with_context(|| "parse")?;
         let Decl::Val(_, e) = &file[0].node else {
             panic!("expected Val");
         };
@@ -2691,12 +2710,14 @@ mod tests {
             &e.node,
             Exp::Var(q, n, Inference::TypesOnly) if q.is_empty() && n == "x"
         ));
+        Ok(()) // return success to the test harness
     }
 
     /// Upstream `eapps BANG` → [`Exp::DisjointApp`] via postfix `!`.
     #[test]
     #[cfg(generated_parser)]
-    fn parse_bang_postfix_wraps_operand_in_disjoint_app() {
+    fn parse_bang_postfix_wraps_operand_in_disjoint_app() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         use crate::source::{Decl, Exp};
         let mut errors = ErrorReporter::new_silent();
         let file = parse_ur(
@@ -2705,18 +2726,20 @@ mod tests {
             &mut errors,
             crate::db::ProjectDb::default(),
         )
-        .expect("parse");
+        .with_context(|| "parse")?;
         let Decl::Val(_, e) = &file[0].node else {
             panic!("expected Val");
         };
         assert!(matches!(&e.node, Exp::DisjointApp(_)));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn debug_cookie_bars() {
+    fn debug_cookie_bars() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/demo/cookie.ur");
         let Ok(src) = std::fs::read_to_string(path) else {
-            return;
+            return Ok(()); // return early with success
         };
         let pp = preprocess_ur_for_parse(&src);
         for (i, c) in pp.char_indices() {
@@ -2727,13 +2750,15 @@ mod tests {
             }
         }
         tracing::debug!(total_len = pp.len(), "preprocess_ur cookie.ur scan");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn pp_basis_context() {
+    fn pp_basis_context() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/lib/ur/basis.urs");
         let Ok(content) = std::fs::read_to_string(path) else {
-            return;
+            return Ok(()); // return early with success
         };
         let pp = preprocess_urs(&content);
         let pos: usize = 504;
@@ -2741,23 +2766,28 @@ mod tests {
         let end = (pos + 200).min(pp.len());
         tracing::debug!(pos, window = %&pp[start..end], "preprocessed basis.urs window");
         tracing::debug!(pos, char_at = ?pp.chars().nth(pos), "preprocessed char");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn basis_urs_window_matches_fixed_width() {
+    fn basis_urs_window_matches_fixed_width() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let pos = 38564usize;
         let before = 200usize;
         let after = 100usize;
-        let s = basis_urs_preprocessed_window(pos, before, after).expect("read basis.urs");
+        let s =
+            basis_urs_preprocessed_window(pos, before, after).with_context(|| "read basis.urs")?;
         assert_eq!(
             s.len(),
             before + after,
             "slice must use (pos + after).min(len) — catches + → - / * mutants"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn parse_top_level_decl_count_tracks_parser() {
+    fn parse_top_level_decl_count_tracks_parser() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let mut errors = ErrorReporter::new_silent();
         let n = parse_top_level_decl_count("test.ur", "val x = 1", &mut errors);
         #[cfg(not(generated_parser))]
@@ -2769,10 +2799,12 @@ mod tests {
         {
             assert_eq!(n, Some(1), "smoke parse must count exactly one decl");
         }
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn parse_ur_two_vals_requires_two_decls() {
+    fn parse_ur_two_vals_requires_two_decls() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let mut errors = ErrorReporter::new_silent();
         let n = parse_ur(
             "t.ur",
@@ -2793,10 +2825,12 @@ mod tests {
         {
             assert!(n.is_none());
         }
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn parse_top_level_decl_count_matches_parse_ur_len() {
+    fn parse_top_level_decl_count_matches_parse_ur_len() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let mut e1 = ErrorReporter::new_silent();
         let mut e2 = ErrorReporter::new_silent();
         let src = "val p = 1\nval q = 2\nval r = 3";
@@ -2805,10 +2839,12 @@ mod tests {
         assert_eq!(a, b);
         #[cfg(generated_parser)]
         assert_eq!(a, Some(3));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn parse_urs_returns_none_without_generated_parser() {
+    fn parse_urs_returns_none_without_generated_parser() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let mut errors = ErrorReporter::new_silent();
         let result = parse_urs("test.urs", "val x : int", &mut errors);
         #[cfg(not(generated_parser))]
@@ -2818,25 +2854,28 @@ mod tests {
         }
         #[cfg(generated_parser)]
         {
-            let items = result.expect("val x : int should parse as a signature");
+            let items = result.with_context(|| "val x : int should parse as a signature")?;
             assert!(
                 !items.is_empty(),
                 "catches parse_urs -> Some(vec![]) mutants"
             );
         }
+        Ok(()) // return success to the test harness
     }
 
     #[test]
     #[cfg(generated_parser)]
-    fn parse_urs_sets_file_on_inner_spans() {
+    fn parse_urs_sets_file_on_inner_spans() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         use crate::source::SgnItem;
         let mut errors = ErrorReporter::new_silent();
         let path = "sig/M.urs";
-        let items = parse_urs(path, "val x : int", &mut errors).expect("parse");
+        let items = parse_urs(path, "val x : int", &mut errors).with_context(|| "parse")?;
         let SgnItem::Val(_, c) = &items[0].node else {
             panic!("expected Val item");
         };
         assert_eq!(c.span.file, path);
+        Ok(()) // return success to the test harness
     }
 
     /// LALRPOP `ArithExp` vs [`expr_langsec::parse_cmp_app_spine`] on the same token stream
@@ -2969,7 +3008,8 @@ mod tests {
         }
 
         #[test]
-        fn lalrpop_arith_exp_matches_expr_langsec() {
+        fn lalrpop_arith_exp_matches_expr_langsec() -> anyhow::Result<()> {
+            // test returns Result to allow ? propagation
             let cases = [
                 "a + b * c",
                 "f g h",
@@ -3025,11 +3065,13 @@ mod tests {
                     spine.node
                 );
             }
+            Ok(()) // return success to the test harness
         }
     }
 
     #[test]
-    fn parse_query1_prime_followed_by_val_rev_stays_two_decls() {
+    fn parse_query1_prime_followed_by_val_rev_stays_two_decls() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let source_text = concat!(
             "fun localQuery1Prime [t ::: Name] [fs ::: {Type}] [state ::: Type]\n",
             "    (q : sql_query [] [] [t = fs] [])\n",
@@ -3063,11 +3105,13 @@ mod tests {
             },
             other => panic!("expected second declaration to be val rev, got {:?}", other),
         }
+        Ok(()) // return success to the test harness
     }
 
     #[test]
     #[cfg(generated_parser)]
-    fn parse_uppercase_field_postfix_on_value_is_field_access() {
+    fn parse_uppercase_field_postfix_on_value_is_field_access() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         use crate::source::{Decl, Exp};
         let mut errors = ErrorReporter::new_silent();
         let file = parse_ur(
@@ -3076,7 +3120,7 @@ mod tests {
             &mut errors,
             crate::db::ProjectDb::default(),
         )
-        .expect("parse");
+        .with_context(|| "parse")?;
         let Decl::Val(_, expression) = &file[0].node else {
             panic!("expected Val");
         };
@@ -3087,10 +3131,12 @@ mod tests {
             }
             other => panic!("expected field access, got {:?}", other),
         }
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn parse_monadic_bind_desugars_to_basis_bind_application() {
+    fn parse_monadic_bind_desugars_to_basis_bind_application() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let mut errors = ErrorReporter::new_silent();
         let Some(file) = parse_ur(
             "bind_desugar.ur",
@@ -3160,10 +3206,12 @@ mod tests {
             panic!("expected returned variable, got {:?}", returned_value.node);
         };
         assert_eq!(returned_name, "ls");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn preprocess_top_folder_wraps_tf_binder_in_brackets() {
+    fn preprocess_top_folder_wraps_tf_binder_in_brackets() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let src = r"(** Row folding *)
 
 con folder = K ==> fn r :: {K} =>
@@ -3180,7 +3228,7 @@ con folder = K ==> fn r :: {K} =>
         );
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/lib/ur/top.ur");
         let Ok(full) = std::fs::read_to_string(path) else {
-            return;
+            return Ok(()); // return early with success
         };
         let pre_full = preprocess_ur_for_parse(&full);
         assert!(
@@ -3192,23 +3240,28 @@ con folder = K ==> fn r :: {K} =>
                 .and_then(|s| s.get(..200))
                 .unwrap_or("<missing>")
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn debug_top_ur_pos_263() {
+    fn debug_top_ur_pos_263() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/lib/ur/top.ur");
-        let src = std::fs::read_to_string(path).expect("top.ur");
+        let src = std::fs::read_to_string(path).with_context(|| "top.ur")?;
         let pre = preprocess_ur_for_parse(&src);
         let pos = 263usize;
         let start = pos.saturating_sub(40);
         let end = (pos + 40).min(pre.len());
         tracing::debug!(pos, slice = ?pre.get(pos..pos + 1), "top.ur preprocess byte");
         tracing::debug!(pos, context = ?&pre[start..end], "top.ur preprocess context");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
     #[cfg(generated_parser)]
-    fn parse_post_fields_fun_desugars_without_spurious_constructor_annotations() {
+    fn parse_post_fields_fun_desugars_without_spurious_constructor_annotations(
+    ) -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         fn has_suspicious_arg_annotation_in_con(constructor: &crate::source::LocCon) -> bool {
             match &constructor.node {
                 crate::source::Con::Annot(inner_constructor, _) => {
@@ -3357,7 +3410,7 @@ con folder = K ==> fn r :: {K} =>
             &mut errors,
             crate::db::ProjectDb::default(),
         )
-        .expect("postFields snippet should parse");
+        .with_context(|| "postFields snippet should parse")?;
         assert!(!errors.has_errors(), "unexpected parse errors");
         let crate::source::Decl::ValRec(outer_bindings) = &parsed[0].node else {
             panic!(
@@ -3407,11 +3460,13 @@ con folder = K ==> fn r :: {K} =>
             "postFields parse tree should not contain synthesized constructor apps to `_arg`: {:?}",
             parsed
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
     #[cfg(generated_parser)]
-    fn parse_parenthesized_annotated_fun_params_stay_direct_lambdas() {
+    fn parse_parenthesized_annotated_fun_params_stay_direct_lambdas() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let source_text = "fun demo (x : bool) (y : string) = x\n";
         let mut errors = ErrorReporter::new_silent();
         let parsed = parse_ur(
@@ -3420,7 +3475,7 @@ con folder = K ==> fn r :: {K} =>
             &mut errors,
             crate::db::ProjectDb::default(),
         )
-        .expect("annotated fun params should parse");
+        .with_context(|| "annotated fun params should parse")?;
         assert!(!errors.has_errors(), "unexpected parse errors");
         let crate::source::Decl::ValRec(bindings) = &parsed[0].node else {
             panic!(
@@ -3570,12 +3625,14 @@ con folder = K ==> fn r :: {K} =>
                 _ => false,
             }
         }
+        Ok(()) // return success to the test harness
     }
 
     #[test]
     #[cfg(generated_parser)]
-    fn parse_parenthesized_sql_table_param_stays_annotated_lambda() {
-        let source_text = concat!("fun nonempty [fs] [us] (t : sql_table fs us) = t\n",);
+    fn parse_parenthesized_sql_table_param_stays_annotated_lambda() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
+        let source_text = "fun nonempty [fs] [us] (t : sql_table fs us) = t\n"; // literal string; concat! with one arg is unnecessary
         let mut errors = ErrorReporter::new_silent();
         let parsed = parse_ur(
             "nonempty_sql_table_param.ur",
@@ -3583,7 +3640,7 @@ con folder = K ==> fn r :: {K} =>
             &mut errors,
             crate::db::ProjectDb::default(),
         )
-        .expect("sql_table parameter should parse");
+        .with_context(|| "sql_table parameter should parse")?;
         assert!(!errors.has_errors(), "unexpected parse errors");
         let crate::source::Decl::ValRec(bindings) = &parsed[0].node else {
             panic!(
@@ -3623,5 +3680,6 @@ con folder = K ==> fn r :: {K} =>
             "sql_table parameter should not desugar through a synthetic case, got {:?}",
             inner_body.node
         );
+        Ok(()) // return success to the test harness
     }
 }

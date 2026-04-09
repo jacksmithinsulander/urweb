@@ -11,7 +11,11 @@ pub(super) static PREPROCESS_URS_FUEL_TEST_OVERRIDE: std::sync::Mutex<Option<usi
 /// Test hook: override preprocess fuel (see [`super::test_set_preprocess_urs_fuel_override`]).
 #[cfg(test)]
 pub(super) fn set_test_fuel_override(fuel: Option<usize>) {
-    *PREPROCESS_URS_FUEL_TEST_OVERRIDE.lock().unwrap() = fuel;
+    // acquire the mutex guard for the fuel override; a poisoned mutex is a programmer error
+    *match PREPROCESS_URS_FUEL_TEST_OVERRIDE.lock() {
+        Ok(g) => g,
+        Err(e) => panic!("PREPROCESS_URS_FUEL_TEST_OVERRIDE mutex poisoned: {e}"),
+    } = fuel;
 }
 
 /// Drop one unit of fuel; if exhausted, append `source_text[current_index..]` and return the buffer in `Err`.

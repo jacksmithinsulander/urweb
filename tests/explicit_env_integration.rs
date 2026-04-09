@@ -8,27 +8,32 @@ use ur::explicit::environment::{
 use ur::explicit::{Constructor, Declaration, Expression, Kind, Signature, SignatureItem};
 
 #[test]
-fn lift_kind_in_kind_rel_ge_bound() {
+fn lift_kind_in_kind_rel_ge_bound() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let k = Located::dummy(Kind::Rel(5));
     let out = lift_kind_in_kind(k, 3);
     assert!(
         matches!(out.node, Kind::Rel(6)),
         "Rel(5) >= bound 3 => Rel(6)"
     );
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn lift_kind_in_kind_rel_lt_bound() {
+fn lift_kind_in_kind_rel_lt_bound() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let k = Located::dummy(Kind::Rel(2));
     let out = lift_kind_in_kind(k, 3);
     assert!(
         matches!(out.node, Kind::Rel(2)),
         "Rel(2) < bound 3 => Rel(2) unchanged"
     );
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn lift_kind_in_kind_arrow_recursive() {
+fn lift_kind_in_kind_arrow_recursive() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let k = Located::dummy(Kind::Arrow(
         Box::new(Located::dummy(Kind::Rel(0))),
         Box::new(Located::dummy(Kind::Rel(1))),
@@ -39,20 +44,24 @@ fn lift_kind_in_kind_arrow_recursive() {
     };
     assert!(matches!(k1.as_ref().node, Kind::Rel(1)));
     assert!(matches!(k2.as_ref().node, Kind::Rel(2)));
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn lift_con_in_con_rel_ge_bound() {
+fn lift_con_in_con_rel_ge_bound() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let c = Located::dummy(Constructor::Rel(4));
     let out = lift_con_in_con(c, 2);
     assert!(
         matches!(out.node, Constructor::Rel(5)),
         "Rel(4) >= bound 2 => Rel(5)"
     );
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn lift_con_in_con_rel_uses_plus_not_minus() {
+fn lift_con_in_con_rel_uses_plus_not_minus() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     // n+1 not n-1. Rel(3) with bound 1: 3>=1 => Rel(4). Mutant n-1 would give Rel(2).
     let c = Located::dummy(Constructor::Rel(3));
     let out = lift_con_in_con(c, 1);
@@ -60,20 +69,24 @@ fn lift_con_in_con_rel_uses_plus_not_minus() {
         matches!(out.node, Constructor::Rel(4)),
         "Rel(3) >= bound 1 => Rel(4)"
     );
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn lift_con_in_con_rel_lt_bound() {
+fn lift_con_in_con_rel_lt_bound() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let c = Located::dummy(Constructor::Rel(1));
     let out = lift_con_in_con(c, 2);
     assert!(
         matches!(out.node, Constructor::Rel(1)),
         "Rel(1) < bound 2 => Rel(1) unchanged"
     );
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn lift_kind_in_kind_fun_binds() {
+fn lift_kind_in_kind_fun_binds() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     // Kind::Fun(x, body) uses bound+1 for body. Rel(0) in body stays 0 (bound); Rel(1) => Rel(2).
     let body = Located::dummy(Kind::Rel(1));
     let k = Located::dummy(Kind::Fun("a".into(), Box::new(body)));
@@ -85,10 +98,12 @@ fn lift_kind_in_kind_fun_binds() {
         matches!(body_out.as_ref().node, Kind::Rel(2)),
         "Fun binds; Rel(1) in body => Rel(2)"
     );
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn lift_kind_in_kind_fun_bound_plus_one() {
+fn lift_kind_in_kind_fun_bound_plus_one() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     // bound+1 (not bound*1). Rel(0) in body with bound 0: new binder, stays 0. Mutant bound*1 would use 0, Rel(0)>=0 => Rel(1).
     let body = Located::dummy(Kind::Rel(0));
     let k = Located::dummy(Kind::Fun("a".into(), Box::new(body)));
@@ -100,10 +115,12 @@ fn lift_kind_in_kind_fun_bound_plus_one() {
         matches!(body_out.as_ref().node, Kind::Rel(0)),
         "Fun body Rel(0) stays 0 (bound+1=1, 0<1)"
     );
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn lift_con_in_con_abs_binds() {
+fn lift_con_in_con_abs_binds() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     // Abs(x, k, body): body is processed with bound+1. Rel(1) in body is free => becomes Rel(2).
     let k = Located::dummy(Kind::Type);
     let body = Located::dummy(Constructor::Rel(1)); // free var before Abs
@@ -116,10 +133,12 @@ fn lift_con_in_con_abs_binds() {
         matches!(body_out.as_ref().node, Constructor::Rel(2)),
         "Abs binds; Rel(1) in body (free) => Rel(2)"
     );
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn lift_kind_in_con_tcfun_lifts_kind_param() {
+fn lift_kind_in_con_tcfun_lifts_kind_param() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     // TCFun has a kind param. lift_kind_in_con processes it with bound.
     let k = Located::dummy(Kind::Rel(1)); // kind with Rel(1)
     let body = Located::dummy(Constructor::Unit);
@@ -130,10 +149,12 @@ fn lift_kind_in_con_tcfun_lifts_kind_param() {
     };
     // Kind::Rel(1) >= bound 0 => Rel(2)
     assert!(matches!(k_out.as_ref().node, Kind::Rel(2)));
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn lift_kind_in_con_kabs_bound_plus_one_not_star() {
+fn lift_kind_in_con_kabs_bound_plus_one_not_star() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     // bound+1 not bound*1. With bound=1: body gets bound 2. Kind::Rel(1) in body (ref to outer) stays.
     // Mutant bound*1=1 would process body with bound 1, Rel(1)>=1 => Rel(2) (wrong).
     let inner_k = Located::dummy(Kind::Rel(1));
@@ -153,10 +174,12 @@ fn lift_kind_in_con_kabs_bound_plus_one_not_star() {
         matches!(k_out.as_ref().node, Kind::Rel(1)),
         "KAbs body with bound 1: Rel(1) stays (bound+1=2)"
     );
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn lift_kind_in_con_kabs_increments_bound_for_body() {
+fn lift_kind_in_con_kabs_increments_bound_for_body() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     // KAbs binds kind; body uses bound+1. Body with Kind::Rel(1) (ref to outer) becomes Rel(2).
     let inner_k = Located::dummy(Kind::Rel(1));
     let body = Located::dummy(Constructor::TCFun(
@@ -173,10 +196,12 @@ fn lift_kind_in_con_kabs_increments_bound_for_body() {
         panic!("expected TCFun in body")
     };
     assert!(matches!(k_out.as_ref().node, Kind::Rel(2)));
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn lift_kind_in_con_tkfun_bound_plus_one() {
+fn lift_kind_in_con_tkfun_bound_plus_one() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     // TKFun body uses bound+1. With bound 0, body gets bound 1. Kind::Rel(0) in body stays (0<1).
     // Mutant bound*1=0 would make Rel(0) become Rel(1).
     let inner_k = Located::dummy(Kind::Rel(0));
@@ -194,10 +219,12 @@ fn lift_kind_in_con_tkfun_bound_plus_one() {
         panic!("expected TCFun in body")
     };
     assert!(matches!(k_out.as_ref().node, Kind::Rel(0)));
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn lift_con_in_con_tcfun_binds() {
+fn lift_con_in_con_tcfun_binds() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     // TCFun binds con. Body uses bound+1. Rel(2) with bound 1 => body bound 2 => Rel(3).
     let k = Located::dummy(Kind::Type);
     let body = Located::dummy(Constructor::Rel(2));
@@ -207,10 +234,12 @@ fn lift_con_in_con_tcfun_binds() {
         panic!("expected TCFun")
     };
     assert!(matches!(body_out.as_ref().node, Constructor::Rel(3)));
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn lift_con_in_con_abs_bound_plus_one_not_star() {
+fn lift_con_in_con_abs_bound_plus_one_not_star() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     // bound+1 not bound*1. Abs with bound=1: body gets bound 2. Constructor::Rel(1) in body (ref to binder) stays.
     // Mutant bound*1=1 would process body with bound 1, Rel(1)>=1 => Rel(2) (wrong).
     let k = Located::dummy(Kind::Type);
@@ -224,10 +253,12 @@ fn lift_con_in_con_abs_bound_plus_one_not_star() {
         matches!(body_out.as_ref().node, Constructor::Rel(1)),
         "Abs body with bound 1: Rel(1) stays (bound+1=2)"
     );
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn lift_con_in_con_tcfun_bound_plus_one() {
+fn lift_con_in_con_tcfun_bound_plus_one() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     // bound+1 not bound-1. bound 1 => body bound 2. Rel(1) in body: 1<2 stays. Mutant bound-1=0: Rel(1)>=0 => Rel(2).
     let k = Located::dummy(Kind::Type);
     let body = Located::dummy(Constructor::Rel(1));
@@ -237,10 +268,12 @@ fn lift_con_in_con_tcfun_bound_plus_one() {
         panic!("expected TCFun")
     };
     assert!(matches!(body_out.as_ref().node, Constructor::Rel(1)));
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn lift_con_in_con_kabs_does_not_increment_bound() {
+fn lift_con_in_con_kabs_does_not_increment_bound() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     // KAbs binds kind, not con. Body uses same bound.
     let body = Located::dummy(Constructor::Rel(1));
     let c = Located::dummy(Constructor::KAbs("k".into(), Box::new(body)));
@@ -250,99 +283,155 @@ fn lift_con_in_con_kabs_does_not_increment_bound() {
     };
     // Rel(1) >= bound 0 => Rel(2)
     assert!(matches!(body_out.as_ref().node, Constructor::Rel(2)));
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn env_error_display() {
+fn env_error_display() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let e = EnvError::UnboundRel(42);
     let s = format!("{}", e);
     assert!(s.contains("42"));
     assert!(s.contains("unbound"));
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn env_push_k_rel_returns_new_env() {
+fn env_push_k_rel_returns_new_env() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let env = Env::new();
     let env2 = env.push_k_rel("a".into());
     assert_ne!(std::ptr::addr_of!(env), std::ptr::addr_of!(env2));
     assert_eq!(env2.rel_k.len(), 1);
     assert_eq!(env2.rel_k[0], "a");
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn env_lookup_k_rel() {
+fn env_lookup_k_rel() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let env = Env::new().push_k_rel("x".into()).push_k_rel("y".into());
-    assert_eq!(env.lookup_k_rel(0).unwrap(), "y");
-    assert_eq!(env.lookup_k_rel(1).unwrap(), "x");
+    // verify k-rel lookup at index 0 succeeds and returns "y"
+    let looked_up_0 = match env.lookup_k_rel(0) {
+        Ok(v) => v,
+        Err(e) => panic!("lookup_k_rel(0) failed: {e}"),
+    };
+    assert_eq!(looked_up_0, "y");
+    // verify k-rel lookup at index 1 succeeds and returns "x"
+    let looked_up_1 = match env.lookup_k_rel(1) {
+        Ok(v) => v,
+        Err(e) => panic!("lookup_k_rel(1) failed: {e}"),
+    };
+    assert_eq!(looked_up_1, "x");
     assert!(matches!(env.lookup_k_rel(2), Err(EnvError::UnboundRel(2))));
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn env_push_c_rel_returns_new_env() {
+fn env_push_c_rel_returns_new_env() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let k = Located::dummy(Kind::Type);
     let env = Env::new();
     let env2 = env.push_c_rel("a".into(), k);
     assert_eq!(env2.rel_c.len(), 1);
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn env_push_c_named() {
+fn env_push_c_named() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let mut env = Env::new();
     let k = Located::dummy(Kind::Type);
     env.push_c_named("T".into(), 10, k, None);
-    let (name, _, _) = env.lookup_c_named(10).unwrap();
+    // look up constructor with id 10; must succeed since it was just pushed
+    let (name, _, _) = match env.lookup_c_named(10) {
+        Ok(v) => v,
+        Err(e) => panic!("lookup_c_named(10) failed: {e}"),
+    };
     assert_eq!(name, "T");
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn env_push_e_rel() {
+fn env_push_e_rel() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let mut env = Env::new();
     let t = Located::dummy(Constructor::Unit);
     env.push_e_rel("x".into(), t);
-    let (name, _) = env.lookup_e_rel(0).unwrap();
+    // look up expression relative binding at index 0; must succeed after push_e_rel
+    let (name, _) = match env.lookup_e_rel(0) {
+        Ok(v) => v,
+        Err(e) => panic!("lookup_e_rel(0) failed: {e}"),
+    };
     assert_eq!(name, "x");
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn env_push_e_named() {
+fn env_push_e_named() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let mut env = Env::new();
     let t = Located::dummy(Constructor::Unit);
     env.push_e_named("v".into(), 7, t);
-    let (name, _) = env.lookup_e_named(7).unwrap();
+    // look up named expression binding with id 7; must succeed after push_e_named
+    let (name, _) = match env.lookup_e_named(7) {
+        Ok(v) => v,
+        Err(e) => panic!("lookup_e_named(7) failed: {e}"),
+    };
     assert_eq!(name, "v");
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn env_push_sgn_named() {
+fn env_push_sgn_named() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let mut env = Env::new();
     let sgn = Located::dummy(Signature::Const(vec![]));
     env.push_sgn_named("M".into(), 1, sgn);
-    let (name, _) = env.lookup_sgn_named(1).unwrap();
+    // look up named signature binding with id 1; must succeed after push_sgn_named
+    let (name, _) = match env.lookup_sgn_named(1) {
+        Ok(v) => v,
+        Err(e) => panic!("lookup_sgn_named(1) failed: {e}"),
+    };
     assert_eq!(name, "M");
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn env_push_str_named() {
+fn env_push_str_named() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let mut env = Env::new();
     let sgn = Located::dummy(Signature::Const(vec![]));
     env.push_str_named("S".into(), 2, sgn);
-    let (name, _) = env.lookup_str_named(2).unwrap();
+    // look up named structure binding with id 2; must succeed after push_str_named
+    let (name, _) = match env.lookup_str_named(2) {
+        Ok(v) => v,
+        Err(e) => panic!("lookup_str_named(2) failed: {e}"),
+    };
     assert_eq!(name, "S");
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn env_decl_binds_con() {
+fn env_decl_binds_con() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let k = Located::dummy(Kind::Type);
     let c = Located::dummy(Constructor::Unit);
     let d = Located::dummy(Declaration::Constructor("T".into(), 99, k, c));
     let mut env = Env::new();
     env.decl_binds(&d);
-    let (name, _, _) = env.lookup_c_named(99).unwrap();
+    // look up constructor with id 99; must succeed since decl_binds was called
+    let (name, _, _) = match env.lookup_c_named(99) {
+        Ok(v) => v,
+        Err(e) => panic!("lookup_c_named(99) failed: {e}"),
+    };
     assert_eq!(name, "T");
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn env_decl_binds_datatype_with_params() {
+fn env_decl_binds_datatype_with_params() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     // Exercises nxs - i - 1 in decl_binds (line 385); Rel indices in base type
     let dt = ur::explicit::DatatypeDecl {
         name: "T".into(),
@@ -353,7 +442,11 @@ fn env_decl_binds_datatype_with_params() {
     let d = Located::dummy(Declaration::Datatype(vec![dt]));
     let mut env = Env::new();
     env.decl_binds(&d);
-    let (_, t) = env.lookup_e_named(11).unwrap();
+    // look up expression named binding with id 11; must succeed since datatype constructor was bound
+    let (_, t) = match env.lookup_e_named(11) {
+        Ok(v) => v,
+        Err(e) => panic!("lookup_e_named(11) failed: {e}"),
+    };
     // Type is TCFun("a", Type, App(Named(10), Rel(0))); body must contain Rel(0)
     let Constructor::TCFun(_, _, body) = &t.node else {
         panic!("expected TCFun")
@@ -365,10 +458,12 @@ fn env_decl_binds_datatype_with_params() {
         matches!(arg.as_ref().node, Constructor::Rel(0)),
         "param ref in App must be Rel(0)"
     );
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn env_decl_binds_datatype_two_params() {
+fn env_decl_binds_datatype_two_params() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     // With 2 params, base type is App(App(Named(10), Rel(1)), Rel(0)). Catches nxs-i-1 mutant.
     let dt = ur::explicit::DatatypeDecl {
         name: "T".into(),
@@ -379,7 +474,11 @@ fn env_decl_binds_datatype_two_params() {
     let d = Located::dummy(Declaration::Datatype(vec![dt]));
     let mut env = Env::new();
     env.decl_binds(&d);
-    let (_, t) = env.lookup_e_named(21).unwrap();
+    // look up expression named binding with id 21; must succeed after two-param datatype bind
+    let (_, t) = match env.lookup_e_named(21) {
+        Ok(v) => v,
+        Err(e) => panic!("lookup_e_named(21) failed: {e}"),
+    };
     // TCFun("b", ..., TCFun("a", ..., App(App(Named(20), Rel(1)), Rel(0))))
     let Constructor::TCFun(_, _, inner) = &t.node else {
         panic!("expected TCFun")
@@ -401,43 +500,63 @@ fn env_decl_binds_datatype_two_params() {
         matches!(arg1.as_ref().node, Constructor::Rel(1)),
         "outer arg must be Rel(1)"
     );
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn env_pat_binds_adds_variable() {
+fn env_pat_binds_adds_variable() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let t = Located::dummy(Constructor::Unit);
     let p = Located::dummy(ur::explicit::Pattern::Var("z".into(), t));
     let mut env = Env::new();
     env.pat_binds(&p);
-    let (name, _) = env.lookup_e_rel(0).unwrap();
+    // look up relative expression binding at index 0; must succeed after pat_binds
+    let (name, _) = match env.lookup_e_rel(0) {
+        Ok(v) => v,
+        Err(e) => panic!("lookup_e_rel(0) failed: {e}"),
+    };
     assert_eq!(name, "z");
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn env_decl_binds_val() {
+fn env_decl_binds_val() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let t = Located::dummy(Constructor::Unit);
     let e = Located::dummy(Expression::Prim(ur::primitives::Prim::Int(0)));
     let d = Located::dummy(Declaration::Val("x".into(), 5, t, e));
     let mut env = Env::new();
     env.decl_binds(&d);
-    let (name, _) = env.lookup_e_named(5).unwrap();
+    // look up named expression binding with id 5; must succeed after decl_binds Val
+    let (name, _) = match env.lookup_e_named(5) {
+        Ok(v) => v,
+        Err(e) => panic!("lookup_e_named(5) failed: {e}"),
+    };
     assert_eq!(name, "x");
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn env_sgi_binds_con() {
+fn env_sgi_binds_con() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let k = Located::dummy(Kind::Type);
     let c = Located::dummy(Constructor::Unit);
     let sgi = Located::dummy(SignatureItem::Constructor("C".into(), 8, k, c));
     let mut env = Env::new();
     env.sgi_binds(&sgi);
-    let (name, _, _) = env.lookup_c_named(8).unwrap();
+    // look up constructor with id 8; must succeed after sgi_binds
+    let (name, _, _) = match env.lookup_c_named(8) {
+        Ok(v) => v,
+        Err(e) => panic!("lookup_c_named(8) failed: {e}"),
+    };
     assert_eq!(name, "C");
+    Ok(()) // return success to the test harness
 }
 
 // Phase 5 expanded: lift_con_in_con Record, Concat, Map, Tuple, TCFun; Env push/lookup
 #[test]
-fn lift_con_in_con_record_recurses() {
+fn lift_con_in_con_record_recurses() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let k = Located::dummy(Kind::Type);
     let rel0 = Located::dummy(Constructor::Rel(0));
     let unit = Located::dummy(Constructor::Unit);
@@ -450,18 +569,22 @@ fn lift_con_in_con_record_recurses() {
         }
         _ => panic!("expected Record"),
     }
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn lift_con_in_con_map_unchanged() {
+fn lift_con_in_con_map_unchanged() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let k = Located::dummy(Kind::Type);
     let map = Located::dummy(Constructor::Map(Box::new(k.clone()), Box::new(k)));
     let out = lift_con_in_con(map, 0);
     assert!(matches!(out.node, Constructor::Map(_, _)));
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn lift_con_in_con_app_recurses() {
+fn lift_con_in_con_app_recurses() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let n = Located::dummy(Constructor::Named(1));
     let rel0 = Located::dummy(Constructor::Rel(0));
     let app = Located::dummy(Constructor::App(Box::new(n), Box::new(rel0)));
@@ -470,10 +593,12 @@ fn lift_con_in_con_app_recurses() {
         Constructor::App(_, arg) => assert!(matches!(arg.node, Constructor::Rel(1))),
         _ => panic!("expected App"),
     }
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn lift_con_in_con_proj_recurses() {
+fn lift_con_in_con_proj_recurses() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let rel0 = Located::dummy(Constructor::Rel(0));
     let tup = Located::dummy(Constructor::Tuple(vec![rel0]));
     let proj = Located::dummy(Constructor::Proj(Box::new(tup), 1));
@@ -487,10 +612,12 @@ fn lift_con_in_con_proj_recurses() {
         }
         _ => panic!("expected Proj"),
     }
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn lift_kind_in_kind_record_recurses() {
+fn lift_kind_in_kind_record_recurses() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let rel1 = Located::dummy(Kind::Rel(1));
     let k = Located::dummy(Kind::Record(Box::new(rel1)));
     let out = lift_kind_in_kind(k, 0);
@@ -498,10 +625,12 @@ fn lift_kind_in_kind_record_recurses() {
         Kind::Record(inner) => assert!(matches!(inner.node, Kind::Rel(2))),
         _ => panic!("expected Record"),
     }
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn lift_kind_in_kind_tuple_recurses() {
+fn lift_kind_in_kind_tuple_recurses() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let rel1 = Located::dummy(Kind::Rel(1));
     let k = Located::dummy(Kind::Tuple(vec![rel1]));
     let out = lift_kind_in_kind(k, 0);
@@ -509,22 +638,35 @@ fn lift_kind_in_kind_tuple_recurses() {
         Kind::Tuple(ks) => assert!(matches!(ks[0].node, Kind::Rel(2))),
         _ => panic!("expected Tuple"),
     }
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn env_push_c_rel_then_lookup() {
+fn env_push_c_rel_then_lookup() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let k = Located::dummy(Kind::Type);
     let mut env = Env::new();
     env = env.push_c_rel("a".into(), k);
-    let (name, _) = env.lookup_c_rel(0).unwrap();
+    // look up constructor relative binding at index 0; must succeed after push_c_rel
+    let (name, _) = match env.lookup_c_rel(0) {
+        Ok(v) => v,
+        Err(e) => panic!("lookup_c_rel(0) failed: {e}"),
+    };
     assert_eq!(name, "a");
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn env_push_e_rel_then_lookup() {
+fn env_push_e_rel_then_lookup() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let t = Located::dummy(Constructor::Unit);
     let mut env = Env::new();
     env.push_e_rel("x".into(), t);
-    let (name, _) = env.lookup_e_rel(0).unwrap();
+    // look up expression relative binding at index 0; must succeed after push_e_rel
+    let (name, _) = match env.lookup_e_rel(0) {
+        Ok(v) => v,
+        Err(e) => panic!("lookup_e_rel(0) failed: {e}"),
+    };
     assert_eq!(name, "x");
+    Ok(()) // return success to the test harness
 }

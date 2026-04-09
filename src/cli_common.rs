@@ -831,30 +831,40 @@ mod tests {
     use super::*;
     use crate::compiler_diagnostics::{lock_for_compile, TEST_CWD_LOCK};
     use crate::diagnostics::DiagnosticLocale;
+    use anyhow::Context as _; // .with_context() on Result in tests
 
     #[test]
-    fn validate_name_empty() {
+    fn validate_name_empty() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         assert!(validate_project_name("", DiagnosticLocale::En).is_err());
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn validate_name_starts_with_digit() {
+    fn validate_name_starts_with_digit() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         assert!(validate_project_name("1foo", DiagnosticLocale::En).is_err());
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn validate_name_valid() {
+    fn validate_name_valid() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         assert!(validate_project_name("my_app", DiagnosticLocale::En).is_ok());
         assert!(validate_project_name("Foo123", DiagnosticLocale::En).is_ok());
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn validate_name_hyphen_invalid() {
+    fn validate_name_hyphen_invalid() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         assert!(validate_project_name("my-app", DiagnosticLocale::En).is_err());
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn ur_toml_strict_accepts_new_project_shape() {
+    fn ur_toml_strict_accepts_new_project_shape() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let content = r#"[package]
 name = "demo"
 kind = "app"
@@ -869,15 +879,19 @@ boot = false
 scss = "style/scss/main.scss"
 css = "style/css/main.css"
 "#;
-        let cfg = parse_ur_toml_strict(content).expect("valid ur.toml");
+        let cfg = parse_ur_toml_strict(content)
+            .map_err(anyhow::Error::msg)
+            .with_context(|| "valid ur.toml")?;
         assert_eq!(cfg.package.kind, "app");
         assert_eq!(cfg.build.entry, "demo");
         assert!(cfg.style.is_some());
+        Ok(()) // return success to the test harness
     }
 
     /// Omitted `[package].kind` must deserialize to `"app"` via [`default_pkg_kind`] (mutants on that default break orchestration).
     #[test]
-    fn ur_toml_package_kind_defaults_to_app() {
+    fn ur_toml_package_kind_defaults_to_app() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let content = r#"[package]
 name = "nokind"
 
@@ -885,13 +899,17 @@ name = "nokind"
 entry = "Main"
 db = "sqlite"
 "#;
-        let cfg = parse_ur_toml_strict(content).expect("parse");
+        let cfg = parse_ur_toml_strict(content)
+            .map_err(anyhow::Error::msg)
+            .with_context(|| "parse")?;
         assert_eq!(cfg.package.kind, "app");
+        Ok(()) // return success to the test harness
     }
 
     /// Omitted `[build].db` uses [`default_build_db`] (`sqlite`).
     #[test]
-    fn ur_toml_build_db_defaults_to_sqlite() {
+    fn ur_toml_build_db_defaults_to_sqlite() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let content = r#"[package]
 name = "x"
 kind = "app"
@@ -899,12 +917,16 @@ kind = "app"
 [build]
 entry = "Main"
 "#;
-        let cfg = parse_ur_toml_strict(content).expect("parse");
+        let cfg = parse_ur_toml_strict(content)
+            .map_err(anyhow::Error::msg)
+            .with_context(|| "parse")?;
         assert_eq!(cfg.build.db, "sqlite");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn ur_toml_strict_accepts_library_template_shape() {
+    fn ur_toml_strict_accepts_library_template_shape() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let content = r#"[package]
 name = "mylib"
 kind = "lib"
@@ -914,10 +936,12 @@ entry = "mylib"
 boot = false
 "#;
         assert!(parse_ur_toml_strict(content).is_ok());
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn ur_toml_strict_rejects_unknown_table_fields() {
+    fn ur_toml_strict_rejects_unknown_table_fields() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let content = r#"[package]
 name = "x"
 kind = "app"
@@ -927,10 +951,12 @@ wat = true
 entry = "m"
 "#;
         assert!(parse_ur_toml_strict(content).is_err());
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn toml_parse_basic() {
+    fn toml_parse_basic() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let content = "[build]\nentry = \"myapp\"\ndb = \"sqlite\"\n";
         let entries = parse_toml(content);
         assert_eq!(
@@ -940,101 +966,129 @@ entry = "m"
                 .map(|(_, v)| v.as_str()),
             Some("myapp")
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn toml_parse_section_and_key() {
+    fn toml_parse_section_and_key() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let content = "[build]\nentry = \"x\"\n";
         let entries = parse_toml(content);
         assert_eq!(toml_get(&entries, "build.entry"), Some("x"));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn toml_get_missing_returns_none() {
+    fn toml_get_missing_returns_none() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let entries = parse_toml("[build]\nentry = \"x\"\n");
         assert_eq!(toml_get(&entries, "build.other"), None);
         assert_eq!(toml_get(&entries, "missing"), None);
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn toml_parse_empty_line_skipped() {
+    fn toml_parse_empty_line_skipped() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let content = "[a]\n\nkey = \"v\"\n";
         let entries = parse_toml(content);
         assert_eq!(toml_get(&entries, "a.key"), Some("v"));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn toml_parse_quoted_value() {
+    fn toml_parse_quoted_value() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let content = r#"[x]
 k = "hello""#;
         let entries = parse_toml(content);
         assert_eq!(toml_get(&entries, "x.k"), Some("hello"));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn toml_comment_ignored() {
+    fn toml_comment_ignored() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let content = "# comment\n[build]\nentry = \"x\"\n";
         let entries = parse_toml(content);
         assert_eq!(entries.len(), 1);
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn toml_line_looks_like_comment_not_parsed_as_key() {
+    fn toml_line_looks_like_comment_not_parsed_as_key() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let content = "#key = value\n[build]\nentry = \"x\"\n";
         let entries = parse_toml(content);
         assert!(!entries.iter().any(|(k, _)| k.starts_with('#')));
         assert_eq!(toml_get(&entries, "build.entry"), Some("x"));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn toml_section_bracket_requires_both() {
+    fn toml_section_bracket_requires_both() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let content = "[build\nentry = \"x\"\n";
         let entries = parse_toml(content);
         assert_eq!(toml_get(&entries, "entry"), Some("x"));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn is_lib_project_detects_lib() {
+    fn is_lib_project_detects_lib() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         assert!(is_lib_project("lib"));
         assert!(!is_lib_project("app"));
         assert!(!is_lib_project(""));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn parse_boot_detects_true() {
+    fn parse_boot_detects_true() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         assert!(parse_boot("true"));
         assert!(!parse_boot("false"));
         assert!(!parse_boot(""));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn should_add_ccompiler_when_non_empty() {
+    fn should_add_ccompiler_when_non_empty() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         assert!(should_add_ccompiler("gcc"));
         assert!(!should_add_ccompiler(""));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn is_file_arg_accepts_ur_without_dash() {
+    fn is_file_arg_accepts_ur_without_dash() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         assert!(is_file_arg("m.ur"));
         assert!(!is_file_arg("-check"));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn should_skip_urp_line_empty_and_comments() {
+    fn should_skip_urp_line_empty_and_comments() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         assert!(should_skip_urp_line(""));
         assert!(should_skip_urp_line("# comment"));
         assert!(!should_skip_urp_line("mymod"));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn is_unknown_compiler_flag_detects_flags() {
+    fn is_unknown_compiler_flag_detects_flags() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         assert!(is_unknown_compiler_flag("", "-"));
         assert!(is_unknown_compiler_flag("bad", "-bad"));
         assert!(!is_unknown_compiler_flag("myproj", "myproj"));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn apply_verbosity_v_flag_increments_and_caps() {
+    fn apply_verbosity_v_flag_increments_and_caps() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let mut s = crate::settings::Settings::new();
         apply_verbosity_v_flag(&mut s, "v");
         assert_eq!(s.verbosity, 1);
@@ -1044,10 +1098,12 @@ k = "hello""#;
         assert_eq!(s.verbosity, crate::compiler_tracing::MAX_COMPILER_VERBOSITY);
         apply_verbosity_v_flag(&mut s, "v");
         assert_eq!(s.verbosity, crate::compiler_tracing::MAX_COMPILER_VERBOSITY);
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn leading_build_verbosity_collects_prefix_only() {
+    fn leading_build_verbosity_collects_prefix_only() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let args = vec![
             "-vv".to_string(),
             "-verbose".to_string(),
@@ -1056,133 +1112,233 @@ k = "hello""#;
         let v = leading_build_verbosity_flags(&args);
         assert_eq!(v.len(), 2);
         assert_eq!(v[0], "-vv");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn is_valid_limit_non_negative() {
+    fn is_valid_limit_non_negative() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         assert!(is_valid_limit(0));
         assert!(is_valid_limit(1));
         assert!(!is_valid_limit(-1));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn command_succeeded_ok_and_success() {
+    fn command_succeeded_ok_and_success() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let s = std::process::Command::new("true").status();
         assert!(command_succeeded(&s));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn sass_tool_available_either_or() {
+    fn sass_tool_available_either_or() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         assert!(sass_tool_available(true, false));
         assert!(sass_tool_available(false, true));
         assert!(sass_tool_available(true, true));
         assert!(!sass_tool_available(false, false));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn file_exists_detects_present_and_absent() {
+    fn file_exists_detects_present_and_absent() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let _guard = lock_for_compile(&TEST_CWD_LOCK, "cli_common file_exists test");
-        let dir = tempfile::tempdir().unwrap();
-        let cwd = std::env::current_dir().unwrap();
-        std::env::set_current_dir(dir.path()).unwrap();
-        std::fs::write("exists.txt", "").unwrap();
+        // create a temporary directory for the test; failure means the OS cannot create temp dirs
+        let dir = match tempfile::tempdir() {
+            Ok(v) => v,
+            Err(e) => panic!("tempdir() failed: {e}"),
+        };
+        // capture the current working directory so it can be restored after the test
+        let cwd = match std::env::current_dir() {
+            Ok(v) => v,
+            Err(e) => panic!("current_dir() failed: {e}"),
+        };
+        // change into the temporary directory for the duration of the test
+        match std::env::set_current_dir(dir.path()) {
+            Ok(()) => {}
+            Err(e) => panic!("set_current_dir to temp dir failed: {e}"),
+        }
+        // create a file that file_exists() should detect as present
+        match std::fs::write("exists.txt", "") {
+            Ok(()) => {}
+            Err(e) => panic!("fs::write exists.txt failed: {e}"),
+        }
         assert!(file_exists("exists.txt"));
         assert!(!file_exists("nonexistent.txt"));
-        std::env::set_current_dir(&cwd).unwrap();
+        // restore the original working directory after the test completes
+        match std::env::set_current_dir(&cwd) {
+            Ok(()) => {}
+            Err(e) => panic!("set_current_dir to original cwd failed: {e}"),
+        }
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn command_succeeded_err_fails() {
+    fn command_succeeded_err_fails() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let s = std::process::Command::new("/nonexistent").status();
         assert!(!command_succeeded(&s));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn toml_unclosed_quote_preserves_raw() {
+    fn toml_unclosed_quote_preserves_raw() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let content = "[x]\nk = \"hello\n";
         let entries = parse_toml(content);
-        let v = toml_get(&entries, "x.k").unwrap();
+        // look up key "x.k" in the parsed TOML; must be present since we wrote it
+        let v = match toml_get(&entries, "x.k") {
+            Some(v) => v,
+            None => panic!("toml_get(\"x.k\") returned None"),
+        };
         assert!(v.contains("hello"), "unclosed quote should not strip");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn capitalize_helper() {
+    fn capitalize_helper() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         assert_eq!(capitalize("hello"), "Hello");
         assert_eq!(capitalize(""), "");
         assert_eq!(capitalize("A"), "A");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn kind_specific_created_files_app() {
+    fn kind_specific_created_files_app() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let files = kind_specific_created_files(ProjectKind::App, "foo");
         assert!(files.iter().any(|s| s.contains("style/scss")));
         assert!(!files.iter().any(|s| s.ends_with(".urs")));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn kind_specific_created_files_library() {
+    fn kind_specific_created_files_library() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let files = kind_specific_created_files(ProjectKind::Library, "mylib");
         assert!(files.iter().any(|s| s.ends_with(".urs")));
         assert!(!files.iter().any(|s| s.contains("style/")));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn package_spec_repo_leaf_skips_empty_segments() {
+    fn package_spec_repo_leaf_skips_empty_segments() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         assert_eq!(package_spec_repo_leaf("org/repo"), "repo");
         assert_eq!(package_spec_repo_leaf("org//repo"), "repo");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn load_ur_manifest_cwd_ok_and_entry() {
+    fn load_ur_manifest_cwd_ok_and_entry() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let _guard = lock_for_compile(&TEST_CWD_LOCK, "cli_common manifest load");
-        let dir = tempfile::tempdir().unwrap();
-        let cwd = std::env::current_dir().unwrap();
-        std::env::set_current_dir(dir.path()).unwrap();
-        std::fs::write(
+        // create a temporary directory for the manifest test
+        let dir = match tempfile::tempdir() {
+            Ok(v) => v,
+            Err(e) => panic!("tempdir() failed: {e}"),
+        };
+        // save the current working directory so it can be restored after the test
+        let cwd = match std::env::current_dir() {
+            Ok(v) => v,
+            Err(e) => panic!("current_dir() failed: {e}"),
+        };
+        // switch into the temp dir so load_ur_manifest_cwd picks up the test manifest
+        match std::env::set_current_dir(dir.path()) {
+            Ok(()) => {}
+            Err(e) => panic!("set_current_dir to temp dir failed: {e}"),
+        }
+        // write a valid manifest with a non-empty entry field
+        match std::fs::write(
             UR_MANIFEST_FILE,
             r#"[package]
 kind = "app"
 [build]
 entry = "demo"
 "#,
-        )
-        .unwrap();
-        let cfg = load_ur_manifest_cwd().unwrap();
+        ) {
+            Ok(()) => {}
+            Err(e) => panic!("fs::write manifest (with entry) failed: {e}"),
+        }
+        // parse the manifest; must succeed for a valid TOML file
+        let cfg = match load_ur_manifest_cwd() {
+            Ok(v) => v,
+            Err(e) => panic!("load_ur_manifest_cwd() failed: {e}"),
+        };
         assert_eq!(cfg.build.entry, "demo");
         assert!(require_manifest_entry(&cfg).is_ok());
-        std::fs::write(
+        // overwrite with an empty entry to test the require_manifest_entry error path
+        match std::fs::write(
             UR_MANIFEST_FILE,
             r#"[package]
 kind = "app"
 [build]
 entry = ""
 "#,
-        )
-        .unwrap();
-        let cfg_empty = load_ur_manifest_cwd().unwrap();
+        ) {
+            Ok(()) => {}
+            Err(e) => panic!("fs::write manifest (empty entry) failed: {e}"),
+        }
+        // parse the manifest with empty entry; must succeed since the TOML is still valid
+        let cfg_empty = match load_ur_manifest_cwd() {
+            Ok(v) => v,
+            Err(e) => panic!("load_ur_manifest_cwd() with empty entry failed: {e}"),
+        };
         assert!(require_manifest_entry(&cfg_empty).is_err());
-        std::env::set_current_dir(&cwd).unwrap();
+        // restore the original working directory
+        match std::env::set_current_dir(&cwd) {
+            Ok(()) => {}
+            Err(e) => panic!("set_current_dir to original cwd failed: {e}"),
+        }
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn ensure_ur_toml_present_for_install_checks_file() {
+    fn ensure_ur_toml_present_for_install_checks_file() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let _guard = lock_for_compile(&TEST_CWD_LOCK, "cli_common install manifest");
-        let dir = tempfile::tempdir().unwrap();
-        let cwd = std::env::current_dir().unwrap();
-        std::env::set_current_dir(dir.path()).unwrap();
+        // create a temporary directory for the install-manifest check test
+        let dir = match tempfile::tempdir() {
+            Ok(v) => v,
+            Err(e) => panic!("tempdir() failed: {e}"),
+        };
+        // save the current working directory so it can be restored after the test
+        let cwd = match std::env::current_dir() {
+            Ok(v) => v,
+            Err(e) => panic!("current_dir() failed: {e}"),
+        };
+        // change into the temp dir; no manifest file exists yet
+        match std::env::set_current_dir(dir.path()) {
+            Ok(()) => {}
+            Err(e) => panic!("set_current_dir to temp dir failed: {e}"),
+        }
         assert!(super::ensure_ur_toml_present_for_install().is_err());
-        std::fs::write(
+        // write a minimal valid manifest so the install check should now succeed
+        match std::fs::write(
             UR_MANIFEST_FILE,
             "[package]\nkind=\"app\"\n[build]\nentry=\"x\"\n",
-        )
-        .unwrap();
+        ) {
+            Ok(()) => {}
+            Err(e) => panic!("fs::write manifest failed: {e}"),
+        }
         assert!(super::ensure_ur_toml_present_for_install().is_ok());
-        std::env::set_current_dir(&cwd).unwrap();
+        // restore the original working directory
+        match std::env::set_current_dir(&cwd) {
+            Ok(()) => {}
+            Err(e) => panic!("set_current_dir to original cwd failed: {e}"),
+        }
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn exec_peer_bin_missing_prints_path_error() {
+    fn exec_peer_bin_missing_prints_path_error() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let code = exec_peer_bin("/nonexistent-peer-binary-ur-test", &[]);
         assert_eq!(code, 1);
+        Ok(()) // return success to the test harness
     }
 }

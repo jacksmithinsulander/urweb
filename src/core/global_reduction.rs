@@ -1904,6 +1904,7 @@ mod tests {
     use super::*;
     use crate::error_types::Located;
     use crate::settings::Settings;
+    use anyhow::Context as _; // .with_context() on Option in tests
 
     fn dummy() -> Span {
         Span::dummy()
@@ -1936,14 +1937,17 @@ mod tests {
     }
 
     #[test]
-    fn empty_file_stays_empty() {
+    fn empty_file_stays_empty() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // Catches mutant: reduce panics or adds phantom decls on empty input.
         let result = reduce(vec![], &Settings::default());
         assert!(result.is_empty(), "reduce of empty file must be empty");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn val_decl_preserved() {
+    fn val_decl_preserved() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // Catches mutant: reduce drops Val declarations.
         let file = vec![val_decl(1, prim_exp()), export_decl(1)];
         let result = reduce(file, &Settings::default());
@@ -1953,10 +1957,12 @@ mod tests {
                 .any(|d| matches!(&d.node, Declaration::Val(_, id, _, _, _) if *id == 1)),
             "Val decl must be preserved by reduce"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn database_decl_preserved() {
+    fn database_decl_preserved() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // Catches mutant: reduce drops Database declarations.
         let file = vec![Located::new(Declaration::Database("mydb".into()), dummy())];
         let result = reduce(file, &Settings::default());
@@ -1966,10 +1972,12 @@ mod tests {
                 .any(|d| matches!(&d.node, Declaration::Database(s) if s == "mydb")),
             "Database decl must be preserved by reduce"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn named_exp_inlined() {
+    fn named_exp_inlined() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // Catches mutant: named_e map is never populated, so Named refs are not inlined.
         // val f (id=1) : Unit = prim  -- use_count=1 (from id=2)
         // val g (id=2) : Unit = Named(1)
@@ -1988,15 +1996,17 @@ mod tests {
                 Declaration::Val(_, 2, _, e, _) => Some(e.clone()),
                 _ => None,
             })
-            .expect("val id=2 must exist");
+            .with_context(|| "val id=2 must exist")?;
         assert!(
             matches!(g_body.node, Expression::Prim(_)),
             "Named(1) must be inlined to Prim when use_count <= 1"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn beta_reduction_of_app_abs() {
+    fn beta_reduction_of_app_abs() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // Catches mutant: App + Abs case falls through to the App node constructor.
         // (fn x : Unit => Rel(0)) Prim(42)  →  Prim(42)
         let span = dummy();
@@ -2012,21 +2022,24 @@ mod tests {
             span.clone(),
         )];
         let result = reduce(file, &Settings::default());
-        let body = result
-            .iter()
-            .find_map(|d| match &d.node {
-                Declaration::Val(_, 1, _, e, _) => Some(e.clone()),
-                _ => None,
-            })
-            .unwrap();
+        // Find the Val declaration with id=1 and extract its body; panic with a message if absent.
+        let body = match result.iter().find_map(|d| match &d.node {
+            Declaration::Val(_, 1, _, e, _) => Some(e.clone()),
+            _ => None,
+        }) {
+            Some(v) => v,
+            None => panic!("no Val declaration with id=1 found in reduce output"),
+        };
         assert!(
             matches!(body.node, Expression::Prim(Prim::Int(42))),
             "App of Abs must beta-reduce"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn record_field_projection_reduces() {
+    fn record_field_projection_reduces() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // Catches mutant: Field of Record is not statically projected.
         // { x = Prim(1) }.x  →  Prim(1)
         let span = dummy();
@@ -2053,12 +2066,14 @@ mod tests {
             matches!(result.node, Expression::Prim(_)),
             "Field of known Record must project"
         );
+        Ok(()) // return success to the test harness
     }
 
     // --- Plan: Catch Missed Mutants - global_reduction ---
 
     #[test]
-    fn reduce_exp_case_var_matches() {
+    fn reduce_exp_case_var_matches() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // Kills: delete Var arm in match_pat. Case(_, [(Var, body)]) -> body.
         use crate::core::Pattern;
         let var_pat = Located::new(Pattern::Var("x".into(), unit_con()), dummy());
@@ -2078,10 +2093,12 @@ mod tests {
             matches!(result.node, Expression::Prim(Prim::Int(77))),
             "Var pattern must match and return body"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn reduce_exp_case_prim_equal_matches() {
+    fn reduce_exp_case_prim_equal_matches() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // Kills: delete Prim arm, == -> != in match_pat.
         use crate::core::Pattern;
         let prim_pat = Located::new(Pattern::Prim(Prim::Int(1)), dummy());
@@ -2101,10 +2118,12 @@ mod tests {
             matches!(result.node, Expression::Prim(Prim::Int(88))),
             "Prim(1) pattern must match Prim(1) disc"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn reduce_exp_case_prim_not_equal_no_match() {
+    fn reduce_exp_case_prim_not_equal_no_match() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // Kills: == -> !=. Prim(1) vs Prim(2) -> Case remains.
         use crate::core::Pattern;
         let prim_pat = Located::new(Pattern::Prim(Prim::Int(2)), dummy());
@@ -2124,10 +2143,12 @@ mod tests {
             matches!(result.node, Expression::Case(_, _, _)),
             "Prim(2) must not match Prim(1)"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn reduce_exp_record_concat() {
+    fn reduce_exp_record_concat() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // Kills: delete Record arm in Concat. Record + Record -> merged Record.
         let span = dummy();
         let field_name = Located::new(Constructor::Name("x".into()), span);
@@ -2162,10 +2183,12 @@ mod tests {
             matches!(result.node, Expression::Record(_)),
             "Record + Record must reduce to merged Record"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn named_inlined_when_use_count_one() {
+    fn named_inlined_when_use_count_one() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // Kills: may_inline, count_uses. val f=prim, val g=Named(f), export g -> g inlined.
         let file = vec![
             val_decl(1, prim_exp()),
@@ -2179,35 +2202,43 @@ mod tests {
                 Declaration::Val(_, 2, _, e, _) => Some(e),
                 _ => None,
             })
-            .expect("val 2 must exist");
+            .with_context(|| "val 2 must exist")?;
         assert!(
             matches!(g.node, Expression::Prim(_)),
             "Named(1) must be inlined when use_count=1"
         );
+        Ok(()) // return success to the test harness
     }
 
     // --- More tests to kill missed mutants ---
 
     #[test]
-    fn passive_prim() {
+    fn passive_prim() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let e = Located::new(Expression::Prim(Prim::Int(0)), dummy());
         assert!(passive(&e.node), "Prim is passive");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn passive_rel() {
+    fn passive_rel() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let e = Located::new(Expression::Rel(0), dummy());
         assert!(passive(&e.node), "Rel is passive");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn passive_named() {
+    fn passive_named() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let e = Located::new(Expression::Named(1), dummy());
         assert!(passive(&e.node), "Named is passive");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn passive_constructor_none() {
+    fn passive_constructor_none() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         use crate::datatype_kind::DatatypeKind;
         let con = Located::new(
             Expression::Constructor(
@@ -2219,10 +2250,12 @@ mod tests {
             dummy(),
         );
         assert!(passive(&con.node), "Constructor(_,_,_,None) is passive");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn passive_constructor_some_inner_passive() {
+    fn passive_constructor_some_inner_passive() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         use crate::datatype_kind::DatatypeKind;
         let inner = Located::new(Expression::Prim(Prim::Int(0)), dummy());
         let con = Located::new(
@@ -2238,45 +2271,57 @@ mod tests {
             passive(&con.node),
             "Constructor with passive inner is passive"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn passive_app_not_passive() {
+    fn passive_app_not_passive() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let app = Located::new(
             Expression::App(Box::new(prim_exp()), Box::new(prim_exp())),
             dummy(),
         );
         assert!(!passive(&app.node), "App is not passive");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn not_ffi_unit() {
+    fn not_ffi_unit() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let t = unit_con();
         assert!(not_ffi(&t.node), "Unit is not Ffi");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn not_ffi_false_for_ffi() {
+    fn not_ffi_false_for_ffi() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let t = Located::new(Constructor::Ffi("Basis".into(), "int".into()), dummy());
         assert!(!not_ffi(&t.node), "Ffi is ffi");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn pat_binds_n_var() {
+    fn pat_binds_n_var() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         use crate::core::Pattern;
         let p = Located::new(Pattern::Var("x".into(), unit_con()), dummy());
         assert_eq!(pat_binds_n(&p), 1);
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn pat_binds_n_prim() {
+    fn pat_binds_n_prim() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         use crate::core::Pattern;
         let p = Located::new(Pattern::Prim(Prim::Int(0)), dummy());
         assert_eq!(pat_binds_n(&p), 0);
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn pat_binds_n_record() {
+    fn pat_binds_n_record() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         use crate::core::Pattern;
         let field_pat = Located::new(Pattern::Var("x".into(), unit_con()), dummy());
         let p = Located::new(
@@ -2284,118 +2329,150 @@ mod tests {
             dummy(),
         );
         assert_eq!(pat_binds_n(&p), 1);
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn count_exp_prim() {
+    fn count_exp_prim() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let e = prim_exp();
         assert_eq!(count_exp(&e), 1);
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn count_exp_app() {
+    fn count_exp_app() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let app = Located::new(
             Expression::App(Box::new(prim_exp()), Box::new(prim_exp())),
             dummy(),
         );
         assert_eq!(count_exp(&app), 3);
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn count_named_uses_single() {
+    fn count_named_uses_single() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let file = vec![
             val_decl(1, prim_exp()),
             val_decl(2, Located::new(Expression::Named(1), dummy())),
         ];
         let uses = count_named_uses(&file);
         assert_eq!(uses.get(&1), Some(&1));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn is_poly_con_named_in_set() {
+    fn is_poly_con_named_in_set() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let mut poly = BTreeSet::new();
         poly.insert(5);
         let con = Located::new(Constructor::Named(5), dummy());
         assert!(is_poly_con(&poly, &con));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn is_poly_con_named_not_in_set() {
+    fn is_poly_con_named_not_in_set() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let poly: BTreeSet<usize> = BTreeSet::new();
         let con = Located::new(Constructor::Named(5), dummy());
         assert!(!is_poly_con(&poly, &con));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn is_policy_sql_policy() {
+    fn is_policy_sql_policy() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let t = Located::new(
             Constructor::Ffi("Basis".into(), "sql_policy".into()),
             dummy(),
         );
         assert!(is_policy(&t.node));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn is_policy_not_basis_int() {
+    fn is_policy_not_basis_int() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let t = Located::new(Constructor::Ffi("Basis".into(), "int".into()), dummy());
         assert!(!is_policy(&t.node));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn prim_eq_int_same() {
+    fn prim_eq_int_same() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         assert!(prim_eq(&Prim::Int(42), &Prim::Int(42)));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn prim_eq_int_diff() {
+    fn prim_eq_int_diff() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         assert!(!prim_eq(&Prim::Int(1), &Prim::Int(2)));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn prim_eq_float_same() {
+    fn prim_eq_float_same() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         assert!(prim_eq(&Prim::Float(1.0), &Prim::Float(1.0)));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn prim_eq_string_same() {
+    fn prim_eq_string_same() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         use crate::primitives::StringMode;
         assert!(prim_eq(
             &Prim::String(StringMode::Normal, "a".into()),
             &Prim::String(StringMode::Normal, "a".into())
         ));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn prim_eq_string_diff() {
+    fn prim_eq_string_diff() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         use crate::primitives::StringMode;
         assert!(!prim_eq(
             &Prim::String(StringMode::Normal, "a".into()),
             &Prim::String(StringMode::Normal, "b".into())
         ));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn prim_eq_char_same() {
+    fn prim_eq_char_same() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         assert!(prim_eq(&Prim::Char('x'), &Prim::Char('x')));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn prim_eq_char_diff() {
+    fn prim_eq_char_diff() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         assert!(!prim_eq(&Prim::Char('a'), &Prim::Char('b')));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn passive_record_of_prim() {
+    fn passive_record_of_prim() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let field_name = Located::new(Constructor::Name("x".into()), dummy());
         let rec = Located::new(
             Expression::Record(vec![(field_name, prim_exp(), unit_con())]),
             dummy(),
         );
         assert!(passive(&rec.node));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn passive_field_of_prim() {
+    fn passive_field_of_prim() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let inner = prim_exp();
         let fm = FieldMeta {
             field: unit_con(),
@@ -2413,26 +2490,32 @@ mod tests {
             dummy(),
         );
         assert!(passive(&field.node));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn count_exp_prim_is_one() {
+    fn count_exp_prim_is_one() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let e = prim_exp();
         assert_eq!(count_exp(&e), 1);
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn count_exp_app_counts_both() {
+    fn count_exp_app_counts_both() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let span = dummy();
         let app = Located::new(
             Expression::App(Box::new(prim_exp()), Box::new(prim_exp())),
             span,
         );
         assert_eq!(count_exp(&app), 3);
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn count_named_uses_sees_named_refs() {
+    fn count_named_uses_sees_named_refs() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let file = vec![
             val_decl(1, prim_exp()),
             val_decl(2, Located::new(Expression::Named(1), dummy())),
@@ -2440,24 +2523,31 @@ mod tests {
         ];
         let uses = count_named_uses(&file);
         assert_eq!(uses.get(&1), Some(&2));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn is_poly_con_ffi_false() {
+    fn is_poly_con_ffi_false() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let c = Located::new(Constructor::Ffi("Basis".into(), "int".into()), dummy());
         let empty: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
         assert!(!is_poly_con(&empty, &c));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn is_policy_basis_sql_policy() {
+    fn is_policy_basis_sql_policy() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let c = Constructor::Ffi("Basis".into(), "sql_policy".into());
         assert!(is_policy(&c));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn is_policy_basis_int_false() {
+    fn is_policy_basis_int_false() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let c = Constructor::Ffi("Basis".into(), "int".into());
         assert!(!is_policy(&c));
+        Ok(()) // return success to the test harness
     }
 }

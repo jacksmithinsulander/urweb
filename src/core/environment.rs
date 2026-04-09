@@ -463,7 +463,11 @@ mod tests {
         let k = Located::dummy(Kind::Type);
         let c = Located::dummy(Constructor::Unit);
         let env = Env::empty().push_c_named_as("T".into(), 1, k.clone(), Some(c.clone()));
-        let entry = env.lookup_c_named(1).unwrap();
+        // Unwrap the lookup result, panicking with a message if the binding is absent.
+        let entry = match env.lookup_c_named(1) {
+            Ok(v) => v,
+            Err(e) => panic!("lookup_c_named(1) failed unexpectedly: {e}"),
+        };
         assert_eq!(entry.0, "T");
         assert!(matches!(
             env.lookup_c_named(99),
@@ -475,7 +479,11 @@ mod tests {
     fn env_push_and_lookup_e_named() {
         let t = Located::dummy(Constructor::Unit);
         let env = Env::empty().push_e_named_as("x".into(), 42, t.clone());
-        let entry = env.lookup_e_named(42).unwrap();
+        // Unwrap the named-expression lookup, panicking with a message if absent.
+        let entry = match env.lookup_e_named(42) {
+            Ok(v) => v,
+            Err(e) => panic!("lookup_e_named(42) failed unexpectedly: {e}"),
+        };
         assert_eq!(entry.0, "x");
         assert!(matches!(
             env.lookup_e_named(99),
@@ -490,7 +498,11 @@ mod tests {
             vec!["a".into()],
             vec![("C".into(), 11, None), ("D".into(), 12, None)],
         );
-        let (params, constrs) = env.lookup_datatype(10).unwrap();
+        // Unwrap the datatype lookup, panicking with a message if the datatype is absent.
+        let (params, constrs) = match env.lookup_datatype(10) {
+            Ok(v) => v,
+            Err(e) => panic!("lookup_datatype(10) failed unexpectedly: {e}"),
+        };
         assert_eq!(params, &["a".to_string()]);
         assert_eq!(constrs.len(), 2);
         assert!(matches!(
@@ -506,7 +518,11 @@ mod tests {
             vec![],
             vec![("Some".into(), 1, Some(Located::dummy(Constructor::Unit)))],
         );
-        let info = env.lookup_constructor("Some").unwrap();
+        // Unwrap the constructor lookup by name, panicking with a message if absent.
+        let info = match env.lookup_constructor("Some") {
+            Some(v) => v,
+            None => panic!("lookup_constructor(\"Some\") returned None unexpectedly"),
+        };
         assert_eq!(info.1, 10); // datatype id
         assert_eq!(info.4, 1); // constr id
     }

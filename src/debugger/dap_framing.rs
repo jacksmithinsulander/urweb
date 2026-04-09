@@ -117,18 +117,23 @@ mod tests {
     use std::io::Cursor;
 
     #[test]
-    fn framing_roundtrip() {
+    fn framing_roundtrip() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let msg = json!({"seq": 1, "type": "event", "event": "test", "body": {}});
         let mut buf = Vec::new();
-        write_dap_message(&mut buf, &msg).unwrap();
+        write_dap_message(&mut buf, &msg)?;
         let mut cur = Cursor::new(buf);
-        let read = read_dap_message(&mut cur).unwrap().unwrap();
+        // unwrap the Option to get Value; None means unexpected EOF
+        let read = read_dap_message(&mut cur)?
+            .ok_or_else(|| anyhow::anyhow!("expected message but got EOF"))?;
         assert_eq!(read, msg);
+        Ok(()) // return success to the test harness
     }
 
     /// Hostile peer: never sends blank line after endless `X:` headers.
     #[test]
-    fn read_rejects_excessive_header_lines() {
+    fn read_rejects_excessive_header_lines() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let mut hdr = String::new();
         for idx in 0..DAP_FRAMING_MAX_HEADER_LINES + 4 {
             hdr.push_str(&format!("X-Custom: {idx}\r\n"));
@@ -136,20 +141,24 @@ mod tests {
         let mut cur = Cursor::new(hdr.into_bytes());
         let err = read_dap_message(&mut cur).expect_err("expected header line limit");
         assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        Ok(()) // return success to the test harness
     }
 
     /// Hostile peer: `Content-Length` larger than [`DAP_FRAMING_MAX_BODY_BYTES`].
     #[test]
-    fn read_rejects_oversized_content_length() {
+    fn read_rejects_oversized_content_length() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let hdr = format!("Content-Length: {}\r\n\r\n", DAP_FRAMING_MAX_BODY_BYTES + 1);
         let mut cur = Cursor::new(hdr.into_bytes());
         let err = read_dap_message(&mut cur).expect_err("expected body cap");
         assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        Ok(()) // return success to the test harness
     }
 
     /// Hostile peer: one header line longer than [`DAP_FRAMING_MAX_HEADER_LINE_BYTES`].
     #[test]
-    fn read_rejects_overlong_header_line() {
+    fn read_rejects_overlong_header_line() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let mut hdr = String::with_capacity(DAP_FRAMING_MAX_HEADER_LINE_BYTES + 32);
         hdr.push_str("X-Long: ");
         hdr.push_str(&"y".repeat(DAP_FRAMING_MAX_HEADER_LINE_BYTES + 2));
@@ -157,11 +166,13 @@ mod tests {
         let mut cur = Cursor::new(hdr.into_bytes());
         let err = read_dap_message(&mut cur).expect_err("expected header line cap");
         assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        Ok(()) // return success to the test harness
     }
 
     /// Bodies with `Content-Length` exactly [`DAP_FRAMING_STACK_BODY_MAX`] use the stack buffer path.
     #[test]
-    fn read_stack_body_exact_max_roundtrip() {
+    fn read_stack_body_exact_max_roundtrip() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // Find padding length so `{"a":"<xs>"}` serializes to exactly [`DAP_FRAMING_STACK_BODY_MAX`] bytes.
         let mut pad_len = DAP_FRAMING_STACK_BODY_MAX.saturating_sub(16);
         let mut body = String::new();
@@ -176,7 +187,10 @@ mod tests {
         assert_eq!(body.len(), DAP_FRAMING_STACK_BODY_MAX);
         let hdr = format!("Content-Length: {}\r\n\r\n{}", body.len(), body);
         let mut cur = Cursor::new(hdr.into_bytes());
-        let v = read_dap_message(&mut cur).unwrap().unwrap();
+        // unwrap the Option; None means unexpected EOF when a message was expected
+        let v = read_dap_message(&mut cur)?
+            .ok_or_else(|| anyhow::anyhow!("expected message but got EOF"))?;
         assert_eq!(v["a"], serde_json::json!("x".repeat(pad_len)));
+        Ok(()) // return success to the test harness
     }
 }

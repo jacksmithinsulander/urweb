@@ -799,47 +799,57 @@ mod tests {
     use crate::error_types::Located;
     use crate::export::{Effect, ExportKind};
     use crate::primitives::Prim;
+    use anyhow::Context as _; // .with_context() on Option in tests
 
     #[test]
-    fn union_find_equate_merge() {
+    fn union_find_equate_merge() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // Kills: equate no-op, representative. equate(a,b), equate(b,c) -> rep(a)==rep(c).
         let mut uf = UnionFind::new();
         uf.equate(1, 2);
         uf.equate(2, 3);
         assert_eq!(uf.representative(1), uf.representative(3));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn union_find_representative_self() {
+    fn union_find_representative_self() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // Kills: representative. Unrelated node -> self.
         let uf = UnionFind::new();
         assert_eq!(uf.representative(42), 42);
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn unravel_app_named_returns_id() {
+    fn unravel_app_named_returns_id() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // Kills: delete Named arm. Named(n) -> Some((n, [])).
         let e = Located::dummy(Expression::Named(7));
         let r = unravel_app(&e);
-        let (id, args) = r.expect("Named must return Some");
+        let (id, args) = r.with_context(|| "Named must return Some")?;
         assert_eq!(id, 7);
         assert!(args.is_empty());
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn unravel_app_app_unwraps() {
+    fn unravel_app_app_unwraps() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // Kills: delete App arm. App(Named(3), arg) -> Some((3, [arg])).
         let arg = Located::dummy(Expression::Prim(Prim::Int(0)));
         let f = Located::dummy(Expression::Named(3));
         let app = Located::dummy(Expression::App(Box::new(f), Box::new(arg.clone())));
         let r = unravel_app(&app);
-        let (id, args) = r.expect("App(Named,_) must return Some");
+        let (id, args) = r.with_context(|| "App(Named,_) must return Some")?;
         assert_eq!(id, 3);
         assert_eq!(args.len(), 1);
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn tag_val_preserved() {
+    fn tag_val_preserved() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // Kills: delete Val arm in tag. Val decl must be in output.
         let span = Span::dummy();
         let file: crate::core::File = vec![Located::new(
@@ -855,10 +865,12 @@ mod tests {
         let out = tag(file, &mut |_, _| {});
         assert_eq!(out.len(), 1);
         assert!(matches!(&out[0].node, Declaration::Val(_, 1, _, _, _)));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn tag_valrec_preserved() {
+    fn tag_valrec_preserved() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // Kills: delete ValRec arm. ValRec decl must be in output.
         let span = Span::dummy();
         let file: crate::core::File = vec![Located::new(
@@ -874,10 +886,12 @@ mod tests {
         let out = tag(file, &mut |_, _| {});
         assert_eq!(out.len(), 1);
         assert!(matches!(&out[0].node, Declaration::ValRec(_)));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn tag_export_preserved() {
+    fn tag_export_preserved() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // Kills: delete Export arm. Export decl must be in output.
         let span = Span::dummy();
         let file: crate::core::File = vec![
@@ -900,5 +914,6 @@ mod tests {
         assert!(out
             .iter()
             .any(|d| matches!(d.node, Declaration::Export(_, _, _))));
+        Ok(()) // return success to the test harness
     }
 }

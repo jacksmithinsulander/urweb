@@ -465,13 +465,15 @@ mod tests {
     use super::*;
     use crate::c_like_representation::File;
     use crate::settings::Settings;
+    use anyhow::Context as _; // .context()/.with_context() on Option and Result in tests
 
     fn empty_file() -> File {
         (vec![], vec![])
     }
 
     #[test]
-    fn prepare_empty_file_adds_empty_prepared_stmts() {
+    fn prepare_empty_file_adds_empty_prepared_stmts() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let settings = Settings::default();
         let (decls, exports) = prepare(empty_file(), &settings);
         assert!(exports.is_empty());
@@ -481,10 +483,12 @@ mod tests {
             &decls[0].node,
             Decl::PreparedStatements(v) if v.is_empty()
         ));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn prep_string_literal_becomes_template() {
+    fn prep_string_literal_becomes_template() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let mut st = PrepareState::new();
         let settings = Settings::default();
         let e = Located::dummy(Exp::Prim(Prim::String(
@@ -493,13 +497,15 @@ mod tests {
         )));
         let result = try_prepare(&e, &mut st, &settings);
         assert!(result.is_some());
-        let (id, tmpl) = result.unwrap();
+        let (id, tmpl) = result.ok_or_else(|| anyhow::anyhow!("expected Some from result"))?; // convert None to anyhow error
         assert_eq!(id, 0);
         assert_eq!(tmpl, "SELECT 1");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn prep_string_sqlify_int_postgres() {
+    fn prep_string_sqlify_int_postgres() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let mut st = PrepareState::new();
         let settings = Settings {
             db_backend: Some(crate::db::ProjectDb::postgres()),
@@ -519,12 +525,14 @@ mod tests {
         ));
         let result = try_prepare(&e, &mut st, &settings);
         assert!(result.is_some());
-        let (_, tmpl) = result.unwrap();
+        let (_, tmpl) = result.ok_or_else(|| anyhow::anyhow!("expected Some from result"))?; // convert None to anyhow error
         assert_eq!(tmpl, "$1::int8");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn prep_string_sqlify_char() {
+    fn prep_string_sqlify_char() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // Catches mutant: delete match arm "sqlifyChar" in sqlify_type.
         let mut st = PrepareState::new();
         let settings = Settings {
@@ -546,16 +554,18 @@ mod tests {
             result.is_some(),
             "sqlifyChar must be recognized (catches delete sqlifyChar arm)"
         );
-        let (_, tmpl) = result.unwrap();
+        let (_, tmpl) = result.ok_or_else(|| anyhow::anyhow!("expected Some from result"))?; // convert None to anyhow error
         assert!(
             tmpl.contains("char"),
             "sqlifyChar must produce char type: {}",
             tmpl
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn prep_string_sqlify_bool() {
+    fn prep_string_sqlify_bool() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // Catches mutant: delete match arm "sqlifyBool" in sqlify_type.
         let mut st = PrepareState::new();
         let settings = Settings {
@@ -577,16 +587,18 @@ mod tests {
             result.is_some(),
             "sqlifyBool must be recognized (catches delete sqlifyBool arm)"
         );
-        let (_, tmpl) = result.unwrap();
+        let (_, tmpl) = result.ok_or_else(|| anyhow::anyhow!("expected Some from result"))?; // convert None to anyhow error
         assert!(
             tmpl.contains("bool"),
             "sqlifyBool must produce bool: {}",
             tmpl
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn prep_string_sqlify_time() {
+    fn prep_string_sqlify_time() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // Catches mutant: delete match arm "sqlifyTime" in sqlify_type.
         let mut st = PrepareState::new();
         let settings = Settings {
@@ -608,16 +620,18 @@ mod tests {
             result.is_some(),
             "sqlifyTime must be recognized (catches delete sqlifyTime arm)"
         );
-        let (_, tmpl) = result.unwrap();
+        let (_, tmpl) = result.ok_or_else(|| anyhow::anyhow!("expected Some from result"))?; // convert None to anyhow error
         assert!(
             tmpl.contains("timestamp"),
             "sqlifyTime must produce timestamp: {}",
             tmpl
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn prep_string_sqlify_clocktime() {
+    fn prep_string_sqlify_clocktime() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // Catches mutant: delete match arm "sqlifyClocktime" in sqlify_type.
         let mut st = PrepareState::new();
         let settings = Settings {
@@ -639,16 +653,18 @@ mod tests {
             result.is_some(),
             "sqlifyClocktime must be recognized (catches delete sqlifyClocktime arm)"
         );
-        let (_, tmpl) = result.unwrap();
+        let (_, tmpl) = result.ok_or_else(|| anyhow::anyhow!("expected Some from result"))?; // convert None to anyhow error
         assert!(
             tmpl.contains("time"),
             "sqlifyClocktime must produce time type: {}",
             tmpl
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn prep_string_sqlify_calendardate() {
+    fn prep_string_sqlify_calendardate() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // Catches mutant: delete match arm "sqlifyCalendardate" in sqlify_type.
         let mut st = PrepareState::new();
         let settings = Settings {
@@ -670,16 +686,18 @@ mod tests {
             result.is_some(),
             "sqlifyCalendardate must be recognized (catches delete sqlifyCalendardate arm)"
         );
-        let (_, tmpl) = result.unwrap();
+        let (_, tmpl) = result.ok_or_else(|| anyhow::anyhow!("expected Some from result"))?; // convert None to anyhow error
         assert!(
             tmpl.contains("date"),
             "sqlifyCalendardate must produce date: {}",
             tmpl
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn prep_string_sqlify_blob() {
+    fn prep_string_sqlify_blob() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // Catches mutant: delete match arm "sqlifyBlob" in sqlify_type.
         let mut st = PrepareState::new();
         let settings = Settings {
@@ -701,16 +719,18 @@ mod tests {
             result.is_some(),
             "sqlifyBlob must be recognized (catches delete sqlifyBlob arm)"
         );
-        let (_, tmpl) = result.unwrap();
+        let (_, tmpl) = result.ok_or_else(|| anyhow::anyhow!("expected Some from result"))?; // convert None to anyhow error
         assert!(
             tmpl.contains("bytea") || tmpl.contains("?"),
             "sqlifyBlob must produce blob type: {}",
             tmpl
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn prep_string_sqlify_channel() {
+    fn prep_string_sqlify_channel() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // Catches mutant: delete match arm "sqlifyChannel" in sqlify_type.
         let mut st = PrepareState::new();
         let settings = Settings {
@@ -732,10 +752,12 @@ mod tests {
             result.is_some(),
             "sqlifyChannel must be recognized (catches delete sqlifyChannel arm)"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn prep_string_sqlify_client() {
+    fn prep_string_sqlify_client() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // Catches mutant: delete match arm "sqlifyClient" in sqlify_type.
         let mut st = PrepareState::new();
         let settings = Settings {
@@ -757,10 +779,12 @@ mod tests {
             result.is_some(),
             "sqlifyClient must be recognized (catches delete sqlifyClient arm)"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn prep_string_strcat_requires_both_parts() {
+    fn prep_string_strcat_requires_both_parts() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // Catches mutant: && with || in strcat branch. Both parts must succeed.
         let mut st = PrepareState::new();
         let settings = Settings {
@@ -783,10 +807,12 @@ mod tests {
             result.is_none(),
             "strcat with dynamic arg must fail (catches && -> || in strcat branch)"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn prep_string_sqlify_int_mysql() {
+    fn prep_string_sqlify_int_mysql() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let mut st = PrepareState::new();
         let settings = Settings {
             db_backend: Some(crate::db::ProjectDb::mysql()),
@@ -805,12 +831,14 @@ mod tests {
         ));
         let result = try_prepare(&e, &mut st, &settings);
         assert!(result.is_some());
-        let (_, tmpl) = result.unwrap();
+        let (_, tmpl) = result.ok_or_else(|| anyhow::anyhow!("expected Some from result"))?; // convert None to anyhow error
         assert_eq!(tmpl, "?");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn prep_string_sqlify_float_postgres() {
+    fn prep_string_sqlify_float_postgres() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let mut st = PrepareState::new();
         let settings = Settings {
             db_backend: Some(crate::db::ProjectDb::postgres()),
@@ -828,12 +856,14 @@ mod tests {
         ));
         let result = try_prepare(&e, &mut st, &settings);
         assert!(result.is_some());
-        let (_, tmpl) = result.unwrap();
+        let (_, tmpl) = result.ok_or_else(|| anyhow::anyhow!("expected Some from result"))?; // convert None to anyhow error
         assert_eq!(tmpl, "$1::float8");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn prep_string_sqlify_string_postgres() {
+    fn prep_string_sqlify_string_postgres() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let mut st = PrepareState::new();
         let settings = Settings {
             db_backend: Some(crate::db::ProjectDb::postgres()),
@@ -851,12 +881,14 @@ mod tests {
         ));
         let result = try_prepare(&e, &mut st, &settings);
         assert!(result.is_some());
-        let (_, tmpl) = result.unwrap();
+        let (_, tmpl) = result.ok_or_else(|| anyhow::anyhow!("expected Some from result"))?; // convert None to anyhow error
         assert_eq!(tmpl, "$1::text");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn prep_string_strcat_combines() {
+    fn prep_string_strcat_combines() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let mut st = PrepareState::new();
         let settings = Settings {
             db_backend: Some(crate::db::ProjectDb::postgres()),
@@ -888,35 +920,43 @@ mod tests {
         ));
         let result = try_prepare(&e, &mut st, &settings);
         assert!(result.is_some());
-        let (_, tmpl) = result.unwrap();
+        let (_, tmpl) = result.ok_or_else(|| anyhow::anyhow!("expected Some from result"))?; // convert None to anyhow error
         assert_eq!(tmpl, "SELECT * FROM t WHERE id = $1::int8");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn prep_string_dynamic_returns_none() {
+    fn prep_string_dynamic_returns_none() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let mut st = PrepareState::new();
         let settings = Settings::default();
         // A dynamic expression that can't be templatized.
         let e = Located::dummy(Exp::Rel(0));
         let result = try_prepare(&e, &mut st, &settings);
         assert!(result.is_none());
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn deduplication_same_query_gets_same_id() {
+    fn deduplication_same_query_gets_same_id() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let mut st = PrepareState::new();
         let settings = Settings::default();
         let e = Located::dummy(Exp::Prim(Prim::String(
             StringMode::Normal,
             "SELECT 1".into(),
         )));
-        let (id1, _) = try_prepare(&e, &mut st, &settings).unwrap();
-        let (id2, _) = try_prepare(&e, &mut st, &settings).unwrap();
+        let (id1, _) = try_prepare(&e, &mut st, &settings)
+            .context("expected duplicate query to prepare the first time")?;
+        let (id2, _) = try_prepare(&e, &mut st, &settings)
+            .context("expected duplicate query to prepare the second time")?;
         assert_eq!(id1, id2);
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn different_queries_get_different_ids() {
+    fn different_queries_get_different_ids() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let mut st = PrepareState::new();
         let settings = Settings::default();
         let e1 = Located::dummy(Exp::Prim(Prim::String(
@@ -927,13 +967,17 @@ mod tests {
             StringMode::Normal,
             "SELECT 2".into(),
         )));
-        let (id1, _) = try_prepare(&e1, &mut st, &settings).unwrap();
-        let (id2, _) = try_prepare(&e2, &mut st, &settings).unwrap();
+        let (id1, _) =
+            try_prepare(&e1, &mut st, &settings).context("expected first query to be prepared")?;
+        let (id2, _) =
+            try_prepare(&e2, &mut st, &settings).context("expected second query to be prepared")?;
         assert_ne!(id1, id2);
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn prep_string_ffi_app_non_basis_rejects() {
+    fn prep_string_ffi_app_non_basis_rejects() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // Catches mutant: match guard m == "Basis" with true. Non-Basis strcat must not match.
         use crate::c_like_representation::Typ;
         let mut st = PrepareState::new();
@@ -954,10 +998,12 @@ mod tests {
             result.is_none(),
             "FfiApp Other.strcat must not be templatized (catches m==Basis guard mutant)"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn prep_string_case_nullable_pattern() {
+    fn prep_string_case_nullable_pattern() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // Catches mutant: delete Case arm. (PNone=>"NULL") | (PSome=>sqlifyInt) must template.
         use crate::c_like_representation::{Pat, Typ};
         let mut st = PrepareState::new();
@@ -996,13 +1042,15 @@ mod tests {
             result.is_some(),
             "nullable case pattern must template (catches delete Case arm mutant)"
         );
-        let (_, tmpl) = result.unwrap();
+        let (_, tmpl) = result.ok_or_else(|| anyhow::anyhow!("expected Some from result"))?; // convert None to anyhow error
         assert!(tmpl.contains("$1"), "must have param placeholder");
         assert!(tmpl.contains("int8"), "must be sqlifyInt type");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn prep_string_case_bool_pattern() {
+    fn prep_string_case_bool_pattern() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // Catches mutant: delete Case arm for (True=>"TRUE")|(False=>"FALSE").
         use crate::c_like_representation::{Pat, Typ};
         let mut st = PrepareState::new();
@@ -1030,13 +1078,15 @@ mod tests {
             result.is_some(),
             "bool case pattern must template (catches delete Case arm mutant)"
         );
-        let (_, tmpl) = result.unwrap();
+        let (_, tmpl) = result.ok_or_else(|| anyhow::anyhow!("expected Some from result"))?; // convert None to anyhow error
         assert!(tmpl.contains("$1"), "must have param placeholder");
         assert!(tmpl.contains("bool"), "must be bool type");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn prep_string_strcat_multi_param_increments_n() {
+    fn prep_string_strcat_multi_param_increments_n() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // Catches mutant: += with -= or *=. Param indices must increment.
         // strcat("a=", strcat(sqlifyInt, strcat(" b=", sqlifyString))) => a=$1::int8 b=$2::text
         let mut st = PrepareState::new();
@@ -1081,11 +1131,12 @@ mod tests {
         ));
         let result = try_prepare(&e, &mut st, &settings);
         assert!(result.is_some(), "strcat of strcat must template");
-        let (_, tmpl) = result.unwrap();
+        let (_, tmpl) = result.ok_or_else(|| anyhow::anyhow!("expected Some from result"))?; // convert None to anyhow error
         assert!(
             tmpl.contains("$1") && tmpl.contains("$2"),
             "must have $1 and $2 (catches += mutant): {}",
             tmpl
         );
+        Ok(()) // return success to the test harness
     }
 }

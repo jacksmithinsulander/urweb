@@ -262,7 +262,10 @@ fn drain_analysis(
             Ok(r) => r,
             Err(_) => break,
         };
-        let mut g = global.lock().unwrap();
+        let mut g = match global.lock() {
+            Ok(guard) => guard,                     // acquired the mutex lock normally
+            Err(poisoned) => poisoned.into_inner(), // recover data from a poisoned mutex
+        };
         let skip = g
             .docs
             .get(&ready.uri)
@@ -303,7 +306,10 @@ fn schedule_analysis(
     text: String,
     gen: u64,
 ) {
-    let g = global.lock().unwrap();
+    let g = match global.lock() {
+        Ok(guard) => guard,                     // acquired the mutex lock normally
+        Err(poisoned) => poisoned.into_inner(), // recover data from a poisoned mutex
+    };
     let Some(proj) = g.project.as_ref() else {
         let mut err = ur::error_types::ErrorReporter::new_silent();
         let file_label =
@@ -406,7 +412,10 @@ fn handle_notification(
         if let Ok(p) = serde_json::from_value::<DidOpenTextDocumentParams>(notif.params.clone()) {
             let uri = p.text_document.uri;
             let text = p.text_document.text;
-            let mut g = global.lock().unwrap();
+            let mut g = match global.lock() {
+                Ok(guard) => guard,                     // acquired the mutex lock normally
+                Err(poisoned) => poisoned.into_inner(), // recover data from a poisoned mutex
+            };
             let gen = ur::lsp_support::next_buffer_analysis_generation(None);
             g.docs.insert(
                 uri.clone(),
@@ -423,7 +432,10 @@ fn handle_notification(
             if let Some(ch) = p.content_changes.into_iter().next() {
                 let uri = p.text_document.uri;
                 let text = ch.text;
-                let mut g = global.lock().unwrap();
+                let mut g = match global.lock() {
+                    Ok(guard) => guard,                     // acquired the mutex lock normally
+                    Err(poisoned) => poisoned.into_inner(), // recover data from a poisoned mutex
+                };
                 let gen = ur::lsp_support::next_buffer_analysis_generation(
                     g.docs.get(&uri).map(|document| document.analysis_gen),
                 );
@@ -441,7 +453,10 @@ fn handle_notification(
     } else if method == DidCloseTextDocument::METHOD {
         if let Ok(p) = serde_json::from_value::<DidCloseTextDocumentParams>(notif.params.clone()) {
             let uri = p.text_document.uri;
-            let mut g = global.lock().unwrap();
+            let mut g = match global.lock() {
+                Ok(guard) => guard,                     // acquired the mutex lock normally
+                Err(poisoned) => poisoned.into_inner(), // recover data from a poisoned mutex
+            };
             g.docs.remove(&uri);
             g.last_snap.remove(&uri);
             ur::lsp_support::publish_diagnostics(
@@ -496,7 +511,10 @@ fn handle_request(
 
     if method == "textDocument/hover" {
         let params: HoverParams = serde_json::from_value(req.params.clone())?;
-        let g = global.lock().unwrap();
+        let g = match global.lock() {
+            Ok(guard) => guard,                     // acquired the mutex lock normally
+            Err(poisoned) => poisoned.into_inner(), // recover data from a poisoned mutex
+        };
         let uri = &params.text_document_position_params.text_document.uri;
         let doc = g.docs.get(uri);
         let fk = file_key(&g, uri);
@@ -517,7 +535,10 @@ fn handle_request(
 
     if method == GotoDefinition::METHOD {
         let params: GotoDefinitionParams = serde_json::from_value(req.params.clone())?;
-        let g = global.lock().unwrap();
+        let g = match global.lock() {
+            Ok(guard) => guard,                     // acquired the mutex lock normally
+            Err(poisoned) => poisoned.into_inner(), // recover data from a poisoned mutex
+        };
         let uri = &params.text_document_position_params.text_document.uri;
         let doc = g.docs.get(uri);
         let fk = file_key(&g, uri);
@@ -545,7 +566,10 @@ fn handle_request(
 
     if method == Completion::METHOD {
         let params: CompletionParams = serde_json::from_value(req.params.clone())?;
-        let g = global.lock().unwrap();
+        let g = match global.lock() {
+            Ok(guard) => guard,                     // acquired the mutex lock normally
+            Err(poisoned) => poisoned.into_inner(), // recover data from a poisoned mutex
+        };
         let uri = &params.text_document_position.text_document.uri;
         let doc = g.docs.get(uri);
         let fk = file_key(&g, uri);
@@ -571,7 +595,10 @@ fn handle_request(
 
     if method == SignatureHelpRequest::METHOD {
         let params: SignatureHelpParams = serde_json::from_value(req.params.clone())?;
-        let g = global.lock().unwrap();
+        let g = match global.lock() {
+            Ok(guard) => guard,                     // acquired the mutex lock normally
+            Err(poisoned) => poisoned.into_inner(), // recover data from a poisoned mutex
+        };
         let uri = &params.text_document_position_params.text_document.uri;
         let doc = g.docs.get(uri);
         let fk = file_key(&g, uri);
@@ -603,7 +630,10 @@ fn handle_request(
 
     if method == DocumentHighlightRequest::METHOD {
         let params: DocumentHighlightParams = serde_json::from_value(req.params.clone())?;
-        let g = global.lock().unwrap();
+        let g = match global.lock() {
+            Ok(guard) => guard,                     // acquired the mutex lock normally
+            Err(poisoned) => poisoned.into_inner(), // recover data from a poisoned mutex
+        };
         let uri = &params.text_document_position_params.text_document.uri;
         let doc = g.docs.get(uri);
         let text = doc.map(|d| d.text.as_str()).unwrap_or("");
@@ -624,7 +654,10 @@ fn handle_request(
 
     if method == DocumentSymbolRequest::METHOD {
         let params: DocumentSymbolParams = serde_json::from_value(req.params.clone())?;
-        let g = global.lock().unwrap();
+        let g = match global.lock() {
+            Ok(guard) => guard,                     // acquired the mutex lock normally
+            Err(poisoned) => poisoned.into_inner(), // recover data from a poisoned mutex
+        };
         let uri = &params.text_document.uri;
         let fk = file_key(&g, uri);
         let elab = g.last_snap.get(uri).and_then(|s| s.elaborated.as_ref());
@@ -658,7 +691,10 @@ fn handle_request(
 
     if method == WorkspaceSymbolRequest::METHOD {
         let _params: WorkspaceSymbolParams = serde_json::from_value(req.params.clone())?;
-        let g = global.lock().unwrap();
+        let g = match global.lock() {
+            Ok(guard) => guard,                     // acquired the mutex lock normally
+            Err(poisoned) => poisoned.into_inner(), // recover data from a poisoned mutex
+        };
         let Some(ref root) = g.workspace_root else {
             connection
                 .sender
@@ -696,7 +732,10 @@ fn handle_request(
 
     if method == References::METHOD {
         let params: ReferenceParams = serde_json::from_value(req.params.clone())?;
-        let g = global.lock().unwrap();
+        let g = match global.lock() {
+            Ok(guard) => guard,                     // acquired the mutex lock normally
+            Err(poisoned) => poisoned.into_inner(), // recover data from a poisoned mutex
+        };
         let uri = &params.text_document_position.text_document.uri;
         let doc = g.docs.get(uri);
         let text = doc.map(|d| d.text.as_str()).unwrap_or("");
@@ -714,7 +753,10 @@ fn handle_request(
 
     if method == PrepareRenameRequest::METHOD {
         let params: TextDocumentPositionParams = serde_json::from_value(req.params.clone())?;
-        let g = global.lock().unwrap();
+        let g = match global.lock() {
+            Ok(guard) => guard,                     // acquired the mutex lock normally
+            Err(poisoned) => poisoned.into_inner(), // recover data from a poisoned mutex
+        };
         let uri = &params.text_document.uri;
         let doc = g.docs.get(uri);
         let text = doc.map(|d| d.text.as_str()).unwrap_or("");
@@ -729,7 +771,10 @@ fn handle_request(
 
     if method == Rename::METHOD {
         let params: RenameParams = serde_json::from_value(req.params.clone())?;
-        let g = global.lock().unwrap();
+        let g = match global.lock() {
+            Ok(guard) => guard,                     // acquired the mutex lock normally
+            Err(poisoned) => poisoned.into_inner(), // recover data from a poisoned mutex
+        };
         let uri = &params.text_document_position.text_document.uri;
         let doc = g.docs.get(uri);
         let text = doc.map(|d| d.text.as_str()).unwrap_or("");
@@ -756,7 +801,10 @@ fn handle_request(
 
     if method == FoldingRangeRequest::METHOD {
         let params: FoldingRangeParams = serde_json::from_value(req.params.clone())?;
-        let g = global.lock().unwrap();
+        let g = match global.lock() {
+            Ok(guard) => guard,                     // acquired the mutex lock normally
+            Err(poisoned) => poisoned.into_inner(), // recover data from a poisoned mutex
+        };
         let uri = &params.text_document.uri;
         let doc = g.docs.get(uri);
         let text = doc.map(|d| d.text.as_str()).unwrap_or("");
@@ -771,7 +819,10 @@ fn handle_request(
 
     if method == SelectionRangeRequest::METHOD {
         let params: SelectionRangeParams = serde_json::from_value(req.params.clone())?;
-        let g = global.lock().unwrap();
+        let g = match global.lock() {
+            Ok(guard) => guard,                     // acquired the mutex lock normally
+            Err(poisoned) => poisoned.into_inner(), // recover data from a poisoned mutex
+        };
         let uri = &params.text_document.uri;
         let doc = g.docs.get(uri);
         let text = doc.map(|d| d.text.as_str()).unwrap_or("");
@@ -789,7 +840,10 @@ fn handle_request(
 
     if method == InlayHintRequest::METHOD {
         let params: InlayHintParams = serde_json::from_value(req.params.clone())?;
-        let g = global.lock().unwrap();
+        let g = match global.lock() {
+            Ok(guard) => guard,                     // acquired the mutex lock normally
+            Err(poisoned) => poisoned.into_inner(), // recover data from a poisoned mutex
+        };
         let uri = &params.text_document.uri;
         let fk = file_key(&g, uri);
         let elab = g.last_snap.get(uri).and_then(|s| s.elaborated.as_ref());
@@ -806,7 +860,10 @@ fn handle_request(
 
     if method == SemanticTokensFullRequest::METHOD {
         let params: SemanticTokensParams = serde_json::from_value(req.params.clone())?;
-        let g = global.lock().unwrap();
+        let g = match global.lock() {
+            Ok(guard) => guard,                     // acquired the mutex lock normally
+            Err(poisoned) => poisoned.into_inner(), // recover data from a poisoned mutex
+        };
         let uri = &params.text_document.uri;
         let doc = g.docs.get(uri);
         let text = doc.map(|d| d.text.as_str()).unwrap_or("");
@@ -822,7 +879,10 @@ fn handle_request(
 
     if method == Formatting::METHOD {
         let params: DocumentFormattingParams = serde_json::from_value(req.params.clone())?;
-        let g = global.lock().unwrap();
+        let g = match global.lock() {
+            Ok(guard) => guard,                     // acquired the mutex lock normally
+            Err(poisoned) => poisoned.into_inner(), // recover data from a poisoned mutex
+        };
         let uri = &params.text_document.uri;
         let tab = params.options.tab_size.try_into().unwrap_or(4usize).max(1);
         let Some(virtual_path) = uri_local_path_for_tooling(uri) else {

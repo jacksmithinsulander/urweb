@@ -1190,28 +1190,33 @@ mod tests {
     use super::*;
 
     #[test]
-    fn empty_file_cjrizes_to_empty() {
+    fn empty_file_cjrizes_to_empty() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let mut errors = ErrorReporter::new();
         let result = cjrize((vec![], vec![]), &mut errors);
         assert!(result.is_some());
-        let (decls, ps) = result.unwrap();
+        let (decls, ps) = result.ok_or_else(|| anyhow::anyhow!("expected Some from result"))?; // convert None to anyhow error
         assert!(decls.is_empty());
         assert!(ps.is_empty());
         assert!(!errors.has_errors());
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn sm_unit_struct_is_id_zero() {
+    fn sm_unit_struct_is_id_zero() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let mut sm = Sm::new();
         // Empty record → struct id 0
         let id = sm.find(&[], vec![]);
         assert_eq!(id, 0);
         // No decls emitted (already known)
         assert!(sm.drain_decls().is_empty());
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn sm_new_struct_gets_fresh_id() {
+    fn sm_new_struct_gets_fresh_id() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let mut sm = Sm::new();
         let span = Span::dummy();
         let t = Located::new(
@@ -1226,10 +1231,12 @@ mod tests {
                            // Idempotent
         let id2 = sm.find(&mono_fields, cjr_fields);
         assert_eq!(id2, 1);
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn typ_eq_fun_same() {
+    fn typ_eq_fun_same() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let span = Span::dummy();
         let a = mono::Typ::Fun(
             Box::new(Located::new(mono::Typ::Source, span.clone())),
@@ -1240,10 +1247,12 @@ mod tests {
             Box::new(Located::new(mono::Typ::Source, span)),
         );
         assert!(typ_eq(&a, &b), "same Fun types must be equal");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn typ_eq_fun_differ_domain() {
+    fn typ_eq_fun_differ_domain() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let span = Span::dummy();
         let a = mono::Typ::Fun(
             Box::new(Located::new(mono::Typ::Source, span.clone())),
@@ -1260,10 +1269,12 @@ mod tests {
             !typ_eq(&a, &b),
             "Fun with different domain must not be equal"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn typ_eq_datatype_same_id() {
+    fn typ_eq_datatype_same_id() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let def = mono::DatatypeDef {
             kind: DatatypeKind::Default,
             constrs: vec![],
@@ -1272,10 +1283,12 @@ mod tests {
         let a = mono::Typ::Datatype(5, r.clone());
         let b = mono::Typ::Datatype(5, r);
         assert!(typ_eq(&a, &b));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn typ_eq_datatype_different_id() {
+    fn typ_eq_datatype_different_id() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let def = mono::DatatypeDef {
             kind: DatatypeKind::Default,
             constrs: vec![],
@@ -1284,65 +1297,81 @@ mod tests {
         let a = mono::Typ::Datatype(5, r.clone());
         let b = mono::Typ::Datatype(6, r);
         assert!(!typ_eq(&a, &b));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn typ_eq_ffi_same() {
+    fn typ_eq_ffi_same() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let a = mono::Typ::Ffi("Basis".into(), "int".into());
         let b = mono::Typ::Ffi("Basis".into(), "int".into());
         assert!(typ_eq(&a, &b));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn typ_eq_ffi_different_module() {
+    fn typ_eq_ffi_different_module() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let a = mono::Typ::Ffi("Basis".into(), "int".into());
         let b = mono::Typ::Ffi("Other".into(), "int".into());
         assert!(!typ_eq(&a, &b));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn typ_eq_source() {
+    fn typ_eq_source() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let a = mono::Typ::Source;
         let b = mono::Typ::Source;
         assert!(typ_eq(&a, &b));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn typ_eq_different_variants() {
+    fn typ_eq_different_variants() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let a = mono::Typ::Source;
         let b = mono::Typ::Ffi("Basis".into(), "int".into());
         assert!(!typ_eq(&a, &b), "different variants must not be equal");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn record_fields_eq_same() {
+    fn record_fields_eq_same() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let span = Span::dummy();
         let t = Located::new(mono::Typ::Ffi("Basis".into(), "int".into()), span);
         let a = vec![("x".to_string(), t.clone())];
         let b = vec![("x".to_string(), t)];
         assert!(record_fields_eq(&a, &b));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn record_fields_eq_different_field_name() {
+    fn record_fields_eq_different_field_name() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let span = Span::dummy();
         let t = Located::new(mono::Typ::Ffi("Basis".into(), "int".into()), span);
         let a = vec![("x".to_string(), t.clone())];
         let b = vec![("y".to_string(), t)];
         assert!(!record_fields_eq(&a, &b));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn typ_eq_record_same() {
+    fn typ_eq_record_same() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let span = Span::dummy();
         let t = Located::new(mono::Typ::Ffi("Basis".into(), "int".into()), span);
         let a = mono::Typ::Record(vec![("x".into(), t.clone())]);
         let b = mono::Typ::Record(vec![("x".into(), t)]);
         assert!(typ_eq(&a, &b), "same Record types must be equal");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn typ_eq_record_different_field_type() {
+    fn typ_eq_record_different_field_type() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let span = Span::dummy();
         let t1 = Located::new(mono::Typ::Ffi("Basis".into(), "int".into()), span.clone());
         let t2 = Located::new(mono::Typ::Ffi("Basis".into(), "string".into()), span);
@@ -1352,10 +1381,12 @@ mod tests {
             !typ_eq(&a, &b),
             "Record with different field types must not be equal (catches && in record_fields_eq)"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn typ_eq_record_vs_option() {
+    fn typ_eq_record_vs_option() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let span = Span::dummy();
         let t = Located::new(mono::Typ::Source, span);
         let rec = mono::Typ::Record(vec![]);
@@ -1364,37 +1395,45 @@ mod tests {
             !typ_eq(&rec, &opt),
             "Record vs Option must not be equal (catches delete Record arm)"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn typ_eq_option_same() {
+    fn typ_eq_option_same() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let span = Span::dummy();
         let t = Located::new(mono::Typ::Source, span);
         let a = mono::Typ::Option(Box::new(t.clone()));
         let b = mono::Typ::Option(Box::new(t));
         assert!(typ_eq(&a, &b));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn typ_eq_list_same() {
+    fn typ_eq_list_same() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let span = Span::dummy();
         let t = Located::new(mono::Typ::Source, span);
         let a = mono::Typ::List(Box::new(t.clone()));
         let b = mono::Typ::List(Box::new(t));
         assert!(typ_eq(&a, &b));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn typ_eq_signal_same() {
+    fn typ_eq_signal_same() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let span = Span::dummy();
         let t = Located::new(mono::Typ::Source, span);
         let a = mono::Typ::Signal(Box::new(t.clone()));
         let b = mono::Typ::Signal(Box::new(t));
         assert!(typ_eq(&a, &b));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn sm_find_list_increments_count() {
+    fn sm_find_list_increments_count() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let mut sm = Sm::new();
         let span = Span::dummy();
         let elem_mono = Located::new(mono::Typ::Ffi("Basis".into(), "int".into()), span.clone());
@@ -1403,10 +1442,12 @@ mod tests {
         assert_eq!(id, 1, "find_list must use count (catches += mutant)");
         let id2 = sm.find_list(&elem_mono, &elem_cjr);
         assert_eq!(id2, 1, "same type must return same id");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn classify_constrs_enum() {
+    fn classify_constrs_enum() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let c: Vec<(String, usize, Option<LocTyp>)> =
             vec![("A".into(), 0, None), ("B".into(), 1, None)];
         assert_eq!(
@@ -1414,10 +1455,12 @@ mod tests {
             DatatypeKind::Enum,
             "all nullary => Enum (catches unary==0 check)"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn classify_constrs_option() {
+    fn classify_constrs_option() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let unit = Located::dummy(Typ::Ffi("Basis".into(), "unit".into()));
         let c: Vec<(String, usize, Option<LocTyp>)> =
             vec![("None".into(), 0, None), ("Some".into(), 1, Some(unit))];
@@ -1426,10 +1469,12 @@ mod tests {
             DatatypeKind::Option,
             "1 nullary && 1 unary => Option"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn classify_constrs_default() {
+    fn classify_constrs_default() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let unit = Located::dummy(Typ::Ffi("Basis".into(), "unit".into()));
         let c: Vec<(String, usize, Option<LocTyp>)> = vec![
             ("A".into(), 0, None),
@@ -1441,16 +1486,20 @@ mod tests {
             DatatypeKind::Default,
             "2 nullary 1 unary => Default (catches nullary==1 && unary==1)"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn type_has_signal_direct() {
+    fn type_has_signal_direct() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let t = mono::Typ::Signal(Box::new(Located::dummy(mono::Typ::Source)));
         assert!(type_has_signal(&t), "Signal must have signal");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn type_has_signal_fun() {
+    fn type_has_signal_fun() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let inner = mono::Typ::Signal(Box::new(Located::dummy(mono::Typ::Source)));
         let t = mono::Typ::Fun(
             Box::new(Located::dummy(mono::Typ::Source)),
@@ -1460,29 +1509,35 @@ mod tests {
             type_has_signal(&t),
             "Fun with Signal in range must have signal (catches || mutant)"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn type_has_signal_record() {
+    fn type_has_signal_record() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let inner = mono::Typ::Signal(Box::new(Located::dummy(mono::Typ::Source)));
         let t = mono::Typ::Record(vec![("x".into(), Located::new(inner, Span::dummy()))]);
         assert!(
             type_has_signal(&t),
             "Record with Signal field must have signal"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn type_has_signal_option_no_signal() {
+    fn type_has_signal_option_no_signal() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let t = mono::Typ::Option(Box::new(Located::dummy(mono::Typ::Source)));
         assert!(
             !type_has_signal(&t),
             "Option of Source must not have signal"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn type_has_signal_option_with_signal() {
+    fn type_has_signal_option_with_signal() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // Catches mutant: delete Typ::Option|List arm in type_has_signal.
         let inner = mono::Typ::Signal(Box::new(Located::dummy(mono::Typ::Source)));
         let t = mono::Typ::Option(Box::new(Located::new(inner, Span::dummy())));
@@ -1490,10 +1545,12 @@ mod tests {
             type_has_signal(&t),
             "Option containing Signal must have signal"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn cjrize_task_initialize_produces_task_decl() {
+    fn cjrize_task_initialize_produces_task_decl() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let span = Span::dummy();
         let unit = Located::new(mono::Typ::Ffi("Basis".into(), "unit".into()), span.clone());
         let body = mono::Exp::Record(vec![]);
@@ -1519,7 +1576,7 @@ mod tests {
         let result = cjrize(file, &mut errors);
         assert!(result.is_some(), "cjrize must process Task (initialize)");
         assert!(!errors.has_errors());
-        let (decls, _) = result.unwrap();
+        let (decls, _) = result.ok_or_else(|| anyhow::anyhow!("expected Some from result"))?; // convert None to anyhow error
         assert_eq!(decls.len(), 1);
         match &decls[0].node {
             Decl::Task(tk, ..) => {
@@ -1530,10 +1587,12 @@ mod tests {
             }
             _ => panic!("expected Decl::Task, got {:?}", decls[0].node),
         }
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn cjrize_task_client_leaves_produces_task_decl() {
+    fn cjrize_task_client_leaves_produces_task_decl() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let span = Span::dummy();
         let unit = Located::new(mono::Typ::Ffi("Basis".into(), "unit".into()), span.clone());
         let body = mono::Exp::Record(vec![]);
@@ -1559,7 +1618,7 @@ mod tests {
         let result = cjrize(file, &mut errors);
         assert!(result.is_some(), "cjrize must process Task (clientLeaves)");
         assert!(!errors.has_errors());
-        let (decls, _) = result.unwrap();
+        let (decls, _) = result.ok_or_else(|| anyhow::anyhow!("expected Some from result"))?; // convert None to anyhow error
         assert_eq!(decls.len(), 1);
         match &decls[0].node {
             Decl::Task(tk, ..) => {
@@ -1570,10 +1629,12 @@ mod tests {
             }
             _ => panic!("expected Decl::Task, got {:?}", decls[0].node),
         }
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn cjrize_task_periodic_produces_periodic() {
+    fn cjrize_task_periodic_produces_periodic() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let span = Span::dummy();
         let unit = Located::new(mono::Typ::Ffi("Basis".into(), "unit".into()), span.clone());
         let body = mono::Exp::Record(vec![]);
@@ -1607,7 +1668,7 @@ mod tests {
         let result = cjrize(file, &mut errors);
         assert!(result.is_some(), "cjrize must process Task (periodic)");
         assert!(!errors.has_errors());
-        let (decls, _) = result.unwrap();
+        let (decls, _) = result.ok_or_else(|| anyhow::anyhow!("expected Some from result"))?; // convert None to anyhow error
         assert_eq!(decls.len(), 1);
         match &decls[0].node {
             Decl::Task(tk, ..) => {
@@ -1618,10 +1679,12 @@ mod tests {
             }
             _ => panic!("expected Decl::Task, got {:?}", decls[0].node),
         }
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn cjrize_table_with_strcat_constraint() {
+    fn cjrize_table_with_strcat_constraint() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let span = Span::dummy();
         let string_ty = Located::new(
             mono::Typ::Ffi("Basis".into(), "string".into()),
@@ -1666,7 +1729,7 @@ mod tests {
             "cjrize must process Table with Strcat constraint"
         );
         assert!(!errors.has_errors());
-        let (decls, _) = result.unwrap();
+        let (decls, _) = result.ok_or_else(|| anyhow::anyhow!("expected Some from result"))?; // convert None to anyhow error
         assert_eq!(decls.len(), 1);
         match &decls[0].node {
             Decl::Table(_, _, _, constraints) => {
@@ -1678,10 +1741,12 @@ mod tests {
             }
             _ => panic!("expected Decl::Table, got {:?}", decls[0].node),
         }
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn sm_find_idempotent_two_same_structs() {
+    fn sm_find_idempotent_two_same_structs() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let mut sm = Sm::new();
         let span = Span::dummy();
         let t = Located::new(
@@ -1698,10 +1763,12 @@ mod tests {
             "Sm::find same struct twice => same id (catches += 1)"
         );
         assert_eq!(id1, 1, "first non-unit struct gets id 1");
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn cjrize_datatype_produces_decl() {
+    fn cjrize_datatype_produces_decl() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let decl = mono::Decl::Datatype(vec![mono::DatatypeDecl {
             name: "Color".into(),
             id: 10,
@@ -1714,7 +1781,8 @@ mod tests {
             result.is_some(),
             "cjrize must process Datatype (catches delete Decl::Datatype arm)"
         );
-        let (decls, _) = result.unwrap();
+        let (decls, _) = result.ok_or_else(|| anyhow::anyhow!("expected Some from result"))?; // convert None to anyhow error
         assert!(!decls.is_empty(), "cjrize must produce decl for Datatype");
+        Ok(()) // return success to the test harness
     }
 }

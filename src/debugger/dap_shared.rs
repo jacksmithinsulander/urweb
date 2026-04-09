@@ -14,6 +14,11 @@ use super::mi_parse::{classify_mi_line, mi_get_str, MiRecord};
 /// DAP notifier helpers return [`CompileError`] alongside GDB/MI (same catalog surface as the compiler).
 type Result<T> = std::result::Result<T, CompileError>;
 
+/// Convert a poisoned mutex into a [`CompileError`]; the poison context string is included for diagnostics.
+fn mutex_poison_error(context: &str) -> CompileError {
+    CompileError::Io(std::io::Error::other(context.to_string())) // wrap poison message in I/O error for CompileError::Io
+}
+
 pub struct DapState {
     pub seq: i64,
     pub out: io::Stdout,
@@ -42,7 +47,10 @@ impl LoadedSourceNotifier {
         let Some(path) = library_record_path(tl) else {
             return Ok(());
         };
-        let mut known = self.known_paths.lock().unwrap();
+        let mut known = self
+            .known_paths
+            .lock() // acquire the loaded-paths mutex
+            .map_err(|_| mutex_poison_error("known_paths mutex poisoned"))?; // convert PoisonError to CompileError
         if !known.insert(path.clone()) {
             return Ok(());
         }
@@ -54,12 +62,18 @@ impl LoadedSourceNotifier {
         let Some(path) = library_record_path(tl) else {
             return Ok(());
         };
-        self.known_paths.lock().unwrap().remove(&path);
+        self.known_paths
+            .lock() // acquire the loaded-paths mutex
+            .map_err(|_| mutex_poison_error("known_paths mutex poisoned"))? // convert PoisonError to CompileError
+            .remove(&path); // remove path from the set
         self.emit_loaded_source("removed", &path)
     }
 
     fn emit_loaded_source(&self, reason: &str, path: &str) -> Result<()> {
-        let mut st = self.dap.lock().unwrap();
+        let mut st = self
+            .dap
+            .lock() // acquire the DAP transport mutex
+            .map_err(|_| mutex_poison_error("dap transport mutex poisoned"))?; // convert PoisonError to CompileError
         let body: Value = json!({
             "reason": reason,
             "source": { "name": path, "path": path },

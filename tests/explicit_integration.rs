@@ -4,42 +4,51 @@ use ur::compiler;
 use ur::datatype_kind::DatatypeKind;
 use ur::error_types::Located;
 use ur::explicit::utilities::{classify_datatype, con, decl, exp, kind};
-use ur::explicit::{CaseMeta, Constructor, Declaration, Expression, FieldMeta, Kind, RestMeta};
+use ur::explicit::{CaseMeta, Constructor, Declaration, Expression, FieldMeta, Kind, RestMeta}; // error construction and chaining in tests
 
 #[test]
-fn explicit_classify_datatype_enum() {
+fn explicit_classify_datatype_enum() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let constrs: Vec<(String, usize, Option<ur::explicit::LocatedConstructor>)> =
         vec![("A".into(), 0, None), ("B".into(), 1, None)];
     assert_eq!(classify_datatype(&constrs), DatatypeKind::Enum);
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn explicit_classify_datatype_enum_single_nullary() {
+fn explicit_classify_datatype_enum_single_nullary() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let constrs: Vec<(String, usize, Option<ur::explicit::LocatedConstructor>)> =
         vec![("Unit".into(), 0, None)];
     assert_eq!(classify_datatype(&constrs), DatatypeKind::Enum);
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn explicit_classify_datatype_option() {
+fn explicit_classify_datatype_option() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let unit = Located::dummy(Constructor::Unit);
     let constrs: Vec<(String, usize, Option<ur::explicit::LocatedConstructor>)> =
         vec![("None".into(), 0, None), ("Some".into(), 1, Some(unit))];
     assert_eq!(classify_datatype(&constrs), DatatypeKind::Option);
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn explicit_classify_datatype_default() {
+fn explicit_classify_datatype_default() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let unit = Located::dummy(Constructor::Unit);
     let constrs: Vec<(String, usize, Option<ur::explicit::LocatedConstructor>)> = vec![
         ("A".into(), 0, Some(unit.clone())),
         ("B".into(), 1, Some(unit)),
     ];
     assert_eq!(classify_datatype(&constrs), DatatypeKind::Default);
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn explicit_classify_datatype_default_two_nullary_one_unary() {
+fn explicit_classify_datatype_default_two_nullary_one_unary() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     // (2 nullary, 1 unary) must be Default, not Option. Catches && vs || mutant.
     let unit = Located::dummy(Constructor::Unit);
     let constrs: Vec<(String, usize, Option<ur::explicit::LocatedConstructor>)> = vec![
@@ -48,84 +57,104 @@ fn explicit_classify_datatype_default_two_nullary_one_unary() {
         ("C".into(), 1, Some(unit)),
     ];
     assert_eq!(classify_datatype(&constrs), DatatypeKind::Default);
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn explicit_kind_exists() {
+fn explicit_kind_exists() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let k = Located::dummy(Kind::Arrow(
         Box::new(Located::dummy(Kind::Rel(1))),
         Box::new(Located::dummy(Kind::Type)),
     ));
     assert!(kind::exists(&k, &|kr| matches!(kr, Kind::Rel(1))));
     assert!(!kind::exists(&k, &|kr| matches!(kr, Kind::Rel(99))));
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn explicit_kind_exists_in_tuple() {
+fn explicit_kind_exists_in_tuple() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let k = Located::dummy(Kind::Tuple(vec![Located::dummy(Kind::Rel(42))]));
     assert!(kind::exists(&k, &|kr| matches!(kr, Kind::Rel(42))));
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn explicit_kind_exists_in_record() {
+fn explicit_kind_exists_in_record() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let k = Located::dummy(Kind::Record(Box::new(Located::dummy(Kind::Rel(7)))));
     assert!(kind::exists(&k, &|kr| matches!(kr, Kind::Rel(7))));
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn explicit_kind_exists_in_fun() {
+fn explicit_kind_exists_in_fun() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let k = Located::dummy(Kind::Fun(
         "x".into(),
         Box::new(Located::dummy(Kind::Rel(99))),
     ));
     assert!(kind::exists(&k, &|kr| matches!(kr, Kind::Rel(99))));
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn explicit_kind_fold_visits_arrow() {
+fn explicit_kind_fold_visits_arrow() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let k = Located::dummy(Kind::Arrow(
         Box::new(Located::dummy(Kind::Type)),
         Box::new(Located::dummy(Kind::Unit)),
     ));
     let count = kind::fold(&k, 0usize, &|_, n| n + 1);
     assert!(count >= 3, "fold must visit Arrow and sub-kinds");
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn explicit_kind_fold_visits_tuple() {
+fn explicit_kind_fold_visits_tuple() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let k = Located::dummy(Kind::Tuple(vec![Located::dummy(Kind::Rel(1))]));
     let count = kind::fold(&k, 0usize, &|_, n| n + 1);
     assert_eq!(count, 2, "fold must visit Tuple and Rel(1)");
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn explicit_kind_fold_visits_record() {
+fn explicit_kind_fold_visits_record() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let k = Located::dummy(Kind::Record(Box::new(Located::dummy(Kind::Rel(2)))));
     let count = kind::fold(&k, 0usize, &|_, n| n + 1);
     assert_eq!(count, 2, "fold must visit Record and Rel(2)");
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn explicit_kind_fold_visits_fun() {
+fn explicit_kind_fold_visits_fun() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let k = Located::dummy(Kind::Fun(
         "x".into(),
         Box::new(Located::dummy(Kind::Rel(3))),
     ));
     let count = kind::fold(&k, 0usize, &|_, n| n + 1);
     assert_eq!(count, 2, "fold must visit Fun and Rel(3)");
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn explicit_con_exists() {
+fn explicit_con_exists() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let c = Located::dummy(Constructor::Unit);
     assert!(con::exists(&c, &|_| false, &|cc| matches!(
         cc,
         Constructor::Unit
     )));
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn explicit_con_exists_app_first_only() {
+fn explicit_con_exists_app_first_only() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     // App(Unit, Rel(0)): fc matches Unit (in c1), not Rel (in c2). Short-circuit || must yield true.
     let c = Located::dummy(Constructor::App(
         Box::new(Located::dummy(Constructor::Unit)),
@@ -135,10 +164,12 @@ fn explicit_con_exists_app_first_only() {
         cc,
         Constructor::Unit
     )));
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn explicit_con_exists_tfun_first_only() {
+fn explicit_con_exists_tfun_first_only() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     // TFun(Unit, Rel(0)): fc matches Unit in c1, not Rel in c2.
     let c = Located::dummy(Constructor::TFun(
         Box::new(Located::dummy(Constructor::Unit)),
@@ -148,10 +179,12 @@ fn explicit_con_exists_tfun_first_only() {
         cc,
         Constructor::Unit
     )));
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn explicit_con_exists_record_kind_only() {
+fn explicit_con_exists_record_kind_only() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     // Record(kind with Rel(1), [(Unit,Unit)]): fk matches Rel(1) in kind; fc never matches Unit.
     let k = Located::dummy(Kind::Record(Box::new(Located::dummy(Kind::Rel(1)))));
     let unit = Located::dummy(Constructor::Unit);
@@ -159,10 +192,12 @@ fn explicit_con_exists_record_kind_only() {
     assert!(con::exists(&c, &|kr| matches!(kr, Kind::Rel(1)), &|_| {
         false
     }));
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn explicit_con_exists_record_xcs_only() {
+fn explicit_con_exists_record_xcs_only() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     // Record(kind Type, [(Rel(0), Unit)]): kind doesn't match; fc matches Unit in value.
     let k = Located::dummy(Kind::Type);
     let c = Located::dummy(Constructor::Record(
@@ -176,16 +211,20 @@ fn explicit_con_exists_record_xcs_only() {
         cc,
         Constructor::Unit
     )));
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn explicit_con_exists_returns_false_when_nothing_matches() {
+fn explicit_con_exists_returns_false_when_nothing_matches() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let c = Located::dummy(Constructor::Unit);
     assert!(!con::exists(&c, &|_| false, &|_| false));
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn explicit_con_exists_concat_first_only() {
+fn explicit_con_exists_concat_first_only() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let c = Located::dummy(Constructor::Concat(
         Box::new(Located::dummy(Constructor::Unit)),
         Box::new(Located::dummy(Constructor::Rel(0))),
@@ -194,10 +233,12 @@ fn explicit_con_exists_concat_first_only() {
         cc,
         Constructor::Unit
     )));
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn explicit_con_exists_concat_second_only() {
+fn explicit_con_exists_concat_second_only() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let c = Located::dummy(Constructor::Concat(
         Box::new(Located::dummy(Constructor::Rel(0))),
         Box::new(Located::dummy(Constructor::Unit)),
@@ -206,10 +247,12 @@ fn explicit_con_exists_concat_second_only() {
         cc,
         Constructor::Unit
     )));
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn explicit_con_exists_tuple_any() {
+fn explicit_con_exists_tuple_any() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let c = Located::dummy(Constructor::Tuple(vec![
         Located::dummy(Constructor::Rel(0)),
         Located::dummy(Constructor::Unit),
@@ -219,10 +262,12 @@ fn explicit_con_exists_tuple_any() {
         cc,
         Constructor::Unit
     )));
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn explicit_con_exists_map_first_kind_only() {
+fn explicit_con_exists_map_first_kind_only() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let c = Located::dummy(Constructor::Map(
         Box::new(Located::dummy(Kind::Rel(7))),
         Box::new(Located::dummy(Kind::Type)),
@@ -230,10 +275,12 @@ fn explicit_con_exists_map_first_kind_only() {
     assert!(con::exists(&c, &|kr| matches!(kr, Kind::Rel(7)), &|_| {
         false
     }));
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn explicit_con_exists_tcfun_body_only() {
+fn explicit_con_exists_tcfun_body_only() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     // TCFun: kind has Type, body has Unit. fc matches Unit in body.
     let body = Located::dummy(Constructor::Unit);
     let k = Located::dummy(Kind::Type);
@@ -242,10 +289,12 @@ fn explicit_con_exists_tcfun_body_only() {
         cc,
         Constructor::Unit
     )));
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn explicit_con_exists_abs_body_only() {
+fn explicit_con_exists_abs_body_only() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     // Abs: kind Type, body Unit. fc matches body.
     let body = Located::dummy(Constructor::Unit);
     let k = Located::dummy(Kind::Type);
@@ -254,10 +303,12 @@ fn explicit_con_exists_abs_body_only() {
         cc,
         Constructor::Unit
     )));
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn explicit_con_exists_kapp_kind_only() {
+fn explicit_con_exists_kapp_kind_only() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     // KApp(Unit, Rel(7)): fc doesn't match c, fk matches k.
     let c = Located::dummy(Constructor::KApp(
         Box::new(Located::dummy(Constructor::Unit)),
@@ -266,10 +317,12 @@ fn explicit_con_exists_kapp_kind_only() {
     assert!(con::exists(&c, &|kr| matches!(kr, Kind::Rel(7)), &|_| {
         false
     }));
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn explicit_con_exists_map_second_kind_only() {
+fn explicit_con_exists_map_second_kind_only() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     // Map(Type, Rel(8)): k1 doesn't match, k2 matches.
     let c = Located::dummy(Constructor::Map(
         Box::new(Located::dummy(Kind::Type)),
@@ -278,25 +331,31 @@ fn explicit_con_exists_map_second_kind_only() {
     assert!(con::exists(&c, &|kr| matches!(kr, Kind::Rel(8)), &|_| {
         false
     }));
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn explicit_exp_exists_returns_false_when_nothing_matches() {
+fn explicit_exp_exists_returns_false_when_nothing_matches() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let e = Located::dummy(Expression::Prim(ur::primitives::Prim::Int(0)));
     assert!(!exp::exists(&e, &|_| false, &|_| false, &|_| false));
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn explicit_exp_exists_returns_true_when_fe_matches() {
+fn explicit_exp_exists_returns_true_when_fe_matches() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let e = Located::dummy(Expression::Prim(ur::primitives::Prim::Int(42)));
     assert!(exp::exists(&e, &|_| false, &|_| false, &|ex| matches!(
         ex,
         Expression::Prim(_)
     )));
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn explicit_exp_exists_app_first_only() {
+fn explicit_exp_exists_app_first_only() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let e = Located::dummy(Expression::App(
         Box::new(Located::dummy(Expression::Prim(ur::primitives::Prim::Int(
             1,
@@ -307,10 +366,12 @@ fn explicit_exp_exists_app_first_only() {
         ex,
         Expression::Prim(_)
     )));
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn explicit_decl_map_preserves_datatype_constrs() {
+fn explicit_decl_map_preserves_datatype_constrs() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let unit = Located::dummy(Constructor::Unit);
     let dt = ur::explicit::DatatypeDecl {
         name: "T".into(),
@@ -329,10 +390,12 @@ fn explicit_decl_map_preserves_datatype_constrs() {
         2,
         "map_constrs must preserve constr count"
     );
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn explicit_exp_exists_capp_exp_only() {
+fn explicit_exp_exists_capp_exp_only() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let unit = Located::dummy(Constructor::Unit);
     let e = Located::dummy(Expression::CApp(
         Box::new(Located::dummy(Expression::Prim(ur::primitives::Prim::Int(
@@ -344,10 +407,12 @@ fn explicit_exp_exists_capp_exp_only() {
         ex,
         Expression::Prim(_)
     )));
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn explicit_exp_exists_app_second_only() {
+fn explicit_exp_exists_app_second_only() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let e = Located::dummy(Expression::App(
         Box::new(Located::dummy(Expression::Rel(0))),
         Box::new(Located::dummy(Expression::Prim(ur::primitives::Prim::Int(
@@ -358,10 +423,12 @@ fn explicit_exp_exists_app_second_only() {
         ex,
         Expression::Prim(_)
     )));
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn explicit_exp_exists_capp_con_only() {
+fn explicit_exp_exists_capp_con_only() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let unit = Located::dummy(Constructor::Unit);
     let e = Located::dummy(Expression::CApp(
         Box::new(Located::dummy(Expression::Rel(0))),
@@ -373,10 +440,12 @@ fn explicit_exp_exists_capp_con_only() {
         &|cc| matches!(cc, Constructor::Unit),
         &|_| false
     ));
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn explicit_exp_exists_abs_body_only() {
+fn explicit_exp_exists_abs_body_only() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let unit = Located::dummy(Constructor::Unit);
     let body = Located::dummy(Expression::Prim(ur::primitives::Prim::Int(0)));
     let e = Located::dummy(Expression::Abs(
@@ -389,10 +458,12 @@ fn explicit_exp_exists_abs_body_only() {
         ex,
         Expression::Prim(_)
     )));
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn explicit_exp_exists_cabs_body_only() {
+fn explicit_exp_exists_cabs_body_only() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let body = Located::dummy(Expression::Prim(ur::primitives::Prim::Int(0)));
     let k = Located::dummy(Kind::Type);
     let e = Located::dummy(Expression::CAbs("x".into(), Box::new(k), Box::new(body)));
@@ -400,10 +471,12 @@ fn explicit_exp_exists_cabs_body_only() {
         ex,
         Expression::Prim(_)
     )));
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn explicit_exp_exists_kapp_kind_only() {
+fn explicit_exp_exists_kapp_kind_only() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let k = Located::dummy(Kind::Rel(9));
     let e = Located::dummy(Expression::KApp(
         Box::new(Located::dummy(Expression::Rel(0))),
@@ -415,10 +488,12 @@ fn explicit_exp_exists_kapp_kind_only() {
         &|_| false,
         &|_| false
     ));
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn explicit_exp_exists_kapp_exp_only() {
+fn explicit_exp_exists_kapp_exp_only() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let e = Located::dummy(Expression::KApp(
         Box::new(Located::dummy(Expression::Prim(ur::primitives::Prim::Int(
             0,
@@ -429,20 +504,24 @@ fn explicit_exp_exists_kapp_exp_only() {
         ex,
         Expression::Prim(_)
     )));
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn explicit_exp_exists_kabs_body_only() {
+fn explicit_exp_exists_kabs_body_only() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let body = Located::dummy(Expression::Prim(ur::primitives::Prim::Int(0)));
     let e = Located::dummy(Expression::KAbs("x".into(), Box::new(body)));
     assert!(exp::exists(&e, &|_| false, &|_| false, &|ex| matches!(
         ex,
         Expression::Prim(_)
     )));
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn explicit_exp_exists_record_x_only() {
+fn explicit_exp_exists_record_x_only() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     // Record(x,e,t): only x (first con) matches - ec(x)
     let unit = Located::dummy(Constructor::Unit);
     let other = Located::dummy(Constructor::Named(99));
@@ -457,10 +536,12 @@ fn explicit_exp_exists_record_x_only() {
         &|cc| matches!(cc, Constructor::Unit),
         &|_| false
     ));
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn explicit_exp_exists_record_t_only() {
+fn explicit_exp_exists_record_t_only() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     // Record(x,e,t): only t (third con) matches - ec(t)
     let unit = Located::dummy(Constructor::Unit);
     let other = Located::dummy(Constructor::Named(99));
@@ -475,10 +556,12 @@ fn explicit_exp_exists_record_t_only() {
         &|cc| matches!(cc, Constructor::Unit),
         &|_| false
     ));
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn explicit_exp_exists_abs_dom_only() {
+fn explicit_exp_exists_abs_dom_only() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let unit = Located::dummy(Constructor::Unit);
     let other = Located::dummy(Constructor::Named(1));
     let e = Located::dummy(Expression::Abs(
@@ -493,10 +576,12 @@ fn explicit_exp_exists_abs_dom_only() {
         &|cc| matches!(cc, Constructor::Unit),
         &|_| false
     ));
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn explicit_exp_exists_abs_ran_only() {
+fn explicit_exp_exists_abs_ran_only() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let unit = Located::dummy(Constructor::Unit);
     let other = Located::dummy(Constructor::Named(1));
     let e = Located::dummy(Expression::Abs(
@@ -511,10 +596,12 @@ fn explicit_exp_exists_abs_ran_only() {
         &|cc| matches!(cc, Constructor::Unit),
         &|_| false
     ));
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn explicit_exp_exists_cabs_kind_only() {
+fn explicit_exp_exists_cabs_kind_only() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let k = Located::dummy(Kind::Rel(7));
     let e = Located::dummy(Expression::CAbs(
         "x".into(),
@@ -527,10 +614,12 @@ fn explicit_exp_exists_cabs_kind_only() {
         &|_| false,
         &|_| false
     ));
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn explicit_exp_exists_let_t_only() {
+fn explicit_exp_exists_let_t_only() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let unit = Located::dummy(Constructor::Unit);
     let e = Located::dummy(Expression::Let(
         "x".into(),
@@ -544,10 +633,12 @@ fn explicit_exp_exists_let_t_only() {
         &|cc| matches!(cc, Constructor::Unit),
         &|_| false
     ));
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn explicit_exp_exists_let_e1_only() {
+fn explicit_exp_exists_let_e1_only() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let unit = Located::dummy(Constructor::Unit);
     let prim = Located::dummy(Expression::Prim(ur::primitives::Prim::Int(0)));
     let e = Located::dummy(Expression::Let(
@@ -560,10 +651,12 @@ fn explicit_exp_exists_let_e1_only() {
         ex,
         Expression::Prim(_)
     )));
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn explicit_exp_exists_record_middle_only() {
+fn explicit_exp_exists_record_middle_only() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     // (x, e, t): only e matches
     let unit = Located::dummy(Constructor::Unit);
     let prim = Located::dummy(Expression::Prim(ur::primitives::Prim::Int(0)));
@@ -572,10 +665,12 @@ fn explicit_exp_exists_record_middle_only() {
         ex,
         Expression::Prim(_)
     )));
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn explicit_exp_exists_concat_e2_only() {
+fn explicit_exp_exists_concat_e2_only() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let unit = Located::dummy(Constructor::Unit);
     let prim = Located::dummy(Expression::Prim(ur::primitives::Prim::Int(0)));
     let e = Located::dummy(Expression::Concat(
@@ -588,10 +683,12 @@ fn explicit_exp_exists_concat_e2_only() {
         ex,
         Expression::Prim(_)
     )));
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn explicit_exp_exists_let_e2_only() {
+fn explicit_exp_exists_let_e2_only() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let unit = Located::dummy(Constructor::Unit);
     let prim = Located::dummy(Expression::Prim(ur::primitives::Prim::Int(0)));
     let e = Located::dummy(Expression::Let(
@@ -604,11 +701,13 @@ fn explicit_exp_exists_let_e2_only() {
         ex,
         Expression::Prim(_)
     )));
+    Ok(()) // return success to the test harness
 }
 
 // Case: ee(disc) || arms.iter().any(...) || ec(dt) || ec(result) — each || must short-circuit correctly
 #[test]
-fn explicit_exp_exists_case_disc_only() {
+fn explicit_exp_exists_case_disc_only() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let unit = Located::dummy(Constructor::Unit);
     let disc = Located::dummy(Expression::Prim(ur::primitives::Prim::Int(0)));
     let arm_exp = Located::dummy(Expression::Rel(0));
@@ -631,10 +730,12 @@ fn explicit_exp_exists_case_disc_only() {
         ex,
         Expression::Prim(_)
     )));
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn explicit_exp_exists_case_arm_only() {
+fn explicit_exp_exists_case_arm_only() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let unit = Located::dummy(Constructor::Unit);
     let disc = Located::dummy(Expression::Rel(0));
     let arm_exp = Located::dummy(Expression::Prim(ur::primitives::Prim::Int(0)));
@@ -657,10 +758,12 @@ fn explicit_exp_exists_case_arm_only() {
         ex,
         Expression::Prim(_)
     )));
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn explicit_exp_exists_case_dt_only() {
+fn explicit_exp_exists_case_dt_only() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let unit = Located::dummy(Constructor::Unit);
     let disc = Located::dummy(Expression::Rel(0));
     let arm_exp = Located::dummy(Expression::Rel(0));
@@ -685,10 +788,12 @@ fn explicit_exp_exists_case_dt_only() {
         &|cc| matches!(cc, Constructor::Unit),
         &|_| false
     ));
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn explicit_exp_exists_case_result_only() {
+fn explicit_exp_exists_case_result_only() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let unit = Located::dummy(Constructor::Unit);
     let disc = Located::dummy(Expression::Rel(0));
     let arm_exp = Located::dummy(Expression::Rel(0));
@@ -713,10 +818,12 @@ fn explicit_exp_exists_case_result_only() {
         &|cc| matches!(cc, Constructor::Unit),
         &|_| false
     ));
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn explicit_exp_exists_field_rest_only() {
+fn explicit_exp_exists_field_rest_only() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let unit = Located::dummy(Constructor::Unit);
     let meta = FieldMeta {
         field: Located::dummy(Constructor::Named(1)),
@@ -733,10 +840,12 @@ fn explicit_exp_exists_field_rest_only() {
         &|cc| matches!(cc, Constructor::Unit),
         &|_| false
     ));
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn explicit_exp_exists_field_field_only() {
+fn explicit_exp_exists_field_field_only() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let unit = Located::dummy(Constructor::Unit);
     let meta = FieldMeta {
         field: unit,
@@ -753,10 +862,12 @@ fn explicit_exp_exists_field_field_only() {
         &|cc| matches!(cc, Constructor::Unit),
         &|_| false
     ));
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn explicit_exp_exists_field_e_only() {
+fn explicit_exp_exists_field_e_only() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let _unit = Located::dummy(Constructor::Unit);
     let prim = Located::dummy(Expression::Prim(ur::primitives::Prim::Int(0)));
     let meta = FieldMeta {
@@ -772,10 +883,12 @@ fn explicit_exp_exists_field_e_only() {
         ex,
         Expression::Prim(_)
     )));
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn explicit_exp_exists_field_c_only() {
+fn explicit_exp_exists_field_c_only() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let unit = Located::dummy(Constructor::Unit);
     let meta = FieldMeta {
         field: Located::dummy(Constructor::Named(1)),
@@ -792,10 +905,12 @@ fn explicit_exp_exists_field_c_only() {
         &|cc| matches!(cc, Constructor::Unit),
         &|_| false
     ));
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn explicit_exp_exists_concat_e1_only() {
+fn explicit_exp_exists_concat_e1_only() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let unit = Located::dummy(Constructor::Unit);
     let prim = Located::dummy(Expression::Prim(ur::primitives::Prim::Int(0)));
     let e = Located::dummy(Expression::Concat(
@@ -808,10 +923,12 @@ fn explicit_exp_exists_concat_e1_only() {
         ex,
         Expression::Prim(_)
     )));
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn explicit_exp_exists_concat_c1_only() {
+fn explicit_exp_exists_concat_c1_only() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let unit = Located::dummy(Constructor::Unit);
     let e = Located::dummy(Expression::Concat(
         Box::new(Located::dummy(Expression::Rel(0))),
@@ -825,10 +942,12 @@ fn explicit_exp_exists_concat_c1_only() {
         &|cc| matches!(cc, Constructor::Unit),
         &|_| false
     ));
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn explicit_exp_exists_concat_c2_only() {
+fn explicit_exp_exists_concat_c2_only() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let unit = Located::dummy(Constructor::Unit);
     let e = Located::dummy(Expression::Concat(
         Box::new(Located::dummy(Expression::Rel(0))),
@@ -842,10 +961,12 @@ fn explicit_exp_exists_concat_c2_only() {
         &|cc| matches!(cc, Constructor::Unit),
         &|_| false
     ));
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn explicit_exp_exists_cut_e_only() {
+fn explicit_exp_exists_cut_e_only() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let _unit = Located::dummy(Constructor::Unit);
     let prim = Located::dummy(Expression::Prim(ur::primitives::Prim::Int(0)));
     let meta = FieldMeta {
@@ -861,10 +982,12 @@ fn explicit_exp_exists_cut_e_only() {
         ex,
         Expression::Prim(_)
     )));
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn explicit_exp_exists_cut_c_only() {
+fn explicit_exp_exists_cut_c_only() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let unit = Located::dummy(Constructor::Unit);
     let meta = FieldMeta {
         field: Located::dummy(Constructor::Named(1)),
@@ -881,10 +1004,12 @@ fn explicit_exp_exists_cut_c_only() {
         &|cc| matches!(cc, Constructor::Unit),
         &|_| false
     ));
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn explicit_exp_exists_cut_field_only() {
+fn explicit_exp_exists_cut_field_only() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let unit = Located::dummy(Constructor::Unit);
     let meta = FieldMeta {
         field: unit,
@@ -901,10 +1026,12 @@ fn explicit_exp_exists_cut_field_only() {
         &|cc| matches!(cc, Constructor::Unit),
         &|_| false
     ));
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn explicit_exp_exists_cut_rest_only() {
+fn explicit_exp_exists_cut_rest_only() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let unit = Located::dummy(Constructor::Unit);
     let meta = FieldMeta {
         field: Located::dummy(Constructor::Named(1)),
@@ -921,10 +1048,12 @@ fn explicit_exp_exists_cut_rest_only() {
         &|cc| matches!(cc, Constructor::Unit),
         &|_| false
     ));
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn explicit_exp_exists_cutmulti_e_only() {
+fn explicit_exp_exists_cutmulti_e_only() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let prim = Located::dummy(Expression::Prim(ur::primitives::Prim::Int(0)));
     let meta = RestMeta {
         rest: Located::dummy(Constructor::Named(1)),
@@ -938,10 +1067,12 @@ fn explicit_exp_exists_cutmulti_e_only() {
         ex,
         Expression::Prim(_)
     )));
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn explicit_exp_exists_cutmulti_c_only() {
+fn explicit_exp_exists_cutmulti_c_only() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let unit = Located::dummy(Constructor::Unit);
     let meta = RestMeta {
         rest: Located::dummy(Constructor::Named(1)),
@@ -957,10 +1088,12 @@ fn explicit_exp_exists_cutmulti_c_only() {
         &|cc| matches!(cc, Constructor::Unit),
         &|_| false
     ));
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn explicit_exp_exists_cutmulti_rest_only() {
+fn explicit_exp_exists_cutmulti_rest_only() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let unit = Located::dummy(Constructor::Unit);
     let meta = RestMeta { rest: unit };
     let e = Located::dummy(Expression::CutMulti(
@@ -974,11 +1107,13 @@ fn explicit_exp_exists_cutmulti_rest_only() {
         &|cc| matches!(cc, Constructor::Unit),
         &|_| false
     ));
+    Ok(()) // return success to the test harness
 }
 
 // decl::fold_node — each Decl arm must be visited (deleting arm falls through to _ => init)
 #[test]
-fn explicit_decl_fold_con_visits() {
+fn explicit_decl_fold_con_visits() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let unit = Located::dummy(Constructor::Unit);
     let k = Located::dummy(Kind::Type);
     let d = Located::dummy(Declaration::Constructor("T".into(), 0, k, unit));
@@ -994,10 +1129,12 @@ fn explicit_decl_fold_con_visits() {
         n >= 2,
         "fold must visit Con's kind and con (catches delete arm mutant)"
     );
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn explicit_decl_fold_datatypeimp_visits() {
+fn explicit_decl_fold_datatypeimp_visits() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let unit = Located::dummy(Constructor::Unit);
     let d = Located::dummy(Declaration::DatatypeImp {
         name: "T".into(),
@@ -1017,10 +1154,12 @@ fn explicit_decl_fold_datatypeimp_visits() {
         &|_, s| s,
     );
     assert!(n >= 1, "fold must visit DatatypeImp constrs");
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn explicit_decl_fold_valrec_visits() {
+fn explicit_decl_fold_valrec_visits() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let unit = Located::dummy(Constructor::Unit);
     let e = Located::dummy(Expression::Prim(ur::primitives::Prim::Int(0)));
     let d = Located::dummy(Declaration::ValRec(vec![("x".into(), 0, unit, e)]));
@@ -1033,10 +1172,12 @@ fn explicit_decl_fold_valrec_visits() {
         &|_, s| s,
     );
     assert!(n >= 2, "fold must visit ValRec's type and exp");
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn explicit_decl_fold_datatype_visits() {
+fn explicit_decl_fold_datatype_visits() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let unit = Located::dummy(Constructor::Unit);
     let dt = ur::explicit::DatatypeDecl {
         name: "T".into(),
@@ -1054,10 +1195,12 @@ fn explicit_decl_fold_datatype_visits() {
         &|_, s| s,
     );
     assert!(n >= 1, "fold must visit Datatype constrs");
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn explicit_decl_fold_val_visits() {
+fn explicit_decl_fold_val_visits() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let unit = Located::dummy(Constructor::Unit);
     let e = Located::dummy(Expression::Prim(ur::primitives::Prim::Int(0)));
     let d = Located::dummy(Declaration::Val("x".into(), 0, unit, e));
@@ -1070,10 +1213,12 @@ fn explicit_decl_fold_val_visits() {
         &|_, s| s,
     );
     assert!(n >= 2, "fold must visit Val's type and exp");
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn explicit_decl_fold_table_visits() {
+fn explicit_decl_fold_table_visits() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let unit = Located::dummy(Constructor::Unit);
     let e = Located::dummy(Expression::Rel(0));
     let d = Located::dummy(Declaration::Table {
@@ -1095,10 +1240,12 @@ fn explicit_decl_fold_table_visits() {
         &|_, s| s,
     );
     assert!(n >= 2, "fold must visit Table's con/exp");
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn explicit_decl_fold_view_visits() {
+fn explicit_decl_fold_view_visits() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let unit = Located::dummy(Constructor::Unit);
     let e = Located::dummy(Expression::Rel(0));
     let d = Located::dummy(Declaration::View(0, "V".into(), 0, e, unit));
@@ -1111,10 +1258,12 @@ fn explicit_decl_fold_view_visits() {
         &|_, s| s,
     );
     assert!(n >= 2, "fold must visit View's exp and con");
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn explicit_decl_fold_index_visits() {
+fn explicit_decl_fold_index_visits() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let e1 = Located::dummy(Expression::Rel(0));
     let e2 = Located::dummy(Expression::Prim(ur::primitives::Prim::Int(0)));
     let d = Located::dummy(Declaration::Index(e1, e2));
@@ -1127,10 +1276,12 @@ fn explicit_decl_fold_index_visits() {
         &|_, s| s,
     );
     assert!(n >= 1, "fold must visit Index exp");
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn explicit_decl_fold_cookie_visits() {
+fn explicit_decl_fold_cookie_visits() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let unit = Located::dummy(Constructor::Unit);
     let d = Located::dummy(Declaration::Cookie(0, "c".into(), 0, unit));
     let n = decl::fold(
@@ -1142,10 +1293,12 @@ fn explicit_decl_fold_cookie_visits() {
         &|_, s| s,
     );
     assert!(n >= 1, "fold must visit Cookie con");
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn explicit_decl_fold_task_visits() {
+fn explicit_decl_fold_task_visits() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let e1 = Located::dummy(Expression::Rel(0));
     let e2 = Located::dummy(Expression::Prim(ur::primitives::Prim::Int(0)));
     let d = Located::dummy(Declaration::Task(e1, e2));
@@ -1158,10 +1311,12 @@ fn explicit_decl_fold_task_visits() {
         &|_, s| s,
     );
     assert!(n >= 1, "fold must visit Task exp");
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn explicit_decl_fold_policy_visits() {
+fn explicit_decl_fold_policy_visits() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let e = Located::dummy(Expression::Prim(ur::primitives::Prim::Int(0)));
     let d = Located::dummy(Declaration::Policy(e));
     let n = decl::fold(
@@ -1173,10 +1328,12 @@ fn explicit_decl_fold_policy_visits() {
         &|_, s| s,
     );
     assert!(n >= 1, "fold must visit Policy exp");
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn explicit_decl_fold_ffi_visits() {
+fn explicit_decl_fold_ffi_visits() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let unit = Located::dummy(Constructor::Unit);
     let d = Located::dummy(Declaration::Ffi("f".into(), 0, vec![], unit));
     let n = decl::fold(
@@ -1188,10 +1345,12 @@ fn explicit_decl_fold_ffi_visits() {
         &|_, s| s,
     );
     assert!(n >= 1, "fold must visit Ffi type");
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn explicit_corify_minimal_file_returns_non_empty_core() {
+fn explicit_corify_minimal_file_returns_non_empty_core() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     // Kills: corify mutants that return None or empty core for valid explicit input.
     let file: ur::explicit::File = vec![Located::dummy(Declaration::Database("db".into()))];
     let mut settings = ur::settings::Settings::default();
@@ -1201,7 +1360,11 @@ fn explicit_corify_minimal_file_returns_non_empty_core() {
         result.is_some(),
         "corify must return Some for minimal explicit file (catches replace with None)"
     );
-    let core_file = result.unwrap();
+    // extract the core file from the result; is_some() was asserted above
+    let core_file = match result {
+        Some(v) => v,
+        None => panic!("corify returned None for minimal explicit file"),
+    };
     assert!(
         !core_file.is_empty(),
         "corify must produce at least one Core decl (catches replace with Default::default())"
@@ -1212,6 +1375,7 @@ fn explicit_corify_minimal_file_returns_non_empty_core() {
             .any(|d| matches!(&d.node, ur::core::Declaration::Database(_))),
         "corify must produce Database decl"
     );
+    Ok(()) // return success to the test harness
 }
 
 // ---------------------------------------------------------------------------
@@ -1221,7 +1385,8 @@ fn explicit_corify_minimal_file_returns_non_empty_core() {
 use ur::explicit::environment;
 
 #[test]
-fn explicit_corify_val_produces_core_val() {
+fn explicit_corify_val_produces_core_val() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let unit = Located::dummy(ur::explicit::Constructor::Unit);
     let prim = Located::dummy(ur::explicit::Expression::Prim(ur::primitives::Prim::Int(0)));
     let decl = Located::dummy(ur::explicit::Declaration::Val("x".into(), 0, unit, prim));
@@ -1230,17 +1395,23 @@ fn explicit_corify_val_produces_core_val() {
     let mut errors = ur::error_types::ErrorReporter::new();
     let result = compiler::corify(file, &mut settings, &mut errors);
     assert!(result.is_some());
-    let core_file = result.unwrap();
+    // extract the core file from the result; is_some() was asserted above
+    let core_file = match result {
+        Some(v) => v,
+        None => panic!("corify returned None"),
+    };
     assert!(
         core_file
             .iter()
             .any(|d| matches!(&d.node, ur::core::Declaration::Val(_, _, _, _, _))),
         "corify must produce Val decl"
     );
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn explicit_corify_datatype_produces_core_datatype() {
+fn explicit_corify_datatype_produces_core_datatype() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let unit = Located::dummy(ur::explicit::Constructor::Unit);
     let dt = ur::explicit::DatatypeDecl {
         name: "T".into(),
@@ -1254,41 +1425,54 @@ fn explicit_corify_datatype_produces_core_datatype() {
     let mut errors = ur::error_types::ErrorReporter::new();
     let result = compiler::corify(file, &mut settings, &mut errors);
     assert!(result.is_some());
-    let core_file = result.unwrap();
+    // extract the core file from the result; is_some() was asserted above
+    let core_file = match result {
+        Some(v) => v,
+        None => panic!("corify returned None"),
+    };
     assert!(
         core_file
             .iter()
             .any(|d| matches!(&d.node, ur::core::Declaration::Datatype(_))),
         "corify must produce Datatype decl"
     );
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn explicit_lift_kind_in_kind_rel_at_bound() {
+fn explicit_lift_kind_in_kind_rel_at_bound() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let k = Located::dummy(ur::explicit::Kind::Rel(0));
     let out = environment::lift_kind_in_kind(k, 0);
     assert!(matches!(out.node, ur::explicit::Kind::Rel(1)));
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn explicit_lift_kind_in_kind_rel_below_bound() {
+fn explicit_lift_kind_in_kind_rel_below_bound() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let k = Located::dummy(ur::explicit::Kind::Rel(0));
     let out = environment::lift_kind_in_kind(k, 1);
     assert!(matches!(out.node, ur::explicit::Kind::Rel(0)));
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn explicit_lift_con_in_con_rel_at_bound() {
+fn explicit_lift_con_in_con_rel_at_bound() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let c = Located::dummy(ur::explicit::Constructor::Rel(0));
     let out = environment::lift_con_in_con(c, 0);
     assert!(matches!(out.node, ur::explicit::Constructor::Rel(1)));
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn explicit_lift_con_in_con_unit_unchanged() {
+fn explicit_lift_con_in_con_unit_unchanged() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let c = Located::dummy(ur::explicit::Constructor::Unit);
     let out = environment::lift_con_in_con(c, 0);
     assert!(matches!(out.node, ur::explicit::Constructor::Unit));
+    Ok(()) // return success to the test harness
 }
 
 // ---------------------------------------------------------------------------
@@ -1296,21 +1480,28 @@ fn explicit_lift_con_in_con_unit_unchanged() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn explicit_corify_sequence_produces_core_sequence() {
+fn explicit_corify_sequence_produces_core_sequence() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let decl = Located::dummy(ur::explicit::Declaration::Sequence(0, "s".into(), 1));
     let file: ur::explicit::File = vec![decl];
     let mut settings = ur::settings::Settings::default();
     let mut errors = ur::error_types::ErrorReporter::new();
     let result = compiler::corify(file, &mut settings, &mut errors);
     assert!(result.is_some());
-    let core_file = result.unwrap();
+    // extract the core file from the result; is_some() was asserted above
+    let core_file = match result {
+        Some(v) => v,
+        None => panic!("corify returned None"),
+    };
     assert!(core_file
         .iter()
         .any(|d| matches!(&d.node, ur::core::Declaration::Sequence(_, _, _))));
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn explicit_corify_cookie_produces_core_cookie() {
+fn explicit_corify_cookie_produces_core_cookie() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let unit = Located::dummy(ur::explicit::Constructor::Unit);
     let decl = Located::dummy(ur::explicit::Declaration::Cookie(0, "c".into(), 1, unit));
     let file: ur::explicit::File = vec![decl];
@@ -1318,28 +1509,40 @@ fn explicit_corify_cookie_produces_core_cookie() {
     let mut errors = ur::error_types::ErrorReporter::new();
     let result = compiler::corify(file, &mut settings, &mut errors);
     assert!(result.is_some());
-    let core_file = result.unwrap();
+    // extract the core file from the result; is_some() was asserted above
+    let core_file = match result {
+        Some(v) => v,
+        None => panic!("corify returned None"),
+    };
     assert!(core_file
         .iter()
         .any(|d| matches!(&d.node, ur::core::Declaration::Cookie(_, _, _, _))));
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn explicit_corify_style_produces_core_style() {
+fn explicit_corify_style_produces_core_style() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let decl = Located::dummy(ur::explicit::Declaration::Style(0, "s".into(), 1));
     let file: ur::explicit::File = vec![decl];
     let mut settings = ur::settings::Settings::default();
     let mut errors = ur::error_types::ErrorReporter::new();
     let result = compiler::corify(file, &mut settings, &mut errors);
     assert!(result.is_some());
-    let core_file = result.unwrap();
+    // extract the core file from the result; is_some() was asserted above
+    let core_file = match result {
+        Some(v) => v,
+        None => panic!("corify returned None"),
+    };
     assert!(core_file
         .iter()
         .any(|d| matches!(&d.node, ur::core::Declaration::Style(_, _, _))));
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn explicit_corify_constructor_produces_core_constructor() {
+fn explicit_corify_constructor_produces_core_constructor() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let k = Located::dummy(ur::explicit::Kind::Type);
     let unit = Located::dummy(ur::explicit::Constructor::Unit);
     let decl = Located::dummy(ur::explicit::Declaration::Constructor(
@@ -1353,14 +1556,20 @@ fn explicit_corify_constructor_produces_core_constructor() {
     let mut errors = ur::error_types::ErrorReporter::new();
     let result = compiler::corify(file, &mut settings, &mut errors);
     assert!(result.is_some());
-    let core_file = result.unwrap();
+    // extract the core file from the result; is_some() was asserted above
+    let core_file = match result {
+        Some(v) => v,
+        None => panic!("corify returned None"),
+    };
     assert!(core_file
         .iter()
         .any(|d| matches!(&d.node, ur::core::Declaration::Constructor(_, _, _, _))));
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn explicit_lift_con_in_con_record() {
+fn explicit_lift_con_in_con_record() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let k = Located::dummy(ur::explicit::Kind::Type);
     let unit = Located::dummy(ur::explicit::Constructor::Unit);
     let rel0 = Located::dummy(ur::explicit::Constructor::Rel(0));
@@ -1376,10 +1585,12 @@ fn explicit_lift_con_in_con_record() {
         }
         _ => panic!("expected Record"),
     }
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn explicit_lift_con_in_con_concat() {
+fn explicit_lift_con_in_con_concat() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let rel0 = Located::dummy(ur::explicit::Constructor::Rel(0));
     let unit = Located::dummy(ur::explicit::Constructor::Unit);
     let concat = Located::dummy(ur::explicit::Constructor::Concat(
@@ -1394,10 +1605,12 @@ fn explicit_lift_con_in_con_concat() {
         }
         _ => panic!("expected Concat"),
     }
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn explicit_lift_con_in_con_tuple() {
+fn explicit_lift_con_in_con_tuple() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let rel0 = Located::dummy(ur::explicit::Constructor::Rel(0));
     let unit = Located::dummy(ur::explicit::Constructor::Unit);
     let tup = Located::dummy(ur::explicit::Constructor::Tuple(vec![rel0, unit]));
@@ -1410,10 +1623,12 @@ fn explicit_lift_con_in_con_tuple() {
         }
         _ => panic!("expected Tuple"),
     }
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn explicit_lift_con_in_con_tfun() {
+fn explicit_lift_con_in_con_tfun() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let unit = Located::dummy(ur::explicit::Constructor::Unit);
     let rel1 = Located::dummy(ur::explicit::Constructor::Rel(1));
     let tfun = Located::dummy(ur::explicit::Constructor::TFun(
@@ -1427,11 +1642,13 @@ fn explicit_lift_con_in_con_tfun() {
         }
         _ => panic!("expected TFun"),
     }
+    Ok(()) // return success to the test harness
 }
 
 // Phase D: corify Export/Task/Policy/Index, lift_con_in_con KAbs/KApp/Proj/TRecord, lift_kind_in_con
 #[test]
-fn explicit_corify_index_produces_core_index() {
+fn explicit_corify_index_produces_core_index() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let prim = Located::dummy(ur::explicit::Expression::Prim(ur::primitives::Prim::Int(0)));
     let decl_db = Located::dummy(ur::explicit::Declaration::Database("db".into()));
     let decl_idx = Located::dummy(ur::explicit::Declaration::Index(prim.clone(), prim));
@@ -1440,14 +1657,20 @@ fn explicit_corify_index_produces_core_index() {
     let mut errors = ur::error_types::ErrorReporter::new();
     let result = compiler::corify(file, &mut settings, &mut errors);
     assert!(result.is_some());
-    let core_file = result.unwrap();
+    // extract the core file from the result; is_some() was asserted above
+    let core_file = match result {
+        Some(v) => v,
+        None => panic!("corify returned None"),
+    };
     assert!(core_file
         .iter()
         .any(|d| matches!(&d.node, ur::core::Declaration::Index(_, _))));
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn explicit_corify_task_produces_core_task() {
+fn explicit_corify_task_produces_core_task() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let prim = Located::dummy(ur::explicit::Expression::Prim(ur::primitives::Prim::Int(0)));
     let decl_db = Located::dummy(ur::explicit::Declaration::Database("db".into()));
     let decl_task = Located::dummy(ur::explicit::Declaration::Task(prim.clone(), prim));
@@ -1456,14 +1679,20 @@ fn explicit_corify_task_produces_core_task() {
     let mut errors = ur::error_types::ErrorReporter::new();
     let result = compiler::corify(file, &mut settings, &mut errors);
     assert!(result.is_some());
-    let core_file = result.unwrap();
+    // extract the core file from the result; is_some() was asserted above
+    let core_file = match result {
+        Some(v) => v,
+        None => panic!("corify returned None"),
+    };
     assert!(core_file
         .iter()
         .any(|d| matches!(&d.node, ur::core::Declaration::Task(_, _))));
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn explicit_corify_policy_produces_core_policy() {
+fn explicit_corify_policy_produces_core_policy() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let prim = Located::dummy(ur::explicit::Expression::Prim(ur::primitives::Prim::Int(0)));
     let decl_db = Located::dummy(ur::explicit::Declaration::Database("db".into()));
     let decl_policy = Located::dummy(ur::explicit::Declaration::Policy(prim));
@@ -1472,14 +1701,20 @@ fn explicit_corify_policy_produces_core_policy() {
     let mut errors = ur::error_types::ErrorReporter::new();
     let result = compiler::corify(file, &mut settings, &mut errors);
     assert!(result.is_some());
-    let core_file = result.unwrap();
+    // extract the core file from the result; is_some() was asserted above
+    let core_file = match result {
+        Some(v) => v,
+        None => panic!("corify returned None"),
+    };
     assert!(core_file
         .iter()
         .any(|d| matches!(&d.node, ur::core::Declaration::Policy(_))));
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn explicit_lift_con_in_con_kabs() {
+fn explicit_lift_con_in_con_kabs() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let rel0 = Located::dummy(ur::explicit::Constructor::Rel(0));
     let kabs = Located::dummy(ur::explicit::Constructor::KAbs("a".into(), Box::new(rel0)));
     let out = environment::lift_con_in_con(kabs, 0);
@@ -1492,10 +1727,12 @@ fn explicit_lift_con_in_con_kabs() {
         }
         _ => panic!("expected KAbs"),
     }
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn explicit_lift_con_in_con_kapp() {
+fn explicit_lift_con_in_con_kapp() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let unit = Located::dummy(ur::explicit::Constructor::Unit);
     let k = Located::dummy(ur::explicit::Kind::Type);
     let kapp = Located::dummy(ur::explicit::Constructor::KApp(
@@ -1504,10 +1741,12 @@ fn explicit_lift_con_in_con_kapp() {
     ));
     let out = environment::lift_con_in_con(kapp, 0);
     assert!(matches!(out.node, ur::explicit::Constructor::KApp(_, _)));
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn explicit_lift_con_in_con_proj() {
+fn explicit_lift_con_in_con_proj() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let rel0 = Located::dummy(ur::explicit::Constructor::Rel(0));
     let unit = Located::dummy(ur::explicit::Constructor::Unit);
     let tup = Located::dummy(ur::explicit::Constructor::Tuple(vec![rel0, unit]));
@@ -1521,10 +1760,12 @@ fn explicit_lift_con_in_con_proj() {
         }
         _ => panic!("expected Proj"),
     }
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn explicit_lift_con_in_con_trecord() {
+fn explicit_lift_con_in_con_trecord() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let rel0 = Located::dummy(ur::explicit::Constructor::Rel(0));
     let trec = Located::dummy(ur::explicit::Constructor::TRecord(Box::new(rel0)));
     let out = environment::lift_con_in_con(trec, 0);
@@ -1534,19 +1775,23 @@ fn explicit_lift_con_in_con_trecord() {
         }
         _ => panic!("expected TRecord"),
     }
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn explicit_lift_kind_in_con_kabs() {
+fn explicit_lift_kind_in_con_kabs() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let _k_type = Located::dummy(ur::explicit::Kind::Type);
     let unit = Located::dummy(ur::explicit::Constructor::Unit);
     let kabs = Located::dummy(ur::explicit::Constructor::KAbs("a".into(), Box::new(unit)));
     let out = environment::lift_kind_in_con(kabs, 0);
     assert!(matches!(out.node, ur::explicit::Constructor::KAbs(_, _)));
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn explicit_lift_kind_in_con_kapp() {
+fn explicit_lift_kind_in_con_kapp() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let k_rel = Located::dummy(ur::explicit::Kind::Rel(0));
     let unit = Located::dummy(ur::explicit::Constructor::Unit);
     let kapp = Located::dummy(ur::explicit::Constructor::KApp(
@@ -1560,21 +1805,26 @@ fn explicit_lift_kind_in_con_kapp() {
         }
         _ => panic!("expected KApp"),
     }
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn explicit_lift_kind_in_con_proj() {
+fn explicit_lift_kind_in_con_proj() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let unit = Located::dummy(ur::explicit::Constructor::Unit);
     let tup = Located::dummy(ur::explicit::Constructor::Tuple(vec![unit]));
     let proj = Located::dummy(ur::explicit::Constructor::Proj(Box::new(tup), 1));
     let out = environment::lift_kind_in_con(proj, 0);
     assert!(matches!(out.node, ur::explicit::Constructor::Proj(_, 1)));
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn explicit_lift_kind_in_con_trecord() {
+fn explicit_lift_kind_in_con_trecord() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     let unit = Located::dummy(ur::explicit::Constructor::Unit);
     let trec = Located::dummy(ur::explicit::Constructor::TRecord(Box::new(unit)));
     let out = environment::lift_kind_in_con(trec, 0);
     assert!(matches!(out.node, ur::explicit::Constructor::TRecord(_)));
+    Ok(()) // return success to the test harness
 }

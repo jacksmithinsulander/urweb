@@ -1638,7 +1638,11 @@ mod tests {
         ));
         let result = get_app(&e);
         assert!(result.is_some());
-        let (f, args) = result.unwrap();
+        // Unwrap the get_app result; panic with a message if it is None.
+        let (f, args) = match result {
+            Some(v) => v,
+            None => panic!("get_app returned None unexpectedly"),
+        };
         assert_eq!(f, 1);
         assert_eq!(args.len(), 1);
     }
@@ -1872,7 +1876,11 @@ mod tests {
         let arg = dummy(Expression::Prim(crate::primitives::Prim::Int(42)));
         let result = sub_body(body, typ, &[arg]);
         assert!(result.is_some());
-        let (new_body, _) = result.unwrap();
+        // Unwrap sub_body result; panic with a message if it is None.
+        let (new_body, _) = match result {
+            Some(v) => v,
+            None => panic!("sub_body returned None unexpectedly"),
+        };
         assert!(matches!(new_body.node, Expression::Named(99)));
     }
 
@@ -1882,7 +1890,11 @@ mod tests {
         let typ = dummy_con();
         let result = sub_body(body, typ, &[]);
         assert!(result.is_some());
-        let (b, _) = result.unwrap();
+        // Unwrap sub_body result for empty args; panic with a message if it is None.
+        let (b, _) = match result {
+            Some(v) => v,
+            None => panic!("sub_body with empty args returned None unexpectedly"),
+        };
         assert!(matches!(b.node, Expression::Rel(0)));
     }
 

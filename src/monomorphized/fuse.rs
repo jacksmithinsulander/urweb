@@ -251,6 +251,7 @@ pub fn fuse(file: File) -> File {
 mod tests {
     use super::*;
     use crate::error_types::Located;
+    use anyhow::Context as _; // .with_context() on Result in tests
 
     fn dummy<T>(node: T) -> Located<T> {
         Located::dummy(node)
@@ -265,28 +266,36 @@ mod tests {
     }
 
     #[test]
-    fn fuse_empty_file() {
+    fn fuse_empty_file() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let result = fuse((vec![], vec![]));
         assert!(result.0.is_empty());
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn returns_string_plain_string_is_none() {
+    fn returns_string_plain_string_is_none() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         assert!(returns_string(&string_typ()).is_none());
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn returns_string_int_to_string_is_some() {
+    fn returns_string_int_to_string_is_some() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let t = dummy(Typ::Fun(Box::new(int_typ()), Box::new(string_typ())));
-        let (args, t_prime) = returns_string(&t).expect("should match");
+        let (args, t_prime) = returns_string(&t).with_context(|| "should match")?;
         assert_eq!(args.len(), 1);
         // t' should be int -> unit (TRecord [])
         assert!(matches!(t_prime.node, Typ::Fun(_, _)));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn returns_string_non_string_return_is_none() {
+    fn returns_string_non_string_return_is_none() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let t = dummy(Typ::Fun(Box::new(int_typ()), Box::new(int_typ())));
         assert!(returns_string(&t).is_none());
+        Ok(()) // return success to the test harness
     }
 }

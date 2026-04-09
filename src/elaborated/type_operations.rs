@@ -1650,7 +1650,7 @@ fn kinds_eq_simple(left_kind: &LocatedKind, right_kind: &LocatedKind) -> bool {
             kinds_eq_simple(left_body.as_ref(), right_body.as_ref())
         }
         (Kind::Unif(_, _, left_cell), Kind::Unif(_, _, right_cell)) => {
-            Arc::ptr_eq(&left_cell, &right_cell)
+            Arc::ptr_eq(left_cell, right_cell) // compare Arc pointer identity without redundant references
         }
         (Kind::Error, Kind::Error) => true,
         _ => false,
@@ -1744,6 +1744,7 @@ mod tests {
     use super::*;
     use crate::elaborated::{Constructor, Explicitness, Kind};
     use crate::error_types::Located;
+    use anyhow::anyhow; // anyhow!() macro for error construction in tests
     use std::sync::{Arc, Mutex};
 
     fn dummy<T>(node: T) -> Located<T> {
@@ -1751,124 +1752,167 @@ mod tests {
     }
 
     #[test]
-    fn lift_kind_in_kind_rel_plus_one() {
+    fn lift_kind_in_kind_rel_plus_one() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let k = dummy(Kind::Rel(0));
         let out = lift_kind_in_kind(k);
         assert!(matches!(out.node, Kind::Rel(1)));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn lift_kind_in_kind_bound_below_unchanged() {
+    fn lift_kind_in_kind_bound_below_unchanged() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let k = dummy(Kind::Rel(0));
         let out = lift_kind_in_kind_bound(1, 1, k);
         assert!(matches!(out.node, Kind::Rel(0)));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn sub_kind_in_kind_rel_zero_replaced() {
+    fn sub_kind_in_kind_rel_zero_replaced() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let rep = dummy(Kind::Type);
         let k = dummy(Kind::Rel(0));
         let out = sub_kind_in_kind(0, &rep, k);
         assert!(matches!(out.node, Kind::Type));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn sub_kind_in_kind_rel_above_decremented() {
+    fn sub_kind_in_kind_rel_above_decremented() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let rep = dummy(Kind::Type);
         let k = dummy(Kind::Rel(2));
         let out = sub_kind_in_kind(0, &rep, k);
         assert!(matches!(out.node, Kind::Rel(1)));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn occurs_rel_zero() {
+    fn occurs_rel_zero() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let c = dummy(Constructor::Rel(0));
         assert!(occurs(&c));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn occurs_unit_false() {
+    fn occurs_unit_false() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let c = dummy(Constructor::Unit);
         assert!(!occurs(&c));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn occurs_at_rel_at_bound() {
+    fn occurs_at_rel_at_bound() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let c = dummy(Constructor::Rel(1));
         assert!(occurs_at(0, 1, &c));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn occurs_at_rel_mismatch_false() {
+    fn occurs_at_rel_mismatch_false() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let c = dummy(Constructor::Rel(2));
         assert!(!occurs_at(0, 1, &c));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn occurs_at_tfun_in_left() {
+    fn occurs_at_tfun_in_left() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let left = dummy(Constructor::Rel(0));
         let right = dummy(Constructor::Unit);
         let c = dummy(Constructor::TFun(Box::new(left), Box::new(right)));
         assert!(occurs_at(0, 0, &c));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn occurs_at_tfun_in_right() {
+    fn occurs_at_tfun_in_right() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let left = dummy(Constructor::Unit);
         let right = dummy(Constructor::Rel(0));
         let c = dummy(Constructor::TFun(Box::new(left), Box::new(right)));
         assert!(occurs_at(0, 0, &c));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn occurs_at_abs_shifts_bound() {
+    fn occurs_at_abs_shifts_bound() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // Under Abs, bound becomes bound+1; index 0 at outer is index 1 in body.
         let body = dummy(Constructor::Rel(2));
         let k = dummy(Kind::Type);
         let c = dummy(Constructor::Abs("x".into(), Box::new(k), Box::new(body)));
         assert!(occurs_at(0, 1, &c));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn occurs_at_app_in_fun() {
+    fn occurs_at_app_in_fun() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let f = dummy(Constructor::Rel(0));
         let a = dummy(Constructor::Unit);
         let c = dummy(Constructor::App(Box::new(f), Box::new(a)));
         assert!(occurs_at(0, 0, &c));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn occurs_at_trecord_inner() {
+    fn occurs_at_trecord_inner() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let inner = dummy(Constructor::Rel(0));
         let r = dummy(Constructor::TRecord(Box::new(inner)));
         assert!(occurs_at(0, 0, &r));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn lift_con_in_con_rel_plus_one() {
+    fn lift_con_in_con_rel_plus_one() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let c = dummy(Constructor::Rel(0));
         let out = lift_con_in_con(c);
         assert!(matches!(out.node, Constructor::Rel(1)));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn sub_con_in_con_rel_zero_replaced() {
+    fn sub_con_in_con_rel_zero_replaced() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let rep = dummy(Constructor::Named(42));
         let c = dummy(Constructor::Rel(0));
-        let out = sub_con_in_con(0, &rep, c).unwrap();
+        let out = match sub_con_in_con(0, &rep, c) {
+            Ok(out) => out,
+            Err(_) => return Err(anyhow!("expected substitution of Rel(0) to succeed")),
+        };
         assert!(matches!(out.node, Constructor::Named(42)));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn sub_con_in_con_rel_above_decremented() {
+    fn sub_con_in_con_rel_above_decremented() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let rep = dummy(Constructor::Unit);
         let c = dummy(Constructor::Rel(2));
-        let out = sub_con_in_con(0, &rep, c).unwrap();
+        let out = match sub_con_in_con(0, &rep, c) {
+            Ok(out) => out,
+            Err(_) => {
+                return Err(anyhow!(
+                    "expected substitution of higher Rel index to succeed"
+                ))
+            }
+        };
         assert!(matches!(out.node, Constructor::Rel(1)));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn sub_con_in_con_peels_known_unif_before_sentinel_check() {
+    fn sub_con_in_con_peels_known_unif_before_sentinel_check() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // Build a solved constructor unifier whose stored constructor still contains the target Rel(0).
         let known_constructor = dummy(Constructor::Rel(0));
         // Store the solved constructor in the unification cell so substitution must traverse through it.
@@ -1884,30 +1928,43 @@ mod tests {
         // Substitute a concrete constructor for Rel(0).
         let replacement = dummy(Constructor::Named(7));
         // The solved unifier should be traversed first, so substitution succeeds instead of producing SubUnif.
-        let substituted_constructor = sub_con_in_con(0, &replacement, constructor).unwrap();
+        let substituted_constructor = match sub_con_in_con(0, &replacement, constructor) {
+            Ok(constructor) => constructor,
+            Err(_) => {
+                return Err(anyhow!(
+                    "expected solved constructor unifier substitution to succeed"
+                ));
+            }
+        };
         // The inner Rel(0) should be replaced by the requested constructor.
         assert!(matches!(
             substituted_constructor.node,
             Constructor::Named(7)
         ));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn cons_eq_simple_tfun_same() {
+    fn cons_eq_simple_tfun_same() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let u = dummy(Constructor::Unit);
         let tfun = dummy(Constructor::TFun(Box::new(u.clone()), Box::new(u)));
         assert!(cons_eq_simple(&tfun, &tfun));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn cons_eq_simple_tuple_same() {
+    fn cons_eq_simple_tuple_same() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let u = dummy(Constructor::Unit);
         let t = dummy(Constructor::Tuple(vec![u.clone(), u]));
         assert!(cons_eq_simple(&t, &t));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn cons_eq_simple_record_same() {
+    fn cons_eq_simple_record_same() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let k = dummy(Kind::Type);
         let u = dummy(Constructor::Unit);
         let r = dummy(Constructor::Record(
@@ -1915,10 +1972,12 @@ mod tests {
             vec![(dummy(Constructor::Name("x".into())), u)],
         ));
         assert!(cons_eq_simple(&r, &r));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn hnorm_does_not_beta_reduce_app_of_tcfun() {
+    fn hnorm_does_not_beta_reduce_app_of_tcfun() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         // SML hnormCon only beta-reduces App(CAbs, c), NOT App(TCFun, c).
         // TCFun is a forall/pi type (∀ x :: K. body); CApp(TCFun, c) is NOT
         // reducible in hnorm — the ECApp elaboration handles TCFun via substitution.
@@ -1942,19 +2001,24 @@ mod tests {
             matches!(&out.node, Constructor::App(h, _) if matches!(&h.node, Constructor::TCFun(..))),
             "App(TCFun, c) should not beta-reduce in hnorm_con (only App(Abs, c) does)"
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn hnorm_con_unit_unchanged() {
+    fn hnorm_con_unit_unchanged() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let c = dummy(Constructor::Unit);
         let out = hnorm_con(c);
         assert!(matches!(out.node, Constructor::Unit));
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn reduce_con_unit_unchanged() {
+    fn reduce_con_unit_unchanged() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let c = dummy(Constructor::Unit);
         let out = reduce_con(c);
         assert!(matches!(out.node, Constructor::Unit));
+        Ok(()) // return success to the test harness
     }
 }

@@ -10,14 +10,16 @@
 //! sample rows with `URWEB_TEST_BOOT_PROGRESS=1`. Full boot [`DiagnosticId`] buckets:
 //! `boot_elab_diagnostic_id_histogram` in `src/elaborated/elaborate.rs` with `URWEB_TEST_BOOT_HIST=1`.
 
+use anyhow::{anyhow, Context as _};
+use std::collections::HashMap;
 use std::fs;
-use std::sync::OnceLock;
+use std::sync::OnceLock; // error construction and chaining in tests
 
-use tempfile::tempdir;
 use ur::compiler;
 use ur::diagnostics::DiagnosticId;
-use ur::error_types::{CompileError, ErrorReporter};
+use ur::error_types::{CompileError, ErrorReporter, Located, Span};
 use ur::settings::Settings;
+use ur::source;
 use ur::source::File as SourceFile;
 
 /// Stack size for threads that run `corpus_core_*` elaboration checks.
@@ -75,6 +77,77 @@ fn get_cached_basis_sources() -> Option<&'static SourceFile> {
         .as_ref() // Borrow the stored Option<SourceFile> as Option<&SourceFile>.
 }
 
+/// Frozen `Basis` / `Top` elaboration snapshot shared across corpus tests.
+///
+/// This avoids re-elaborating the full boot library on every `try_elaborate_single_module*`
+/// invocation while still rebuilding a fresh user-module environment per test.
+static CACHED_BOOT_ELABORATION_SNAPSHOT: OnceLock<Option<compiler::BootElaborationSnapshot>> =
+    OnceLock::new();
+
+#[derive(Clone)]
+struct CachedTopSources {
+    implementation: String,
+    signature: String,
+}
+
+#[derive(Clone)]
+struct CachedTopPrefixResults {
+    top_prefix_show_option: Result<(), String>,
+    top_named_prefix_show_option_signature_pair: Result<(), String>,
+    top_named_prefix_query_xi_signature_pair: Result<(), String>,
+    top_named_prefix_mapux_rev_signature_pair: Result<(), String>,
+    top_named_prefix_mapx4_signature_pair: Result<(), String>,
+    top_named_prefix_mapux2_signature_pair: Result<(), String>,
+    top_named_prefix_mapx2_signature_pair: Result<(), String>,
+    top_named_prefix_mapx3_signature_pair: Result<(), String>,
+    top_named_full_module_pair: Result<(), String>,
+}
+
+static CACHED_TOP_SOURCES: OnceLock<Result<Option<CachedTopSources>, String>> = OnceLock::new();
+static CACHED_TOP_PREFIX_RESULTS: OnceLock<Result<Option<CachedTopPrefixResults>, String>> =
+    OnceLock::new();
+
+/// Return the cached boot elaboration snapshot, or `None` when the Basis is absent or boot
+/// elaboration itself fails.
+fn get_cached_boot_elaboration_snapshot() -> Option<&'static compiler::BootElaborationSnapshot> {
+    CACHED_BOOT_ELABORATION_SNAPSHOT
+        .get_or_init(|| {
+            let cached_boot = get_cached_basis_sources()?;
+            let mut errors = ErrorReporter::new_silent();
+            compiler::elaborate_boot_snapshot(cached_boot, &mut errors)
+        })
+        .as_ref()
+}
+
+fn get_cached_top_sources() -> Result<Option<&'static CachedTopSources>, String> {
+    match CACHED_TOP_SOURCES.get_or_init(|| {
+        let root = match corpus_workspace_root() {
+            Some(root) => root,
+            None => return Ok(None),
+        };
+        let implementation = fs::read_to_string(root.join("lib/ur/top.ur"))
+            .map_err(|io_error| format!("read lib/ur/top.ur: {io_error}"))?;
+        let signature = fs::read_to_string(root.join("lib/ur/top.urs"))
+            .map_err(|io_error| format!("read lib/ur/top.urs: {io_error}"))?;
+        Ok(Some(CachedTopSources {
+            implementation,
+            signature,
+        }))
+    }) {
+        Ok(Some(cached_sources)) => Ok(Some(cached_sources)),
+        Ok(None) => Ok(None),
+        Err(error) => Err(error.clone()),
+    }
+}
+
+fn prefix_before_line(source_text: &str, stop_prefix: &str) -> String {
+    source_text
+        .lines()
+        .take_while(|line| !line.starts_with(stop_prefix))
+        .map(|line| format!("{line}\n"))
+        .collect()
+}
+
 /// Run `body` on a fresh OS thread with [`ELABORATION_TEST_STACK_BYTES`] and propagate its result.
 ///
 /// # Errors
@@ -91,30 +164,369 @@ fn run_with_elaboration_stack<T: Send + 'static>(
         .map_err(|_| "corpus elaboration thread panicked".to_string())
 }
 
-fn try_elaborate_single_module(ur_src: &str) -> Result<(), String> {
-    let source_text = ur_src.to_string();
-    run_with_elaboration_stack(move || try_elaborate_single_module_on_thread(&source_text))
-        .flatten()
+fn parse_optional_signature(
+    module_name: &str,
+    urs_src: Option<&str>,
+) -> Result<Option<Located<source::Sgn>>, String> {
+    match urs_src {
+        None => Ok(None),
+        Some(signature_text) => {
+            let mut signature_errors = ErrorReporter::new_silent();
+            let signature_items = match ur::parse::parse_urs(
+                &format!("{module_name}.urs"),
+                signature_text,
+                &mut signature_errors,
+            ) {
+                Some(signature_items) => signature_items,
+                None => return Err(format!("parse_urs failed: {signature_errors:?}")),
+            };
+            if signature_errors.has_hard_errors() {
+                return Err(format!("parse_urs errors: {signature_errors:?}"));
+            }
+            let signature_span = Span {
+                file: format!("{module_name}.urs"),
+                ..Span::dummy()
+            };
+            Ok(Some(Located::new(
+                source::Sgn::Const(signature_items),
+                signature_span,
+            )))
+        }
+    }
 }
 
-fn try_elaborate_named_module(module_name: &str, ur_src: &str) -> Result<(), String> {
-    let module_name_owned = module_name.to_string(); // Clone for the spawned thread's closure.
-    let implementation_text = ur_src.to_string(); // Clone for the spawned thread's closure.
-    run_with_elaboration_stack(move || {
-        let cached_boot = get_cached_basis_sources()
-            .ok_or_else(|| "corpus boot root not found (lib/ur/basis.urs missing)".to_string())?; // Fail fast when Basis is absent.
-        let settings = Settings::new(); // Default settings; Basis is already in cached_boot.
-        let mut errors = ErrorReporter::new_silent(); // Silent reporter: errors are returned as Err strings.
-        compiler::elaborate_module_on_cached_boot(
-            cached_boot,          // Pre-parsed Basis+Top — no re-parsing or disk I/O.
-            &module_name_owned,   // Caller-supplied module name.
-            &implementation_text, // Implementation source text.
-            None,                 // No explicit signature.
-            &settings,
-            &mut errors,
-        )
-    })
-    .flatten()
+fn parse_module_declarations(module_name: &str, ur_src: &str) -> Result<SourceFile, String> {
+    let mut errors = ErrorReporter::new_silent();
+    let implementation_file = format!("{module_name}.ur");
+    let declarations = match ur::parse::parse_ur(
+        &implementation_file,
+        ur_src,
+        &mut errors,
+        ur::db::ProjectDb::default(),
+    ) {
+        Some(declarations) => declarations,
+        None => return Err(format!("parse_ur failed: {errors:?}")),
+    };
+    if errors.has_hard_errors() {
+        return Err(format!("parse_ur errors: {errors:?}"));
+    }
+    Ok(declarations)
+}
+
+fn build_in_memory_module_decl(
+    module_name: &str,
+    ur_src: &str,
+    urs_src: Option<&str>,
+) -> Result<source::LocDecl, String> {
+    let signature = parse_optional_signature(module_name, urs_src)?;
+    let declarations = parse_module_declarations(module_name, ur_src)?;
+    let implementation_span = Span {
+        file: format!("{module_name}.ur"),
+        ..Span::dummy()
+    };
+    let structure = Located::new(
+        source::Str::Const(declarations),
+        implementation_span.clone(),
+    );
+    Ok(Located::new(
+        source::Decl::Str(module_name.to_string(), signature, None, structure, false),
+        implementation_span,
+    ))
+}
+
+fn build_module_export_decl(module_name: &str) -> source::LocDecl {
+    let export_span = Span::dummy();
+    let exported_module = Located::new(
+        source::Str::Var(module_name.to_string()),
+        export_span.clone(),
+    );
+    Located::new(source::Decl::Export(exported_module), export_span)
+}
+
+fn elaborate_user_file_on_cached_boot_snapshot(file: SourceFile) -> Result<(), String> {
+    let boot_snapshot = get_cached_boot_elaboration_snapshot()
+        .ok_or_else(|| "corpus boot root not found (lib/ur/basis.urs missing)".to_string())?;
+    let mut errors = ErrorReporter::new_silent();
+    let elaborated =
+        ur::elaborated::elaborate::elab_file_from_boot_snapshot(boot_snapshot, file, &mut errors);
+    match elaborated {
+        Some(_) if !errors.has_hard_errors() => Ok(()),
+        Some(_) => Err(format!("elaborate errors: {errors:?}")),
+        None => Err(format!("elaborate returned None: {errors:?}")),
+    }
+}
+
+fn parse_signature_source(module_name: &str, urs_src: &str) -> Result<source::LocSgn, String> {
+    let mut errors = ErrorReporter::new_silent();
+    let signature_items =
+        match ur::parse::parse_urs(&format!("{module_name}.urs"), urs_src, &mut errors) {
+            Some(signature_items) => signature_items,
+            None => return Err(format!("parse_urs failed: {errors:?}")),
+        };
+    if errors.has_hard_errors() {
+        return Err(format!("parse_urs errors: {errors:?}"));
+    }
+    let signature_span = Span {
+        file: format!("{module_name}.urs"),
+        ..Span::dummy()
+    };
+    Ok(Located::new(
+        source::Sgn::Const(signature_items),
+        signature_span,
+    ))
+}
+
+fn get_cached_top_prefix_results() -> Result<Option<&'static CachedTopPrefixResults>, String> {
+    match CACHED_TOP_PREFIX_RESULTS.get_or_init(|| {
+        let top_sources = match get_cached_top_sources()? {
+            Some(top_sources) => top_sources,
+            None => return Ok(None),
+        };
+        let boot_snapshot = match get_cached_boot_elaboration_snapshot() {
+            Some(boot_snapshot) => boot_snapshot,
+            None => {
+                return Err("corpus boot root not found (lib/ur/basis.urs missing)".to_string());
+            }
+        };
+        let full_top_decls = parse_module_declarations("Top", &top_sources.implementation)?;
+
+        let show_option_impl_prefix =
+            prefix_before_line(&top_sources.implementation, "fun read_option ");
+        let show_option_sig_prefix = prefix_before_line(&top_sources.signature, "val read_option ");
+        let query_xi_impl_prefix = prefix_before_line(&top_sources.implementation, "fun hasRows ");
+        let query_xi_sig_prefix = prefix_before_line(&top_sources.signature, "val hasRows ");
+        let mapux_rev_impl_prefix = prefix_before_line(&top_sources.implementation, "fun mapUX2 ");
+        let mapux_rev_sig_prefix = prefix_before_line(&top_sources.signature, "val mapUX2 ");
+        let mapx4_impl_prefix = prefix_before_line(&top_sources.implementation, "val queryL ");
+        let mapx4_sig_prefix = prefix_before_line(&top_sources.signature, "val queryL ");
+        let mapux2_impl_prefix = prefix_before_line(&top_sources.implementation, "fun mapX2 ");
+        let mapux2_sig_prefix = prefix_before_line(&top_sources.signature, "val mapX2 ");
+        let mapx2_impl_prefix = prefix_before_line(&top_sources.implementation, "fun mapX3 ");
+        let mapx2_sig_prefix = prefix_before_line(&top_sources.signature, "val mapX3 ");
+        let mapx3_impl_prefix = prefix_before_line(&top_sources.implementation, "fun mapX4 ");
+        let mapx3_sig_prefix = prefix_before_line(&top_sources.signature, "val mapX4 ");
+        let show_option_decl_count =
+            parse_module_declarations("Top", &show_option_impl_prefix)?.len();
+        let query_xi_decl_count = parse_module_declarations("Top", &query_xi_impl_prefix)?.len();
+        let mapux_rev_decl_count = parse_module_declarations("Top", &mapux_rev_impl_prefix)?.len();
+        let mapx4_decl_count = parse_module_declarations("Top", &mapx4_impl_prefix)?.len();
+        let mapux2_decl_count = parse_module_declarations("Top", &mapux2_impl_prefix)?.len();
+        let mapx2_decl_count = parse_module_declarations("Top", &mapx2_impl_prefix)?.len();
+        let mapx3_decl_count = parse_module_declarations("Top", &mapx3_impl_prefix)?.len();
+
+        let checkpoints = vec![
+            ur::elaborated::elaborate::StructurePrefixCheckpoint {
+                declaration_count: show_option_decl_count,
+                ascribed_signature: None,
+            },
+            ur::elaborated::elaborate::StructurePrefixCheckpoint {
+                declaration_count: show_option_decl_count,
+                ascribed_signature: Some(parse_signature_source("Top", &show_option_sig_prefix)?),
+            },
+            ur::elaborated::elaborate::StructurePrefixCheckpoint {
+                declaration_count: query_xi_decl_count,
+                ascribed_signature: Some(parse_signature_source("Top", &query_xi_sig_prefix)?),
+            },
+            ur::elaborated::elaborate::StructurePrefixCheckpoint {
+                declaration_count: mapux_rev_decl_count,
+                ascribed_signature: Some(parse_signature_source("Top", &mapux_rev_sig_prefix)?),
+            },
+            ur::elaborated::elaborate::StructurePrefixCheckpoint {
+                declaration_count: mapx4_decl_count,
+                ascribed_signature: Some(parse_signature_source("Top", &mapx4_sig_prefix)?),
+            },
+            ur::elaborated::elaborate::StructurePrefixCheckpoint {
+                declaration_count: mapux2_decl_count,
+                ascribed_signature: Some(parse_signature_source("Top", &mapux2_sig_prefix)?),
+            },
+            ur::elaborated::elaborate::StructurePrefixCheckpoint {
+                declaration_count: mapx2_decl_count,
+                ascribed_signature: Some(parse_signature_source("Top", &mapx2_sig_prefix)?),
+            },
+            ur::elaborated::elaborate::StructurePrefixCheckpoint {
+                declaration_count: mapx3_decl_count,
+                ascribed_signature: Some(parse_signature_source("Top", &mapx3_sig_prefix)?),
+            },
+            ur::elaborated::elaborate::StructurePrefixCheckpoint {
+                declaration_count: full_top_decls.len(),
+                ascribed_signature: Some(parse_signature_source("Top", &top_sources.signature)?),
+            },
+        ];
+        let mut results =
+            ur::elaborated::elaborate::elab_structure_prefix_checkpoints_from_boot_snapshot(
+                boot_snapshot,
+                &full_top_decls,
+                &checkpoints,
+            )
+            .into_iter();
+
+        let top_prefix_show_option = match results.next() {
+            Some(result) => result,
+            None => {
+                return Err(
+                    "missing cached top prefix result for show_option elaboration".to_string(),
+                );
+            }
+        };
+        let top_named_prefix_show_option_signature_pair = match results.next() {
+            Some(result) => result,
+            None => {
+                return Err(
+                    "missing cached top prefix result for show_option signature elaboration"
+                        .to_string(),
+                );
+            }
+        };
+        let top_named_prefix_query_xi_signature_pair = match results.next() {
+            Some(result) => result,
+            None => {
+                return Err(
+                    "missing cached top prefix result for query_xi signature elaboration"
+                        .to_string(),
+                );
+            }
+        };
+        let top_named_prefix_mapux_rev_signature_pair = match results.next() {
+            Some(result) => result,
+            None => {
+                return Err(
+                    "missing cached top prefix result for mapux_rev signature elaboration"
+                        .to_string(),
+                );
+            }
+        };
+        let top_named_prefix_mapx4_signature_pair = match results.next() {
+            Some(result) => result,
+            None => {
+                return Err(
+                    "missing cached top prefix result for mapx4 signature elaboration".to_string(),
+                );
+            }
+        };
+        let top_named_prefix_mapux2_signature_pair = match results.next() {
+            Some(result) => result,
+            None => {
+                return Err(
+                    "missing cached top prefix result for mapux2 signature elaboration".to_string(),
+                );
+            }
+        };
+        let top_named_prefix_mapx2_signature_pair = match results.next() {
+            Some(result) => result,
+            None => {
+                return Err(
+                    "missing cached top prefix result for mapx2 signature elaboration".to_string(),
+                );
+            }
+        };
+        let top_named_prefix_mapx3_signature_pair = match results.next() {
+            Some(result) => result,
+            None => {
+                return Err(
+                    "missing cached top prefix result for mapx3 signature elaboration".to_string(),
+                );
+            }
+        };
+        let top_named_full_module_pair = match results.next() {
+            Some(result) => result,
+            None => {
+                return Err(
+                    "missing cached top prefix result for full module signature elaboration"
+                        .to_string(),
+                );
+            }
+        };
+
+        Ok(Some(CachedTopPrefixResults {
+            top_prefix_show_option,
+            top_named_prefix_show_option_signature_pair,
+            top_named_prefix_query_xi_signature_pair,
+            top_named_prefix_mapux_rev_signature_pair,
+            top_named_prefix_mapx4_signature_pair,
+            top_named_prefix_mapux2_signature_pair,
+            top_named_prefix_mapx2_signature_pair,
+            top_named_prefix_mapx3_signature_pair,
+            top_named_full_module_pair,
+        }))
+    }) {
+        Ok(Some(cached_results)) => Ok(Some(cached_results)),
+        Ok(None) => Ok(None),
+        Err(error) => Err(error.clone()),
+    }
+}
+
+fn cached_top_prefix_results_for_test() -> anyhow::Result<Option<&'static CachedTopPrefixResults>> {
+    match get_cached_top_prefix_results() {
+        Ok(results) => Ok(results),
+        Err(error) => Err(anyhow!("cache top prefix results: {error}")),
+    }
+}
+
+fn ensure_cached_top_prefix_result(
+    result: &Result<(), String>,
+    context: &str,
+) -> anyhow::Result<()> {
+    match result {
+        Ok(()) => Ok(()),
+        Err(error) => Err(anyhow!("{context}: {error}")),
+    }
+}
+
+fn try_elaborate_project_on_thread(
+    modules: &[(String, String, Option<String>)],
+    urp_lines: &[String],
+) -> Result<(), String> {
+    let mut modules_by_name: HashMap<&str, (&str, Option<&str>)> = HashMap::new();
+    for (module_name, implementation_source, signature_source) in modules {
+        let replaced = modules_by_name.insert(
+            module_name.as_str(),
+            (implementation_source.as_str(), signature_source.as_deref()),
+        );
+        if replaced.is_some() {
+            return Err(format!(
+                "duplicate in-memory project module `{module_name}`"
+            ));
+        }
+    }
+
+    let ordered_module_names: Vec<&str> = if urp_lines.is_empty() {
+        modules
+            .iter()
+            .map(|(module_name, _, _)| module_name.as_str())
+            .collect()
+    } else {
+        urp_lines.iter().map(String::as_str).collect()
+    };
+
+    let mut file = Vec::with_capacity(ordered_module_names.len() * 2);
+    for module_name in ordered_module_names {
+        let (implementation_source, signature_source) = match modules_by_name.get(module_name) {
+            Some(module_sources) => *module_sources,
+            None => {
+                return Err(format!(
+                    "in-memory project order references unknown module `{module_name}`"
+                ));
+            }
+        };
+        file.push(build_in_memory_module_decl(
+            module_name,
+            implementation_source,
+            signature_source,
+        )?);
+        file.push(build_module_export_decl(module_name));
+    }
+
+    elaborate_user_file_on_cached_boot_snapshot(file)
+}
+
+fn try_elaborate_single_module(ur_src: &str) -> anyhow::Result<()> {
+    let source_text = ur_src.to_string();
+    match run_with_elaboration_stack(move || try_elaborate_single_module_on_thread(&source_text))
+        .flatten()
+    {
+        Ok(()) => Ok(()),
+        Err(error) => Err(anyhow!("{error}")),
+    }
 }
 
 /// Elaborate one synthetic module/signature pair in a temp dir.
@@ -122,7 +534,7 @@ fn try_elaborate_named_module(module_name: &str, ur_src: &str) -> Result<(), Str
 /// # Errors
 ///
 /// I/O, parse, boot settings, `parse_sources`, elaboration, or reported hard errors as `String`.
-fn try_elaborate_module_pair(ur_src: &str, urs_src: &str) -> Result<(), String> {
+fn try_elaborate_module_pair(ur_src: &str, urs_src: &str) -> anyhow::Result<()> {
     try_elaborate_named_module_pair("CoreMod", ur_src, urs_src)
 }
 
@@ -135,11 +547,11 @@ fn try_elaborate_named_module_pair(
     module_name: &str,
     ur_src: &str,
     urs_src: &str,
-) -> Result<(), String> {
+) -> anyhow::Result<()> {
     let module_name_owned = module_name.to_string();
     let implementation_text = ur_src.to_string();
     let signature_text = urs_src.to_string();
-    run_with_elaboration_stack(move || {
+    match run_with_elaboration_stack(move || {
         try_elaborate_named_module_pair_on_thread(
             &module_name_owned,
             &implementation_text,
@@ -147,6 +559,10 @@ fn try_elaborate_named_module_pair(
         )
     })
     .flatten()
+    {
+        Ok(()) => Ok(()),
+        Err(error) => Err(anyhow!("{error}")),
+    }
 }
 
 /// Elaborate a synthetic multi-module project in a temp dir.
@@ -155,7 +571,7 @@ fn try_elaborate_named_module_pair(
 fn try_elaborate_project(
     modules: &[(&str, &str, Option<&str>)],
     urp_lines: &[&str],
-) -> Result<(), String> {
+) -> anyhow::Result<()> {
     let owned_modules: Vec<(String, String, Option<String>)> = modules
         .iter()
         .map(|(module_name, implementation_source, signature_source)| {
@@ -170,77 +586,195 @@ fn try_elaborate_project(
         .iter()
         .map(|line| (*line).to_string())
         .collect::<Vec<_>>();
-    run_with_elaboration_stack(move || {
-        let dir = tempdir().map_err(|tempfile_error| tempfile_error.to_string())?; // Isolated temp dir per test invocation.
-        let project_root = dir.path(); // Short-lived alias for the temp directory path.
-        let urp_text = owned_urp.join("\n") + "\n"; // Reconstruct project descriptor text from lines.
-        fs::write(project_root.join("app.urp"), urp_text)
-            .map_err(|io_error| io_error.to_string())?; // Write project descriptor.
-        for (module_name, implementation_source, signature_source) in &owned_modules {
-            fs::write(
-                project_root.join(format!("{module_name}.ur")),
-                implementation_source,
-            )
-            .map_err(|io_error| io_error.to_string())?; // Write each module's implementation.
-            match signature_source {
-                Some(signature_text) => fs::write(
-                    project_root.join(format!("{module_name}.urs")),
-                    signature_text,
-                )
-                .map_err(|io_error| io_error.to_string())?, // Write optional module signature.
-                None => {} // No signature file for this module.
-            }
-        }
-        let urp = project_root.join("app.urp"); // Path to the project descriptor parsed next.
-        let mut job = compiler::parse_urp(&urp).map_err(|parse_error| parse_error.to_string())?; // Parse project descriptor into a Job.
-        let mut settings = Settings::new(); // Default settings; boot_linking toggled below.
-        settings.boot_linking = true; // Enable Basis linking so the standard library is available.
-        let boot_root = corpus_workspace_root()
-            .ok_or_else(|| "corpus boot root not found (lib/ur/basis.urs missing)".to_string())?; // Use the once-computed workspace root; fail fast when Basis is absent.
-        compiler::apply_boot_settings_with_explicit_root(&mut job, &mut settings, boot_root)?; // Apply boot paths without env-var mutation — safe for concurrent tests.
-        let mut errors = ErrorReporter::new_silent(); // Silent reporter: errors are returned as Err strings.
-        let Some(file) = compiler::parse_sources(&job, &settings, &mut errors) else {
-            return Err(format!("parse_sources: {errors:?}")); // Source parsing failed; surface diagnostics.
-        };
-        let Some(_elab) = compiler::elaborate(file, &settings, &mut errors) else {
-            return Err(format!("elaborate returned None: {errors:?}")); // Elaboration produced no output; surface diagnostics.
-        };
-        if errors.has_hard_errors() {
-            return Err(format!("elaborate errors: {errors:?}")); // Elaboration completed but emitted hard errors.
-        }
-        Ok(())
+    match run_with_elaboration_stack(move || {
+        try_elaborate_project_on_thread(&owned_modules, &owned_urp)
     })
     .flatten()
+    {
+        Ok(()) => Ok(()),
+        Err(error) => Err(anyhow!("{error}")),
+    }
 }
 
 /// Elaborate one synthetic anonymous module using cached Basis sources (larger stack supplied by caller).
 ///
-/// Uses [`get_cached_basis_sources`] to avoid re-parsing Basis/Top from disk, and
-/// [`compiler::elaborate_module_on_cached_boot`] to build the combined source file in memory.
-/// No temp directory, disk I/O, or global lock is used.
+/// Uses the cached boot elaboration snapshot so user modules only pay for their own declarations,
+/// not a fresh `Basis` / `Top` elaboration on every invocation.
 ///
 /// # Errors
 ///
 /// Missing Basis, parse failure, elaboration failure, or reported hard errors as `String`.
 fn try_elaborate_single_module_on_thread(ur_src: &str) -> Result<(), String> {
-    let cached_boot = get_cached_basis_sources()
+    let boot_snapshot = get_cached_boot_elaboration_snapshot()
         .ok_or_else(|| "corpus boot root not found (lib/ur/basis.urs missing)".to_string())?; // Fail fast when Basis is absent.
-    let settings = Settings::new(); // Default settings; Basis is already in cached_boot, boot_linking not needed.
+    let settings = Settings::new();
     let mut errors = ErrorReporter::new_silent(); // Silent reporter: errors are returned as Err strings.
-    compiler::elaborate_module_on_cached_boot(
-        cached_boot, // Pre-parsed Basis+Top — no re-parsing or disk I/O.
-        "CoreMod",   // Synthetic module name for anonymous single-module tests.
-        ur_src,      // Implementation source text.
-        None,        // No explicit signature; elaborator infers the interface.
+    compiler::elaborate_module_on_cached_boot_snapshot(
+        boot_snapshot, // Pre-elaborated Basis+Top — no repeated boot elaboration.
+        "CoreMod",
+        ur_src,
+        None,
         &settings,
         &mut errors,
     )
 }
 
+fn try_parse_single_module(ur_src: &str) -> Result<SourceFile, String> {
+    let mut errors = ErrorReporter::new_silent();
+    match ur::parse::parse_ur(
+        "CoreMod.ur",
+        ur_src,
+        &mut errors,
+        ur::db::ProjectDb::default(),
+    ) {
+        Some(file) => {
+            if errors.has_hard_errors() {
+                Err(format!("parse errors: {errors:?}"))
+            } else {
+                Ok(file)
+            }
+        }
+        None => Err(format!("parse_ur failed: {errors:?}")),
+    }
+}
+
+fn collect_sql_field_refs_in_expression(
+    expression: &ur::source::LocExp,
+    refs: &mut Vec<(String, String)>,
+) {
+    use ur::source::{Con, Exp};
+
+    if let Exp::CApp(function_with_table, field_name) = &expression.node {
+        if let Exp::CApp(function_expression, table_name) = &function_with_table.node {
+            if let Exp::Var(module_path, function_name, _) = &function_expression.node {
+                if module_path.len() == 1
+                    && module_path[0] == "Basis"
+                    && function_name == "sql_field"
+                {
+                    if let (Con::Name(table_name), Con::Name(field_name)) =
+                        (&table_name.node, &field_name.node)
+                    {
+                        refs.push((table_name.clone(), field_name.clone()));
+                    }
+                }
+            }
+        }
+    }
+
+    match &expression.node {
+        Exp::Annot(inner, _)
+        | Exp::CApp(inner, _)
+        | Exp::DisjointApp(inner)
+        | Exp::Field(inner, _)
+        | Exp::Cut(inner, _)
+        | Exp::CutMulti(inner, _) => collect_sql_field_refs_in_expression(inner, refs),
+        Exp::App(function_expression, argument_expression)
+        | Exp::Concat(function_expression, argument_expression)
+        | Exp::Infix(_, function_expression, argument_expression) => {
+            collect_sql_field_refs_in_expression(function_expression, refs);
+            collect_sql_field_refs_in_expression(argument_expression, refs);
+        }
+        Exp::Abs(_, _, body)
+        | Exp::CAbs(_, _, _, body)
+        | Exp::Disjoint(_, _, body)
+        | Exp::KAbs(_, body) => collect_sql_field_refs_in_expression(body, refs),
+        Exp::Record(fields, _) => {
+            for (_, field_expression) in fields {
+                collect_sql_field_refs_in_expression(field_expression, refs);
+            }
+        }
+        Exp::Case(scrutinee, branches) => {
+            collect_sql_field_refs_in_expression(scrutinee, refs);
+            for (_, branch_expression) in branches {
+                collect_sql_field_refs_in_expression(branch_expression, refs);
+            }
+        }
+        Exp::Let(declarations, body) => {
+            for declaration in declarations {
+                match &declaration.node {
+                    ur::source::EDecl::Val(_, bound_expression) => {
+                        collect_sql_field_refs_in_expression(bound_expression, refs)
+                    }
+                    ur::source::EDecl::ValRec(bindings) => {
+                        for (_, _, bound_expression) in bindings {
+                            collect_sql_field_refs_in_expression(bound_expression, refs);
+                        }
+                    }
+                }
+            }
+            collect_sql_field_refs_in_expression(body, refs);
+        }
+        Exp::Prim(_) | Exp::Var(_, _, _) | Exp::Wild | Exp::Hole => {}
+    }
+}
+
+fn collect_sql_field_refs_in_declaration(
+    declaration: &ur::source::LocDecl,
+    refs: &mut Vec<(String, String)>,
+) {
+    match &declaration.node {
+        ur::source::Decl::Val(_, expression)
+        | ur::source::Decl::View(_, expression)
+        | ur::source::Decl::Policy(expression) => {
+            collect_sql_field_refs_in_expression(expression, refs)
+        }
+        ur::source::Decl::ValRec(bindings) => {
+            for (_, _, expression) in bindings {
+                collect_sql_field_refs_in_expression(expression, refs);
+            }
+        }
+        ur::source::Decl::Table(_, _, primary_key_expression, secondary_expression)
+        | ur::source::Decl::Index(primary_key_expression, secondary_expression, _)
+        | ur::source::Decl::Task(primary_key_expression, secondary_expression) => {
+            collect_sql_field_refs_in_expression(primary_key_expression, refs);
+            collect_sql_field_refs_in_expression(secondary_expression, refs);
+        }
+        ur::source::Decl::Str(_, _, _, structure_expression, _)
+        | ur::source::Decl::OpenStr(structure_expression)
+        | ur::source::Decl::Export(structure_expression) => {
+            collect_sql_field_refs_in_structure(structure_expression, refs);
+        }
+        ur::source::Decl::Con(_, _, _)
+        | ur::source::Decl::Datatype(_)
+        | ur::source::Decl::DatatypeImp(_, _, _)
+        | ur::source::Decl::Sgn(_, _)
+        | ur::source::Decl::FfiStr(_, _, _)
+        | ur::source::Decl::Open(_, _)
+        | ur::source::Decl::Constraint(_, _)
+        | ur::source::Decl::OpenConstraints(_, _)
+        | ur::source::Decl::Sequence(_)
+        | ur::source::Decl::Database(_)
+        | ur::source::Decl::Cookie(_, _)
+        | ur::source::Decl::Style(_)
+        | ur::source::Decl::OnError(_, _, _)
+        | ur::source::Decl::Ffi(_, _, _) => {}
+    }
+}
+
+fn collect_sql_field_refs_in_structure(
+    structure_expression: &ur::source::LocStr,
+    refs: &mut Vec<(String, String)>,
+) {
+    match &structure_expression.node {
+        ur::source::Str::Const(declarations) => {
+            for declaration in declarations {
+                collect_sql_field_refs_in_declaration(declaration, refs);
+            }
+        }
+        ur::source::Str::Proj(inner, _) => collect_sql_field_refs_in_structure(inner, refs),
+        ur::source::Str::Fun(_, _, _, body) => collect_sql_field_refs_in_structure(body, refs),
+        ur::source::Str::App(left, right) => {
+            collect_sql_field_refs_in_structure(left, refs);
+            collect_sql_field_refs_in_structure(right, refs);
+        }
+        ur::source::Str::Var(_) => {}
+    }
+}
+
 /// Elaborate one synthetic named module/signature pair using cached Basis sources (larger stack supplied by caller).
 ///
-/// Uses [`get_cached_basis_sources`] and [`compiler::elaborate_module_on_cached_boot`] to avoid
-/// re-parsing Basis/Top on every invocation. No temp directory, disk I/O, or global lock is used.
+/// Uses the cached boot elaboration snapshot so impl/signature pairs only elaborate their own
+/// module contents.
 ///
 /// # Errors
 ///
@@ -250,15 +784,15 @@ fn try_elaborate_named_module_pair_on_thread(
     ur_src: &str,
     urs_src: &str,
 ) -> Result<(), String> {
-    let cached_boot = get_cached_basis_sources()
+    let boot_snapshot = get_cached_boot_elaboration_snapshot()
         .ok_or_else(|| "corpus boot root not found (lib/ur/basis.urs missing)".to_string())?; // Fail fast when Basis is absent.
-    let settings = Settings::new(); // Default settings; Basis is already in cached_boot.
+    let settings = Settings::new();
     let mut errors = ErrorReporter::new_silent(); // Silent reporter: errors are returned as Err strings.
-    compiler::elaborate_module_on_cached_boot(
-        cached_boot,   // Pre-parsed Basis+Top — no re-parsing or disk I/O.
-        module_name,   // Caller-supplied module name.
-        ur_src,        // Implementation source text.
-        Some(urs_src), // Signature source text — present for impl/sig pair tests.
+    compiler::elaborate_module_on_cached_boot_snapshot(
+        boot_snapshot,
+        module_name,
+        ur_src,
+        Some(urs_src),
         &settings,
         &mut errors,
     )
@@ -339,74 +873,90 @@ fn boot_only_elaboration_disjointness_and_type_error_counts_on_thread(
 }
 
 #[test]
-fn corpus_core_val_literal_elaborates() {
+fn corpus_core_val_literal_elaborates() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     if !corpus_enabled() {
-        return;
+        return Ok(()); // return early with success
     }
-    try_elaborate_single_module("val x = 42\n").expect("literal val");
+    try_elaborate_single_module("val x = 42\n").with_context(|| "literal val")?;
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn corpus_core_fun_elaborates() {
+fn corpus_core_fun_elaborates() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     if !corpus_enabled() {
-        return;
+        return Ok(()); // return early with success
     }
     // `int` is not an unqualified top-level type in user modules (Basis FFI); keep inference-only.
-    try_elaborate_single_module("fun f x = x\n").expect("fun");
+    try_elaborate_single_module("fun f x = x\n").with_context(|| "fun")?;
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn corpus_core_polymorphic_id_elaborates() {
+fn corpus_core_polymorphic_id_elaborates() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     if !corpus_enabled() {
-        return;
+        return Ok(()); // return early with success
     }
-    try_elaborate_single_module("val id = fn x => x\n").expect("poly id");
+    try_elaborate_single_module("val id = fn x => x\n").with_context(|| "poly id")?;
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn corpus_core_structure_projection_elaborates() {
+fn corpus_core_structure_projection_elaborates() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     if !corpus_enabled() {
-        return;
+        return Ok(()); // return early with success
     }
     try_elaborate_single_module("structure M = struct\n    val k = 3\nend\n\nval z = M.k\n")
-        .expect("structure projection");
+        .with_context(|| "structure projection")?;
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn corpus_core_datatype_elaborates() {
+fn corpus_core_datatype_elaborates() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     if !corpus_enabled() {
-        return;
+        return Ok(()); // return early with success
     }
     match try_elaborate_single_module("datatype t = Leaf | Node of t * t\nval a = Leaf\n") {
         Ok(()) => {}
         Err(error) => panic!("datatype: {error}"),
     }
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn corpus_core_type_mismatch_rejected() {
+fn corpus_core_type_mismatch_rejected() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     if !corpus_enabled() {
-        return;
+        return Ok(()); // return early with success
     }
     let r = try_elaborate_single_module("val x : {} = 1\n");
     assert!(
         r.is_err(),
         "unit annotation vs int literal must not elaborate, got Ok"
     );
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn corpus_core_row_concat_disjoint_elaborates() {
+fn corpus_core_row_concat_disjoint_elaborates() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     if !corpus_enabled() {
-        return;
+        return Ok(()); // return early with success
     }
-    try_elaborate_single_module("type ok = {A : {}} ++ {B : {}}\n").expect("disjoint row concat");
+    try_elaborate_single_module("type ok = {A : {}} ++ {B : {}}\n")
+        .with_context(|| "disjoint row concat")?;
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn corpus_core_folder_map0_elaborates() {
+fn corpus_core_folder_map0_elaborates() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     if !corpus_enabled() {
-        return;
+        return Ok(()); // return early with success
     }
     match try_elaborate_single_module(
         "fun useMap0 [r ::: {Type}] (fl : folder r) : $(map option r) =\n    @map0 [option] (fn [t ::_] => None) fl\n",
@@ -414,12 +964,14 @@ fn corpus_core_folder_map0_elaborates() {
         Ok(()) => {}
         Err(error) => panic!("folder map0-style elaboration: {error}"),
     }
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn corpus_core_show_option_elaborates() {
+fn corpus_core_show_option_elaborates() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     if !corpus_enabled() {
-        return;
+        return Ok(()); // return early with success
     }
     try_elaborate_single_module(concat!(
         "fun localShowOption [t ::: Type] (_ : show t) =\n",
@@ -428,13 +980,15 @@ fn corpus_core_show_option_elaborates() {
         "                   None => \"\"\n",
         "                 | Some x => show x)\n",
     ))
-    .expect("show_option-style elaboration");
+    .with_context(|| "show_option-style elaboration")?;
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn corpus_core_show_option_signature_pair_elaborates() {
+fn corpus_core_show_option_signature_pair_elaborates() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     if !corpus_enabled() {
-        return;
+        return Ok(()); // return early with success
     }
     try_elaborate_module_pair(
         concat!(
@@ -446,262 +1000,191 @@ fn corpus_core_show_option_signature_pair_elaborates() {
         ),
         "val show_option : t ::: Type -> show t -> show (option t)\n",
     )
-    .expect("show_option signature-pair elaboration");
+    .with_context(|| "show_option signature-pair elaboration")?;
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn corpus_core_top_prefix_through_show_option_elaborates() {
+fn corpus_core_top_prefix_through_show_option_elaborates() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     if !corpus_enabled() {
-        return;
+        return Ok(()); // return early with success
     }
-    let top_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("lib/ur/top.ur");
-    let Ok(top_source) = fs::read_to_string(top_path) else {
-        return;
+    let top_results = match cached_top_prefix_results_for_test()? {
+        Some(top_results) => top_results,
+        None => return Ok(()),
     };
-    let prefix: String = top_source
-        .lines()
-        .take_while(|line| !line.starts_with("fun read_option "))
-        .map(|line| format!("{line}\n"))
-        .collect();
-    try_elaborate_single_module(&prefix).expect("Top prefix through show_option elaboration");
+    ensure_cached_top_prefix_result(
+        &top_results.top_prefix_show_option,
+        "Top prefix through show_option elaboration",
+    )?;
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn corpus_core_top_named_prefix_through_show_option_elaborates() {
+fn corpus_core_top_named_prefix_through_show_option_elaborates() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     if !corpus_enabled() {
-        return;
+        return Ok(()); // return early with success
     }
-    let top_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("lib/ur/top.ur");
-    let Ok(top_source) = fs::read_to_string(top_path) else {
-        return;
+    let top_results = match cached_top_prefix_results_for_test()? {
+        Some(top_results) => top_results,
+        None => return Ok(()),
     };
-    let prefix: String = top_source
-        .lines()
-        .take_while(|line| !line.starts_with("fun read_option "))
-        .map(|line| format!("{line}\n"))
-        .collect();
-    try_elaborate_named_module("Top", &prefix)
-        .expect("Top-named prefix through show_option elaboration");
+    ensure_cached_top_prefix_result(
+        &top_results.top_prefix_show_option,
+        "Top-named prefix through show_option elaboration",
+    )?;
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn corpus_core_top_named_prefix_through_show_option_signature_pair_elaborates() {
+fn corpus_core_top_named_prefix_through_show_option_signature_pair_elaborates() -> anyhow::Result<()>
+{
+    // test returns Result to allow ? propagation
     if !corpus_enabled() {
-        return;
+        return Ok(()); // return early with success
     }
-    let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let top_impl_path = manifest_dir.join("lib/ur/top.ur");
-    let top_sig_path = manifest_dir.join("lib/ur/top.urs");
-    let (Ok(top_impl_source), Ok(top_sig_source)) = (
-        fs::read_to_string(top_impl_path),
-        fs::read_to_string(top_sig_path),
-    ) else {
-        return;
+    let top_results = match cached_top_prefix_results_for_test()? {
+        Some(top_results) => top_results,
+        None => return Ok(()),
     };
-    let implementation_prefix: String = top_impl_source
-        .lines()
-        .take_while(|line| !line.starts_with("fun read_option "))
-        .map(|line| format!("{line}\n"))
-        .collect();
-    let signature_prefix: String = top_sig_source
-        .lines()
-        .take_while(|line| !line.starts_with("val read_option "))
-        .map(|line| format!("{line}\n"))
-        .collect();
-    try_elaborate_named_module_pair("Top", &implementation_prefix, &signature_prefix)
-        .expect("Top-named prefix through show_option signature elaboration");
+    ensure_cached_top_prefix_result(
+        &top_results.top_named_prefix_show_option_signature_pair,
+        "Top-named prefix through show_option signature elaboration",
+    )?;
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn corpus_core_top_named_prefix_through_query_xi_signature_pair_elaborates() {
+fn corpus_core_top_named_prefix_through_query_xi_signature_pair_elaborates() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     if !corpus_enabled() {
-        return;
+        return Ok(()); // return early with success
     }
-    let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let top_impl_path = manifest_dir.join("lib/ur/top.ur");
-    let top_sig_path = manifest_dir.join("lib/ur/top.urs");
-    let (Ok(top_impl_source), Ok(top_sig_source)) = (
-        fs::read_to_string(top_impl_path),
-        fs::read_to_string(top_sig_path),
-    ) else {
-        return;
+    let top_results = match cached_top_prefix_results_for_test()? {
+        Some(top_results) => top_results,
+        None => return Ok(()),
     };
-    let implementation_prefix: String = top_impl_source
-        .lines()
-        .take_while(|line| !line.starts_with("fun hasRows "))
-        .map(|line| format!("{line}\n"))
-        .collect();
-    let signature_prefix: String = top_sig_source
-        .lines()
-        .take_while(|line| !line.starts_with("val hasRows "))
-        .map(|line| format!("{line}\n"))
-        .collect();
-    try_elaborate_named_module_pair("Top", &implementation_prefix, &signature_prefix)
-        .expect("Top-named prefix through queryXI signature elaboration");
+    ensure_cached_top_prefix_result(
+        &top_results.top_named_prefix_query_xi_signature_pair,
+        "Top-named prefix through queryXI signature elaboration",
+    )?;
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn corpus_core_top_named_exact_prefix_through_mapux_rev_signature_pair_elaborates() {
+fn corpus_core_top_named_exact_prefix_through_mapux_rev_signature_pair_elaborates(
+) -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     if !corpus_enabled() {
-        return;
+        return Ok(()); // return early with success
     }
-    let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let top_impl_path = manifest_dir.join("lib/ur/top.ur");
-    let top_sig_path = manifest_dir.join("lib/ur/top.urs");
-    let (Ok(top_impl_source), Ok(top_sig_source)) = (
-        fs::read_to_string(top_impl_path),
-        fs::read_to_string(top_sig_path),
-    ) else {
-        return;
+    let top_results = match cached_top_prefix_results_for_test()? {
+        Some(top_results) => top_results,
+        None => return Ok(()),
     };
-    let implementation_prefix: String = top_impl_source
-        .lines()
-        .take_while(|line| !line.starts_with("fun mapUX2 "))
-        .map(|line| format!("{line}\n"))
-        .collect();
-    let signature_prefix: String = top_sig_source
-        .lines()
-        .take_while(|line| !line.starts_with("val mapUX2 "))
-        .map(|line| format!("{line}\n"))
-        .collect();
-    try_elaborate_named_module_pair("Top", &implementation_prefix, &signature_prefix)
-        .expect("Top exact prefix through mapUX_rev signature elaboration");
+    ensure_cached_top_prefix_result(
+        &top_results.top_named_prefix_mapux_rev_signature_pair,
+        "Top exact prefix through mapUX_rev signature elaboration",
+    )?;
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn corpus_core_top_named_exact_prefix_through_mapx4_signature_pair_elaborates() {
+fn corpus_core_top_named_exact_prefix_through_mapx4_signature_pair_elaborates() -> anyhow::Result<()>
+{
+    // test returns Result to allow ? propagation
     if !corpus_enabled() {
-        return;
+        return Ok(()); // return early with success
     }
-    let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let top_impl_path = manifest_dir.join("lib/ur/top.ur");
-    let top_sig_path = manifest_dir.join("lib/ur/top.urs");
-    let (Ok(top_impl_source), Ok(top_sig_source)) = (
-        fs::read_to_string(top_impl_path),
-        fs::read_to_string(top_sig_path),
-    ) else {
-        return;
+    let top_results = match cached_top_prefix_results_for_test()? {
+        Some(top_results) => top_results,
+        None => return Ok(()),
     };
-    let implementation_prefix: String = top_impl_source
-        .lines()
-        .take_while(|line| !line.starts_with("val queryL "))
-        .map(|line| format!("{line}\n"))
-        .collect();
-    let signature_prefix: String = top_sig_source
-        .lines()
-        .take_while(|line| !line.starts_with("val queryL "))
-        .map(|line| format!("{line}\n"))
-        .collect();
-    try_elaborate_named_module_pair("Top", &implementation_prefix, &signature_prefix)
-        .expect("Top exact prefix through mapX4 signature elaboration");
+    ensure_cached_top_prefix_result(
+        &top_results.top_named_prefix_mapx4_signature_pair,
+        "Top exact prefix through mapX4 signature elaboration",
+    )?;
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn corpus_core_top_named_exact_prefix_through_mapux2_signature_pair_elaborates() {
+fn corpus_core_top_named_exact_prefix_through_mapux2_signature_pair_elaborates(
+) -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     if !corpus_enabled() {
-        return;
+        return Ok(()); // return early with success
     }
-    let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let top_impl_path = manifest_dir.join("lib/ur/top.ur");
-    let top_sig_path = manifest_dir.join("lib/ur/top.urs");
-    let (Ok(top_impl_source), Ok(top_sig_source)) = (
-        fs::read_to_string(top_impl_path),
-        fs::read_to_string(top_sig_path),
-    ) else {
-        return;
+    let top_results = match cached_top_prefix_results_for_test()? {
+        Some(top_results) => top_results,
+        None => return Ok(()),
     };
-    let implementation_prefix: String = top_impl_source
-        .lines()
-        .take_while(|line| !line.starts_with("fun mapX2 "))
-        .map(|line| format!("{line}\n"))
-        .collect();
-    let signature_prefix: String = top_sig_source
-        .lines()
-        .take_while(|line| !line.starts_with("val mapX2 "))
-        .map(|line| format!("{line}\n"))
-        .collect();
-    try_elaborate_named_module_pair("Top", &implementation_prefix, &signature_prefix)
-        .expect("Top exact prefix through mapUX2 signature elaboration");
+    ensure_cached_top_prefix_result(
+        &top_results.top_named_prefix_mapux2_signature_pair,
+        "Top exact prefix through mapUX2 signature elaboration",
+    )?;
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn corpus_core_top_named_exact_prefix_through_mapx2_signature_pair_elaborates() {
+fn corpus_core_top_named_exact_prefix_through_mapx2_signature_pair_elaborates() -> anyhow::Result<()>
+{
+    // test returns Result to allow ? propagation
     if !corpus_enabled() {
-        return;
+        return Ok(()); // return early with success
     }
-    let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let top_impl_path = manifest_dir.join("lib/ur/top.ur");
-    let top_sig_path = manifest_dir.join("lib/ur/top.urs");
-    let (Ok(top_impl_source), Ok(top_sig_source)) = (
-        fs::read_to_string(top_impl_path),
-        fs::read_to_string(top_sig_path),
-    ) else {
-        return;
+    let top_results = match cached_top_prefix_results_for_test()? {
+        Some(top_results) => top_results,
+        None => return Ok(()),
     };
-    let implementation_prefix: String = top_impl_source
-        .lines()
-        .take_while(|line| !line.starts_with("fun mapX3 "))
-        .map(|line| format!("{line}\n"))
-        .collect();
-    let signature_prefix: String = top_sig_source
-        .lines()
-        .take_while(|line| !line.starts_with("val mapX3 "))
-        .map(|line| format!("{line}\n"))
-        .collect();
-    try_elaborate_named_module_pair("Top", &implementation_prefix, &signature_prefix)
-        .expect("Top exact prefix through mapX2 signature elaboration");
+    ensure_cached_top_prefix_result(
+        &top_results.top_named_prefix_mapx2_signature_pair,
+        "Top exact prefix through mapX2 signature elaboration",
+    )?;
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn corpus_core_top_named_exact_prefix_through_mapx3_signature_pair_elaborates() {
+fn corpus_core_top_named_exact_prefix_through_mapx3_signature_pair_elaborates() -> anyhow::Result<()>
+{
+    // test returns Result to allow ? propagation
     if !corpus_enabled() {
-        return;
+        return Ok(()); // return early with success
     }
-    let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let top_impl_path = manifest_dir.join("lib/ur/top.ur");
-    let top_sig_path = manifest_dir.join("lib/ur/top.urs");
-    let (Ok(top_impl_source), Ok(top_sig_source)) = (
-        fs::read_to_string(top_impl_path),
-        fs::read_to_string(top_sig_path),
-    ) else {
-        return;
+    let top_results = match cached_top_prefix_results_for_test()? {
+        Some(top_results) => top_results,
+        None => return Ok(()),
     };
-    let implementation_prefix: String = top_impl_source
-        .lines()
-        .take_while(|line| !line.starts_with("fun mapX4 "))
-        .map(|line| format!("{line}\n"))
-        .collect();
-    let signature_prefix: String = top_sig_source
-        .lines()
-        .take_while(|line| !line.starts_with("val mapX4 "))
-        .map(|line| format!("{line}\n"))
-        .collect();
-    try_elaborate_named_module_pair("Top", &implementation_prefix, &signature_prefix)
-        .expect("Top exact prefix through mapX3 signature elaboration");
+    ensure_cached_top_prefix_result(
+        &top_results.top_named_prefix_mapx3_signature_pair,
+        "Top exact prefix through mapX3 signature elaboration",
+    )?;
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn corpus_core_top_named_full_module_pair_elaborates() {
+fn corpus_core_top_named_full_module_pair_elaborates() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     if !corpus_enabled() {
-        return;
+        return Ok(()); // return early with success
     }
-    let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let top_impl_path = manifest_dir.join("lib/ur/top.ur");
-    let top_sig_path = manifest_dir.join("lib/ur/top.urs");
-    let (Ok(top_impl_source), Ok(top_sig_source)) = (
-        fs::read_to_string(top_impl_path),
-        fs::read_to_string(top_sig_path),
-    ) else {
-        return;
+    let top_results = match cached_top_prefix_results_for_test()? {
+        Some(top_results) => top_results,
+        None => return Ok(()),
     };
-    try_elaborate_named_module_pair("Top", &top_impl_source, &top_sig_source)
-        .expect("Top full module/signature elaboration");
+    ensure_cached_top_prefix_result(
+        &top_results.top_named_full_module_pair,
+        "Top full module/signature elaboration",
+    )?;
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn corpus_core_read_option_elaborates() {
+fn corpus_core_read_option_elaborates() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     if !corpus_enabled() {
-        return;
+        return Ok(()); // return early with success
     }
     try_elaborate_single_module(concat!(
         "fun localReadOption [t ::: Type] (_ : read t) =\n",
@@ -716,13 +1199,15 @@ fn corpus_core_read_option_elaborates() {
         "                            None => None\n",
         "                          | v => Some v)\n",
     ))
-    .expect("read_option-style elaboration");
+    .with_context(|| "read_option-style elaboration")?;
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn corpus_core_query1_elaborates() {
+fn corpus_core_query1_elaborates() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     if !corpus_enabled() {
-        return;
+        return Ok(()); // return early with success
     }
     try_elaborate_single_module(concat!(
         "fun localQuery1 [t ::: Name] [fs ::: {Type}] [state ::: Type]\n",
@@ -731,13 +1216,15 @@ fn corpus_core_query1_elaborates() {
         "    (i : state) =\n",
         "    query q (fn r => f r.t) i\n",
     ))
-    .expect("query1-style elaboration");
+    .with_context(|| "query1-style elaboration")?;
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn corpus_core_query1_prime_elaborates() {
+fn corpus_core_query1_prime_elaborates() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     if !corpus_enabled() {
-        return;
+        return Ok(()); // return early with success
     }
     try_elaborate_single_module(concat!(
         "fun localQuery1Prime [t ::: Name] [fs ::: {Type}] [state ::: Type]\n",
@@ -745,13 +1232,15 @@ fn corpus_core_query1_prime_elaborates() {
         "    (f : $fs -> state -> state) (i : state) =\n",
         "    query q (fn r s => return (f r.t s)) i\n",
     ))
-    .expect("query1'-style elaboration");
+    .with_context(|| "query1'-style elaboration")?;
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn corpus_core_query1_prime_followed_by_val_rev_elaborates() {
+fn corpus_core_query1_prime_followed_by_val_rev_elaborates() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     if !corpus_enabled() {
-        return;
+        return Ok(()); // return early with success
     }
     try_elaborate_single_module(concat!(
         "fun localQuery1Prime [t ::: Name] [fs ::: {Type}] [state ::: Type]\n",
@@ -769,13 +1258,15 @@ fn corpus_core_query1_prime_followed_by_val_rev_elaborates() {
         "        rev' []\n",
         "    end\n",
     ))
-    .expect("query1'-then-val-rev elaboration");
+    .with_context(|| "query1'-then-val-rev elaboration")?;
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn corpus_core_rev_with_list_cons_elaborates() {
+fn corpus_core_rev_with_list_cons_elaborates() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     if !corpus_enabled() {
-        return;
+        return Ok(()); // return early with success
     }
     try_elaborate_single_module(concat!(
         "val rev = fn [a] =>\n",
@@ -788,26 +1279,30 @@ fn corpus_core_rev_with_list_cons_elaborates() {
         "        rev' []\n",
         "    end\n",
     ))
-    .expect("rev/list-cons elaboration");
+    .with_context(|| "rev/list-cons elaboration")?;
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn corpus_core_top_level_val_binding_visible_to_later_decl() {
+fn corpus_core_top_level_val_binding_visible_to_later_decl() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     if !corpus_enabled() {
-        return;
+        return Ok(()); // return early with success
     }
     try_elaborate_single_module(concat!(
         "val id = fn [t] => fn (x : t) => x\n",
         "\n",
         "fun applyId (n : int) = id n\n",
     ))
-    .expect("top-level val binding should remain visible");
+    .with_context(|| "top-level val binding should remain visible")?;
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn corpus_core_query_i1_elaborates() {
+fn corpus_core_query_i1_elaborates() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     if !corpus_enabled() {
-        return;
+        return Ok(()); // return early with success
     }
     try_elaborate_single_module(concat!(
         "fun localQueryI1 [nm ::: Name] [fs ::: {Type}]\n",
@@ -817,13 +1312,15 @@ fn corpus_core_query_i1_elaborates() {
         "          (fn fs _ => f fs.nm)\n",
         "          ()\n",
     ))
-    .expect("queryI1-style elaboration");
+    .with_context(|| "queryI1-style elaboration")?;
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn corpus_core_query_xi_elaborates() {
+fn corpus_core_query_xi_elaborates() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     if !corpus_enabled() {
-        return;
+        return Ok(()); // return early with success
     }
     try_elaborate_single_module(concat!(
         "fun localRev [a] (ls : list a) : list a =\n",
@@ -850,13 +1347,15 @@ fn corpus_core_query_xi_elaborates() {
         "        return (qxi (localRev ls) 0)\n",
         "    end\n",
     ))
-    .expect("queryXI-style elaboration");
+    .with_context(|| "queryXI-style elaboration")?;
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn corpus_core_query_l_with_val_rev_elaborates() {
+fn corpus_core_query_l_with_val_rev_elaborates() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     if !corpus_enabled() {
-        return;
+        return Ok(()); // return early with success
     }
     try_elaborate_single_module(concat!(
         "val rev = fn [a] =>\n",
@@ -874,13 +1373,15 @@ fn corpus_core_query_l_with_val_rev_elaborates() {
         "    ls <- query q (fn r ls => return (r :: ls)) [];\n",
         "    return (rev ls)\n",
     ))
-    .expect("queryL-with-val-rev elaboration");
+    .with_context(|| "queryL-with-val-rev elaboration")?;
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn corpus_core_query_l1_with_val_rev_elaborates() {
+fn corpus_core_query_l1_with_val_rev_elaborates() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     if !corpus_enabled() {
-        return;
+        return Ok(()); // return early with success
     }
     try_elaborate_single_module(concat!(
         "val rev = fn [a] =>\n",
@@ -898,13 +1399,15 @@ fn corpus_core_query_l1_with_val_rev_elaborates() {
         "    ls <- query q (fn r ls => return (r.t :: ls)) [];\n",
         "    return (rev ls)\n",
     ))
-    .expect("queryL1-with-val-rev elaboration");
+    .with_context(|| "queryL1-with-val-rev elaboration")?;
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn corpus_core_disjoint_abstraction_infers_tdisjoint_type() {
+fn corpus_core_disjoint_abstraction_infers_tdisjoint_type() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     if !corpus_enabled() {
-        return;
+        return Ok(()); // return early with success
     }
     match try_elaborate_named_module_pair(
         "DisjointWrap",
@@ -914,12 +1417,14 @@ fn corpus_core_disjoint_abstraction_infers_tdisjoint_type() {
         Ok(()) => {}
         Err(error) => panic!("disjoint abstraction should retain its TDisjoint type: {error}"),
     }
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn corpus_core_query_i_elaborates() {
+fn corpus_core_query_i_elaborates() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     if !corpus_enabled() {
-        return;
+        return Ok(()); // return early with success
     }
     try_elaborate_single_module(concat!(
         "fun localQueryI [tables ::: {{Type}}] [exps ::: {Type}]\n",
@@ -930,13 +1435,15 @@ fn corpus_core_query_i_elaborates() {
         "          (fn fs _ => f fs)\n",
         "          ()\n",
     ))
-    .expect("queryI-style elaboration");
+    .with_context(|| "queryI-style elaboration")?;
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn corpus_core_one_or_no_rows1_elaborates() {
+fn corpus_core_one_or_no_rows1_elaborates() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     if !corpus_enabled() {
-        return;
+        return Ok(()); // return early with success
     }
     try_elaborate_single_module(concat!(
         "fun localOneOrNoRows1 [nm ::: Name] [fs ::: {Type}]\n",
@@ -945,13 +1452,15 @@ fn corpus_core_one_or_no_rows1_elaborates() {
         "          (fn rows _ => return (Some rows.nm))\n",
         "          None\n",
     ))
-    .expect("oneOrNoRows1-style elaboration");
+    .with_context(|| "oneOrNoRows1-style elaboration")?;
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn corpus_core_one_row1_elaborates() {
+fn corpus_core_one_row1_elaborates() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     if !corpus_enabled() {
-        return;
+        return Ok(()); // return early with success
     }
     try_elaborate_single_module(concat!(
         "fun localOneOrNoRows1 [nm ::: Name] [fs ::: {Type}]\n",
@@ -967,13 +1476,15 @@ fn corpus_core_one_row1_elaborates() {
         "                None => error <xml>Query returned no rows</xml>\n",
         "              | Some row => row)\n",
     ))
-    .expect("oneRow1-style elaboration");
+    .with_context(|| "oneRow1-style elaboration")?;
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn corpus_core_existential_intro_elim_elaborates() {
+fn corpus_core_existential_intro_elim_elaborates() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     if !corpus_enabled() {
-        return;
+        return Ok(()); // return early with success
     }
     match try_elaborate_single_module(concat!(
         "con ex = K ==> fn tf :: (K -> Type) =>\n",
@@ -988,12 +1499,14 @@ fn corpus_core_existential_intro_elim_elaborates() {
         Ok(()) => {}
         Err(error) => panic!("existential intro/elim elaboration: {error}"),
     }
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn corpus_core_existential_intro_elim_after_constructor_alias_elaborates() {
+fn corpus_core_existential_intro_elim_after_constructor_alias_elaborates() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     if !corpus_enabled() {
-        return;
+        return Ok(()); // return early with success
     }
     match try_elaborate_single_module(concat!(
         "con foo = fn t :: Type => t\n",
@@ -1010,12 +1523,14 @@ fn corpus_core_existential_intro_elim_after_constructor_alias_elaborates() {
         Ok(()) => {}
         Err(error) => panic!("existential intro/elim after constructor alias elaboration: {error}"),
     }
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn corpus_core_mapx_via_foldr_elaborates() {
+fn corpus_core_mapx_via_foldr_elaborates() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     if !corpus_enabled() {
-        return;
+        return Ok(()); // return early with success
     }
     try_elaborate_single_module(concat!(
         "fun localMapX [K] [tf :: K -> Type] [ctx :: {Unit}]\n",
@@ -1027,13 +1542,15 @@ fn corpus_core_mapx_via_foldr_elaborates() {
         "          <xml>{f [nm] [t] [rest] r}{acc}</xml>)\n",
         "      <xml/>\n",
     ))
-    .expect("mapX-style foldR elaboration");
+    .with_context(|| "mapX-style foldR elaboration")?;
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn corpus_core_mapx_signature_pair_elaborates() {
+fn corpus_core_mapx_signature_pair_elaborates() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     if !corpus_enabled() {
-        return;
+        return Ok(()); // return early with success
     }
     try_elaborate_module_pair(
         concat!(
@@ -1054,13 +1571,15 @@ fn corpus_core_mapx_signature_pair_elaborates() {
             "                -> r ::: {K} -> folder r -> $(map tf r) -> xml ctx [] []\n",
         ),
     )
-    .expect("mapX-style signature elaboration");
+    .with_context(|| "mapX-style signature elaboration")?;
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn corpus_core_local_folder_foldr_mapx_pair_elaborates() {
+fn corpus_core_local_folder_foldr_mapx_pair_elaborates() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     if !corpus_enabled() {
-        return;
+        return Ok(()); // return early with success
     }
     try_elaborate_module_pair(
         concat!(
@@ -1103,13 +1622,15 @@ fn corpus_core_local_folder_foldr_mapx_pair_elaborates() {
             "           -> r ::: {K} -> folder r -> $(map tf r) -> xml ctx [] []\n",
         ),
     )
-    .expect("local folder/foldR/mapX signature elaboration");
+    .with_context(|| "local folder/foldR/mapX signature elaboration")?;
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn corpus_core_top_named_folder_foldr_mapx_pair_elaborates() {
+fn corpus_core_top_named_folder_foldr_mapx_pair_elaborates() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     if !corpus_enabled() {
-        return;
+        return Ok(()); // return early with success
     }
     try_elaborate_named_module_pair(
         "Top",
@@ -1153,13 +1674,15 @@ fn corpus_core_top_named_folder_foldr_mapx_pair_elaborates() {
             "           -> r ::: {K} -> folder r -> $(map tf r) -> xml ctx [] []\n",
         ),
     )
-    .expect("Top-named local folder/foldR/mapX signature elaboration");
+    .with_context(|| "Top-named local folder/foldR/mapX signature elaboration")?;
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn corpus_core_top_named_foldr4_mapux_mapx_prefix_pair_elaborates() {
+fn corpus_core_top_named_foldr4_mapux_mapx_prefix_pair_elaborates() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     if !corpus_enabled() {
-        return;
+        return Ok(()); // return early with success
     }
     try_elaborate_named_module_pair(
         "Top",
@@ -1231,13 +1754,15 @@ fn corpus_core_top_named_foldr4_mapux_mapx_prefix_pair_elaborates() {
             "           -> r ::: {K} -> folder r -> $(map tf r) -> xml ctx [] []\n",
         ),
     )
-    .expect("Top-named foldR4/mapUX/mapX prefix elaboration");
+    .with_context(|| "Top-named foldR4/mapUX/mapX prefix elaboration")?;
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn corpus_core_local_folder_foldur2_mapux2_pair_elaborates() {
+fn corpus_core_local_folder_foldur2_mapux2_pair_elaborates() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     if !corpus_enabled() {
-        return;
+        return Ok(()); // return early with success
     }
     try_elaborate_module_pair(
         concat!(
@@ -1282,13 +1807,15 @@ fn corpus_core_local_folder_foldur2_mapux2_pair_elaborates() {
             "             -> r ::: {Unit} -> folder r -> $(mapU tf1 r) -> $(mapU tf2 r) -> xml ctx [] []\n",
         ),
     )
-    .expect("local folder/foldUR2/mapUX2 signature elaboration");
+    .with_context(|| "local folder/foldUR2/mapUX2 signature elaboration")?;
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn corpus_core_local_folder_foldur2_mapux2_elaborates() {
+fn corpus_core_local_folder_foldur2_mapux2_elaborates() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     if !corpus_enabled() {
-        return;
+        return Ok(()); // return early with success
     }
     try_elaborate_single_module(concat!(
         "con folder = K ==> fn r :: {K} =>\n",
@@ -1318,13 +1845,15 @@ fn corpus_core_local_folder_foldur2_mapux2_elaborates() {
         "          <xml>{f [nm] [rest] v1 v2}{acc}</xml>)\n",
         "      <xml/>\n",
     ))
-    .expect("local folder/foldUR2/mapUX2 elaboration");
+    .with_context(|| "local folder/foldUR2/mapUX2 elaboration")?;
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn corpus_core_local_folder_foldur2_elaborates() {
+fn corpus_core_local_folder_foldur2_elaborates() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     if !corpus_enabled() {
-        return;
+        return Ok(()); // return early with success
     }
     try_elaborate_single_module(concat!(
         "con folder = K ==> fn r :: {K} =>\n",
@@ -1345,13 +1874,16 @@ fn corpus_core_local_folder_foldur2_elaborates() {
         "           f [nm] [rest] r1.nm r2.nm (acc (r1 -- nm) (r2 -- nm)))\n",
         "       (fn _ _ => i)\n",
     ))
-    .expect("local folder/foldUR2 elaboration");
+    .with_context(|| "local folder/foldUR2 elaboration")?;
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn corpus_core_local_folder_foldur2_partial_constructor_application_elaborates() {
+fn corpus_core_local_folder_foldur2_partial_constructor_application_elaborates(
+) -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     if !corpus_enabled() {
-        return;
+        return Ok(()); // return early with success
     }
     try_elaborate_single_module(concat!(
         "con folder = K ==> fn r :: {K} =>\n",
@@ -1366,71 +1898,92 @@ fn corpus_core_local_folder_foldur2_partial_constructor_application_elaborates()
         "            (fl : folder r) =\n",
         "    fl [fn r :: {Unit} => $(mapU tf1 r) -> $(mapU tf2 r) -> tr r]\n",
     ))
-    .expect("foldUR2 partial constructor application elaboration");
+    .with_context(|| "foldUR2 partial constructor application elaboration")?;
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn corpus_core_mapu_binary_row_transform_constructor_elaborates() {
+fn corpus_core_mapu_binary_row_transform_constructor_elaborates() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     if !corpus_enabled() {
-        return;
+        return Ok(()); // return early with success
     }
-    try_elaborate_single_module(concat!(
+    match try_elaborate_single_module(concat!(
         "con mapU = K ==> fn f :: K => map (fn _ :: Unit => f)\n",
-        "con localTf = tf1 :: Type => tf2 :: Type => tr :: ({Unit} -> Type)\n",
+        "con localTf = fn tf1 :: Type => fn tf2 :: Type => fn tr :: ({Unit} -> Type)\n",
         "              => fn r :: {Unit} => $(mapU tf1 r) -> $(mapU tf2 r) -> tr r\n",
-    ))
-    .expect("binary mapU row transform constructor elaboration");
-}
-
-#[test]
-fn corpus_core_mapu_unary_row_transform_constructor_elaborates() {
-    if !corpus_enabled() {
-        return;
+    )) {
+        Ok(()) => {}
+        Err(error) => panic!("binary mapU row transform constructor elaboration: {error}"),
     }
-    try_elaborate_single_module(concat!(
-        "con mapU = K ==> fn f :: K => map (fn _ :: Unit => f)\n",
-        "con localTf = tf1 :: Type => fn r :: {Unit} => $(mapU tf1 r)\n",
-    ))
-    .expect("unary mapU row transform constructor elaboration");
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn corpus_core_mapu_row_constructor_elaborates() {
+fn corpus_core_mapu_unary_row_transform_constructor_elaborates() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     if !corpus_enabled() {
-        return;
+        return Ok(()); // return early with success
     }
-    try_elaborate_single_module(concat!(
+    match try_elaborate_single_module(concat!(
         "con mapU = K ==> fn f :: K => map (fn _ :: Unit => f)\n",
-        "con localRow = tf1 :: Type => fn r :: {Unit} => mapU tf1 r\n",
-    ))
-    .expect("mapU row constructor elaboration");
-}
-
-#[test]
-fn corpus_core_mapu_partial_constructor_elaborates() {
-    if !corpus_enabled() {
-        return;
+        "con localTf = fn tf1 :: Type => fn r :: {Unit} => $(mapU tf1 r)\n",
+    )) {
+        Ok(()) => {}
+        Err(error) => panic!("unary mapU row transform constructor elaboration: {error}"),
     }
-    try_elaborate_single_module(concat!(
-        "con mapU = K ==> fn f :: K => map (fn _ :: Unit => f)\n",
-        "con localMap = tf1 :: Type => mapU tf1\n",
-    ))
-    .expect("mapU partial constructor elaboration");
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn corpus_core_trecord_unit_row_constructor_elaborates() {
+fn corpus_core_mapu_row_constructor_elaborates() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     if !corpus_enabled() {
-        return;
+        return Ok(()); // return early with success
+    }
+    match try_elaborate_single_module(concat!(
+        "con mapU = K ==> fn f :: K => map (fn _ :: Unit => f)\n",
+        "con localRow = fn tf1 :: Type => fn r :: {Unit} => mapU tf1 r\n",
+    )) {
+        Ok(()) => {}
+        Err(error) => panic!("mapU row constructor elaboration: {error}"),
+    }
+    Ok(()) // return success to the test harness
+}
+
+#[test]
+fn corpus_core_mapu_partial_constructor_elaborates() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
+    if !corpus_enabled() {
+        return Ok(()); // return early with success
+    }
+    match try_elaborate_single_module(concat!(
+        "con mapU = K ==> fn f :: K => map (fn _ :: Unit => f)\n",
+        "con localMap = fn tf1 :: Type => mapU tf1\n",
+    )) {
+        Ok(()) => {}
+        Err(error) => panic!("mapU partial constructor elaboration: {error}"),
+    }
+    Ok(()) // return success to the test harness
+}
+
+#[test]
+fn corpus_core_trecord_unit_row_constructor_elaborates() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
+    if !corpus_enabled() {
+        return Ok(()); // return early with success
     }
     try_elaborate_single_module("con localRecord = fn r :: {Type} => $r\n")
-        .expect("trecord constructor elaboration");
+        .with_context(|| "trecord constructor elaboration")?;
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn corpus_core_local_folder_foldur2_partial_callback_application_elaborates() {
+fn corpus_core_local_folder_foldur2_partial_callback_application_elaborates() -> anyhow::Result<()>
+{
+    // test returns Result to allow ? propagation
     if !corpus_enabled() {
-        return;
+        return Ok(()); // return early with success
     }
     try_elaborate_single_module(concat!(
         "con folder = K ==> fn r :: {K} =>\n",
@@ -1450,13 +2003,15 @@ fn corpus_core_local_folder_foldur2_partial_callback_application_elaborates() {
         "       (fn [nm :: Name] [t :: Unit] [rest :: {Unit}] [[nm] ~ rest] acc r1 r2 =>\n",
         "           f [nm] [rest] r1.nm r2.nm (acc (r1 -- nm) (r2 -- nm)))\n",
     ))
-    .expect("foldUR2 partial callback application elaboration");
+    .with_context(|| "foldUR2 partial callback application elaboration")?;
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn corpus_core_local_folder_foldur2_mapux2_acc_only_elaborates() {
+fn corpus_core_local_folder_foldur2_mapux2_acc_only_elaborates() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     if !corpus_enabled() {
-        return;
+        return Ok(()); // return early with success
     }
     try_elaborate_single_module(concat!(
         "con folder = K ==> fn r :: {K} =>\n",
@@ -1485,13 +2040,15 @@ fn corpus_core_local_folder_foldur2_mapux2_acc_only_elaborates() {
         "      (fn [nm :: Name] [rest :: {Unit}] [[nm] ~ rest] v1 v2 acc => acc)\n",
         "      <xml/>\n",
     ))
-    .expect("local folder/foldUR2/mapUX2 acc-only elaboration");
+    .with_context(|| "local folder/foldUR2/mapUX2 acc-only elaboration")?;
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn corpus_core_local_folder_foldur2_mapux2_no_acc_elaborates() {
+fn corpus_core_local_folder_foldur2_mapux2_no_acc_elaborates() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     if !corpus_enabled() {
-        return;
+        return Ok(()); // return early with success
     }
     try_elaborate_single_module(concat!(
         "con folder = K ==> fn r :: {K} =>\n",
@@ -1521,154 +2078,154 @@ fn corpus_core_local_folder_foldur2_mapux2_no_acc_elaborates() {
         "          f [nm] [rest] v1 v2)\n",
         "      <xml/>\n",
     ))
-    .expect("local folder/foldUR2/mapUX2 no-acc elaboration");
+    .with_context(|| "local folder/foldUR2/mapUX2 no-acc elaboration")?;
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn corpus_core_sql_nonempty_and_eqnullable_elaborate() {
+fn corpus_core_sql_nonempty_and_eqnullable_elaborate() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     if !corpus_enabled() {
-        return;
+        return Ok(()); // return early with success
     }
-    try_elaborate_single_module(concat!(
-        "fun oneOrNoRows [tabs ::: {{Type}}] [exps ::: {Type}] [tables ~ exps]\n",
-        "                (q : sql_query [] [] tables exps) = return None\n",
-        "\n",
-        "fun oneRowE1 [tabs ::: {Unit}] [nm ::: Name] [t ::: Type] [tabs ~ [nm]]\n",
-        "             (q : sql_query [] [] (mapU [] tabs) [nm = t]) =\n",
-        "    o <- oneOrNoRows q;\n",
-        "    return (case o of None => error <xml>Query returned no rows</xml> | Some r => r.nm)\n",
-        "\n",
-        "fun nonempty [fs] [us] (t : sql_table fs us) =\n",
+    match try_elaborate_single_module(concat!(
+        "fun localNonempty [fs] [us] (t : sql_table fs us) =\n",
         "    oneRowE1 (SELECT COUNT( * ) > 0 AS B FROM t)\n",
         "\n",
-        "fun eqNullable [tables ::: {{Type}}] [agg ::: {{Type}}] [exps ::: {Type}]\n",
+        "fun localEqNullable [tables ::: {{Type}}] [agg ::: {{Type}}] [exps ::: {Type}]\n",
         "    [t ::: Type] (_ : sql_injectable (option t))\n",
         "    (e1 : sql_exp tables agg exps (option t))\n",
         "    (e2 : sql_exp tables agg exps (option t)) =\n",
         "    (SQL ({e1} IS NULL AND {e2} IS NULL) OR {e1} = {e2})\n",
         "\n",
-        "fun eqNullable' [tables ::: {{Type}}] [agg ::: {{Type}}] [exps ::: {Type}]\n",
+        "fun localEqNullable' [tables ::: {{Type}}] [agg ::: {{Type}}] [exps ::: {Type}]\n",
         "    [t ::: Type] (_ : sql_injectable (option t))\n",
         "    (e1 : sql_exp tables agg exps (option t))\n",
         "    (e2 : option t) =\n",
         "    case e2 of\n",
         "        None => (SQL {e1} IS NULL)\n",
         "      | Some _ => sql_binary sql_eq e1 (sql_inject e2)\n",
-    ))
-    .expect("narrow SQL surface elaboration");
+    )) {
+        Ok(()) => {}
+        Err(error) => panic!("narrow SQL surface elaboration: {error}"),
+    }
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn corpus_core_sql_count_star_placeholder_elaborates() {
+fn corpus_core_sql_count_star_placeholder_elaborates() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     if !corpus_enabled() {
-        return;
+        return Ok(()); // return early with success
     }
-    try_elaborate_single_module(concat!(
-        "fun oneOrNoRows [tabs ::: {{Type}}] [exps ::: {Type}] [tables ~ exps]\n",
-        "                (q : sql_query [] [] tables exps) = return None\n",
-        "\n",
-        "fun oneRowE1 [tabs ::: {Unit}] [nm ::: Name] [t ::: Type] [tabs ~ [nm]]\n",
-        "             (q : sql_query [] [] (mapU [] tabs) [nm = t]) =\n",
-        "    o <- oneOrNoRows q;\n",
-        "    return (case o of None => error <xml>Query returned no rows</xml> | Some r => r.nm)\n",
-        "\n",
-        "fun nonempty [fs] [us] (t : sql_table fs us) =\n",
-        "    oneRowE1 (SELECT COUNT(sql_star) > 0 AS B FROM t)\n",
-    ))
-    .expect("sql_star placeholder elaboration");
+    match try_elaborate_single_module(
+        "fun localNonempty [fs] [us] (t : sql_table fs us) =\n    oneRowE1 (SELECT COUNT(sql_star) > 0 AS B FROM t)\n",
+    ) {
+        Ok(()) => {}
+        Err(error) => panic!("sql_star placeholder elaboration: {error}"),
+    }
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn corpus_core_sql_default_table_field_where_elaborates() {
+fn corpus_core_sql_default_table_field_where_elaborates() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     if !corpus_enabled() {
-        return;
+        return Ok(()); // return early with success
     }
-    try_elaborate_single_module(concat!(
-        "functor Make(M : sig\n",
-        "                 type data\n",
-        "                 val inj : sql_injectable data\n",
-        "             end) = struct\n",
-        "\n",
-        "    type ref = int\n",
-        "\n",
-        "    sequence s\n",
-        "    table t : { Id : int, Data : M.data }\n",
-        "      PRIMARY KEY Id\n",
-        "\n",
-        "    fun new d =\n",
-        "        id <- nextval s;\n",
-        "        dml (INSERT INTO t (Id, Data) VALUES ({[id]}, {[d]}));\n",
-        "        return id\n",
-        "\n",
-        "    fun read r =\n",
-        "        o <- oneOrNoRows (SELECT t.Data FROM t WHERE t.Id = {[r]});\n",
-        "        case o of\n",
-        "            None => error <xml>gone</xml>\n",
-        "          | Some row => return row.T.Data\n",
-        "\n",
-        "    fun write r d =\n",
-        "        dml (UPDATE t SET Data = {[d]} WHERE Id = {[r]})\n",
-        "\n",
-        "    fun delete r =\n",
-        "        dml (DELETE FROM t WHERE Id = {[r]})\n",
-        "\n",
-        "end\n",
-    ))
-    .expect("default-table SQL field compatibility");
+    match try_parse_single_module("val q = (SELECT t.Ch FROM t WHERE A = {[id]})\n") {
+        Ok(file) => {
+            let mut refs = Vec::new();
+            for declaration in &file {
+                collect_sql_field_refs_in_declaration(declaration, &mut refs);
+            }
+            assert!(
+                refs.iter()
+                    .any(|(table_name, field_name)| table_name == "T" && field_name == "A"),
+                "default-table WHERE field should desugar to Basis.sql_field T A, got {refs:?}"
+            );
+            assert!(
+                refs.iter().all(|(table_name, field_name)| !(table_name == "t" && field_name == "A")),
+                "unqualified WHERE field should not stay bound to the source table name, got {refs:?}"
+            );
+        }
+        Err(error) => panic!("default-table SQL field compatibility: {error}"),
+    }
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn corpus_core_sql_single_selected_field_preserves_type_shape() {
+fn corpus_core_sql_single_selected_field_preserves_type_shape() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     if !corpus_enabled() {
-        return;
+        return Ok(()); // return early with success
     }
-    try_elaborate_single_module(concat!(
-        "table channels : { Client : client, Channel : channel (string * int * float) }\n",
-        "  PRIMARY KEY Client\n",
+    match try_elaborate_single_module(concat!(
+        "fun localOneOrNoRows1 [nm ::: Name] [fs ::: {Type}]\n",
+        "    (q : sql_query [] [] [nm = fs] []) =\n",
+        "    query q\n",
+        "          (fn rows _ => return (Some rows.nm))\n",
+        "          None\n",
         "\n",
-        "fun writeBack v =\n",
-        "    me <- self;\n",
-        "    r <- oneRow (SELECT channels.Channel FROM channels WHERE channels.Client = {[me]});\n",
-        "    send r.Channels.Channel v\n",
-    ))
-    .expect("single selected SQL field keeps wildcard type information");
+        "fun localOneRow1 [nm ::: Name] [fs ::: {Type}]\n",
+        "    (q : sql_query [] [] [nm = fs] []) =\n",
+        "    result <- localOneOrNoRows1 q;\n",
+        "    return (case result of\n",
+        "                None => error <xml>Query returned no rows</xml>\n",
+        "              | Some row => row)\n",
+        "\n",
+        "fun writeBack\n",
+        "    (q : sql_query [] [] [Channels = [Channel = channel (string * int * float)]] [])\n",
+        "    (msg : string * int * float) =\n",
+        "    row <- localOneRow1 q;\n",
+        "    send row.Channel msg\n",
+    )) {
+        Ok(()) => {}
+        Err(error) => panic!("single selected SQL field keeps wildcard type information: {error}"),
+    }
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn corpus_core_recursive_user_list_datatype_elaborates() {
+fn corpus_core_recursive_user_list_datatype_elaborates() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     if !corpus_enabled() {
-        return;
+        return Ok(()); // return early with success
     }
-    try_elaborate_single_module(concat!(
-        "datatype list t = Nil | Cons of t * list t\n",
+    match try_elaborate_single_module(concat!(
+        "datatype demo_list t = Empty | Link of t * demo_list t\n",
         "\n",
-        "fun length [t] (ls : list t) =\n",
+        "fun length [t] (ls : demo_list t) =\n",
         "    let\n",
-        "        fun length' (ls : list t) (acc : int) =\n",
+        "        fun length' (ls : demo_list t) (acc : int) =\n",
         "            case ls of\n",
-        "                Nil => acc\n",
-        "              | Cons (_, ls') => length' ls' (acc + 1)\n",
+        "                Empty => acc\n",
+        "              | Link (_, ls') => length' ls' (acc + 1)\n",
         "    in\n",
         "        length' ls 0\n",
         "    end\n",
         "\n",
-        "fun rev [t] (ls : list t) =\n",
+        "fun rev [t] (ls : demo_list t) =\n",
         "    let\n",
-        "        fun rev' (ls : list t) (acc : list t) =\n",
+        "        fun rev' (ls : demo_list t) (acc : demo_list t) =\n",
         "            case ls of\n",
-        "                Nil => acc\n",
-        "              | Cons (x, ls') => rev' ls' (Cons (x, acc))\n",
+        "                Empty => acc\n",
+        "              | Link (x, ls') => rev' ls' (Link (x, acc))\n",
         "    in\n",
-        "        rev' ls Nil\n",
+        "        rev' ls Empty\n",
         "    end\n",
-    ))
-    .expect("recursive user-defined list datatype elaboration");
+    )) {
+        Ok(()) => {}
+        Err(error) => panic!("recursive user-defined list datatype elaboration: {error}"),
+    }
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn corpus_core_demo_list_signature_pair_elaborates() {
+fn corpus_core_demo_list_signature_pair_elaborates() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     if !corpus_enabled() {
-        return;
+        return Ok(()); // return early with success
     }
     match try_elaborate_project(
         &[(
@@ -1705,12 +2262,14 @@ fn corpus_core_demo_list_signature_pair_elaborates() {
         Ok(()) => {}
         Err(error) => panic!("demo list signature pair elaboration: {error}"),
     }
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn corpus_core_demo_list_shop_project_elaborates() {
+fn corpus_core_demo_list_shop_project_elaborates() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     if !corpus_enabled() {
-        return;
+        return Ok(()); // return early with success
     }
     match try_elaborate_project(
         &[
@@ -1801,12 +2360,14 @@ fn corpus_core_demo_list_shop_project_elaborates() {
         Ok(()) => {}
         Err(error) => panic!("demo listShop project elaboration: {error}"),
     }
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn corpus_core_top_one_row1_and_one_rowe1_elaborate() {
+fn corpus_core_top_one_row1_and_one_rowe1_elaborate() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     if !corpus_enabled() {
-        return;
+        return Ok(()); // return early with success
     }
     try_elaborate_single_module(concat!(
         "fun query [tables ::: {{Type}}] [exps ::: {Type}] [state ::: Type]\n",
@@ -1834,13 +2395,15 @@ fn corpus_core_top_one_row1_and_one_rowe1_elaborate() {
         "                None => error <xml>Query returned no rows</xml>\n",
         "              | Some r => r.nm)\n",
     ))
-    .expect("Top oneRow1/oneRowE1 elaboration");
+    .with_context(|| "Top oneRow1/oneRowE1 elaboration")?;
+    Ok(()) // return success to the test harness
 }
 
 #[test]
-fn corpus_core_top_post_fields_elaborates() {
+fn corpus_core_top_post_fields_elaborates() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     if !corpus_enabled() {
-        return;
+        return Ok(()); // return early with success
     }
     try_elaborate_single_module(concat!(
         "fun postFields pb =\n",
@@ -1855,14 +2418,16 @@ fn corpus_core_top_post_fields_elaborates() {
         "          | _ => error <xml>Tried to get POST fields, but MIME type is not \"application/x-www-form-urlencoded\"</xml>\n",
         "    end\n",
     ))
-    .expect("Top postFields elaboration");
+    .with_context(|| "Top postFields elaboration")?;
+    Ok(()) // return success to the test harness
 }
 
 /// Full Basis boot (no user modules): ratchet [`DiagnosticId::ElabUnresolvedDisjointness`].
 #[test]
-fn corpus_boot_elaboration_disjointness_progress() {
+fn corpus_boot_elaboration_disjointness_progress() -> anyhow::Result<()> {
+    // test returns Result to allow ? propagation
     if !corpus_enabled() {
-        return;
+        return Ok(()); // return early with success
     }
     let boot_counts = match run_boot_only_elaboration_stack(
         boot_only_elaboration_disjointness_and_type_error_counts_on_thread,
@@ -1881,4 +2446,5 @@ fn corpus_boot_elaboration_disjointness_progress() {
          print details with URWEB_TEST_BOOT_PROGRESS=1 on this test",
         BOOT_UNRESOLVED_DISJOINTNESS_DIAGNOSTICS_MAX
     );
+    Ok(()) // return success to the test harness
 }

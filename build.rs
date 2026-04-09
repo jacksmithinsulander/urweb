@@ -65,9 +65,17 @@ fn main() {
         std::process::exit(1); // Signal failure to Cargo.
     }
 
-    postprocess_grammar_rs(
-        &std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap()).join("parse/grammar.rs"),
-    );
+    // `var_os` returns `None` only when Cargo does not set `OUT_DIR`, which cannot happen during a
+    // normal build; using `let Some(...)` with an `else` branch avoids a panic and keeps clippy happy.
+    let Some(out_dir) = std::env::var_os("OUT_DIR") else {
+        let mut lock = std::io::stderr().lock(); // Single-writer lock for the warning message.
+        let _ = writeln!(
+            lock,
+            "build.rs: OUT_DIR not set; skipping grammar postprocessing."
+        );
+        return;
+    };
+    postprocess_grammar_rs(&std::path::PathBuf::from(out_dir).join("parse/grammar.rs")); // apply LALRPOP output cleanup
 
     println!("cargo:rustc-cfg=generated_parser");
 }

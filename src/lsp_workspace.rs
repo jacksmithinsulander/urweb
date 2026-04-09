@@ -233,7 +233,7 @@ pub fn file_key_relative_to_root(root: &Path, disk: &Path) -> String {
 ///
 /// Forward-slash key under the root, or `None` when the root or local path is missing.
 pub fn relative_file_key_for_uri(workspace_root: Option<&Path>, uri: &Uri) -> Option<String> {
-    let root = workspace_root?;
+    let root = workspace_root?; // return None when no workspace root is available
     let disk = uri_to_file_path(uri)?;
     Some(file_key_relative_to_root(root, &disk))
 }
@@ -241,30 +241,39 @@ pub fn relative_file_key_for_uri(workspace_root: Option<&Path>, uri: &Uri) -> Op
 #[cfg(test)]
 mod tests {
     use super::*;
+    use anyhow::Context as _; // .with_context() on Result in tests
 
     #[test]
-    fn relative_file_key_none_without_workspace() {
-        let uri: Uri = "file:///tmp/a.ur".parse().expect("uri");
+    fn relative_file_key_none_without_workspace() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
+        let uri: Uri = "file:///tmp/a.ur".parse().with_context(|| "uri")?;
         assert!(relative_file_key_for_uri(None, &uri).is_none());
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn relative_file_key_under_root() {
-        let tmp = tempfile::tempdir().unwrap();
+    fn relative_file_key_under_root() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
+        let tmp = tempfile::tempdir()?;
         let only = tmp.path().join("Only.ur");
-        std::fs::write(&only, "").unwrap();
+        std::fs::write(&only, "")?;
         let path_for_uri = only.to_string_lossy().replace('\\', "/");
-        let uri: Uri = format!("file://{path_for_uri}").parse().expect("uri");
+        let uri: Uri = format!("file://{path_for_uri}")
+            .parse()
+            .with_context(|| "uri")?;
         assert_eq!(
             relative_file_key_for_uri(Some(tmp.path()), &uri).as_deref(),
             Some("Only.ur")
         );
+        Ok(()) // return success to the test harness
     }
 
     #[test]
-    fn relative_file_key_non_file_uri() {
+    fn relative_file_key_non_file_uri() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
         let root = std::path::Path::new("/proj");
-        let uri: Uri = "https://ex/x.ur".parse().expect("uri");
+        let uri: Uri = "https://ex/x.ur".parse().with_context(|| "uri")?;
         assert!(relative_file_key_for_uri(Some(root), &uri).is_none());
+        Ok(()) // return success to the test harness
     }
 }
