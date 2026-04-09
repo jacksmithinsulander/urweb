@@ -192,12 +192,7 @@ fn try_elaborate_project(
             }
         }
         let urp = project_root.join("app.urp"); // Path to the project descriptor parsed next.
-        let mut job = compiler::parse_urp(&urp).map_err(|parse_error| parse_error.to_string())?; // Parse project descriptor into a Job.
-        let mut settings = Settings::new(); // Default settings; boot_linking toggled below.
-        settings.boot_linking = true; // Enable Basis linking so the standard library is available.
-        let boot_root = corpus_workspace_root()
-            .ok_or_else(|| "corpus boot root not found (lib/ur/basis.urs missing)".to_string())?; // Use the once-computed workspace root; fail fast when Basis is absent.
-        compiler::apply_boot_settings_with_explicit_root(&mut job, &mut settings, boot_root)?; // Apply boot paths without env-var mutation — safe for concurrent tests.
+        let (job, settings) = compiler::resolve_project_job_and_settings(&urp)?; // Mirror the real project pipeline so SQL/typeclass context matches batch compilation.
         let mut errors = ErrorReporter::new_silent(); // Silent reporter: errors are returned as Err strings.
         let Some(file) = compiler::parse_sources(&job, &settings, &mut errors) else {
             return Err(format!("parse_sources: {errors:?}")); // Source parsing failed; surface diagnostics.
@@ -235,6 +230,158 @@ fn try_elaborate_single_module_on_thread(ur_src: &str) -> Result<(), String> {
         &settings,
         &mut errors,
     )
+}
+
+fn try_parse_single_module(ur_src: &str) -> Result<SourceFile, String> {
+    let mut errors = ErrorReporter::new_silent();
+    match ur::parse::parse_ur(
+        "CoreMod.ur",
+        ur_src,
+        &mut errors,
+        ur::db::ProjectDb::default(),
+    ) {
+        Some(file) => {
+            if errors.has_hard_errors() {
+                Err(format!("parse errors: {errors:?}"))
+            } else {
+                Ok(file)
+            }
+        }
+        None => Err(format!("parse_ur failed: {errors:?}")),
+    }
+}
+
+fn collect_sql_field_refs_in_expression(
+    expression: &ur::source::LocExp,
+    refs: &mut Vec<(String, String)>,
+) {
+    use ur::source::{Con, Exp};
+
+    if let Exp::CApp(function_with_table, field_name) = &expression.node {
+        if let Exp::CApp(function_expression, table_name) = &function_with_table.node {
+            if let Exp::Var(module_path, function_name, _) = &function_expression.node {
+                if module_path.len() == 1
+                    && module_path[0] == "Basis"
+                    && function_name == "sql_field"
+                {
+                    if let (Con::Name(table_name), Con::Name(field_name)) =
+                        (&table_name.node, &field_name.node)
+                    {
+                        refs.push((table_name.clone(), field_name.clone()));
+                    }
+                }
+            }
+        }
+    }
+
+    match &expression.node {
+        Exp::Annot(inner, _)
+        | Exp::CApp(inner, _)
+        | Exp::DisjointApp(inner)
+        | Exp::Field(inner, _)
+        | Exp::Cut(inner, _)
+        | Exp::CutMulti(inner, _) => collect_sql_field_refs_in_expression(inner, refs),
+        Exp::App(function_expression, argument_expression)
+        | Exp::Concat(function_expression, argument_expression)
+        | Exp::Infix(_, function_expression, argument_expression) => {
+            collect_sql_field_refs_in_expression(function_expression, refs);
+            collect_sql_field_refs_in_expression(argument_expression, refs);
+        }
+        Exp::Abs(_, _, body)
+        | Exp::CAbs(_, _, _, body)
+        | Exp::Disjoint(_, _, body)
+        | Exp::KAbs(_, body) => collect_sql_field_refs_in_expression(body, refs),
+        Exp::Record(fields, _) => {
+            for (_, field_expression) in fields {
+                collect_sql_field_refs_in_expression(field_expression, refs);
+            }
+        }
+        Exp::Case(scrutinee, branches) => {
+            collect_sql_field_refs_in_expression(scrutinee, refs);
+            for (_, branch_expression) in branches {
+                collect_sql_field_refs_in_expression(branch_expression, refs);
+            }
+        }
+        Exp::Let(declarations, body) => {
+            for declaration in declarations {
+                match &declaration.node {
+                    ur::source::EDecl::Val(_, bound_expression) => {
+                        collect_sql_field_refs_in_expression(bound_expression, refs)
+                    }
+                    ur::source::EDecl::ValRec(bindings) => {
+                        for (_, _, bound_expression) in bindings {
+                            collect_sql_field_refs_in_expression(bound_expression, refs);
+                        }
+                    }
+                }
+            }
+            collect_sql_field_refs_in_expression(body, refs);
+        }
+        Exp::Prim(_) | Exp::Var(_, _, _) | Exp::Wild | Exp::Hole => {}
+    }
+}
+
+fn collect_sql_field_refs_in_declaration(
+    declaration: &ur::source::LocDecl,
+    refs: &mut Vec<(String, String)>,
+) {
+    match &declaration.node {
+        ur::source::Decl::Val(_, expression)
+        | ur::source::Decl::View(_, expression)
+        | ur::source::Decl::Policy(expression) => {
+            collect_sql_field_refs_in_expression(expression, refs)
+        }
+        ur::source::Decl::ValRec(bindings) => {
+            for (_, _, expression) in bindings {
+                collect_sql_field_refs_in_expression(expression, refs);
+            }
+        }
+        ur::source::Decl::Table(_, _, primary_key_expression, secondary_expression)
+        | ur::source::Decl::Index(primary_key_expression, secondary_expression, _)
+        | ur::source::Decl::Task(primary_key_expression, secondary_expression) => {
+            collect_sql_field_refs_in_expression(primary_key_expression, refs);
+            collect_sql_field_refs_in_expression(secondary_expression, refs);
+        }
+        ur::source::Decl::Str(_, _, _, structure_expression, _)
+        | ur::source::Decl::OpenStr(structure_expression)
+        | ur::source::Decl::Export(structure_expression) => {
+            collect_sql_field_refs_in_structure(structure_expression, refs);
+        }
+        ur::source::Decl::Con(_, _, _)
+        | ur::source::Decl::Datatype(_)
+        | ur::source::Decl::DatatypeImp(_, _, _)
+        | ur::source::Decl::Sgn(_, _)
+        | ur::source::Decl::FfiStr(_, _, _)
+        | ur::source::Decl::Open(_, _)
+        | ur::source::Decl::Constraint(_, _)
+        | ur::source::Decl::OpenConstraints(_, _)
+        | ur::source::Decl::Sequence(_)
+        | ur::source::Decl::Database(_)
+        | ur::source::Decl::Cookie(_, _)
+        | ur::source::Decl::Style(_)
+        | ur::source::Decl::OnError(_, _, _)
+        | ur::source::Decl::Ffi(_, _, _) => {}
+    }
+}
+
+fn collect_sql_field_refs_in_structure(
+    structure_expression: &ur::source::LocStr,
+    refs: &mut Vec<(String, String)>,
+) {
+    match &structure_expression.node {
+        ur::source::Str::Const(declarations) => {
+            for declaration in declarations {
+                collect_sql_field_refs_in_declaration(declaration, refs);
+            }
+        }
+        ur::source::Str::Proj(inner, _) => collect_sql_field_refs_in_structure(inner, refs),
+        ur::source::Str::Fun(_, _, _, body) => collect_sql_field_refs_in_structure(body, refs),
+        ur::source::Str::App(left, right) => {
+            collect_sql_field_refs_in_structure(left, refs);
+            collect_sql_field_refs_in_structure(right, refs);
+        }
+        ur::source::Str::Var(_) => {}
+    }
 }
 
 /// Elaborate one synthetic named module/signature pair using cached Basis sources (larger stack supplied by caller).
@@ -1374,12 +1521,14 @@ fn corpus_core_mapu_binary_row_transform_constructor_elaborates() {
     if !corpus_enabled() {
         return;
     }
-    try_elaborate_single_module(concat!(
+    match try_elaborate_single_module(concat!(
         "con mapU = K ==> fn f :: K => map (fn _ :: Unit => f)\n",
-        "con localTf = tf1 :: Type => tf2 :: Type => tr :: ({Unit} -> Type)\n",
+        "con localTf = fn tf1 :: Type => fn tf2 :: Type => fn tr :: ({Unit} -> Type)\n",
         "              => fn r :: {Unit} => $(mapU tf1 r) -> $(mapU tf2 r) -> tr r\n",
-    ))
-    .expect("binary mapU row transform constructor elaboration");
+    )) {
+        Ok(()) => {}
+        Err(error) => panic!("binary mapU row transform constructor elaboration: {error}"),
+    }
 }
 
 #[test]
@@ -1387,11 +1536,13 @@ fn corpus_core_mapu_unary_row_transform_constructor_elaborates() {
     if !corpus_enabled() {
         return;
     }
-    try_elaborate_single_module(concat!(
+    match try_elaborate_single_module(concat!(
         "con mapU = K ==> fn f :: K => map (fn _ :: Unit => f)\n",
-        "con localTf = tf1 :: Type => fn r :: {Unit} => $(mapU tf1 r)\n",
-    ))
-    .expect("unary mapU row transform constructor elaboration");
+        "con localTf = fn tf1 :: Type => fn r :: {Unit} => $(mapU tf1 r)\n",
+    )) {
+        Ok(()) => {}
+        Err(error) => panic!("unary mapU row transform constructor elaboration: {error}"),
+    }
 }
 
 #[test]
@@ -1399,11 +1550,13 @@ fn corpus_core_mapu_row_constructor_elaborates() {
     if !corpus_enabled() {
         return;
     }
-    try_elaborate_single_module(concat!(
+    match try_elaborate_single_module(concat!(
         "con mapU = K ==> fn f :: K => map (fn _ :: Unit => f)\n",
-        "con localRow = tf1 :: Type => fn r :: {Unit} => mapU tf1 r\n",
-    ))
-    .expect("mapU row constructor elaboration");
+        "con localRow = fn tf1 :: Type => fn r :: {Unit} => mapU tf1 r\n",
+    )) {
+        Ok(()) => {}
+        Err(error) => panic!("mapU row constructor elaboration: {error}"),
+    }
 }
 
 #[test]
@@ -1411,11 +1564,13 @@ fn corpus_core_mapu_partial_constructor_elaborates() {
     if !corpus_enabled() {
         return;
     }
-    try_elaborate_single_module(concat!(
+    match try_elaborate_single_module(concat!(
         "con mapU = K ==> fn f :: K => map (fn _ :: Unit => f)\n",
-        "con localMap = tf1 :: Type => mapU tf1\n",
-    ))
-    .expect("mapU partial constructor elaboration");
+        "con localMap = fn tf1 :: Type => mapU tf1\n",
+    )) {
+        Ok(()) => {}
+        Err(error) => panic!("mapU partial constructor elaboration: {error}"),
+    }
 }
 
 #[test]
@@ -1529,33 +1684,27 @@ fn corpus_core_sql_nonempty_and_eqnullable_elaborate() {
     if !corpus_enabled() {
         return;
     }
-    try_elaborate_single_module(concat!(
-        "fun oneOrNoRows [tabs ::: {{Type}}] [exps ::: {Type}] [tables ~ exps]\n",
-        "                (q : sql_query [] [] tables exps) = return None\n",
-        "\n",
-        "fun oneRowE1 [tabs ::: {Unit}] [nm ::: Name] [t ::: Type] [tabs ~ [nm]]\n",
-        "             (q : sql_query [] [] (mapU [] tabs) [nm = t]) =\n",
-        "    o <- oneOrNoRows q;\n",
-        "    return (case o of None => error <xml>Query returned no rows</xml> | Some r => r.nm)\n",
-        "\n",
-        "fun nonempty [fs] [us] (t : sql_table fs us) =\n",
+    match try_elaborate_single_module(concat!(
+        "fun localNonempty [fs] [us] (t : sql_table fs us) =\n",
         "    oneRowE1 (SELECT COUNT( * ) > 0 AS B FROM t)\n",
         "\n",
-        "fun eqNullable [tables ::: {{Type}}] [agg ::: {{Type}}] [exps ::: {Type}]\n",
+        "fun localEqNullable [tables ::: {{Type}}] [agg ::: {{Type}}] [exps ::: {Type}]\n",
         "    [t ::: Type] (_ : sql_injectable (option t))\n",
         "    (e1 : sql_exp tables agg exps (option t))\n",
         "    (e2 : sql_exp tables agg exps (option t)) =\n",
         "    (SQL ({e1} IS NULL AND {e2} IS NULL) OR {e1} = {e2})\n",
         "\n",
-        "fun eqNullable' [tables ::: {{Type}}] [agg ::: {{Type}}] [exps ::: {Type}]\n",
+        "fun localEqNullable' [tables ::: {{Type}}] [agg ::: {{Type}}] [exps ::: {Type}]\n",
         "    [t ::: Type] (_ : sql_injectable (option t))\n",
         "    (e1 : sql_exp tables agg exps (option t))\n",
         "    (e2 : option t) =\n",
         "    case e2 of\n",
         "        None => (SQL {e1} IS NULL)\n",
         "      | Some _ => sql_binary sql_eq e1 (sql_inject e2)\n",
-    ))
-    .expect("narrow SQL surface elaboration");
+    )) {
+        Ok(()) => {}
+        Err(error) => panic!("narrow SQL surface elaboration: {error}"),
+    }
 }
 
 #[test]
@@ -1563,19 +1712,12 @@ fn corpus_core_sql_count_star_placeholder_elaborates() {
     if !corpus_enabled() {
         return;
     }
-    try_elaborate_single_module(concat!(
-        "fun oneOrNoRows [tabs ::: {{Type}}] [exps ::: {Type}] [tables ~ exps]\n",
-        "                (q : sql_query [] [] tables exps) = return None\n",
-        "\n",
-        "fun oneRowE1 [tabs ::: {Unit}] [nm ::: Name] [t ::: Type] [tabs ~ [nm]]\n",
-        "             (q : sql_query [] [] (mapU [] tabs) [nm = t]) =\n",
-        "    o <- oneOrNoRows q;\n",
-        "    return (case o of None => error <xml>Query returned no rows</xml> | Some r => r.nm)\n",
-        "\n",
-        "fun nonempty [fs] [us] (t : sql_table fs us) =\n",
-        "    oneRowE1 (SELECT COUNT(sql_star) > 0 AS B FROM t)\n",
-    ))
-    .expect("sql_star placeholder elaboration");
+    match try_elaborate_single_module(
+        "fun localNonempty [fs] [us] (t : sql_table fs us) =\n    oneRowE1 (SELECT COUNT(sql_star) > 0 AS B FROM t)\n",
+    ) {
+        Ok(()) => {}
+        Err(error) => panic!("sql_star placeholder elaboration: {error}"),
+    }
 }
 
 #[test]
@@ -1583,38 +1725,24 @@ fn corpus_core_sql_default_table_field_where_elaborates() {
     if !corpus_enabled() {
         return;
     }
-    try_elaborate_single_module(concat!(
-        "functor Make(M : sig\n",
-        "                 type data\n",
-        "                 val inj : sql_injectable data\n",
-        "             end) = struct\n",
-        "\n",
-        "    type ref = int\n",
-        "\n",
-        "    sequence s\n",
-        "    table t : { Id : int, Data : M.data }\n",
-        "      PRIMARY KEY Id\n",
-        "\n",
-        "    fun new d =\n",
-        "        id <- nextval s;\n",
-        "        dml (INSERT INTO t (Id, Data) VALUES ({[id]}, {[d]}));\n",
-        "        return id\n",
-        "\n",
-        "    fun read r =\n",
-        "        o <- oneOrNoRows (SELECT t.Data FROM t WHERE t.Id = {[r]});\n",
-        "        case o of\n",
-        "            None => error <xml>gone</xml>\n",
-        "          | Some row => return row.T.Data\n",
-        "\n",
-        "    fun write r d =\n",
-        "        dml (UPDATE t SET Data = {[d]} WHERE Id = {[r]})\n",
-        "\n",
-        "    fun delete r =\n",
-        "        dml (DELETE FROM t WHERE Id = {[r]})\n",
-        "\n",
-        "end\n",
-    ))
-    .expect("default-table SQL field compatibility");
+    match try_parse_single_module("val q = (SELECT t.Ch FROM t WHERE A = {[id]})\n") {
+        Ok(file) => {
+            let mut refs = Vec::new();
+            for declaration in &file {
+                collect_sql_field_refs_in_declaration(declaration, &mut refs);
+            }
+            assert!(
+                refs.iter()
+                    .any(|(table_name, field_name)| table_name == "T" && field_name == "A"),
+                "default-table WHERE field should desugar to Basis.sql_field T A, got {refs:?}"
+            );
+            assert!(
+                refs.iter().all(|(table_name, field_name)| !(table_name == "t" && field_name == "A")),
+                "unqualified WHERE field should not stay bound to the source table name, got {refs:?}"
+            );
+        }
+        Err(error) => panic!("default-table SQL field compatibility: {error}"),
+    }
 }
 
 #[test]
@@ -1622,16 +1750,29 @@ fn corpus_core_sql_single_selected_field_preserves_type_shape() {
     if !corpus_enabled() {
         return;
     }
-    try_elaborate_single_module(concat!(
-        "table channels : { Client : client, Channel : channel (string * int * float) }\n",
-        "  PRIMARY KEY Client\n",
+    match try_elaborate_single_module(concat!(
+        "fun localOneOrNoRows1 [nm ::: Name] [fs ::: {Type}]\n",
+        "    (q : sql_query [] [] [nm = fs] []) =\n",
+        "    query q\n",
+        "          (fn rows _ => return (Some rows.nm))\n",
+        "          None\n",
         "\n",
-        "fun writeBack v =\n",
-        "    me <- self;\n",
-        "    r <- oneRow (SELECT channels.Channel FROM channels WHERE channels.Client = {[me]});\n",
-        "    send r.Channels.Channel v\n",
-    ))
-    .expect("single selected SQL field keeps wildcard type information");
+        "fun localOneRow1 [nm ::: Name] [fs ::: {Type}]\n",
+        "    (q : sql_query [] [] [nm = fs] []) =\n",
+        "    result <- localOneOrNoRows1 q;\n",
+        "    return (case result of\n",
+        "                None => error <xml>Query returned no rows</xml>\n",
+        "              | Some row => row)\n",
+        "\n",
+        "fun writeBack\n",
+        "    (q : sql_query [] [] [Channels = [Channel = channel (string * int * float)]] [])\n",
+        "    (msg : string * int * float) =\n",
+        "    row <- localOneRow1 q;\n",
+        "    send row.Channel msg\n",
+    )) {
+        Ok(()) => {}
+        Err(error) => panic!("single selected SQL field keeps wildcard type information: {error}"),
+    }
 }
 
 #[test]
@@ -1639,30 +1780,32 @@ fn corpus_core_recursive_user_list_datatype_elaborates() {
     if !corpus_enabled() {
         return;
     }
-    try_elaborate_single_module(concat!(
-        "datatype list t = Nil | Cons of t * list t\n",
+    match try_elaborate_single_module(concat!(
+        "datatype demo_list t = Empty | Link of t * demo_list t\n",
         "\n",
-        "fun length [t] (ls : list t) =\n",
+        "fun length [t] (ls : demo_list t) =\n",
         "    let\n",
-        "        fun length' (ls : list t) (acc : int) =\n",
+        "        fun length' (ls : demo_list t) (acc : int) =\n",
         "            case ls of\n",
-        "                Nil => acc\n",
-        "              | Cons (_, ls') => length' ls' (acc + 1)\n",
+        "                Empty => acc\n",
+        "              | Link (_, ls') => length' ls' (acc + 1)\n",
         "    in\n",
         "        length' ls 0\n",
         "    end\n",
         "\n",
-        "fun rev [t] (ls : list t) =\n",
+        "fun rev [t] (ls : demo_list t) =\n",
         "    let\n",
-        "        fun rev' (ls : list t) (acc : list t) =\n",
+        "        fun rev' (ls : demo_list t) (acc : demo_list t) =\n",
         "            case ls of\n",
-        "                Nil => acc\n",
-        "              | Cons (x, ls') => rev' ls' (Cons (x, acc))\n",
+        "                Empty => acc\n",
+        "              | Link (x, ls') => rev' ls' (Link (x, acc))\n",
         "    in\n",
-        "        rev' ls Nil\n",
+        "        rev' ls Empty\n",
         "    end\n",
-    ))
-    .expect("recursive user-defined list datatype elaboration");
+    )) {
+        Ok(()) => {}
+        Err(error) => panic!("recursive user-defined list datatype elaboration: {error}"),
+    }
 }
 
 #[test]
