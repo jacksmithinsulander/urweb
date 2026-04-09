@@ -5818,7 +5818,15 @@ fn elab_exp_inner(
                 &new_denv,
                 body,
             );
-            (bodye, bodytype)
+            let disjoint_body_type = Located::new(
+                elab::Constructor::TDisjoint(
+                    Box::new(c1e),
+                    Box::new(c2e),
+                    Box::new(bodytype),
+                ),
+                span.clone(),
+            );
+            (bodye, disjoint_body_type)
         }
 
         source::Exp::DisjointApp(body) => {

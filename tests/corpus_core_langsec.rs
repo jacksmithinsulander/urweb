@@ -913,6 +913,19 @@ fn corpus_core_query_l1_with_val_rev_elaborates() {
 }
 
 #[test]
+fn corpus_core_disjoint_abstraction_infers_tdisjoint_type() {
+    if !corpus_enabled() {
+        return;
+    }
+    try_elaborate_named_module_pair(
+        "DisjointWrap",
+        "fun consLike [K] [r ::: {K}] [nm :: Name] [v :: K] [[nm] ~ r] (x : int) = x\n",
+        "val consLike : K --> r ::: {K} -> nm :: Name -> v :: K -> [[nm] ~ r] => int -> int\n",
+    )
+    .expect("disjoint abstraction should retain its TDisjoint type");
+}
+
+#[test]
 fn corpus_core_query_i_elaborates() {
     if !corpus_enabled() {
         return;
