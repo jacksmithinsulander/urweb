@@ -8,10 +8,11 @@ version = "0.1.0"
 edition = "2021"
 
 [profile.test]
-# opt-level 1 gives meaningful optimizations with only a modest compile-time cost.
-# Corpus elaboration tests recurse deeply through the Basis standard library;
-# debug (opt-level 0) is 5-10x slower than opt-level 1 for this workload.
-opt-level = 1
+# opt-level 2 gives strong optimization of the recursive elaboration passes while
+# keeping incremental compile times tolerable (avoids the LTO and LLVM work of opt-level 3).
+# Corpus tests recurse deeply through the Basis standard library and are dominated
+# by the elaboration pass; this reduces each test from ~200s (debug) to ~15-25s.
+opt-level = 2
 
 [profile.mutants]
 inherits = "test"

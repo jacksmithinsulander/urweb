@@ -6,22 +6,29 @@ use ur::lsp_workspace::{
     uri_local_path_for_tooling, uri_to_file_path, workspace_root_from_initialize,
 };
 
+fn parse_uri(uri: &str) -> Uri {
+    match uri.parse() {
+        Ok(parsed) => parsed,
+        Err(error) => panic!("parse URI {uri}: {error}"),
+    }
+}
+
 #[test]
 fn uri_non_file_scheme_is_rejected() {
-    let u: Uri = "https://example.com/x.ur".parse().expect("uri");
+    let u = parse_uri("https://example.com/x.ur");
     assert!(uri_to_file_path(&u).is_none());
 }
 
 #[test]
 fn uri_local_path_for_tooling_rejects_non_file() {
-    let u: Uri = "https://example.com/x.ur".parse().expect("uri");
+    let u = parse_uri("https://example.com/x.ur");
     assert!(uri_local_path_for_tooling(&u).is_none());
 }
 
 #[cfg(unix)]
 #[test]
 fn uri_local_path_for_tooling_accepts_file_uri() {
-    let u: Uri = "file:///tmp/urweb-langsec-tooling.ur".parse().expect("uri");
+    let u = parse_uri("file:///tmp/urweb-langsec-tooling.ur");
     assert_eq!(
         uri_local_path_for_tooling(&u).as_deref(),
         Some("/tmp/urweb-langsec-tooling.ur")
@@ -31,7 +38,7 @@ fn uri_local_path_for_tooling_accepts_file_uri() {
 #[cfg(unix)]
 #[test]
 fn uri_file_scheme_maps_to_local_path() {
-    let u: Uri = "file:///tmp/urweb-lsp-langsec.ur".parse().expect("uri");
+    let u = parse_uri("file:///tmp/urweb-lsp-langsec.ur");
     assert_eq!(
         uri_to_file_path(&u),
         Some(std::path::PathBuf::from("/tmp/urweb-lsp-langsec.ur"))
@@ -43,14 +50,17 @@ fn workspace_root_prefers_workspace_folder_over_root_uri() {
     #[allow(deprecated)]
     let params = InitializeParams {
         workspace_folders: Some(vec![WorkspaceFolder {
-            uri: "file:///first/folder".parse().expect("uri"),
+            uri: parse_uri("file:///first/folder"),
             name: "first".into(),
         }]),
-        root_uri: Some("file:///other/root".parse().expect("uri")),
+        root_uri: Some(parse_uri("file:///other/root")),
         ..Default::default()
     };
 
-    let got = workspace_root_from_initialize(&params).expect("root");
+    let got = match workspace_root_from_initialize(&params) {
+        Some(root) => root,
+        None => panic!("workspace_root_from_initialize should resolve a root"),
+    };
     #[cfg(unix)]
     assert_eq!(got, std::path::PathBuf::from("/first/folder"));
     #[cfg(windows)]

@@ -274,6 +274,10 @@ fn resolve_boot_root() -> Option<PathBuf> {
             }
         }
     }
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    if manifest_dir.join("lib/ur/basis.urs").is_file() {
+        return Some(manifest_dir);
+    }
     let cwd = std::env::current_dir().ok()?;
     boot_root_from(cwd)
 }

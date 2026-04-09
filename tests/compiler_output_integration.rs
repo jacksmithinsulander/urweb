@@ -4,12 +4,8 @@
 
 mod common;
 
-use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
-use tempfile::tempdir;
-
-static CWD_LOCK: Mutex<()> = Mutex::new(());
+use std::sync::OnceLock;
 
 /// Attempt compilation; return None if the compiler doesn't yet support the
 /// construct (parse/elaboration failure). Tests use this to skip gracefully
@@ -18,20 +14,51 @@ fn try_compile(urp: &Path) -> Option<(String, String)> {
     common::compile_to_outputs_bounded(urp.to_path_buf(), |_| {}).ok()
 }
 
-fn setup_minimal_project() -> (tempfile::TempDir, PathBuf) {
-    let dir = tempdir().unwrap();
+fn setup_project(urp_body: &str, module_body: &str) -> (tempfile::TempDir, PathBuf) {
+    let dir = common::tempdir("compiler_output_integration tempdir");
     let dir_path = dir.path().to_path_buf();
-    fs::write(dir_path.join("app.urp"), "mod1\n").unwrap();
-    fs::write(dir_path.join("mod1.ur"), "val x = 1").unwrap();
+    common::write_file(
+        &dir_path.join("app.urp"),
+        urp_body,
+        "write compiler_output_integration app.urp",
+    );
+    common::write_file(
+        &dir_path.join("mod1.ur"),
+        module_body,
+        "write compiler_output_integration mod1.ur",
+    );
     let urp = dir_path.join("app.urp");
     (dir, urp)
 }
 
+fn setup_minimal_project() -> (tempfile::TempDir, PathBuf) {
+    setup_project("mod1\n", "val x = 1")
+}
+
+static MINIMAL_PROJECT_OUTPUT: OnceLock<Option<(String, String)>> = OnceLock::new();
+static SQLITE_MINIMAL_PROJECT_OUTPUT: OnceLock<Option<(String, String)>> = OnceLock::new();
+
+fn minimal_project_output() -> Option<&'static (String, String)> {
+    MINIMAL_PROJECT_OUTPUT
+        .get_or_init(|| {
+            let (_dir, urp) = setup_minimal_project();
+            try_compile(&urp)
+        })
+        .as_ref()
+}
+
+fn sqlite_minimal_project_output() -> Option<&'static (String, String)> {
+    SQLITE_MINIMAL_PROJECT_OUTPUT
+        .get_or_init(|| {
+            let (_dir, urp) = setup_project("database sqlite://\n\nmod1\n", "val x = 1");
+            try_compile(&urp)
+        })
+        .as_ref()
+}
+
 #[test]
 fn compile_to_outputs_c_code_non_empty() {
-    let _g = CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let (_dir, urp) = setup_minimal_project();
-    let (c_code, _sql) = match try_compile(&urp) {
+    let (c_code, _sql) = match minimal_project_output() {
         None => return,
         Some(v) => v,
     };
@@ -43,13 +70,7 @@ fn compile_to_outputs_c_code_non_empty() {
 
 #[test]
 fn compile_to_outputs_sql_non_empty_when_database() {
-    let _g = CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let dir = tempdir().unwrap();
-    let dir_path = dir.path().to_path_buf();
-    fs::write(dir_path.join("app.urp"), "database sqlite://\n\nmod1\n").unwrap();
-    fs::write(dir_path.join("mod1.ur"), "val x = 1").unwrap();
-    let urp = dir_path.join("app.urp");
-    let (c_code, _sql) = match try_compile(&urp) {
+    let (c_code, _sql) = match sqlite_minimal_project_output() {
         None => return,
         Some(v) => v,
     };
@@ -63,9 +84,7 @@ fn compile_to_outputs_sql_non_empty_when_database() {
 
 #[test]
 fn compile_to_outputs_c_contains_main_or_ur_ctx() {
-    let _g = CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let (_dir, urp) = setup_minimal_project();
-    let (c_code, _) = match try_compile(&urp) {
+    let (c_code, _) = match minimal_project_output() {
         None => return,
         Some(v) => v,
     };
@@ -78,9 +97,7 @@ fn compile_to_outputs_c_contains_main_or_ur_ctx() {
 
 #[test]
 fn compile_to_outputs_c_not_xyzzy() {
-    let _g = CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let (_dir, urp) = setup_minimal_project();
-    let (c_code, sql) = match try_compile(&urp) {
+    let (c_code, sql) = match minimal_project_output() {
         None => return,
         Some(v) => v,
     };
@@ -98,16 +115,10 @@ fn compile_to_outputs_c_not_xyzzy() {
 fn compile_to_outputs_sql_create_index_exact_when_table_with_index() {
     // Kills: mutants in sql_generate Decl::Index, CREATE INDEX.
     // Minimal .ur with table+index: assert exact "CREATE INDEX" substring.
-    let _g = CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let dir = tempdir().unwrap();
-    let dir_path = dir.path().to_path_buf();
-    fs::write(dir_path.join("app.urp"), "database sqlite://\n\nmod1\n").unwrap();
-    fs::write(
-        dir_path.join("mod1.ur"),
+    let (_dir, urp) = setup_project(
+        "database sqlite://\n\nmod1\n",
         "table t : { id : int }\nval _ = ()\n",
-    )
-    .unwrap();
-    let urp = dir_path.join("app.urp");
+    );
     let (_c_code, sql) = match try_compile(&urp) {
         None => return,
         Some(v) => v,
@@ -122,23 +133,13 @@ fn compile_to_outputs_sql_create_index_exact_when_table_with_index() {
 fn compile_to_outputs_sql_pg_trgm_when_uses_similar() {
     // Kills: mutants in sql_generate similar init guard.
     // Database with uses_similar: assert pg_trgm extension present.
-    let _g = CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let dir = tempdir().unwrap();
-    let dir_path = dir.path().to_path_buf();
-    fs::write(
-        dir_path.join("app.urp"),
+    let (_dir, urp) = setup_project(
         "database postgres://localhost/db\n\nmod1\n",
-    )
-    .unwrap();
-    fs::write(
-        dir_path.join("mod1.ur"),
         r#"
 table t : { id : int, name : string }
 val _ = (fun () => search t [] []) ()
 "#,
-    )
-    .unwrap();
-    let urp = dir_path.join("app.urp");
+    );
     let (_c_code, sql) = match try_compile(&urp) {
         None => return,
         Some(v) => v,
@@ -151,16 +152,10 @@ val _ = (fun () => search t [] []) ()
 
 #[test]
 fn compile_to_outputs_sql_contains_create_table() {
-    let _g = CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let dir = tempdir().unwrap();
-    let dir_path = dir.path().to_path_buf();
-    fs::write(dir_path.join("app.urp"), "database sqlite://\n\nmod1\n").unwrap();
-    fs::write(
-        dir_path.join("mod1.ur"),
+    let (_dir, urp) = setup_project(
+        "database sqlite://\n\nmod1\n",
         "table t : { id : int, name : string }\nval _ = ()",
-    )
-    .unwrap();
-    let urp = dir_path.join("app.urp");
+    );
     let (_c_code, sql) = match try_compile(&urp) {
         None => return,
         Some(v) => v,
@@ -173,9 +168,7 @@ fn compile_to_outputs_sql_contains_create_table() {
 
 #[test]
 fn compile_to_outputs_c_contains_val_x_or_main_for_prim() {
-    let _g = CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let (_dir, urp) = setup_minimal_project();
-    let (c_code, _) = match try_compile(&urp) {
+    let (c_code, _) = match minimal_project_output() {
         None => return,
         Some(v) => v,
     };
@@ -187,16 +180,10 @@ fn compile_to_outputs_c_contains_val_x_or_main_for_prim() {
 
 #[test]
 fn compile_to_outputs_option_datatype_produces_c_code() {
-    let _g = CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let dir = tempdir().unwrap();
-    let dir_path = dir.path().to_path_buf();
-    fs::write(dir_path.join("app.urp"), "mod1\n").unwrap();
-    fs::write(
-        dir_path.join("mod1.ur"),
+    let (_dir, urp) = setup_project(
+        "mod1\n",
         "datatype t = A | B of int\nval x : t = A\nval _ = ()",
-    )
-    .unwrap();
-    let urp = dir_path.join("app.urp");
+    );
     let (c_code, _) = match try_compile(&urp) {
         None => return,
         Some(v) => v,
@@ -206,12 +193,7 @@ fn compile_to_outputs_option_datatype_produces_c_code() {
 
 #[test]
 fn compile_to_outputs_record_type_produces_c_code() {
-    let _g = CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let dir = tempdir().unwrap();
-    let dir_path = dir.path().to_path_buf();
-    fs::write(dir_path.join("app.urp"), "mod1\n").unwrap();
-    fs::write(dir_path.join("mod1.ur"), "val r = { A = 1 }\nval _ = ()").unwrap();
-    let urp = dir_path.join("app.urp");
+    let (_dir, urp) = setup_project("mod1\n", "val r = { A = 1 }\nval _ = ()");
     let (c_code, _) = match try_compile(&urp) {
         None => return,
         Some(v) => v,
@@ -221,16 +203,7 @@ fn compile_to_outputs_record_type_produces_c_code() {
 
 #[test]
 fn compile_to_outputs_list_type_produces_c_code() {
-    let _g = CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let dir = tempdir().unwrap();
-    let dir_path = dir.path().to_path_buf();
-    fs::write(dir_path.join("app.urp"), "mod1\n").unwrap();
-    fs::write(
-        dir_path.join("mod1.ur"),
-        "val xs = [1, 2, 3] : list int\nval _ = ()",
-    )
-    .unwrap();
-    let urp = dir_path.join("app.urp");
+    let (_dir, urp) = setup_project("mod1\n", "val xs = [1, 2, 3] : list int\nval _ = ()");
     let (c_code, _) = match try_compile(&urp) {
         None => return,
         Some(v) => v,
@@ -240,16 +213,10 @@ fn compile_to_outputs_list_type_produces_c_code() {
 
 #[test]
 fn compile_to_outputs_sql_blob_type_when_used() {
-    let _g = CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let dir = tempdir().unwrap();
-    let dir_path = dir.path().to_path_buf();
-    fs::write(dir_path.join("app.urp"), "database sqlite://\n\nmod1\n").unwrap();
-    fs::write(
-        dir_path.join("mod1.ur"),
+    let (_dir, urp) = setup_project(
+        "database sqlite://\n\nmod1\n",
         "table t : { id : int, data : blob }\nval _ = ()",
-    )
-    .unwrap();
-    let urp = dir_path.join("app.urp");
+    );
     let (_c_code, sql) = match try_compile(&urp) {
         None => return,
         Some(v) => v,
@@ -263,16 +230,10 @@ fn compile_to_outputs_sql_blob_type_when_used() {
 // Phase 6 expanded: more C/SQL output assertions for sqlify, sequence, cookie, url, etc.
 #[test]
 fn compile_to_outputs_sql_int_type_in_table() {
-    let _g = CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let dir = tempdir().unwrap();
-    let dir_path = dir.path().to_path_buf();
-    fs::write(dir_path.join("app.urp"), "database sqlite://\n\nmod1\n").unwrap();
-    fs::write(
-        dir_path.join("mod1.ur"),
+    let (_dir, urp) = setup_project(
+        "database sqlite://\n\nmod1\n",
         "table t : { id : int }\nval _ = ()",
-    )
-    .unwrap();
-    let urp = dir_path.join("app.urp");
+    );
     let (_c_code, sql) = match try_compile(&urp) {
         None => return,
         Some(v) => v,
@@ -285,16 +246,10 @@ fn compile_to_outputs_sql_int_type_in_table() {
 
 #[test]
 fn compile_to_outputs_sql_string_type_in_table() {
-    let _g = CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let dir = tempdir().unwrap();
-    let dir_path = dir.path().to_path_buf();
-    fs::write(dir_path.join("app.urp"), "database sqlite://\n\nmod1\n").unwrap();
-    fs::write(
-        dir_path.join("mod1.ur"),
+    let (_dir, urp) = setup_project(
+        "database sqlite://\n\nmod1\n",
         "table t : { id : int, name : string }\nval _ = ()",
-    )
-    .unwrap();
-    let urp = dir_path.join("app.urp");
+    );
     let (_c_code, sql) = match try_compile(&urp) {
         None => return,
         Some(v) => v,
@@ -307,12 +262,7 @@ fn compile_to_outputs_sql_string_type_in_table() {
 
 #[test]
 fn compile_to_outputs_sequence_produces_sql() {
-    let _g = CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let dir = tempdir().unwrap();
-    let dir_path = dir.path().to_path_buf();
-    fs::write(dir_path.join("app.urp"), "database sqlite://\n\nmod1\n").unwrap();
-    fs::write(dir_path.join("mod1.ur"), "sequence s\nval _ = ()").unwrap();
-    let urp = dir_path.join("app.urp");
+    let (_dir, urp) = setup_project("database sqlite://\n\nmod1\n", "sequence s\nval _ = ()");
     let (_c_code, sql) = match try_compile(&urp) {
         None => return,
         Some(v) => v,
@@ -322,9 +272,7 @@ fn compile_to_outputs_sequence_produces_sql() {
 
 #[test]
 fn compile_to_outputs_c_contains_struct_or_typedef() {
-    let _g = CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let (_dir, urp) = setup_minimal_project();
-    let (c_code, _) = match try_compile(&urp) {
+    let (c_code, _) = match minimal_project_output() {
         None => return,
         Some(v) => v,
     };
@@ -339,16 +287,10 @@ fn compile_to_outputs_c_contains_struct_or_typedef() {
 
 #[test]
 fn compile_to_outputs_sql_bool_when_table_has_bool() {
-    let _g = CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let dir = tempdir().unwrap();
-    let dir_path = dir.path().to_path_buf();
-    fs::write(dir_path.join("app.urp"), "database sqlite://\n\nmod1\n").unwrap();
-    fs::write(
-        dir_path.join("mod1.ur"),
+    let (_dir, urp) = setup_project(
+        "database sqlite://\n\nmod1\n",
         "table t : { id : int, flag : bool }\nval _ = ()",
-    )
-    .unwrap();
-    let urp = dir_path.join("app.urp");
+    );
     let (_c_code, sql) = match try_compile(&urp) {
         None => return,
         Some(v) => v,
@@ -364,16 +306,10 @@ fn compile_to_outputs_sql_bool_when_table_has_bool() {
 
 #[test]
 fn compile_to_outputs_float_column_produces_sql() {
-    let _g = CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let dir = tempdir().unwrap();
-    let dir_path = dir.path().to_path_buf();
-    fs::write(dir_path.join("app.urp"), "database sqlite://\n\nmod1\n").unwrap();
-    fs::write(
-        dir_path.join("mod1.ur"),
+    let (_dir, urp) = setup_project(
+        "database sqlite://\n\nmod1\n",
         "table t : { id : int, x : float }\nval _ = ()",
-    )
-    .unwrap();
-    let urp = dir_path.join("app.urp");
+    );
     let (_c_code, sql) = match try_compile(&urp) {
         None => return,
         Some(v) => v,
@@ -389,13 +325,7 @@ fn compile_to_outputs_float_column_produces_sql() {
 
 #[test]
 fn compile_to_outputs_database_decl_produces_sql_init() {
-    let _g = CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let dir = tempdir().unwrap();
-    let dir_path = dir.path().to_path_buf();
-    fs::write(dir_path.join("app.urp"), "database sqlite://\n\nmod1\n").unwrap();
-    fs::write(dir_path.join("mod1.ur"), "val _ = ()").unwrap();
-    let urp = dir_path.join("app.urp");
-    let (c_code, _sql) = match try_compile(&urp) {
+    let (c_code, _sql) = match sqlite_minimal_project_output() {
         None => return,
         Some(v) => v,
     };
@@ -405,16 +335,10 @@ fn compile_to_outputs_database_decl_produces_sql_init() {
 
 #[test]
 fn compile_to_outputs_view_produces_sql_or_c() {
-    let _g = CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let dir = tempdir().unwrap();
-    let dir_path = dir.path().to_path_buf();
-    fs::write(dir_path.join("app.urp"), "database sqlite://\n\nmod1\n").unwrap();
-    fs::write(
-        dir_path.join("mod1.ur"),
+    let (_dir, urp) = setup_project(
+        "database sqlite://\n\nmod1\n",
         "table t : { id : int }\nview v = ()\nval _ = ()",
-    )
-    .unwrap();
-    let urp = dir_path.join("app.urp");
+    );
     let (c_code, sql) = match try_compile(&urp) {
         None => return,
         Some(v) => v,
@@ -428,16 +352,7 @@ fn compile_to_outputs_view_produces_sql_or_c() {
 // Phase F: More compiler output tests (sqlify, strcat, url, page, cookie, style)
 #[test]
 fn compile_to_outputs_strcat_produces_c_code() {
-    let _g = CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let dir = tempdir().unwrap();
-    let dir_path = dir.path().to_path_buf();
-    fs::write(dir_path.join("app.urp"), "mod1\n").unwrap();
-    fs::write(
-        dir_path.join("mod1.ur"),
-        "val x = \"a\" ^ \"b\"\nval _ = ()",
-    )
-    .unwrap();
-    let urp = dir_path.join("app.urp");
+    let (_dir, urp) = setup_project("mod1\n", "val x = \"a\" ^ \"b\"\nval _ = ()");
     let (c_code, _) = match try_compile(&urp) {
         None => return,
         Some(v) => v,
@@ -447,12 +362,7 @@ fn compile_to_outputs_strcat_produces_c_code() {
 
 #[test]
 fn compile_to_outputs_cookie_produces_c_or_sql() {
-    let _g = CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let dir = tempdir().unwrap();
-    let dir_path = dir.path().to_path_buf();
-    fs::write(dir_path.join("app.urp"), "mod1\n").unwrap();
-    fs::write(dir_path.join("mod1.ur"), "cookie c : unit\nval _ = ()").unwrap();
-    let urp = dir_path.join("app.urp");
+    let (_dir, urp) = setup_project("mod1\n", "cookie c : unit\nval _ = ()");
     let (c_code, _) = match try_compile(&urp) {
         None => return,
         Some(v) => v,
@@ -462,12 +372,7 @@ fn compile_to_outputs_cookie_produces_c_or_sql() {
 
 #[test]
 fn compile_to_outputs_style_produces_c_code() {
-    let _g = CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let dir = tempdir().unwrap();
-    let dir_path = dir.path().to_path_buf();
-    fs::write(dir_path.join("app.urp"), "mod1\n").unwrap();
-    fs::write(dir_path.join("mod1.ur"), "style s = \"\"\nval _ = ()").unwrap();
-    let urp = dir_path.join("app.urp");
+    let (_dir, urp) = setup_project("mod1\n", "style s = \"\"\nval _ = ()");
     let (c_code, _) = match try_compile(&urp) {
         None => return,
         Some(v) => v,
@@ -477,16 +382,10 @@ fn compile_to_outputs_style_produces_c_code() {
 
 #[test]
 fn compile_to_outputs_sql_create_table_substring() {
-    let _g = CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let dir = tempdir().unwrap();
-    let dir_path = dir.path().to_path_buf();
-    fs::write(dir_path.join("app.urp"), "database sqlite://\n\nmod1\n").unwrap();
-    fs::write(
-        dir_path.join("mod1.ur"),
+    let (_dir, urp) = setup_project(
+        "database sqlite://\n\nmod1\n",
         "table t : { id : int }\nval _ = ()",
-    )
-    .unwrap();
-    let urp = dir_path.join("app.urp");
+    );
     let (_c_code, sql) = match try_compile(&urp) {
         None => return,
         Some(v) => v,
@@ -499,16 +398,10 @@ fn compile_to_outputs_sql_create_table_substring() {
 
 #[test]
 fn compile_to_outputs_sql_int_in_column() {
-    let _g = CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let dir = tempdir().unwrap();
-    let dir_path = dir.path().to_path_buf();
-    fs::write(dir_path.join("app.urp"), "database sqlite://\n\nmod1\n").unwrap();
-    fs::write(
-        dir_path.join("mod1.ur"),
+    let (_dir, urp) = setup_project(
+        "database sqlite://\n\nmod1\n",
         "table t : { x : int }\nval _ = ()",
-    )
-    .unwrap();
-    let urp = dir_path.join("app.urp");
+    );
     let (_c_code, sql) = match try_compile(&urp) {
         None => return,
         Some(v) => v,
@@ -521,16 +414,10 @@ fn compile_to_outputs_sql_int_in_column() {
 
 #[test]
 fn compile_to_outputs_sql_float_in_column() {
-    let _g = CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let dir = tempdir().unwrap();
-    let dir_path = dir.path().to_path_buf();
-    fs::write(dir_path.join("app.urp"), "database sqlite://\n\nmod1\n").unwrap();
-    fs::write(
-        dir_path.join("mod1.ur"),
+    let (_dir, urp) = setup_project(
+        "database sqlite://\n\nmod1\n",
         "table t : { x : float }\nval _ = ()",
-    )
-    .unwrap();
-    let urp = dir_path.join("app.urp");
+    );
     let (_c_code, sql) = match try_compile(&urp) {
         None => return,
         Some(v) => v,
@@ -546,9 +433,7 @@ fn compile_to_outputs_sql_float_in_column() {
 
 #[test]
 fn compile_to_outputs_c_contains_basis_or_main() {
-    let _g = CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let (_dir, urp) = setup_minimal_project();
-    let (c_code, _) = match try_compile(&urp) {
+    let (c_code, _) = match minimal_project_output() {
         None => return,
         Some(v) => v,
     };

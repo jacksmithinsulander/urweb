@@ -19,10 +19,9 @@ fn gdb_available() -> bool {
 #[test]
 fn ur_debugger_help_prints_modes_and_succeeds() {
     let exe = cargo_bin("ur-debugger");
-    let output = Command::new(&exe)
-        .arg("--help")
-        .output()
-        .expect("ur-debugger --help");
+    let mut command = Command::new(&exe);
+    command.arg("--help");
+    let output = common::command_output(&mut command, "run ur-debugger --help");
     assert!(
         output.status.success(),
         "stderr={}",
@@ -38,17 +37,21 @@ fn ur_debugger_help_prints_modes_and_succeeds() {
 #[test]
 fn ur_debugger_short_help_succeeds() {
     let exe = cargo_bin("ur-debugger");
-    let output = Command::new(&exe).arg("-h").output().expect("-h");
+    let mut command = Command::new(&exe);
+    command.arg("-h");
+    let output = common::command_output(&mut command, "run ur-debugger -h");
     assert!(output.status.success());
 }
 
 #[test]
 fn ur_debugger_positional_without_mode_fails() {
     let exe = cargo_bin("ur-debugger");
-    let output = Command::new(&exe)
-        .arg("not-a-subcommand")
-        .output()
-        .expect("positional");
+    let mut command = Command::new(&exe);
+    command.arg("not-a-subcommand");
+    let output = common::command_output(
+        &mut command,
+        "run ur-debugger with bare positional argument",
+    );
     assert!(
         !output.status.success(),
         "bare positional must error (run -> Ok(()) mutant would exit 0): {:?}",
@@ -59,7 +62,8 @@ fn ur_debugger_positional_without_mode_fails() {
 #[test]
 fn ur_debugger_no_args_prints_usage_and_succeeds() {
     let exe = cargo_bin("ur-debugger");
-    let output = Command::new(&exe).output().expect("no args");
+    let mut command = Command::new(&exe);
+    let output = common::command_output(&mut command, "run ur-debugger without arguments");
     assert!(output.status.success());
     let err = String::from_utf8_lossy(&output.stderr);
     assert!(err.contains("ur-debugger") || err.contains("--dap"));
@@ -68,10 +72,9 @@ fn ur_debugger_no_args_prints_usage_and_succeeds() {
 #[test]
 fn ur_debugger_unknown_dash_flag_fails() {
     let exe = cargo_bin("ur-debugger");
-    let output = Command::new(&exe)
-        .args(["--not-a-real-cli-flag-xyz"])
-        .output()
-        .expect("bad flag");
+    let mut command = Command::new(&exe);
+    command.args(["--not-a-real-cli-flag-xyz"]);
+    let output = common::command_output(&mut command, "run ur-debugger with unknown flag");
     assert!(!output.status.success());
     let err = String::from_utf8_lossy(&output.stderr);
     assert!(
@@ -83,10 +86,9 @@ fn ur_debugger_unknown_dash_flag_fails() {
 #[test]
 fn ur_debugger_tty_without_program_fails() {
     let exe = cargo_bin("ur-debugger");
-    let output = Command::new(&exe)
-        .arg("--tty")
-        .output()
-        .expect("--tty alone");
+    let mut command = Command::new(&exe);
+    command.arg("--tty");
+    let output = common::command_output(&mut command, "run ur-debugger --tty without a program");
     assert!(
         !output.status.success(),
         "--tty without program must error (gdb_tty Ok mutant would hide this)"
@@ -99,10 +101,9 @@ fn ur_debugger_gdb_mi_batch_quit_ok_when_gdb_installed() {
         return;
     }
     let exe = cargo_bin("ur-debugger");
-    let output = Command::new(&exe)
-        .args(["--gdb", "--", "-batch", "-ex", "quit"])
-        .output()
-        .expect("--gdb batch");
+    let mut command = Command::new(&exe);
+    command.args(["--gdb", "--", "-batch", "-ex", "quit"]);
+    let output = common::command_output(&mut command, "run ur-debugger --gdb -- -batch -ex quit");
     assert!(
         output.status.success(),
         "gdb -batch -ex quit should be success; stderr={}",

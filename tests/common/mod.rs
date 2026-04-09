@@ -6,6 +6,7 @@
 
 use std::path::PathBuf;
 use std::process::Command;
+use std::process::Output;
 use std::sync::mpsc;
 use std::sync::OnceLock;
 use std::thread;
@@ -58,6 +59,59 @@ pub fn compile_to_outputs_bounded(
     }
 }
 
+/// Unwrap a `Result` in tests with a contextual panic that keeps the original error visible.
+pub fn require_ok<T, E: std::fmt::Display>(result: Result<T, E>, context: &str) -> T {
+    match result {
+        Ok(value) => value,
+        Err(error) => panic!("{context}: {error}"),
+    }
+}
+
+/// Unwrap an `Option` in tests with a contextual panic when the value is missing.
+pub fn require_some<T>(value: Option<T>, context: &str) -> T {
+    match value {
+        Some(inner) => inner,
+        None => panic!("{context}: expected Some(..), got None"),
+    }
+}
+
+/// Unwrap the error side of a `Result` in tests with a contextual panic on unexpected success.
+pub fn require_err<T, E>(result: Result<T, E>, context: &str) -> E {
+    match result {
+        Ok(_) => panic!("{context}: expected Err(..), got Ok(..)"),
+        Err(error) => error,
+    }
+}
+
+/// Create an isolated temp directory for a test, panicking with context on failure.
+pub fn tempdir(context: &str) -> tempfile::TempDir {
+    require_ok(tempfile::tempdir(), context)
+}
+
+/// Write one test fixture file with contextual panic text on failure.
+pub fn write_file(path: &std::path::Path, contents: impl AsRef<[u8]>, context: &str) {
+    match std::fs::write(path, contents) {
+        Ok(()) => {}
+        Err(error) => panic!("{context} ({}): {error}", path.display()),
+    }
+}
+
+/// Create a directory tree for test fixtures with contextual panic text on failure.
+pub fn create_dir_all(path: &std::path::Path, context: &str) {
+    match std::fs::create_dir_all(path) {
+        Ok(()) => {}
+        Err(error) => panic!("{context} ({}): {error}", path.display()),
+    }
+}
+
+/// Run a child process and surface spawn errors with contextual panic text.
+pub fn command_output(command: &mut Command, context: &str) -> Output {
+    match command.output() {
+        Ok(output) => output,
+        Err(error) => panic!("{context}: {error}"),
+    }
+}
+
 /// Same as Cargo’s default `target/` when `CARGO_TARGET_DIR` is unset.
 fn cargo_target_root() -> PathBuf {
     std::env::var_os("CARGO_TARGET_DIR")
@@ -89,8 +143,8 @@ fn ensure_ur_bins_built_once() {
         if let Ok(target_dir) = std::env::var("CARGO_TARGET_DIR") {
             cmd.env("CARGO_TARGET_DIR", target_dir);
         }
-        let status = cmd
-            .args([
+        let status = require_ok(
+            cmd.args([
                 "build",
                 "-p",
                 "ur",
@@ -115,8 +169,9 @@ fn ensure_ur_bins_built_once() {
                 "--bin",
                 "test_parse",
             ])
-            .status()
-            .expect("spawn cargo build for integration-test peer binaries");
+            .status(),
+            "spawn cargo build for integration-test peer binaries",
+        );
         assert!(
             status.success(),
             "cargo build for integration-test peer binaries exited with {status}",
@@ -152,8 +207,9 @@ pub fn ur_package_binary(name: &str) -> PathBuf {
 
 /// Directory containing root-package executables (`ur`, `ur-compile`, …) for `PATH`.
 pub fn ur_package_bin_dir() -> PathBuf {
-    ur_package_binary("ur")
-        .parent()
-        .expect("ur binary path must have a parent directory")
-        .to_path_buf()
+    require_some(
+        ur_package_binary("ur").parent(),
+        "ur binary path must have a parent directory",
+    )
+    .to_path_buf()
 }

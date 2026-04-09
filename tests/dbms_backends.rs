@@ -2,12 +2,7 @@
 
 mod common;
 
-use std::fs;
-use std::sync::Mutex;
-use tempfile::tempdir;
 use ur::db;
-
-static CWD_LOCK: Mutex<()> = Mutex::new(());
 
 /// Native `-dbms` values emit vendor headers (not `sqlite3.h`).
 #[test]
@@ -19,16 +14,25 @@ fn compile_to_outputs_each_native_backend_emits_vendor_client() {
         ("tigerbeetle", "tb_client.h"),
     ];
     for (canon, needle) in needle_for {
-        let _g = CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let dir = tempdir().unwrap();
+        let dir = common::tempdir("dbms_backends native backend tempdir");
         let dir_path = dir.path().to_path_buf();
         let urp_body = format!("dbms {canon}\ndatabase :memory:\n\nm\n");
-        fs::write(dir_path.join("app.urp"), urp_body).unwrap();
-        fs::write(dir_path.join("m.ur"), "val x = 1").unwrap();
+        common::write_file(
+            &dir_path.join("app.urp"),
+            urp_body,
+            "write dbms_backends app.urp",
+        );
+        common::write_file(
+            &dir_path.join("m.ur"),
+            "val x = 1",
+            "write dbms_backends m.ur",
+        );
         let urp = dir_path.join("app.urp");
 
-        std::env::set_current_dir(&dir_path).unwrap();
-        let (c, _) = common::compile_to_outputs_bounded(urp.clone(), |_| {}).unwrap();
+        let (c, _) = common::require_ok(
+            common::compile_to_outputs_bounded(urp, |_| {}),
+            &format!("compile native backend project for {canon}"),
+        );
         assert!(
             c.contains(needle),
             "dbms {canon} should mention {needle}: {}",
@@ -44,18 +48,23 @@ fn compile_to_outputs_each_native_backend_emits_vendor_client() {
 /// TigerBeetle `urweb_tb_transfer` lowers to a blocking `tb_client_submit` + `CREATE_TRANSFERS`.
 #[test]
 fn compile_to_outputs_tigerbeetle_emits_transfer_submit() {
-    let _g = CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let dir = tempdir().unwrap();
+    let dir = common::tempdir("dbms_backends tigerbeetle tempdir");
     let dir_path = dir.path().to_path_buf();
-    fs::write(
-        dir_path.join("app.urp"),
+    common::write_file(
+        &dir_path.join("app.urp"),
         "dbms tigerbeetle\ndatabase 127.0.0.1:3000\n\nm\n",
-    )
-    .unwrap();
-    fs::write(dir_path.join("m.ur"), "val x = 1").unwrap();
+        "write tigerbeetle app.urp",
+    );
+    common::write_file(
+        &dir_path.join("m.ur"),
+        "val x = 1",
+        "write tigerbeetle m.ur",
+    );
     let urp = dir_path.join("app.urp");
-    std::env::set_current_dir(&dir_path).unwrap();
-    let (c, _) = common::compile_to_outputs_bounded(urp.clone(), |_| {}).unwrap();
+    let (c, _) = common::require_ok(
+        common::compile_to_outputs_bounded(urp, |_| {}),
+        "compile tigerbeetle transfer project",
+    );
     assert!(
         c.contains("tb_client_submit") && c.contains("TB_OPERATION_CREATE_TRANSFERS"),
         "expected TigerBeetle transfer submit in C: {}",
@@ -65,15 +74,24 @@ fn compile_to_outputs_tigerbeetle_emits_transfer_submit() {
 
 #[test]
 fn compile_to_outputs_rejects_unknown_dbms_name() {
-    let _g = CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let dir = tempdir().unwrap();
+    let dir = common::tempdir("dbms_backends unknown dbms tempdir");
     let dir_path = dir.path().to_path_buf();
-    fs::write(dir_path.join("app.urp"), "dbms oracle\ndatabase x\n\nm\n").unwrap();
-    fs::write(dir_path.join("m.ur"), "val x = 1").unwrap();
+    common::write_file(
+        &dir_path.join("app.urp"),
+        "dbms oracle\ndatabase x\n\nm\n",
+        "write unknown dbms app.urp",
+    );
+    common::write_file(
+        &dir_path.join("m.ur"),
+        "val x = 1",
+        "write unknown dbms m.ur",
+    );
     let urp = dir_path.join("app.urp");
 
-    std::env::set_current_dir(&dir_path).unwrap();
-    let err = common::compile_to_outputs_bounded(urp.clone(), |_| {}).unwrap_err();
+    let err = common::require_err(
+        common::compile_to_outputs_bounded(urp, |_| {}),
+        "compile unknown dbms project should fail",
+    );
     let msg = format!("{err:#}");
     assert!(
         msg.contains("unknown dbms") || msg.contains("oracle"),
@@ -83,16 +101,19 @@ fn compile_to_outputs_rejects_unknown_dbms_name() {
 
 /// `compile_to_outputs` includes DB client headers for each SQL wire.
 fn compile_dbms_urp_minimal_c(urp_body: &str) -> String {
-    let _g = CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let dir = tempdir().unwrap();
+    let dir = common::tempdir("dbms_backends sql wire tempdir");
     let dir_path = dir.path().to_path_buf();
-    fs::write(dir_path.join("app.urp"), urp_body).unwrap();
-    fs::write(dir_path.join("m.ur"), "val x = 1").unwrap();
+    common::write_file(
+        &dir_path.join("app.urp"),
+        urp_body,
+        "write sql wire app.urp",
+    );
+    common::write_file(&dir_path.join("m.ur"), "val x = 1", "write sql wire m.ur");
     let urp = dir_path.join("app.urp");
-    std::env::set_current_dir(&dir_path).unwrap();
-    let (c_code, _) = common::compile_to_outputs_bounded(urp.clone(), |_| {}).unwrap_or_else(|e| {
-        panic!("compile_to_outputs must succeed for minimal SQL URP ({urp_body:?}): {e:#}")
-    });
+    let (c_code, _) = common::require_ok(
+        common::compile_to_outputs_bounded(urp, |_| {}),
+        &format!("compile_to_outputs must succeed for minimal SQL URP ({urp_body:?})"),
+    );
     assert!(
         !c_code.trim().is_empty(),
         "expected non-empty generated C for {urp_body:?}"
@@ -149,7 +170,10 @@ fn public_db_api_lists_alternate_backends() {
 #[test]
 fn parse_tigerbeetle_case_insensitive() {
     assert_eq!(
-        db::ProjectDb::parse_user_input("TigerBeetle").unwrap(),
+        common::require_ok(
+            db::ProjectDb::parse_user_input("TigerBeetle"),
+            "parse TigerBeetle backend name",
+        ),
         db::ProjectDb::Tigerbeetle
     );
 }
