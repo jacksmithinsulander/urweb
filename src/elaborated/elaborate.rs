@@ -5819,11 +5819,7 @@ fn elab_exp_inner(
                 body,
             );
             let disjoint_body_type = Located::new(
-                elab::Constructor::TDisjoint(
-                    Box::new(c1e),
-                    Box::new(c2e),
-                    Box::new(bodytype),
-                ),
+                elab::Constructor::TDisjoint(Box::new(c1e), Box::new(c2e), Box::new(bodytype)),
                 span.clone(),
             );
             (bodye, disjoint_body_type)
@@ -12311,29 +12307,21 @@ mod tests {
         let crate::source::Exp::CAbs(_, _, _, outer_exp) = &body.node else {
             panic!("expected outer constructor abstraction, got {:?}", body);
         };
-        let crate::source::Exp::Abs(_, _, argument_case) = &outer_exp.node else {
+        // `(_ : read t)` is a named-wildcard pattern with annotation — the parser correctly
+        // emits a direct Abs("_", Some(read_t), ...) rather than a Case desugaring, because
+        // `_` resolves to Pat::Var("_") which satisfies annotated_var_pattern_supports_direct_lambda.
+        let crate::source::Exp::Abs(_, _, fn_s_lambda) = &outer_exp.node else {
             panic!(
-                "expected outer value lambda under fun body, got {:?}",
+                "expected Abs for (_ : read t) arg under CAbs, got {:?}",
                 outer_exp
             );
         };
-        let crate::source::Exp::Case(_, argument_branches) = &argument_case.node else {
-            panic!(
-                "expected parser-desugared annotated argument case under fun body, got {:?}",
-                argument_case
-            );
-        };
-        let Some((_, inner_exp)) = argument_branches.first() else {
-            panic!(
-                "expected one parser-desugared annotated argument branch, got {:?}",
-                argument_branches
-            );
-        };
-        let crate::source::Exp::Abs(_, _, case_exp) = &inner_exp.node else {
-            panic!("expected value lambda under fun body, got {:?}", inner_exp);
+        // `fn s =>` is the explicit lambda over `s` in the function body.
+        let crate::source::Exp::Abs(_, _, case_exp) = &fn_s_lambda.node else {
+            panic!("expected Abs for fn s => under (_ : read t) lambda, got {:?}", fn_s_lambda);
         };
         let crate::source::Exp::Case(_, outer_branches) = &case_exp.node else {
-            panic!("expected outer case under fun body, got {:?}", case_exp);
+            panic!("expected outer case under fn s => body, got {:?}", case_exp);
         };
         assert_eq!(
             outer_branches.len(),

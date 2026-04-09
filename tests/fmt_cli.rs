@@ -2,21 +2,23 @@
 
 mod common;
 
-use std::fs;
 use std::process::Command;
 
 use common::ur_package_binary as cargo_bin;
-use tempfile::tempdir;
 
 #[test]
 fn ur_fmt_parse_failure_prints_error_detail() {
-    let tmp = tempdir().unwrap();
+    let tmp = common::tempdir("fmt_cli parse failure tempdir");
     let path = tmp.path().join("bad.ur");
-    fs::write(&path, "fun main () = )))\n").unwrap();
-    let output = Command::new(cargo_bin("ur-fmt"))
-        .arg(path.to_str().unwrap())
-        .output()
-        .expect("ur-fmt bad.ur");
+    common::write_file(
+        &path,
+        "fun main () = )))\n",
+        "write malformed formatter fixture",
+    );
+    let path_arg = common::require_some(path.to_str(), "formatter fixture path must be UTF-8");
+    let mut command = Command::new(cargo_bin("ur-fmt"));
+    command.arg(path_arg);
+    let output = common::command_output(&mut command, "run ur-fmt on malformed file");
     assert!(
         !output.status.success(),
         "invalid syntax must fail (print_errors noop mutant drops detail-only output)"
@@ -34,13 +36,13 @@ fn ur_fmt_parse_failure_prints_error_detail() {
 
 #[test]
 fn ur_fmt_check_unchanged_file_exits_zero() {
-    let tmp = tempdir().unwrap();
+    let tmp = common::tempdir("fmt_cli check tempdir");
     let path = tmp.path().join("ok.ur");
-    fs::write(&path, "val x = 1\n").unwrap();
-    let output = Command::new(cargo_bin("ur-fmt"))
-        .args(["--check", path.to_str().unwrap()])
-        .output()
-        .expect("ur-fmt --check");
+    common::write_file(&path, "val x = 1\n", "write stable formatter fixture");
+    let path_arg = common::require_some(path.to_str(), "formatter fixture path must be UTF-8");
+    let mut command = Command::new(cargo_bin("ur-fmt"));
+    command.args(["--check", path_arg]);
+    let output = common::command_output(&mut command, "run ur-fmt --check on stable file");
     assert!(
         output.status.success(),
         "formatted == orig guard: --check should pass for stable text, stderr={}",
