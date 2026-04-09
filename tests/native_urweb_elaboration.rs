@@ -3,22 +3,19 @@
 
 mod common;
 
-use std::fs;
-use std::sync::Mutex;
-use tempfile::tempdir;
-
-static LOCK: Mutex<()> = Mutex::new(());
-
 fn boot_elaborates(urp_body: &str, ur_body: &str) -> bool {
-    let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let dir = match tempdir() {
-        Ok(d) => d,
-        Err(_) => return false,
-    };
+    let dir = common::tempdir("native_urweb_elaboration tempdir");
     let root = dir.path();
-    fs::write(root.join("app.urp"), urp_body).unwrap();
-    fs::write(root.join("m.ur"), ur_body).unwrap();
-    std::env::set_current_dir(root).unwrap_or(());
+    common::write_file(
+        &root.join("app.urp"),
+        urp_body,
+        "write app.urp for native elaboration test",
+    );
+    common::write_file(
+        &root.join("m.ur"),
+        ur_body,
+        "write m.ur for native elaboration test",
+    );
     common::compile_to_outputs_bounded(root.join("app.urp"), |settings| {
         settings.boot_linking = true;
     })
