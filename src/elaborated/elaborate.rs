@@ -586,10 +586,7 @@ fn expand_folder_constructor_application(
 
     let singleton_name_row = Located::new(
         elab::Constructor::Record(
-            Box::new(Located::new(
-                elab::Kind::Record(Box::new(unit_kind)),
-                span.clone(),
-            )),
+            Box::new(unit_kind),
             vec![(
                 Located::new(elab::Constructor::Rel(2), span.clone()),
                 Located::new(elab::Constructor::Unit, span.clone()),
@@ -599,7 +596,7 @@ fn expand_folder_constructor_application(
     );
     let singleton_value_row = Located::new(
         elab::Constructor::Record(
-            Box::new(row_kind_constructor.clone()),
+            Box::new(field_kind.clone()),
             vec![(
                 Located::new(elab::Constructor::Rel(2), span.clone()),
                 Located::new(elab::Constructor::Rel(1), span.clone()),
@@ -666,7 +663,7 @@ fn expand_folder_constructor_application(
         span.clone(),
     );
     let empty_row = Located::new(
-        elab::Constructor::Record(Box::new(row_kind_constructor.clone()), Vec::new()),
+        elab::Constructor::Record(Box::new(field_kind.clone()), Vec::new()),
         span.clone(),
     );
     let tf_of_empty = Located::new(
@@ -1306,10 +1303,49 @@ fn assert_projected_signature_constraints(
 
     let mut updated_disjointness_environment = disjointness_environment.clone();
     for (left, right) in constraints {
-        updated_disjointness_environment =
-            disjoint::assert(left, right, updated_disjointness_environment);
+        updated_disjointness_environment = assert_disjoint_rows(
+            elaboration_environment,
+            left,
+            right,
+            updated_disjointness_environment,
+        );
     }
     updated_disjointness_environment
+}
+
+fn normalize_disjoint_row(
+    elaboration_environment: &Env,
+    constructor: elab::LocatedConstructor,
+) -> elab::LocatedConstructor {
+    deep_normalize_constructor(elaboration_environment, constructor)
+}
+
+fn assert_disjoint_rows(
+    elaboration_environment: &Env,
+    left_constructor: elab::LocatedConstructor,
+    right_constructor: elab::LocatedConstructor,
+    disjointness_environment: disjoint::DisjointEnv,
+) -> disjoint::DisjointEnv {
+    disjoint::assert(
+        normalize_disjoint_row(elaboration_environment, left_constructor),
+        normalize_disjoint_row(elaboration_environment, right_constructor),
+        disjointness_environment,
+    )
+}
+
+fn prove_disjoint_rows(
+    elaboration_environment: &Env,
+    span: Span,
+    disjointness_environment: &disjoint::DisjointEnv,
+    left_constructor: elab::LocatedConstructor,
+    right_constructor: elab::LocatedConstructor,
+) -> Vec<disjoint::Goal> {
+    disjoint::prove(
+        span,
+        disjointness_environment,
+        normalize_disjoint_row(elaboration_environment, left_constructor),
+        normalize_disjoint_row(elaboration_environment, right_constructor),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -4260,6 +4296,14 @@ fn unify_cons_inner(
             }
             // Occurs check: prevent circular types before storing.
             if occurs_cunif(r1, &right_normalized) {
+                if std::env::var("URWEB_DEBUG_OCCURS_CHECK").ok().as_deref() == Some("1") {
+                    eprintln!(
+                        "occurs-check debug span={}:{} same-unif-left right={}",
+                        diagnostic_span.file,
+                        diagnostic_span.first.line,
+                        crate::elaborated::type_display::format_constructor(&right_normalized),
+                    );
+                }
                 return Err(Box::new(FailedToUnifyConstructors::OccursCheckWouldCycle));
             }
             // Apply squish to adjust depth from current context to the Unif's creation context.
@@ -4275,6 +4319,28 @@ fn unify_cons_inner(
         (elab::Constructor::Unif(nl, _, _k, _, r), _) => {
             // Occurs check: prevent circular types before storing.
             if occurs_cunif(r, &right_normalized) {
+                if matches!(
+                    right_normalized.node,
+                    elab::Constructor::Record(_, _) | elab::Constructor::Concat(_, _)
+                ) {
+                    return unify_rows(
+                        elaboration_context,
+                        elaboration_environment,
+                        diagnostic_span,
+                        &left_normalized,
+                        &right_normalized,
+                        recursion_depth + 1,
+                    );
+                }
+                if std::env::var("URWEB_DEBUG_OCCURS_CHECK").ok().as_deref() == Some("1") {
+                    eprintln!(
+                        "occurs-check debug span={}:{} left-unif nl={} right={}",
+                        diagnostic_span.file,
+                        diagnostic_span.first.line,
+                        nl,
+                        crate::elaborated::type_display::format_constructor(&right_normalized),
+                    );
+                }
                 return Err(Box::new(FailedToUnifyConstructors::OccursCheckWouldCycle));
             }
             // Apply squish to adjust depth from current context to the Unif's creation context.
@@ -4301,6 +4367,28 @@ fn unify_cons_inner(
         (_, elab::Constructor::Unif(nl, _, _k, _, r)) => {
             // Occurs check: prevent circular types before storing.
             if occurs_cunif(r, &left_normalized) {
+                if matches!(
+                    left_normalized.node,
+                    elab::Constructor::Record(_, _) | elab::Constructor::Concat(_, _)
+                ) {
+                    return unify_rows(
+                        elaboration_context,
+                        elaboration_environment,
+                        diagnostic_span,
+                        &left_normalized,
+                        &right_normalized,
+                        recursion_depth + 1,
+                    );
+                }
+                if std::env::var("URWEB_DEBUG_OCCURS_CHECK").ok().as_deref() == Some("1") {
+                    eprintln!(
+                        "occurs-check debug span={}:{} right-unif nl={} left={}",
+                        diagnostic_span.file,
+                        diagnostic_span.first.line,
+                        nl,
+                        crate::elaborated::type_display::format_constructor(&left_normalized),
+                    );
+                }
                 return Err(Box::new(FailedToUnifyConstructors::OccursCheckWouldCycle));
             }
             // Apply squish to adjust depth from current context to the Unif's creation context.
@@ -4865,6 +4953,26 @@ fn unify_cons_inner(
     }
 }
 
+fn eat_matching<T: Clone>(
+    left_items: Vec<T>,
+    right_items: Vec<T>,
+    mut predicate: impl FnMut(&T, &T) -> bool,
+) -> (Vec<T>, Vec<T>) {
+    let mut left_remaining = Vec::new();
+    let mut right_remaining = right_items;
+    for left_item in left_items {
+        if let Some(position) = right_remaining
+            .iter()
+            .position(|right_item| predicate(&left_item, right_item))
+        {
+            right_remaining.remove(position);
+        } else {
+            left_remaining.push(left_item);
+        }
+    }
+    (left_remaining, right_remaining)
+}
+
 /// Row-specific unification (for Record / Concat / Unif tails).
 fn unify_rows(
     elaboration_context: &mut ElabCtx,
@@ -4874,6 +4982,7 @@ fn unify_rows(
     right_constructor: &elab::LocatedConstructor,
     recursion_depth: usize,
 ) -> Result<(), Box<FailedToUnifyConstructors>> {
+    let debug_row_solves = std::env::var("URWEB_DEBUG_ROW_SOLVES").ok().as_deref() == Some("1");
     // Compute the row element kind once so any synthesized shared row tails use the same shape.
     let row_element_kind = match hnorm_kind(kindof(
         elaboration_context,
@@ -4947,6 +5056,78 @@ fn unify_rows(
             })
         };
 
+    let (left_fields, right_fields) = eat_matching(
+        left_summary.fields.clone(),
+        right_summary.fields.clone(),
+        |left_field, right_field| {
+            row_field_pair_matches(
+                elaboration_context,
+                elaboration_environment,
+                diagnostic_span,
+                &left_field.0,
+                &left_field.1,
+                &right_field.0,
+                &right_field.1,
+                recursion_depth,
+            )
+        },
+    );
+    let (left_unifs, right_unifs) = eat_matching(
+        left_summary.unifs.clone(),
+        right_summary.unifs.clone(),
+        |left_unif, right_unif| match (&left_unif.node, &right_unif.node) {
+            (
+                elab::Constructor::Unif(_, _, _, _, left_cell),
+                elab::Constructor::Unif(_, _, _, _, right_cell),
+            ) => Arc::ptr_eq(left_cell, right_cell),
+            _ => false,
+        },
+    );
+    let constructor_has_unifs = |constructor: &elab::LocatedConstructor| {
+        crate::elaborated::utilities::con::exists(constructor, &|_| false, &|candidate| {
+            matches!(candidate.node, elab::Constructor::Unif(_, _, _, _, _))
+        })
+    };
+    let other_piece_matches =
+        |left_other: &elab::LocatedConstructor, right_other: &elab::LocatedConstructor| {
+            if cons_eq_simple(left_other, right_other) {
+                return true;
+            }
+            if constructor_has_unifs(left_other) && constructor_has_unifs(right_other) {
+                return false;
+            }
+            let (constructor_snapshots, kind_snapshots) =
+                snapshot_constructor_match_attempt(&[left_other, right_other]);
+            let matched = unify_cons_inner(
+                elaboration_context,
+                elaboration_environment,
+                diagnostic_span,
+                left_other,
+                right_other,
+                recursion_depth + 1,
+            )
+            .is_ok();
+            if !matched {
+                restore_class_match_snapshots(constructor_snapshots, kind_snapshots);
+            }
+            matched
+        };
+    let (left_others, right_others) = eat_matching(
+        left_summary.others.clone(),
+        right_summary.others.clone(),
+        other_piece_matches,
+    );
+    let left_summary = RecordSummary {
+        fields: left_fields,
+        unifs: left_unifs,
+        others: left_others,
+    };
+    let right_summary = RecordSummary {
+        fields: right_fields,
+        unifs: right_unifs,
+        others: right_others,
+    };
+
     // If both are fully known (no unifs), check field by field
     if left_summary.unifs.is_empty()
         && right_summary.unifs.is_empty()
@@ -4994,7 +5175,7 @@ fn unify_rows(
 
     let empty_row = || {
         Located::new(
-            elab::Constructor::Record(Box::new(row_kind.clone()), Vec::new()),
+            elab::Constructor::Record(Box::new(row_element_kind.clone()), Vec::new()),
             diagnostic_span.clone(),
         )
     };
@@ -5198,11 +5379,23 @@ fn unify_rows(
                 &right_fields_remaining,
                 &right_summary.unifs,
                 &right_summary.others,
+                &row_element_kind,
                 diagnostic_span,
             );
             // Occurs check: refuse cyclic solutions (mirrors SML `occursCon r c`).
             // No squish needed: unifs in RecordSummary always have nl=0.
             if !occurs_cunif(&row_tail_cell, &solution) {
+                if debug_row_solves {
+                    eprintln!(
+                        "row-solve single-left span={}:{} left_tail={} left={} right={} solution={}",
+                        diagnostic_span.file,
+                        diagnostic_span.first.line,
+                        crate::elaborated::type_display::format_constructor(&left_summary.unifs[0]),
+                        crate::elaborated::type_display::format_constructor(left_constructor),
+                        crate::elaborated::type_display::format_constructor(right_constructor),
+                        crate::elaborated::type_display::format_constructor(&solution),
+                    );
+                }
                 *crate::compiler_diagnostics::lock_for_compile(
                     row_tail_cell.as_ref(),
                     "elaboration unification cell",
@@ -5253,11 +5446,23 @@ fn unify_rows(
                 &left_fields_remaining,
                 &left_summary.unifs,
                 &left_summary.others,
+                &row_element_kind,
                 diagnostic_span,
             );
             // Occurs check: refuse cyclic solutions.
             // No squish needed: unifs in RecordSummary always have nl=0.
             if !occurs_cunif(&row_tail_cell, &solution) {
+                if debug_row_solves {
+                    eprintln!(
+                        "row-solve single-right span={}:{} right_tail={} left={} right={} solution={}",
+                        diagnostic_span.file,
+                        diagnostic_span.first.line,
+                        crate::elaborated::type_display::format_constructor(&right_summary.unifs[0]),
+                        crate::elaborated::type_display::format_constructor(left_constructor),
+                        crate::elaborated::type_display::format_constructor(right_constructor),
+                        crate::elaborated::type_display::format_constructor(&solution),
+                    );
+                }
                 *crate::compiler_diagnostics::lock_for_compile(
                     row_tail_cell.as_ref(),
                     "elaboration unification cell",
@@ -5286,7 +5491,8 @@ fn unify_rows(
             elab::Constructor::Unif(_, _, _, _, row_tail_cell) => row_tail_cell.clone(),
             _ => unreachable!("RecordSummary.unifs must contain Constructor::Unif nodes"),
         };
-        // Share one fresh tail so both solved rows keep the same residual unknown.
+        // Match SML `unifySummaries`: keep one fresh shared row tail so later equations can
+        // still refine the common XML/body/form context instead of forcing it to empty early.
         let shared_row_tail = fresh_cunif(
             elaboration_environment,
             diagnostic_span.clone(),
@@ -5298,6 +5504,7 @@ fn unify_rows(
             &right_summary.fields,
             &Vec::new(),
             &Vec::new(),
+            &row_element_kind,
             diagnostic_span,
         );
         // Rebuild the left side's concrete fields as a row constructor.
@@ -5305,6 +5512,7 @@ fn unify_rows(
             &left_summary.fields,
             &Vec::new(),
             &Vec::new(),
+            &row_element_kind,
             diagnostic_span,
         );
         // Solve the left tail as "right fields ++ shared tail".
@@ -5317,7 +5525,7 @@ fn unify_rows(
         );
         // Solve the right tail as "left fields ++ shared tail".
         let right_solution = Located::new(
-            elab::Constructor::Concat(Box::new(left_fields_row), Box::new(shared_row_tail)),
+            elab::Constructor::Concat(Box::new(left_fields_row), Box::new(shared_row_tail.clone())),
             diagnostic_span.clone(),
         );
         // Only assign the synthesized solution when it does not create a cycle on the left.
@@ -5325,6 +5533,18 @@ fn unify_rows(
         // Only assign the synthesized solution when it does not create a cycle on the right.
         let right_assignable = !occurs_cunif(&right_row_tail_cell, &right_solution);
         if let (true, true) = (left_assignable, right_assignable) {
+            if debug_row_solves {
+                eprintln!(
+                    "row-solve shared-tail span={}:{} left={} right={} shared={} left_solution={} right_solution={}",
+                    diagnostic_span.file,
+                    diagnostic_span.first.line,
+                    crate::elaborated::type_display::format_constructor(left_constructor),
+                    crate::elaborated::type_display::format_constructor(right_constructor),
+                    crate::elaborated::type_display::format_constructor(&shared_row_tail),
+                    crate::elaborated::type_display::format_constructor(&left_solution),
+                    crate::elaborated::type_display::format_constructor(&right_solution),
+                );
+            }
             // The shared-tail reduction succeeded for both sides.
             *crate::compiler_diagnostics::lock_for_compile(
                 left_row_tail_cell.as_ref(),
@@ -5352,6 +5572,7 @@ fn unify_rows(
             &right_summary.fields,
             &right_summary.unifs,
             &right_summary.others,
+            &row_element_kind,
             diagnostic_span,
         );
         // Try the SML-style map guess; ignore failure and continue with normal fallback paths.
@@ -5379,6 +5600,7 @@ fn unify_rows(
             &left_summary.fields,
             &left_summary.unifs,
             &left_summary.others,
+            &row_element_kind,
             diagnostic_span,
         );
         // Try the SML-style map guess; ignore failure and continue with normal fallback paths.
@@ -5486,6 +5708,7 @@ fn unify_rows(
                     &left_summary.fields,
                     &left_summary.unifs,
                     &left_summary.others,
+                    &row_element_kind,
                     diagnostic_span,
                 );
                 // Squish by nl to adjust for the creation-depth of this CUnif.
@@ -5521,6 +5744,7 @@ fn unify_rows(
                     &right_summary.fields,
                     &right_summary.unifs,
                     &right_summary.others,
+                    &row_element_kind,
                     diagnostic_span,
                 );
                 if let Ok(adjusted) = squish_con(nl, solution) {
@@ -5641,13 +5865,7 @@ fn guess_map_unfold(
         // Empty record {} → pre-image must also be the empty record of domain_kind.
         elab::Constructor::Record(_, ref fields) if fields.is_empty() => {
             let empty_pre_image = Located::new(
-                elab::Constructor::Record(
-                    Box::new(Located::new(
-                        elab::Kind::Record(Box::new(domain_kind.clone())),
-                        span.clone(),
-                    )),
-                    vec![],
-                ),
+                elab::Constructor::Record(Box::new(domain_kind.clone()), vec![]),
                 span.clone(),
             );
             // Unify pre_image_row = {}
@@ -5698,10 +5916,7 @@ fn guess_map_unfold(
                 // Unify pre_image_row = {nm = pre_image_value}
                 let singleton_pre_image = Located::new(
                     elab::Constructor::Record(
-                        Box::new(Located::new(
-                            elab::Kind::Record(Box::new(domain_kind.clone())),
-                            span.clone(),
-                        )),
+                        Box::new(domain_kind.clone()),
                         vec![(first_name_constructor, pre_image_value)],
                     ),
                     span.clone(),
@@ -5879,6 +6094,16 @@ fn guess_map_unfold(
                     );
                     // Occurs check: prevent circular constructors.
                     if occurs_cunif(unif_cell, &map_f_pre_image) {
+                        if std::env::var("URWEB_DEBUG_OCCURS_CHECK").ok().as_deref() == Some("1") {
+                            eprintln!(
+                                "occurs-check debug span={}:{} guess-map target={}",
+                                span.file,
+                                span.first.line,
+                                crate::elaborated::type_display::format_constructor(
+                                    &map_f_pre_image
+                                ),
+                            );
+                        }
                         return Err(Box::new(FailedToUnifyConstructors::OccursCheckWouldCycle));
                     }
                     // Squish adjusts from current depth to Unif's creation depth (mirrors SML unifyCons'').
@@ -5974,12 +6199,11 @@ fn unsummarize_summary(
     fields: &[(elab::LocatedConstructor, elab::LocatedConstructor)],
     unifs: &[elab::LocatedConstructor],
     others: &[elab::LocatedConstructor],
+    row_element_kind: &elab::LocatedKind,
     span: &Span,
 ) -> elab::LocatedConstructor {
-    // Start with the fields assembled into a Record constructor.
-    let ktype = Located::new(elab::Kind::Type, span.clone());
     let mut result = Located::new(
-        elab::Constructor::Record(Box::new(ktype), fields.to_vec()),
+        elab::Constructor::Record(Box::new(row_element_kind.clone()), fields.to_vec()),
         span.clone(),
     );
     // Concat each unification-variable tail piece onto the result row.
@@ -6610,12 +6834,14 @@ fn elab_exp_against_type(
                 &right_constructor,
                 expected_right_row,
             );
-            let asserted_disjointness_environment = disjoint::assert(
+            let asserted_disjointness_environment = assert_disjoint_rows(
+                elaboration_environment,
                 left_constructor.clone(),
                 right_constructor.clone(),
                 disjointness_environment.clone(),
             );
-            let goals = disjoint::prove(
+            let goals = prove_disjoint_rows(
+                elaboration_environment,
                 expression.span.clone(),
                 &asserted_disjointness_environment,
                 left_constructor,
@@ -7086,10 +7312,20 @@ fn elab_exp_inner(
                 &krow,
             );
             // Add disjointness to disjointness_environment
-            let new_denv =
-                disjoint::assert(c1e.clone(), c2e.clone(), disjointness_environment.clone());
+            let new_denv = assert_disjoint_rows(
+                elaboration_environment,
+                c1e.clone(),
+                c2e.clone(),
+                disjointness_environment.clone(),
+            );
             // Check c1 ~ c2 holds
-            let goals = disjoint::prove(span.clone(), &new_denv, c1e.clone(), c2e.clone());
+            let goals = prove_disjoint_rows(
+                elaboration_environment,
+                span.clone(),
+                &new_denv,
+                c1e.clone(),
+                c2e.clone(),
+            );
             if !goals.is_empty() {
                 // Defer as constraint
                 for g in goals {
@@ -7160,7 +7396,8 @@ fn elab_exp_inner(
                 &body_t,
                 &expected_disjoint,
             );
-            let disjoint_goals = disjoint::prove(
+            let disjoint_goals = prove_disjoint_rows(
+                elaboration_environment,
                 span.clone(),
                 disjointness_environment,
                 disjoint_left_row,
@@ -8384,7 +8621,8 @@ fn elab_head_inner(
         }
         (elab::Constructor::TDisjoint(_, _, _), source::Inference::TypesOnly) => (e, t),
         (elab::Constructor::TDisjoint(c1, c2, body), source::Inference::Infer) => {
-            let goals = disjoint::prove(
+            let goals = prove_disjoint_rows(
+                elaboration_environment,
                 span.clone(),
                 disjointness_environment,
                 *c1.clone(),
@@ -8741,8 +8979,12 @@ pub fn elab_sgn_item(
         source::SgnItem::Constraint(c1, c2) => {
             let (c1e, _) = elab_con(elaboration_context, elaboration_environment, c1);
             let (c2e, _) = elab_con(elaboration_context, elaboration_environment, c2);
-            let new_denv =
-                disjoint::assert(c1e.clone(), c2e.clone(), disjointness_environment.clone());
+            let new_denv = assert_disjoint_rows(
+                elaboration_environment,
+                c1e.clone(),
+                c2e.clone(),
+                disjointness_environment.clone(),
+            );
             let result = Located::new(elab::SignatureItem::Constraint(c1e, c2e), span);
             (Some(result), elaboration_environment.clone(), new_denv)
         }
@@ -9427,7 +9669,8 @@ fn sub_sgi(
         }
         elab::SignatureItem::Constraint(c1, c2) => {
             // Check that the constraint holds in actual
-            let goals = disjoint::prove(
+            let goals = prove_disjoint_rows(
+                elaboration_environment,
                 span.clone(),
                 disjointness_environment,
                 c1.clone(),
@@ -9747,8 +9990,12 @@ pub fn elab_decl(
         source::Decl::Constraint(c1, c2) => {
             let (c1e, _) = elab_con(elaboration_context, elaboration_environment, c1);
             let (c2e, _) = elab_con(elaboration_context, elaboration_environment, c2);
-            let new_denv =
-                disjoint::assert(c1e.clone(), c2e.clone(), disjointness_environment.clone());
+            let new_denv = assert_disjoint_rows(
+                elaboration_environment,
+                c1e.clone(),
+                c2e.clone(),
+                disjointness_environment.clone(),
+            );
             let decl_out = Located::new(elab::Declaration::Constraint(c1e, c2e), span);
             (vec![decl_out], elaboration_environment.clone(), new_denv)
         }
@@ -11384,7 +11631,7 @@ fn decls_to_sgn(decls: &[elab::LocatedDeclaration], span: &Span) -> elab::Locate
 // Constraint solving
 // ---------------------------------------------------------------------------
 
-const CONSTRAINT_SOLVE_MAX_PASSES: usize = 8;
+const CONSTRAINT_SOLVE_MAX_PASSES: usize = 64;
 
 fn solve_constraints(elaboration_context: &mut ElabCtx, elaboration_environment: &Env) {
     let mut pending_constraints = std::mem::take(&mut elaboration_context.constraints);
@@ -11403,7 +11650,8 @@ fn solve_constraints(elaboration_context: &mut ElabCtx, elaboration_environment:
                     elaboration_environment: c_env,
                     goal,
                 } => {
-                    let goals = disjoint::prove(
+                    let goals = prove_disjoint_rows(
+                        &c_env,
                         goal.span.clone(),
                         &goal.disjointness_environment,
                         goal.left_constructor.clone(),
@@ -11505,7 +11753,22 @@ fn solve_constraints(elaboration_context: &mut ElabCtx, elaboration_environment:
     // Report truly unresolvable constraints
     for c in remaining {
         match c {
-            Constraint::Disjoint { span, goal: _, .. } => {
+            Constraint::Disjoint { span, goal, .. } => {
+                if std::env::var("URWEB_DEBUG_UNRESOLVED_DISJOINTNESS")
+                    .ok()
+                    .as_deref()
+                    == Some("1")
+                {
+                    eprintln!(
+                        "unresolved disjointness debug span={}:{} left={} right={}",
+                        span.file,
+                        span.first.line,
+                        crate::elaborated::type_display::format_constructor(&goal.left_constructor),
+                        crate::elaborated::type_display::format_constructor(
+                            &goal.right_constructor
+                        ),
+                    );
+                }
                 elaboration_context.error(
                     span,
                     DiagnosticPayload::new(DiagnosticId::ElabUnresolvedDisjointness, Vec::new()),
@@ -11517,11 +11780,23 @@ fn solve_constraints(elaboration_context: &mut ElabCtx, elaboration_environment:
                     .as_deref()
                     == Some("1")
                 {
+                    let normalized_class = normalize_class_goal(class.clone());
+                    let normalized_arg_unif = match &normalized_class.node {
+                        elab::Constructor::App(_, argument) => match &argument.node {
+                            elab::Constructor::Unif(_, _, _, name, cell) => {
+                                Some(format!("{}@{:x}", name, Arc::as_ptr(cell) as usize))
+                            }
+                            _ => None,
+                        },
+                        _ => None,
+                    };
                     eprintln!(
-                        "unresolved class debug span={}:{} class={} head_info={}",
+                        "unresolved class debug span={}:{} class={} normalized={} normalized_arg_unif={:?} head_info={}",
                         span.file,
                         span.first.line,
                         crate::elaborated::type_display::format_constructor(&class),
+                        crate::elaborated::type_display::format_constructor(&normalized_class),
+                        normalized_arg_unif,
                         debug_constructor_head_name(elaboration_environment, &class),
                     );
                 }
@@ -11650,6 +11925,7 @@ fn try_resolve_class_rule(
     hypotheses: &[elab::LocatedConstructor],
     head: &elab::LocatedConstructor,
     witness: &elab::LocatedExpression,
+    commit: bool,
 ) -> Option<(elab::LocatedExpression, elab::LocatedConstructor)> {
     let (inst_head, inst_hyps) = instantiate_rule(
         elaboration_environment,
@@ -11672,7 +11948,12 @@ fn try_resolve_class_rule(
                 resolve_class(elaboration_environment, hypothesis, span).is_some()
             });
             match all_hypotheses_satisfied {
-                true => Some((witness.clone(), inst_head)),
+                true => {
+                    if !commit {
+                        restore_class_match_snapshots(constructor_snapshots, kind_snapshots);
+                    }
+                    Some((witness.clone(), inst_head))
+                }
                 false => {
                     restore_class_match_snapshots(constructor_snapshots, kind_snapshots);
                     None
@@ -11684,6 +11965,12 @@ fn try_resolve_class_rule(
             None
         }
     }
+}
+
+fn class_goal_contains_unsolved_unifiers(class: &elab::LocatedConstructor) -> bool {
+    crate::elaborated::utilities::con::exists(class, &|_| false, &|candidate| {
+        matches!(candidate.node, elab::Constructor::Unif(_, _, _, _, _))
+    })
 }
 
 fn normalize_class_goal(class: elab::LocatedConstructor) -> elab::LocatedConstructor {
@@ -11736,6 +12023,93 @@ fn resolve_class(
     let Some(rules) = elaboration_environment.class_rules_for_constructor(&class_n) else {
         return None;
     };
+    if class_goal_contains_unsolved_unifiers(&class_n) {
+        #[derive(Clone, Copy)]
+        enum CandidateRule {
+            Closed(usize),
+            Open(usize),
+        }
+
+        let mut selected_rule: Option<CandidateRule> = None;
+        let mut matching_rule_count = 0usize;
+        for (index, (quantifier_kinds, hyps, head, witness)) in
+            rules.closed_rules.iter().enumerate()
+        {
+            if try_resolve_class_rule(
+                elaboration_environment,
+                &class_n,
+                span,
+                quantifier_kinds,
+                hyps,
+                head,
+                witness,
+                false,
+            )
+            .is_some()
+            {
+                matching_rule_count += 1;
+                if selected_rule.is_none() {
+                    selected_rule = Some(CandidateRule::Closed(index));
+                }
+                if matching_rule_count > 1 {
+                    return None;
+                }
+            }
+        }
+        for (index, (quantifier_kinds, hyps, head, witness)) in rules.open_rules.iter().enumerate()
+        {
+            if try_resolve_class_rule(
+                elaboration_environment,
+                &class_n,
+                span,
+                quantifier_kinds,
+                hyps,
+                head,
+                witness,
+                false,
+            )
+            .is_some()
+            {
+                matching_rule_count += 1;
+                if selected_rule.is_none() {
+                    selected_rule = Some(CandidateRule::Open(index));
+                }
+                if matching_rule_count > 1 {
+                    return None;
+                }
+            }
+        }
+
+        return match selected_rule {
+            Some(CandidateRule::Closed(index)) => {
+                let (quantifier_kinds, hyps, head, witness) = &rules.closed_rules[index];
+                try_resolve_class_rule(
+                    elaboration_environment,
+                    &class_n,
+                    span,
+                    quantifier_kinds,
+                    hyps,
+                    head,
+                    witness,
+                    true,
+                )
+            }
+            Some(CandidateRule::Open(index)) => {
+                let (quantifier_kinds, hyps, head, witness) = &rules.open_rules[index];
+                try_resolve_class_rule(
+                    elaboration_environment,
+                    &class_n,
+                    span,
+                    quantifier_kinds,
+                    hyps,
+                    head,
+                    witness,
+                    true,
+                )
+            }
+            None => None,
+        };
+    }
     for (quantifier_kinds, hyps, head, witness) in &rules.closed_rules {
         if let Some(resolved) = try_resolve_class_rule(
             elaboration_environment,
@@ -11745,6 +12119,7 @@ fn resolve_class(
             hyps,
             head,
             witness,
+            true,
         ) {
             return Some(resolved);
         }
@@ -11758,6 +12133,7 @@ fn resolve_class(
             hyps,
             head,
             witness,
+            true,
         ) {
             return Some(resolved);
         }
@@ -12139,6 +12515,11 @@ fn row_field_pair_matches(
     right_type: &elab::LocatedConstructor,
     recursion_depth: usize,
 ) -> bool {
+    let debug_row_field_matches = std::env::var("URWEB_DEBUG_ROW_FIELD_MATCHES")
+        .ok()
+        .as_deref()
+        == Some("1")
+        && diagnostic_span.file.ends_with("/demo/form.ur");
     let (constructor_snapshots, kind_snapshots) =
         snapshot_constructor_match_attempt(&[left_name, left_type, right_name, right_type]);
     let mut probe_context = ElabCtx::new();
@@ -12167,6 +12548,31 @@ fn row_field_pair_matches(
     if !type_match {
         restore_class_match_snapshots(constructor_snapshots, kind_snapshots);
         return false;
+    }
+    if debug_row_field_matches {
+        let raw_left_unif = match &left_type.node {
+            elab::Constructor::Unif(_, _, _, name, cell) => {
+                Some(format!("{}@{:x}", name, Arc::as_ptr(cell) as usize))
+            }
+            _ => None,
+        };
+        let raw_right_unif = match &right_type.node {
+            elab::Constructor::Unif(_, _, _, name, cell) => {
+                Some(format!("{}@{:x}", name, Arc::as_ptr(cell) as usize))
+            }
+            _ => None,
+        };
+        eprintln!(
+            "row-field-match span={}:{} name_left={} name_right={} type_left={} type_right={} raw_left_unif={:?} raw_right_unif={:?}",
+            diagnostic_span.file,
+            diagnostic_span.first.line,
+            crate::elaborated::type_display::format_constructor(&hnorm_con(left_name.clone())),
+            crate::elaborated::type_display::format_constructor(&hnorm_con(right_name.clone())),
+            crate::elaborated::type_display::format_constructor(&hnorm_con(left_type.clone())),
+            crate::elaborated::type_display::format_constructor(&hnorm_con(right_type.clone())),
+            raw_left_unif,
+            raw_right_unif,
+        );
     }
     true
 }
@@ -13010,6 +13416,44 @@ mod tests {
     }
 
     #[test]
+    fn prove_disjoint_rows_unfolds_basis_body_prime_alias() -> anyhow::Result<()> {
+        let Some(fixture) = cached_test_basis_open_fixture() else {
+            return Ok(());
+        };
+        let span = crate::error_types::Span::dummy();
+        let body_prime = match fixture.elaboration_environment.lookup_c("body'") {
+            crate::elaborated::environment::VarLookup::Named(id, _) => {
+                Located::new(elab::Constructor::Named(id), span.clone())
+            }
+            other => panic!("expected opened Basis body' alias, got {:?}", other),
+        };
+        let dyn_row = Located::new(
+            elab::Constructor::Record(
+                Box::new(Located::new(elab::Kind::Unit, span.clone())),
+                vec![(
+                    Located::new(elab::Constructor::Name("Dyn".into()), span.clone()),
+                    Located::new(elab::Constructor::Unit, span.clone()),
+                )],
+            ),
+            span.clone(),
+        );
+
+        let goals = prove_disjoint_rows(
+            &fixture.elaboration_environment,
+            span,
+            &disjoint::empty_env(),
+            body_prime,
+            dyn_row,
+        );
+        assert!(
+            goals.is_empty(),
+            "Basis body' should normalize to a row disjoint from [Dyn], got {:?}",
+            goals
+        );
+        Ok(())
+    }
+
+    #[test]
     fn unify_cons_treats_all_unit_kind_constructors_as_equal() -> anyhow::Result<()> {
         // test returns Result to allow ? propagation
         let span = crate::error_types::Span::dummy();
@@ -13148,7 +13592,7 @@ mod tests {
             span.clone(),
         );
         let row_constructor = Located::new(
-            elab::Constructor::Record(Box::new(row_kind.clone()), Vec::new()),
+            elab::Constructor::Record(Box::new(type_kind.clone()), Vec::new()),
             span.clone(),
         );
         let folder_kind = Located::new(
@@ -13213,7 +13657,7 @@ mod tests {
         let (elaboration_environment, folder_id) =
             Env::empty().push_c_named("folder".into(), folder_kind, None);
         let row_constructor = Located::new(
-            elab::Constructor::Record(Box::new(row_kind.clone()), Vec::new()),
+            elab::Constructor::Record(Box::new(kind_rel.clone()), Vec::new()),
             span.clone(),
         );
         let abstract_folder_body = Located::new(
@@ -13278,7 +13722,10 @@ mod tests {
             "tail",
         );
         let empty_row = Located::new(
-            elab::Constructor::Record(Box::new(row_kind), Vec::new()),
+            elab::Constructor::Record(
+                Box::new(Located::new(elab::Kind::Type, span.clone())),
+                Vec::new(),
+            ),
             span.clone(),
         );
 
@@ -13390,14 +13837,17 @@ mod tests {
         let left_row = Located::new(
             elab::Constructor::Concat(
                 Box::new(Located::new(
-                    elab::Constructor::Record(Box::new(row_kind.clone()), vec![body_field.clone()]),
+                    elab::Constructor::Record(
+                        Box::new(type_kind.clone()),
+                        vec![body_field.clone()],
+                    ),
                     span.clone(),
                 )),
                 Box::new(Located::new(
                     elab::Constructor::Concat(
                         Box::new(Located::new(
                             elab::Constructor::Record(
-                                Box::new(row_kind.clone()),
+                                Box::new(type_kind.clone()),
                                 vec![dyn_field.clone()],
                             ),
                             span.clone(),
@@ -13412,13 +13862,13 @@ mod tests {
         let right_row = Located::new(
             elab::Constructor::Concat(
                 Box::new(Located::new(
-                    elab::Constructor::Record(Box::new(row_kind.clone()), vec![dyn_field]),
+                    elab::Constructor::Record(Box::new(type_kind.clone()), vec![dyn_field]),
                     span.clone(),
                 )),
                 Box::new(Located::new(
                     elab::Constructor::Concat(
                         Box::new(Located::new(
-                            elab::Constructor::Record(Box::new(row_kind), vec![body_field]),
+                            elab::Constructor::Record(Box::new(type_kind), vec![body_field]),
                             span.clone(),
                         )),
                         Box::new(shared_tail),
@@ -13441,6 +13891,50 @@ mod tests {
             result.is_ok(),
             "permuted known fields over the same shared tail should unify: {:?}",
             result
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn unify_cons_falls_back_to_row_solver_on_occurs_checking_concat() -> anyhow::Result<()> {
+        let span = crate::error_types::Span::dummy();
+        let type_kind = Located::new(elab::Kind::Type, span.clone());
+        let row_kind = Located::new(
+            elab::Kind::Record(Box::new(type_kind.clone())),
+            span.clone(),
+        );
+        let elaboration_environment = Env::empty();
+        let mut elaboration_context = ElabCtx::new();
+        let shared_row = fresh_cunif(
+            &elaboration_environment,
+            span.clone(),
+            row_kind.clone(),
+            "shared_row",
+        );
+        let rest_row = fresh_cunif(&elaboration_environment, span.clone(), row_kind, "rest_row");
+        let concat_row = Located::new(
+            elab::Constructor::Concat(Box::new(shared_row.clone()), Box::new(rest_row.clone())),
+            span.clone(),
+        );
+
+        let result = unify_cons(
+            &mut elaboration_context,
+            &elaboration_environment,
+            &span,
+            &shared_row,
+            &concat_row,
+        );
+        assert!(
+            result.is_ok(),
+            "row occurs-check should fall back to row unification, got {:?}",
+            result
+        );
+
+        let solved_rest = hnorm_con(rest_row);
+        assert!(
+            matches!(solved_rest.node, elab::Constructor::Record(_, ref fields) if fields.is_empty()),
+            "remaining row tail should solve to the empty row, got {}",
+            crate::elaborated::type_display::format_constructor(&solved_rest)
         );
         Ok(())
     }
