@@ -262,6 +262,13 @@ pub struct Settings {
     /// User-facing diagnostic language from `ur.toml` `[package].language` (`en` / `sv` / `es`).
     pub diagnostic_locale: DiagnosticLocale,
 
+    /// UUID v4 minted at the start of each [`crate::compiler::compile`] invocation.
+    ///
+    /// Empty string before compilation begins; set by the compiler entry points so that every
+    /// tracing event and structured log within a single job carries the same id. Use
+    /// `RUST_LOG` filtering on `compilation_id` to follow one job through the pipeline.
+    pub compilation_id: String,
+
     // Static files
     pub file_path: String,
     pub js_output: Option<String>,
@@ -638,6 +645,7 @@ impl Settings {
             verbosity: 0,
             emit_phase_timing: false,
             diagnostic_locale: DiagnosticLocale::default(),
+            compilation_id: String::new(), // Populated by compiler::compile; empty until then.
             file_path: ".".into(),
             js_output: None,
         }

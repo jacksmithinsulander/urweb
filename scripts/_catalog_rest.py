@@ -110,6 +110,206 @@ ROWS: list[tuple[str, tuple[str, str, str]]] = [
         ),
     ),
     (
+        "SqlCompatExprFragmentParseFailed",
+        _t(
+            "The legacy SQL compatibility rewrite could not re-parse an expression fragment.\n\nParser errors:\n{0}",
+            "SQL-kompatibilitetsomskrivningen kunde inte tolka om ett uttrycksfragment.\n\nParsefel:\n{0}",
+            "La reescritura de compatibilidad SQL no pudo volver a analizar un fragmento de expresión.\n\nErrores de análisis:\n{0}",
+        ),
+    ),
+    (
+        "SqlCompatExprFragmentPatternMismatch",
+        _t(
+            "The legacy SQL compatibility rewrite produced an unexpected pattern when wrapping an expression fragment.",
+            "SQL-kompatibilitetsomskrivningen producerade ett oväntat mönster vid inbäddning av uttrycksfragment.",
+            "La reescritura de compatibilidad SQL produjo un patrón inesperado al envolver un fragmento de expresión.",
+        ),
+    ),
+    (
+        "SqlCompatExprFragmentDeclMismatch",
+        _t(
+            "The legacy SQL compatibility rewrite produced an unexpected declaration when wrapping an expression fragment.",
+            "SQL-kompatibilitetsomskrivningen producerade en oväntad deklaration vid inbäddning av uttrycksfragment.",
+            "La reescritura de compatibilidad SQL produjo una declaración inesperada al envolver un fragmento de expresión.",
+        ),
+    ),
+    (
+        "SqlCompatConFragmentParseFailed",
+        _t(
+            "The legacy SQL compatibility rewrite could not re-parse a constructor fragment.\n\nParser errors:\n{0}",
+            "SQL-kompatibilitetsomskrivningen kunde inte tolka om ett konstruktorfragment.\n\nParsefel:\n{0}",
+            "La reescritura de compatibilidad SQL no pudo volver a analizar un fragmento de constructor.\n\nErrores de análisis:\n{0}",
+        ),
+    ),
+    (
+        "SqlCompatConFragmentDeclMismatch",
+        _t(
+            "The legacy SQL compatibility rewrite produced an unexpected declaration when wrapping a constructor fragment.",
+            "SQL-kompatibilitetsomskrivningen producerade en oväntad deklaration vid inbäddning av konstruktorfragment.",
+            "La reescritura de compatibilidad SQL produjo una declaración inesperada al envolver un fragmento de constructor.",
+        ),
+    ),
+    (
+        "SqlCompatDynamicFieldMissingBraces",
+        _t(
+            "Dynamic SQL field reference is missing its closing `}}`: {0}",
+            "Dynamisk SQL-fältreferens saknar avslutande `}}`: {0}",
+            "La referencia de campo SQL dinámico le falta el `}}` de cierre: {0}",
+        ),
+    ),
+    (
+        "SqlCompatFieldMissingBrace",
+        _t(
+            "SQL field reference is missing its closing `}}`: {0}",
+            "SQL-fältreferens saknar avslutande `}}`: {0}",
+            "La referencia de campo SQL le falta el `}}` de cierre: {0}",
+        ),
+    ),
+    (
+        "SqlCompatDynamicSelectFieldMissingBraces",
+        _t(
+            "Dynamic SELECT field is missing its closing `}}`: {0}",
+            "Dynamiskt SELECT-fält saknar avslutande `}}`: {0}",
+            "El campo SELECT dinámico le falta el `}}` de cierre: {0}",
+        ),
+    ),
+    (
+        "SqlCompatUnsupportedExpression",
+        _t(
+            "The legacy SQL compatibility rewrite does not support this expression form: {0}",
+            "SQL-kompatibilitetsomskrivningen stöder inte denna uttrycksform: {0}",
+            "La reescritura de compatibilidad SQL no soporta esta forma de expresión: {0}",
+        ),
+    ),
+    (
+        "SqlCompatUnsupportedSelectItem",
+        _t(
+            "The legacy SQL compatibility rewrite does not support this SELECT item: {0}",
+            "SQL-kompatibilitetsomskrivningen stöder inte detta SELECT-element: {0}",
+            "La reescritura de compatibilidad SQL no soporta este elemento SELECT: {0}",
+        ),
+    ),
+    (
+        "SqlCompatUnsupportedPlaceholder",
+        _t(
+            "The legacy SQL compatibility rewrite does not support this SQL placeholder payload: {0}",
+            "SQL-kompatibilitetsomskrivningen stöder inte denna SQL-platshållarens innehåll: {0}",
+            "La reescritura de compatibilidad SQL no soporta este contenido de marcador SQL: {0}",
+        ),
+    ),
+    (
+        "SqlCompatLeftJoinMissingOn",
+        _t(
+            "LEFT JOIN is missing its ON clause.",
+            "LEFT JOIN saknar ON-sats.",
+            "El LEFT JOIN no tiene cláusula ON.",
+        ),
+    ),
+    (
+        "SqlCompatJoinMissingOn",
+        _t(
+            "JOIN is missing its ON clause.",
+            "JOIN saknar ON-sats.",
+            "El JOIN no tiene cláusula ON.",
+        ),
+    ),
+    (
+        "SqlCompatSelectMissingFrom",
+        _t(
+            "SELECT is missing its FROM clause.",
+            "SELECT saknar FROM-sats.",
+            "El SELECT no tiene cláusula FROM.",
+        ),
+    ),
+    (
+        "SqlCompatInsertMissingInto",
+        _t(
+            "INSERT is missing its INTO clause.",
+            "INSERT saknar INTO-sats.",
+            "El INSERT no tiene cláusula INTO.",
+        ),
+    ),
+    (
+        "SqlCompatInsertMissingFieldList",
+        _t(
+            "INSERT is missing its field list.",
+            "INSERT saknar fältlista.",
+            "El INSERT no tiene lista de campos.",
+        ),
+    ),
+    (
+        "SqlCompatInsertFieldListMissingParen",
+        _t(
+            "INSERT field list is missing its closing parenthesis.",
+            "INSERT-fältlistan saknar avslutande parentes.",
+            "La lista de campos del INSERT le falta el paréntesis de cierre.",
+        ),
+    ),
+    (
+        "SqlCompatInsertMissingValues",
+        _t(
+            "INSERT is missing its VALUES clause.",
+            "INSERT saknar VALUES-sats.",
+            "El INSERT no tiene cláusula VALUES.",
+        ),
+    ),
+    (
+        "SqlCompatInsertValuesMissingOpenParen",
+        _t(
+            "INSERT values list is missing its opening parenthesis.",
+            "INSERT-värdelistan saknar inledande parentes.",
+            "La lista de valores del INSERT le falta el paréntesis de apertura.",
+        ),
+    ),
+    (
+        "SqlCompatInsertValuesMissingCloseParen",
+        _t(
+            "INSERT values list is missing its closing parenthesis.",
+            "INSERT-värdelistan saknar avslutande parentes.",
+            "La lista de valores del INSERT le falta el paréntesis de cierre.",
+        ),
+    ),
+    (
+        "SqlCompatDeleteMissingFrom",
+        _t(
+            "DELETE is missing its FROM clause.",
+            "DELETE saknar FROM-sats.",
+            "El DELETE no tiene cláusula FROM.",
+        ),
+    ),
+    (
+        "SqlCompatDeleteMissingWhere",
+        _t(
+            "DELETE is missing its WHERE clause.",
+            "DELETE saknar WHERE-sats.",
+            "El DELETE no tiene cláusula WHERE.",
+        ),
+    ),
+    (
+        "SqlCompatUpdateMissingSet",
+        _t(
+            "UPDATE is missing its SET clause.",
+            "UPDATE saknar SET-sats.",
+            "El UPDATE no tiene cláusula SET.",
+        ),
+    ),
+    (
+        "SqlCompatUpdateMissingWhere",
+        _t(
+            "UPDATE is missing its WHERE clause.",
+            "UPDATE saknar WHERE-sats.",
+            "El UPDATE no tiene cláusula WHERE.",
+        ),
+    ),
+    (
+        "SqlCompatUpdateAssignmentMissingEquals",
+        _t(
+            "UPDATE assignment is missing its `=` operator.",
+            "UPDATE-tilldelning saknar `=`-operator.",
+            "La asignación del UPDATE le falta el operador `=`.",
+        ),
+    ),
+    (
         "ExplifyKindErrorPlaceholder",
         _t(
             "The elaborator marked this kind as invalid, but explify still saw it.",

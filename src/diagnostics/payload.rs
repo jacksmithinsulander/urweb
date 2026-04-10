@@ -2,6 +2,35 @@
 
 use super::ids::DiagnosticId;
 
+/// Severity level for a [`DiagnosticPayload`], used for color rendering and tracing-level mapping.
+///
+/// Drives the ANSI banner color in terminal output and selects which [`tracing`] level the
+/// diagnostic is emitted at when [`crate::error_types::ErrorReporter::report`] is called.
+/// Defaults to [`DiagnosticSeverity::Error`] so existing [`DiagnosticPayload::new`] call sites
+/// are unaffected.
+///
+/// | Variant | Banner color | Tracing level | Minimum `-v` to see |
+/// |---------|-------------|---------------|----------------------|
+/// | `Error`   | bold red    | `error`       | always               |
+/// | `Warning` | bold yellow | `warn`        | always               |
+/// | `Info`    | bold cyan   | `info`        | `-vv` (verbosity ≥ 2) |
+/// | `Hint`    | bold green  | `info`        | `-v` (verbosity ≥ 1)  |
+/// | `Debug`   | dim         | `debug`       | `-vvv` (verbosity ≥ 3)|
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DiagnosticSeverity {
+    /// Hard compiler error; always displayed; bold red banner.
+    #[default]
+    Error,
+    /// Potentially incorrect but non-fatal; bold yellow banner.
+    Warning,
+    /// Informational note; bold cyan banner; emitted at `tracing::info!` level.
+    Info,
+    /// Supplemental suggestion (shown near a hint paragraph); bold green banner; `tracing::info!` level.
+    Hint,
+    /// Internal debug detail; dimmed banner; emitted at `tracing::debug!` level.
+    Debug,
+}
+
 /// Optional hint paragraph following the main diagnostic body (shown after `hint:` in the layout).
 #[derive(Debug, Clone)]
 pub struct DiagnosticHint {
@@ -22,6 +51,11 @@ pub struct DiagnosticPayload {
     pub suffix_payloads: Vec<DiagnosticPayload>,
     /// Optional hint line (separate template).
     pub hint: Option<DiagnosticHint>,
+    /// Severity level for terminal color selection and tracing-event level mapping.
+    ///
+    /// Defaults to [`DiagnosticSeverity::Error`]; use [`DiagnosticPayload::with_severity`] to
+    /// override for warnings, informational notes, or debug details.
+    pub severity: DiagnosticSeverity,
 }
 
 impl DiagnosticPayload {
@@ -41,7 +75,25 @@ impl DiagnosticPayload {
             args,
             suffix_payloads: Vec::new(),
             hint: None,
+            severity: DiagnosticSeverity::default(), // Default to Error so existing callers are unaffected.
         }
+    }
+
+    /// Override the default [`DiagnosticSeverity::Error`] severity for this payload.
+    ///
+    /// Use this when constructing warnings, informational notes, or debug-only details that
+    /// should render with a different banner color and tracing event level.
+    ///
+    /// # Arguments
+    ///
+    /// * `severity` — Desired severity level.
+    ///
+    /// # Returns
+    ///
+    /// `self` with [`DiagnosticPayload::severity`] set to `severity`.
+    pub fn with_severity(mut self, severity: DiagnosticSeverity) -> Self {
+        self.severity = severity; // Override the Error default with the caller-specified level.
+        self
     }
 
     /// Attaches a hint built from another template id and args.

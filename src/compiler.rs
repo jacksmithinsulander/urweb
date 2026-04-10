@@ -360,10 +360,11 @@ pub fn apply_boot_settings(job: &mut Job, settings: &mut Settings) -> Result<(),
         return Ok(()); // Nothing to do when boot linking is disabled.
     }
     let Some(root) = resolve_boot_root() else {
-        // Boot root not found via env, exe parents, or cwd — report a clear error.
-        return Err(format!(
-            "-boot requires the Ur/Web library tree (lib/ur/basis.urs). Set {} to the checkout root, or run the compiler from that tree.",
-            URWEB_BOOT_ROOT_ENV
+        // Boot root not found via env, exe parents, or cwd — report a catalog-localized error.
+        return Err(cli_diagnostic_text(
+            DiagnosticId::CliBootRootNotFound,
+            vec![URWEB_BOOT_ROOT_ENV.to_string()],
+            settings.diagnostic_locale,
         ));
     };
     apply_boot_settings_from_root(job, settings, &root); // Populate job and settings from the resolved root.
@@ -400,10 +401,11 @@ pub fn apply_boot_settings_with_explicit_root(
         return Ok(()); // Boot linking disabled — nothing to apply.
     }
     if !root.join("lib/ur/basis.urs").is_file() {
-        // Explicit root does not contain the expected Basis library — fail clearly.
-        return Err(format!(
-            "-boot requires the Ur/Web library tree (lib/ur/basis.urs) at the provided root: {}",
-            root.display()
+        // Explicit root does not contain the expected Basis library — catalog-localized error.
+        return Err(cli_diagnostic_text(
+            DiagnosticId::CliBootRootMissingBasis,
+            vec![root.display().to_string()],
+            settings.diagnostic_locale,
         ));
     }
     apply_boot_settings_from_root(job, settings, root); // Populate job and settings from the caller-supplied root.
@@ -2107,7 +2109,15 @@ pub(crate) fn apply_job_db_settings(
     job: &Job,
     settings: &mut crate::settings::Settings,
 ) -> Result<(), String> {
+    let locale = settings.diagnostic_locale; // Capture locale before mutable borrow in db call.
     crate::db::apply_urp_job_db_fields(settings, job.dbms.as_deref(), job.database.as_deref())
+        .map_err(|raw_error| {
+            cli_diagnostic_text(
+                DiagnosticId::CliDatabaseBackendUrpRejected,
+                vec![raw_error],
+                locale,
+            )
+        })
 }
 
 /// Parse `.urp` and produce [`Job`] plus merged [`Settings`] (boot discovery, database fields, `ur.toml` reconciliation).
@@ -3096,14 +3106,11 @@ mod tests {
         Ok(()) // return success to the test harness
     }
 
-    /// Goal: `demo/sum.ur` elaborates with real `lib/ur` boot the way the ML compiler does.
+    /// `demo/sum.ur` must elaborate with real `lib/ur` boot the way the ML compiler does.
     ///
-    /// `elab_file` already mirrors SML `dopen` on `Basis` and `Top`, but **full `lib/ur` boot still
-    /// records many type errors** — see `boot_elab_diagnostic_id_histogram` (`URWEB_TEST_BOOT_HIST=1`).
-    /// Keep this test as a tracker: run with
-    /// `cargo test -p ur elaborate_demo_sum_elaborates_after_boot_parity -- --ignored --nocapture`.
+    /// This exercises the full parsed-file boot path used by the CLI, not the cached boot-snapshot
+    /// helper used by some corpus tests.
     #[test]
-    #[ignore = "lib/ur boot elab still reports type errors (~200+); un-ignore when boot histogram hits 0"]
     fn elaborate_demo_sum_elaborates_after_boot_parity() -> anyhow::Result<()> {
         // test returns Result to allow ? propagation
         const STACK: usize = crate::COMPILE_THREAD_STACK_BYTES; // boot + demo elaboration depth

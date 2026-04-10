@@ -24,6 +24,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use super::type_operations;
 use crate::datatype_kind::DatatypeKind;
@@ -87,48 +88,83 @@ fn expand_named_left_spine_in_constructor(
     elaboration_environment: &Env,
     constructor: &LocatedConstructor,
 ) -> LocatedConstructor {
-    match &constructor.node {
-        Constructor::Named(id) => {
-            if let Ok((_, _, Some(definition))) = elaboration_environment.lookup_c_named(*id) {
-                expand_named_left_spine_in_constructor(elaboration_environment, definition)
-            } else {
-                constructor.clone()
+    fn expand_inner(
+        elaboration_environment: &Env,
+        constructor: &LocatedConstructor,
+        seen_named: &mut HashSet<usize>,
+        seen_modprojs: &mut HashSet<(usize, Vec<String>, String)>,
+    ) -> LocatedConstructor {
+        match &constructor.node {
+            Constructor::Named(id) => {
+                if !seen_named.insert(*id) {
+                    return constructor.clone();
+                }
+                if let Ok((_, _, Some(definition))) = elaboration_environment.lookup_c_named(*id) {
+                    expand_inner(
+                        elaboration_environment,
+                        definition,
+                        seen_named,
+                        seen_modprojs,
+                    )
+                } else {
+                    constructor.clone()
+                }
             }
-        }
-        Constructor::ModProj(module_id, path, name) => {
-            if let Some(definition) = resolve_modproj_constructor_definition(
-                elaboration_environment,
-                *module_id,
-                path,
-                name,
-            ) {
-                expand_named_left_spine_in_constructor(elaboration_environment, &definition)
-            } else {
-                constructor.clone()
+            Constructor::ModProj(module_id, path, name) => {
+                let key = (*module_id, path.clone(), name.clone());
+                if !seen_modprojs.insert(key) {
+                    return constructor.clone();
+                }
+                if let Some(definition) = resolve_modproj_constructor_definition(
+                    elaboration_environment,
+                    *module_id,
+                    path,
+                    name,
+                ) {
+                    expand_inner(
+                        elaboration_environment,
+                        &definition,
+                        seen_named,
+                        seen_modprojs,
+                    )
+                } else {
+                    constructor.clone()
+                }
             }
+            Constructor::KApp(function_constructor, kind_argument) => {
+                let expanded_head = expand_inner(
+                    elaboration_environment,
+                    function_constructor,
+                    seen_named,
+                    seen_modprojs,
+                );
+                Located::new(
+                    Constructor::KApp(Box::new(expanded_head), kind_argument.clone()),
+                    constructor.span.clone(),
+                )
+            }
+            Constructor::App(function_constructor, argument_constructor) => {
+                let expanded_head = expand_inner(
+                    elaboration_environment,
+                    function_constructor,
+                    seen_named,
+                    seen_modprojs,
+                );
+                Located::new(
+                    Constructor::App(Box::new(expanded_head), argument_constructor.clone()),
+                    constructor.span.clone(),
+                )
+            }
+            _ => constructor.clone(),
         }
-        Constructor::KApp(function_constructor, kind_argument) => {
-            let expanded_head = expand_named_left_spine_in_constructor(
-                elaboration_environment,
-                function_constructor,
-            );
-            Located::new(
-                Constructor::KApp(Box::new(expanded_head), kind_argument.clone()),
-                constructor.span.clone(),
-            )
-        }
-        Constructor::App(function_constructor, argument_constructor) => {
-            let expanded_head = expand_named_left_spine_in_constructor(
-                elaboration_environment,
-                function_constructor,
-            );
-            Located::new(
-                Constructor::App(Box::new(expanded_head), argument_constructor.clone()),
-                constructor.span.clone(),
-            )
-        }
-        _ => constructor.clone(),
     }
+
+    expand_inner(
+        elaboration_environment,
+        constructor,
+        &mut HashSet::new(),
+        &mut HashSet::new(),
+    )
 }
 
 /// [`expand_named_left_spine_in_constructor`] then [`type_operations::hnorm_con`], iterated.
@@ -163,76 +199,110 @@ fn expand_named_abbrev_in_constructor_full(
     elaboration_environment: &Env,
     constructor: &LocatedConstructor,
 ) -> LocatedConstructor {
-    match &constructor.node {
-        Constructor::Named(id) => {
-            if let Ok((_, _, Some(definition))) = elaboration_environment.lookup_c_named(*id) {
-                return expand_named_abbrev_in_constructor_full(
-                    elaboration_environment,
-                    definition,
-                );
-            }
-            constructor.clone()
-        }
-        Constructor::ModProj(module_id, path, name) => {
-            if let Some(definition) = resolve_modproj_constructor_definition(
-                elaboration_environment,
-                *module_id,
-                path,
-                name,
-            ) {
-                return expand_named_abbrev_in_constructor_full(
-                    elaboration_environment,
-                    &definition,
-                );
-            }
-            constructor.clone()
-        }
-        Constructor::App(function_constructor, argument_constructor) => {
-            let expanded_head = expand_named_abbrev_in_constructor_full(
-                elaboration_environment,
-                function_constructor,
-            );
-            let expanded_argument = expand_named_abbrev_in_constructor_full(
-                elaboration_environment,
-                argument_constructor,
-            );
-            if let Constructor::Named(named_id) = expanded_head.node {
-                if let Ok((_, _, Some(definition))) =
-                    elaboration_environment.lookup_c_named(named_id)
-                {
-                    return Located::new(
-                        Constructor::App(Box::new(definition.clone()), Box::new(expanded_argument)),
-                        constructor.span.clone(),
+    fn expand_inner(
+        elaboration_environment: &Env,
+        constructor: &LocatedConstructor,
+        seen_named: &mut HashSet<usize>,
+        seen_modprojs: &mut HashSet<(usize, Vec<String>, String)>,
+    ) -> LocatedConstructor {
+        match &constructor.node {
+            Constructor::Named(id) => {
+                if !seen_named.insert(*id) {
+                    return constructor.clone();
+                }
+                if let Ok((_, _, Some(definition))) = elaboration_environment.lookup_c_named(*id) {
+                    return expand_inner(
+                        elaboration_environment,
+                        definition,
+                        seen_named,
+                        seen_modprojs,
                     );
                 }
+                constructor.clone()
             }
-            Located::new(
-                Constructor::App(Box::new(expanded_head), Box::new(expanded_argument)),
-                constructor.span.clone(),
-            )
-        }
-        Constructor::KApp(function_constructor, kind_argument) => {
-            let expanded_head = expand_named_abbrev_in_constructor_full(
-                elaboration_environment,
-                function_constructor,
-            );
-            if let Constructor::Named(named_id) = expanded_head.node {
-                if let Ok((_, _, Some(definition))) =
-                    elaboration_environment.lookup_c_named(named_id)
-                {
-                    return Located::new(
-                        Constructor::KApp(Box::new(definition.clone()), kind_argument.clone()),
-                        constructor.span.clone(),
+            Constructor::ModProj(module_id, path, name) => {
+                let key = (*module_id, path.clone(), name.clone());
+                if !seen_modprojs.insert(key) {
+                    return constructor.clone();
+                }
+                if let Some(definition) = resolve_modproj_constructor_definition(
+                    elaboration_environment,
+                    *module_id,
+                    path,
+                    name,
+                ) {
+                    return expand_inner(
+                        elaboration_environment,
+                        &definition,
+                        seen_named,
+                        seen_modprojs,
                     );
                 }
+                constructor.clone()
             }
-            Located::new(
-                Constructor::KApp(Box::new(expanded_head), kind_argument.clone()),
-                constructor.span.clone(),
-            )
+            Constructor::App(function_constructor, argument_constructor) => {
+                let expanded_head = expand_inner(
+                    elaboration_environment,
+                    function_constructor,
+                    seen_named,
+                    seen_modprojs,
+                );
+                let expanded_argument = expand_inner(
+                    elaboration_environment,
+                    argument_constructor,
+                    seen_named,
+                    seen_modprojs,
+                );
+                if let Constructor::Named(named_id) = expanded_head.node {
+                    if let Ok((_, _, Some(definition))) =
+                        elaboration_environment.lookup_c_named(named_id)
+                    {
+                        return Located::new(
+                            Constructor::App(
+                                Box::new(definition.clone()),
+                                Box::new(expanded_argument),
+                            ),
+                            constructor.span.clone(),
+                        );
+                    }
+                }
+                Located::new(
+                    Constructor::App(Box::new(expanded_head), Box::new(expanded_argument)),
+                    constructor.span.clone(),
+                )
+            }
+            Constructor::KApp(function_constructor, kind_argument) => {
+                let expanded_head = expand_inner(
+                    elaboration_environment,
+                    function_constructor,
+                    seen_named,
+                    seen_modprojs,
+                );
+                if let Constructor::Named(named_id) = expanded_head.node {
+                    if let Ok((_, _, Some(definition))) =
+                        elaboration_environment.lookup_c_named(named_id)
+                    {
+                        return Located::new(
+                            Constructor::KApp(Box::new(definition.clone()), kind_argument.clone()),
+                            constructor.span.clone(),
+                        );
+                    }
+                }
+                Located::new(
+                    Constructor::KApp(Box::new(expanded_head), kind_argument.clone()),
+                    constructor.span.clone(),
+                )
+            }
+            _ => constructor.clone(),
         }
-        _ => constructor.clone(),
     }
+
+    expand_inner(
+        elaboration_environment,
+        constructor,
+        &mut HashSet::new(),
+        &mut HashSet::new(),
+    )
 }
 
 /// Full `named_c` unfolding + [`type_operations::hnorm_con`] for [`super::elaborate::elab_exp_inner`]
@@ -1725,7 +1795,7 @@ impl Env {
     /// Mirrors `fun isClass (env : env) c = ...` in `elab_env.sml`.
     /// Currently only handles `Named` and `ModProj` heads.
     pub fn is_class(&self, constructor: &LocatedConstructor) -> bool {
-        if let Some(class_name) = class_head_of(constructor) {
+        if let Some(class_name) = class_lookup_key_in_env(self, constructor) {
             self.classes.contains_key(&class_name)
         } else {
             false
@@ -1743,6 +1813,7 @@ impl Env {
     ///
     /// Mirrors `fun pushERel (env : env) x t = ...` in `elab_env.sml`.
     pub fn push_e_rel(self, name: String, expression_type: LocatedConstructor) -> Self {
+        let extracted_rule = rule_in_in_env(&self, &expression_type);
         // Bump all existing relative expression rename indices by 1.
         let mut new_rename_e: HashMap<String, EVarEntry> = self
             .rename_e
@@ -1792,7 +1863,7 @@ impl Env {
         // (witness = ERel 0) for the relevant class.
         let loc = expression_type.span.clone();
         let mut new_classes = new_classes;
-        if let Some((cn, nvs, hyps, conclusion)) = rule_in(&expression_type) {
+        if let Some((cn, nvs, hyps, conclusion)) = extracted_rule {
             if let Some(class) = new_classes.get_mut(&cn) {
                 let witness = Located::new(Expression::Rel(0), loc);
                 class.open_rules.insert(0, (nvs, hyps, conclusion, witness));
@@ -1825,6 +1896,7 @@ impl Env {
         id: usize,
         expression_type: LocatedConstructor,
     ) -> Self {
+        let extracted_rule = rule_in_in_env(&self, &expression_type);
         let mut new_rename_e = self.rename_e;
         new_rename_e.insert(name.clone(), EVarEntry::Named(id, expression_type.clone()));
 
@@ -1835,7 +1907,7 @@ impl Env {
         // (witness = ENamed id) for the relevant class.
         let loc = expression_type.span.clone();
         let mut new_classes = self.classes;
-        if let Some((cn, nvs, hyps, conclusion)) = rule_in(&expression_type) {
+        if let Some((cn, nvs, hyps, conclusion)) = extracted_rule {
             if let Some(class) = new_classes.get_mut(&cn) {
                 let witness = Located::new(Expression::Named(id), loc);
                 class.closed_rules.push((nvs, hyps, conclusion, witness));
@@ -2031,6 +2103,17 @@ impl Env {
         &self.classes
     }
 
+    /// Return the rule bucket for the class at the head of `constructor`, if any.
+    pub fn class_rules_for_constructor(
+        &self,
+        constructor: &LocatedConstructor,
+    ) -> Option<&ClassRules> {
+        let class_name = class_lookup_key_in_env(self, constructor)?;
+        self.classes.get(&class_name).or_else(|| {
+            class_head_of(constructor).and_then(|raw_class_name| self.classes.get(&raw_class_name))
+        })
+    }
+
     /// Add a closed rule to the given class.
     pub fn add_class_rule(mut self, cn: ClassName, rule: ClassRule) -> Self {
         let entry = self.classes.entry(cn).or_insert_with(ClassRules::empty);
@@ -2082,6 +2165,527 @@ fn class_head_of(constructor: &LocatedConstructor) -> Option<ClassName> {
         }
         _ => None,
     }
+}
+
+fn class_lookup_key_in_env(
+    elaboration_environment: &Env,
+    constructor: &LocatedConstructor,
+) -> Option<ClassName> {
+    match &constructor.node {
+        Constructor::ModProj(module_id, path, name) => {
+            resolve_modproj_constructor_id(elaboration_environment, *module_id, path, name)
+                .map(ClassName::Named)
+                .or_else(|| class_head_of(constructor))
+        }
+        Constructor::App(function_constructor, _) => {
+            class_lookup_key_in_env(elaboration_environment, function_constructor)
+        }
+        Constructor::Abs(_, _, body) => class_lookup_key_in_env(elaboration_environment, body),
+        Constructor::Unif(_, _, _, _, cell) => {
+            let guard = crate::compiler_diagnostics::lock_for_compile(
+                cell.as_ref(),
+                "elaboration environment cell",
+            );
+            match &*guard {
+                super::CUnif::Known(inner) => {
+                    class_lookup_key_in_env(elaboration_environment, inner)
+                }
+                super::CUnif::Unknown => None,
+            }
+        }
+        _ => class_head_of(constructor),
+    }
+}
+
+#[derive(Default)]
+struct SignatureProjectionMaps {
+    signatures: HashMap<usize, String>,
+    structures: HashMap<usize, String>,
+    constructors: HashMap<usize, String>,
+}
+
+fn extend_signature_projection_maps(
+    projection_maps: &mut SignatureProjectionMaps,
+    signature_item: &LocatedSignatureItem,
+) {
+    match &signature_item.node {
+        SignatureItem::ConAbs(name, id, _)
+        | SignatureItem::Constructor(name, id, _, _)
+        | SignatureItem::ClassAbs(name, id, _)
+        | SignatureItem::Class(name, id, _, _) => {
+            projection_maps.constructors.insert(*id, name.clone());
+        }
+        SignatureItem::Datatype(datatypes) => {
+            for datatype in datatypes {
+                projection_maps
+                    .constructors
+                    .insert(datatype.id, datatype.name.clone());
+            }
+        }
+        SignatureItem::DatatypeImp { name, id, .. } => {
+            projection_maps.constructors.insert(*id, name.clone());
+        }
+        SignatureItem::Structure(_, name, id, _) => {
+            projection_maps.structures.insert(*id, name.clone());
+        }
+        SignatureItem::Signature(name, id, _) => {
+            projection_maps.signatures.insert(*id, name.clone());
+        }
+        SignatureItem::Val(_, _, _) | SignatureItem::Constraint(_, _) => {}
+    }
+}
+
+fn rewrite_signature_projection_constructor(
+    constructor: &LocatedConstructor,
+    projection_maps: &SignatureProjectionMaps,
+    root_module_id: usize,
+    current_path: &[String],
+) -> LocatedConstructor {
+    let span = constructor.span.clone();
+    let rewritten_constructor = match &constructor.node {
+        Constructor::Named(id) => match projection_maps.constructors.get(id) {
+            Some(name) => Constructor::ModProj(root_module_id, current_path.to_vec(), name.clone()),
+            None => Constructor::Named(*id),
+        },
+        Constructor::ModProj(module_id, path, name) => {
+            match projection_maps.structures.get(module_id) {
+                Some(structure_name) => {
+                    let mut rewritten_path = current_path.to_vec();
+                    rewritten_path.push(structure_name.clone());
+                    rewritten_path.extend(path.clone());
+                    Constructor::ModProj(root_module_id, rewritten_path, name.clone())
+                }
+                None => Constructor::ModProj(*module_id, path.clone(), name.clone()),
+            }
+        }
+        Constructor::TFun(domain, range) => Constructor::TFun(
+            Box::new(rewrite_signature_projection_constructor(
+                domain,
+                projection_maps,
+                root_module_id,
+                current_path,
+            )),
+            Box::new(rewrite_signature_projection_constructor(
+                range,
+                projection_maps,
+                root_module_id,
+                current_path,
+            )),
+        ),
+        Constructor::TCFun(explicitness, name, kind, body) => Constructor::TCFun(
+            *explicitness,
+            name.clone(),
+            kind.clone(),
+            Box::new(rewrite_signature_projection_constructor(
+                body,
+                projection_maps,
+                root_module_id,
+                current_path,
+            )),
+        ),
+        Constructor::TRecord(row) => {
+            Constructor::TRecord(Box::new(rewrite_signature_projection_constructor(
+                row,
+                projection_maps,
+                root_module_id,
+                current_path,
+            )))
+        }
+        Constructor::TDisjoint(left, right, body) => Constructor::TDisjoint(
+            Box::new(rewrite_signature_projection_constructor(
+                left,
+                projection_maps,
+                root_module_id,
+                current_path,
+            )),
+            Box::new(rewrite_signature_projection_constructor(
+                right,
+                projection_maps,
+                root_module_id,
+                current_path,
+            )),
+            Box::new(rewrite_signature_projection_constructor(
+                body,
+                projection_maps,
+                root_module_id,
+                current_path,
+            )),
+        ),
+        Constructor::App(function_constructor, argument_constructor) => Constructor::App(
+            Box::new(rewrite_signature_projection_constructor(
+                function_constructor,
+                projection_maps,
+                root_module_id,
+                current_path,
+            )),
+            Box::new(rewrite_signature_projection_constructor(
+                argument_constructor,
+                projection_maps,
+                root_module_id,
+                current_path,
+            )),
+        ),
+        Constructor::Abs(name, kind, body) => Constructor::Abs(
+            name.clone(),
+            kind.clone(),
+            Box::new(rewrite_signature_projection_constructor(
+                body,
+                projection_maps,
+                root_module_id,
+                current_path,
+            )),
+        ),
+        Constructor::KAbs(name, body) => Constructor::KAbs(
+            name.clone(),
+            Box::new(rewrite_signature_projection_constructor(
+                body,
+                projection_maps,
+                root_module_id,
+                current_path,
+            )),
+        ),
+        Constructor::KApp(function_constructor, kind_argument) => Constructor::KApp(
+            Box::new(rewrite_signature_projection_constructor(
+                function_constructor,
+                projection_maps,
+                root_module_id,
+                current_path,
+            )),
+            kind_argument.clone(),
+        ),
+        Constructor::TKFun(name, body) => Constructor::TKFun(
+            name.clone(),
+            Box::new(rewrite_signature_projection_constructor(
+                body,
+                projection_maps,
+                root_module_id,
+                current_path,
+            )),
+        ),
+        Constructor::Record(row_kind, fields) => Constructor::Record(
+            row_kind.clone(),
+            fields
+                .iter()
+                .map(|(field_name, field_type)| {
+                    (
+                        rewrite_signature_projection_constructor(
+                            field_name,
+                            projection_maps,
+                            root_module_id,
+                            current_path,
+                        ),
+                        rewrite_signature_projection_constructor(
+                            field_type,
+                            projection_maps,
+                            root_module_id,
+                            current_path,
+                        ),
+                    )
+                })
+                .collect(),
+        ),
+        Constructor::Concat(left, right) => Constructor::Concat(
+            Box::new(rewrite_signature_projection_constructor(
+                left,
+                projection_maps,
+                root_module_id,
+                current_path,
+            )),
+            Box::new(rewrite_signature_projection_constructor(
+                right,
+                projection_maps,
+                root_module_id,
+                current_path,
+            )),
+        ),
+        Constructor::Tuple(items) => Constructor::Tuple(
+            items
+                .iter()
+                .map(|item| {
+                    rewrite_signature_projection_constructor(
+                        item,
+                        projection_maps,
+                        root_module_id,
+                        current_path,
+                    )
+                })
+                .collect(),
+        ),
+        Constructor::Proj(base, index) => Constructor::Proj(
+            Box::new(rewrite_signature_projection_constructor(
+                base,
+                projection_maps,
+                root_module_id,
+                current_path,
+            )),
+            *index,
+        ),
+        Constructor::Unif(level, unif_span, kind, name, cell) => {
+            let guard = crate::compiler_diagnostics::lock_for_compile(
+                cell.as_ref(),
+                "rewrite signature projection constructor",
+            );
+            match &*guard {
+                super::CUnif::Known(inner) => {
+                    return rewrite_signature_projection_constructor(
+                        inner,
+                        projection_maps,
+                        root_module_id,
+                        current_path,
+                    );
+                }
+                super::CUnif::Unknown => Constructor::Unif(
+                    *level,
+                    unif_span.clone(),
+                    kind.clone(),
+                    name.clone(),
+                    cell.clone(),
+                ),
+            }
+        }
+        _ => constructor.node.clone(),
+    };
+    Located::new(rewritten_constructor, span)
+}
+
+fn rewrite_signature_projection_signature(
+    signature: &LocatedSignature,
+    projection_maps: &SignatureProjectionMaps,
+    root_module_id: usize,
+    current_path: &[String],
+) -> LocatedSignature {
+    let span = signature.span.clone();
+    let rewritten_signature = match &signature.node {
+        Signature::Const(items) => Signature::Const(
+            items
+                .iter()
+                .map(|item| {
+                    rewrite_signature_projection_item(
+                        item,
+                        projection_maps,
+                        root_module_id,
+                        current_path,
+                    )
+                })
+                .collect(),
+        ),
+        Signature::Var(id) => match projection_maps.signatures.get(id) {
+            Some(name) => Signature::Proj(root_module_id, current_path.to_vec(), name.clone()),
+            None => Signature::Var(*id),
+        },
+        Signature::Fun(name, id, domain, range) => Signature::Fun(
+            name.clone(),
+            *id,
+            Box::new(rewrite_signature_projection_signature(
+                domain,
+                projection_maps,
+                root_module_id,
+                current_path,
+            )),
+            Box::new(rewrite_signature_projection_signature(
+                range,
+                projection_maps,
+                root_module_id,
+                current_path,
+            )),
+        ),
+        Signature::Where(inner, path, name, constructor) => Signature::Where(
+            Box::new(rewrite_signature_projection_signature(
+                inner,
+                projection_maps,
+                root_module_id,
+                current_path,
+            )),
+            path.clone(),
+            name.clone(),
+            rewrite_signature_projection_constructor(
+                constructor,
+                projection_maps,
+                root_module_id,
+                current_path,
+            ),
+        ),
+        Signature::Proj(module_id, path, name) => match projection_maps.structures.get(module_id) {
+            Some(structure_name) => {
+                let mut rewritten_path = current_path.to_vec();
+                rewritten_path.push(structure_name.clone());
+                rewritten_path.extend(path.clone());
+                Signature::Proj(root_module_id, rewritten_path, name.clone())
+            }
+            None => Signature::Proj(*module_id, path.clone(), name.clone()),
+        },
+        Signature::Error => Signature::Error,
+    };
+    Located::new(rewritten_signature, span)
+}
+
+fn rewrite_signature_projection_item(
+    item: &LocatedSignatureItem,
+    projection_maps: &SignatureProjectionMaps,
+    root_module_id: usize,
+    current_path: &[String],
+) -> LocatedSignatureItem {
+    let span = item.span.clone();
+    let rewritten_item = match &item.node {
+        SignatureItem::ConAbs(name, id, kind) => {
+            SignatureItem::ConAbs(name.clone(), *id, kind.clone())
+        }
+        SignatureItem::Constructor(name, id, kind, constructor) => SignatureItem::Constructor(
+            name.clone(),
+            *id,
+            kind.clone(),
+            rewrite_signature_projection_constructor(
+                constructor,
+                projection_maps,
+                root_module_id,
+                current_path,
+            ),
+        ),
+        SignatureItem::Datatype(datatypes) => SignatureItem::Datatype(
+            datatypes
+                .iter()
+                .map(|datatype| DatatypeDecl {
+                    name: datatype.name.clone(),
+                    id: datatype.id,
+                    params: datatype.params.clone(),
+                    constrs: datatype
+                        .constrs
+                        .iter()
+                        .map(|(name, id, constructor)| {
+                            (
+                                name.clone(),
+                                *id,
+                                constructor.as_ref().map(|constructor| {
+                                    rewrite_signature_projection_constructor(
+                                        constructor,
+                                        projection_maps,
+                                        root_module_id,
+                                        current_path,
+                                    )
+                                }),
+                            )
+                        })
+                        .collect(),
+                })
+                .collect(),
+        ),
+        SignatureItem::DatatypeImp {
+            name,
+            id,
+            params,
+            orig_mod,
+            orig_path,
+            orig_name,
+            orig_constrs_path,
+            constrs,
+        } => SignatureItem::DatatypeImp {
+            name: name.clone(),
+            id: *id,
+            params: params.clone(),
+            orig_mod: *orig_mod,
+            orig_path: orig_path.clone(),
+            orig_name: orig_name.clone(),
+            orig_constrs_path: orig_constrs_path.clone(),
+            constrs: constrs
+                .iter()
+                .map(|(name, id, constructor)| {
+                    (
+                        name.clone(),
+                        *id,
+                        constructor.as_ref().map(|constructor| {
+                            rewrite_signature_projection_constructor(
+                                constructor,
+                                projection_maps,
+                                root_module_id,
+                                current_path,
+                            )
+                        }),
+                    )
+                })
+                .collect(),
+        },
+        SignatureItem::Val(name, id, constructor) => SignatureItem::Val(
+            name.clone(),
+            *id,
+            rewrite_signature_projection_constructor(
+                constructor,
+                projection_maps,
+                root_module_id,
+                current_path,
+            ),
+        ),
+        SignatureItem::Structure(import_mode, name, id, nested_signature) => {
+            SignatureItem::Structure(
+                *import_mode,
+                name.clone(),
+                *id,
+                rewrite_signature_projection_signature(
+                    nested_signature,
+                    projection_maps,
+                    root_module_id,
+                    current_path,
+                ),
+            )
+        }
+        SignatureItem::Signature(name, id, nested_signature) => SignatureItem::Signature(
+            name.clone(),
+            *id,
+            rewrite_signature_projection_signature(
+                nested_signature,
+                projection_maps,
+                root_module_id,
+                current_path,
+            ),
+        ),
+        SignatureItem::Constraint(left, right) => SignatureItem::Constraint(
+            rewrite_signature_projection_constructor(
+                left,
+                projection_maps,
+                root_module_id,
+                current_path,
+            ),
+            rewrite_signature_projection_constructor(
+                right,
+                projection_maps,
+                root_module_id,
+                current_path,
+            ),
+        ),
+        SignatureItem::ClassAbs(name, id, kind) => {
+            SignatureItem::ClassAbs(name.clone(), *id, kind.clone())
+        }
+        SignatureItem::Class(name, id, kind, constructor) => SignatureItem::Class(
+            name.clone(),
+            *id,
+            kind.clone(),
+            rewrite_signature_projection_constructor(
+                constructor,
+                projection_maps,
+                root_module_id,
+                current_path,
+            ),
+        ),
+    };
+    Located::new(rewritten_item, span)
+}
+
+fn rewrite_signature_items_with_running_projections(
+    items: &[LocatedSignatureItem],
+    root_module_id: usize,
+    current_path: &[String],
+) -> Vec<LocatedSignatureItem> {
+    let mut projection_maps = SignatureProjectionMaps::default();
+    let mut rewritten_items = Vec::with_capacity(items.len());
+    for item in items {
+        rewritten_items.push(rewrite_signature_projection_item(
+            item,
+            &projection_maps,
+            root_module_id,
+            current_path,
+        ));
+        extend_signature_projection_maps(&mut projection_maps, item);
+    }
+    rewritten_items
 }
 
 // ---------------------------------------------------------------------------
@@ -2163,6 +2767,36 @@ fn rule_in(
     quantifiers(c, vec![])
 }
 
+fn normalize_class_name_in_env(elaboration_environment: &Env, class_name: ClassName) -> ClassName {
+    match class_name {
+        ClassName::Proj(module_id, path, name) => {
+            resolve_modproj_constructor_id(elaboration_environment, module_id, &path, &name)
+                .map(ClassName::Named)
+                .unwrap_or(ClassName::Proj(module_id, path, name))
+        }
+        _ => class_name,
+    }
+}
+
+fn rule_in_in_env(
+    elaboration_environment: &Env,
+    constructor: &LocatedConstructor,
+) -> Option<(
+    ClassName,
+    Vec<LocatedKind>,
+    Vec<LocatedConstructor>,
+    LocatedConstructor,
+)> {
+    rule_in(constructor).map(|(class_name, quantifier_kinds, hypotheses, conclusion)| {
+        (
+            normalize_class_name_in_env(elaboration_environment, class_name),
+            quantifier_kinds,
+            hypotheses,
+            conclusion,
+        )
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Signature head-normalisation (hnormSgn)
 // ---------------------------------------------------------------------------
@@ -2218,14 +2852,22 @@ pub fn hnorm_sgn(elaboration_environment: &Env, signature: &LocatedSignature) ->
             };
             // Walk through intermediate path components `ms`.
             let mut cur_sgn = hnorm_sgn(elaboration_environment, &root_sgn);
+            let mut current_path = Vec::new();
             for field in ms {
-                cur_sgn = match project_str_field(elaboration_environment, &cur_sgn, field) {
+                cur_sgn = match project_str_field(
+                    elaboration_environment,
+                    &cur_sgn,
+                    *m,
+                    &current_path,
+                    field,
+                ) {
                     Some(s) => hnorm_sgn(elaboration_environment, &s),
                     None => return signature.clone(),
                 };
+                current_path.push(field.clone());
             }
             // Project out the target signature name `x`.
-            match project_sgn_field(elaboration_environment, &cur_sgn, x) {
+            match project_sgn_field(elaboration_environment, &cur_sgn, *m, &current_path, x) {
                 Some(s) => hnorm_sgn(elaboration_environment, &s),
                 None => signature.clone(),
             }
@@ -2242,16 +2884,25 @@ pub fn hnorm_sgn(elaboration_environment: &Env, signature: &LocatedSignature) ->
 fn project_str_field(
     elaboration_environment: &Env,
     signature: &LocatedSignature,
+    root_module_id: usize,
+    current_path: &[String],
     field: &str,
 ) -> Option<LocatedSignature> {
     match &hnorm_sgn(elaboration_environment, signature).node {
         Signature::Const(items) => {
+            let mut projection_maps = SignatureProjectionMaps::default();
             for item in items {
                 if let SignatureItem::Structure(_, name, _, sub_sgn) = &item.node {
                     if name == field {
-                        return Some(sub_sgn.clone());
+                        return Some(rewrite_signature_projection_signature(
+                            sub_sgn,
+                            &projection_maps,
+                            root_module_id,
+                            current_path,
+                        ));
                     }
                 }
+                extend_signature_projection_maps(&mut projection_maps, &item);
             }
             None
         }
@@ -2264,16 +2915,25 @@ fn project_str_field(
 fn project_sgn_field(
     elaboration_environment: &Env,
     signature: &LocatedSignature,
+    root_module_id: usize,
+    current_path: &[String],
     field: &str,
 ) -> Option<LocatedSignature> {
     match &hnorm_sgn(elaboration_environment, signature).node {
         Signature::Const(items) => {
+            let mut projection_maps = SignatureProjectionMaps::default();
             for item in items {
                 if let SignatureItem::Signature(name, _, sub_sgn) = &item.node {
                     if name == field {
-                        return Some(sub_sgn.clone());
+                        return Some(rewrite_signature_projection_signature(
+                            sub_sgn,
+                            &projection_maps,
+                            root_module_id,
+                            current_path,
+                        ));
                     }
                 }
+                extend_signature_projection_maps(&mut projection_maps, &item);
             }
             None
         }
@@ -2282,41 +2942,281 @@ fn project_sgn_field(
     }
 }
 
+pub fn projected_signature_items_shared(
+    elaboration_environment: &Env,
+    root_module_id: usize,
+    path: &[String],
+) -> Option<Arc<[LocatedSignatureItem]>> {
+    static CACHE: OnceLock<
+        Mutex<HashMap<(usize, Vec<String>), Option<Arc<[LocatedSignatureItem]>>>>,
+    > = OnceLock::new();
+    let cache_key = (root_module_id, path.to_vec());
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(guard) = cache.lock() {
+        if let Some(cached_items) = guard.get(&cache_key) {
+            return cached_items.clone();
+        }
+    }
+    let (_, root_signature) = elaboration_environment
+        .lookup_str_named(root_module_id)
+        .ok()?;
+    let mut current_signature = hnorm_sgn(elaboration_environment, root_signature);
+    let mut current_path = Vec::new();
+    for field in path {
+        let next_signature = project_str_field(
+            elaboration_environment,
+            &current_signature,
+            root_module_id,
+            &current_path,
+            field,
+        )?;
+        current_signature = hnorm_sgn(elaboration_environment, &next_signature);
+        current_path.push(field.clone());
+    }
+    let result = match hnorm_sgn(elaboration_environment, &current_signature).node {
+        Signature::Const(items) => Some(Arc::from(
+            rewrite_signature_items_with_running_projections(&items, root_module_id, &current_path),
+        )),
+        Signature::Error => Some(Arc::from(Vec::<LocatedSignatureItem>::new())),
+        _ => None,
+    };
+    if let Ok(mut guard) = cache.lock() {
+        guard.insert(cache_key, result.clone());
+    }
+    result
+}
+
+pub fn projected_signature_items(
+    elaboration_environment: &Env,
+    root_module_id: usize,
+    path: &[String],
+) -> Option<Vec<LocatedSignatureItem>> {
+    projected_signature_items_shared(elaboration_environment, root_module_id, path)
+        .map(|items| items.iter().cloned().collect())
+}
+
+fn collect_projected_signature_constraints(
+    elaboration_environment: &Env,
+    root_module_id: usize,
+    current_path: &[String],
+    items: &[LocatedSignatureItem],
+    collected_constraints: &mut Vec<(LocatedConstructor, LocatedConstructor)>,
+    visited_paths: &mut HashSet<(usize, Vec<String>)>,
+) {
+    let mut projection_maps = SignatureProjectionMaps::default();
+    for item in items {
+        match &item.node {
+            SignatureItem::Constraint(left, right) => {
+                collected_constraints.push((
+                    rewrite_signature_projection_constructor(
+                        left,
+                        &projection_maps,
+                        root_module_id,
+                        current_path,
+                    ),
+                    rewrite_signature_projection_constructor(
+                        right,
+                        &projection_maps,
+                        root_module_id,
+                        current_path,
+                    ),
+                ));
+            }
+            SignatureItem::Structure(super::ImportMode::Import, name, _, _) => {
+                let mut sub_path = current_path.to_vec();
+                sub_path.push(name.clone());
+                if visited_paths.insert((root_module_id, sub_path.clone())) {
+                    if let Some(sub_items) = projected_signature_items_shared(
+                        elaboration_environment,
+                        root_module_id,
+                        &sub_path,
+                    ) {
+                        collect_projected_signature_constraints(
+                            elaboration_environment,
+                            root_module_id,
+                            &sub_path,
+                            sub_items.as_ref(),
+                            collected_constraints,
+                            visited_paths,
+                        );
+                    }
+                }
+            }
+            _ => {}
+        }
+        extend_signature_projection_maps(&mut projection_maps, item);
+    }
+}
+
+pub fn projected_signature_constraints(
+    elaboration_environment: &Env,
+    root_module_id: usize,
+    path: &[String],
+) -> Option<Vec<(LocatedConstructor, LocatedConstructor)>> {
+    let items = projected_signature_items_shared(elaboration_environment, root_module_id, path)?;
+    let mut collected_constraints = Vec::new();
+    let mut visited_paths = HashSet::new();
+    visited_paths.insert((root_module_id, path.to_vec()));
+    collect_projected_signature_constraints(
+        elaboration_environment,
+        root_module_id,
+        path,
+        items.as_ref(),
+        &mut collected_constraints,
+        &mut visited_paths,
+    );
+    Some(collected_constraints)
+}
+
 /// Resolve a constructor definition behind `ModProj(module_id, path, name)` when the structure
 /// signature exposes it as a concrete `SgiCon`/`SignatureItem::Constructor`.
-fn resolve_modproj_constructor_definition(
+pub(crate) fn resolve_modproj_constructor_definition(
     elaboration_environment: &Env,
     module_id: usize,
     path: &[String],
     name: &str,
 ) -> Option<LocatedConstructor> {
+    static CACHE: OnceLock<
+        Mutex<HashMap<(usize, Vec<String>, String), Option<LocatedConstructor>>>,
+    > = OnceLock::new();
+    let cache_key = (module_id, path.to_vec(), name.to_string());
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(guard) = cache.lock() {
+        if let Some(cached_result) = guard.get(&cache_key) {
+            return cached_result.clone();
+        }
+    }
+    if std::env::var("URWEB_DEBUG_MODPROJ_RESOLVE").ok().as_deref() == Some("1") {
+        static COUNTS: OnceLock<Mutex<HashMap<String, usize>>> = OnceLock::new();
+        let key = format!("{}::{}::{}", module_id, path.join("."), name);
+        let counts = COUNTS.get_or_init(|| Mutex::new(HashMap::new()));
+        if let Ok(mut guard) = counts.lock() {
+            let count = guard.entry(key.clone()).or_insert(0);
+            *count += 1;
+            if *count <= 5 || *count == 10 || *count == 100 || *count == 1000 || *count == 10000 {
+                eprintln!("modproj-resolve {key} count={count}");
+            }
+        }
+    }
     // Start from the root structure signature for the projected module id.
-    let (_, root_signature) = elaboration_environment.lookup_str_named(module_id).ok()?;
-    // Normalize the root signature before walking nested structure projections.
-    let mut current_signature = hnorm_sgn(elaboration_environment, root_signature);
-    for field in path {
-        // Descend into the next nested structure component.
-        current_signature = hnorm_sgn(
-            elaboration_environment,
-            &project_str_field(elaboration_environment, &current_signature, field)?,
-        );
-    }
-    match &hnorm_sgn(elaboration_environment, &current_signature).node {
+    let Some(items) = projected_signature_items_shared(elaboration_environment, module_id, path)
+    else {
+        if let Ok(mut guard) = cache.lock() {
+            guard.insert(cache_key, None);
+        }
+        return None;
+    };
+    let current_path = path.to_vec();
+    let result = match items.as_ref() {
         // Search the final signature for a concrete constructor item with this field name.
-        Signature::Const(items) => items.iter().find_map(|item| match &item.node {
-            SignatureItem::Constructor(field_name, _, _, definition) if field_name == name => {
-                Some(definition.clone())
+        _ => {
+            let mut projection_maps = SignatureProjectionMaps::default();
+            for item in items.iter() {
+                match &item.node {
+                    SignatureItem::Constructor(field_name, _, _, definition)
+                        if field_name == name =>
+                    {
+                        let rewritten_definition = rewrite_signature_projection_constructor(
+                            definition,
+                            &projection_maps,
+                            module_id,
+                            &current_path,
+                        );
+                        match &rewritten_definition.node {
+                            Constructor::ModProj(def_module_id, def_path, def_name)
+                                if *def_module_id == module_id
+                                    && def_path == &current_path
+                                    && def_name == name =>
+                            {
+                                return None;
+                            }
+                            _ => return Some(rewritten_definition),
+                        }
+                    }
+                    SignatureItem::Class(field_name, _, _, definition) if field_name == name => {
+                        let rewritten_definition = rewrite_signature_projection_constructor(
+                            definition,
+                            &projection_maps,
+                            module_id,
+                            &current_path,
+                        );
+                        match &rewritten_definition.node {
+                            Constructor::ModProj(def_module_id, def_path, def_name)
+                                if *def_module_id == module_id
+                                    && def_path == &current_path
+                                    && def_name == name =>
+                            {
+                                return None;
+                            }
+                            _ => return Some(rewritten_definition),
+                        }
+                    }
+                    _ => {}
+                }
+                extend_signature_projection_maps(&mut projection_maps, &item);
             }
-            SignatureItem::Class(field_name, _, _, definition) if field_name == name => {
-                Some(definition.clone())
-            }
-            _ => None,
-        }),
-        // Error signatures stay stuck.
-        Signature::Error => None,
-        // Non-constant signatures cannot expose a concrete constructor definition here.
-        _ => None,
+            None
+        }
+    };
+    if let Ok(mut guard) = cache.lock() {
+        guard.insert(cache_key, result.clone());
     }
+    result
+}
+
+/// Resolve the globally unique constructor id referenced by `ModProj(module_id, path, name)`.
+pub(crate) fn resolve_modproj_constructor_id(
+    elaboration_environment: &Env,
+    module_id: usize,
+    path: &[String],
+    name: &str,
+) -> Option<usize> {
+    static CACHE: OnceLock<Mutex<HashMap<(usize, Vec<String>, String), Option<usize>>>> =
+        OnceLock::new();
+    let cache_key = (module_id, path.to_vec(), name.to_string());
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(guard) = cache.lock() {
+        if let Some(cached_result) = guard.get(&cache_key) {
+            return *cached_result;
+        }
+    }
+
+    let result = projected_signature_items_shared(elaboration_environment, module_id, path)
+        .and_then(|items| {
+            for item in items.iter() {
+                match &item.node {
+                    SignatureItem::ConAbs(field_name, id, _)
+                    | SignatureItem::Constructor(field_name, id, _, _)
+                    | SignatureItem::ClassAbs(field_name, id, _)
+                    | SignatureItem::Class(field_name, id, _, _)
+                        if field_name == name =>
+                    {
+                        return Some(*id);
+                    }
+                    SignatureItem::Datatype(datatypes) => {
+                        if let Some(datatype) =
+                            datatypes.iter().find(|datatype| datatype.name == name)
+                        {
+                            return Some(datatype.id);
+                        }
+                    }
+                    SignatureItem::DatatypeImp {
+                        name: datatype_name,
+                        id,
+                        ..
+                    } if datatype_name == name => {
+                        return Some(*id);
+                    }
+                    _ => {}
+                }
+            }
+            None
+        });
+
+    if let Ok(mut guard) = cache.lock() {
+        guard.insert(cache_key, result);
+    }
+    result
 }
 
 /// Implement the `SgnWhere` rewrite: replace `SgiConAbs(x, n, k)` at path `ms`
@@ -2417,7 +3317,9 @@ fn enrich_classes(
     for item in &items {
         match &item.node {
             SignatureItem::Val(val_name, _val_id, con) => {
-                if let Some((cn, nvs, hyps, conclusion)) = rule_in(con) {
+                if let Some((cn, nvs, hyps, conclusion)) =
+                    rule_in_in_env(elaboration_environment, con)
+                {
                     if elaboration_environment.classes.contains_key(&cn) {
                         let loc = item.span.clone();
                         let witness = Located::new(

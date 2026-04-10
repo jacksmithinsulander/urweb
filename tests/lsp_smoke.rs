@@ -331,7 +331,8 @@ fn ur_lsp_did_change_replaces_text_and_clears_diagnostics() -> anyhow::Result<()
     )?; // send JSON-RPC message to the LSP server
 
     let uri = "file:///tmp/ur-lsp-change.ur"; // temporary document URI for the change-detection test
-    let _ = write_msg( // intentionally ignore send errors for fire-and-forget notification
+    let _ = write_msg(
+        // intentionally ignore send errors for fire-and-forget notification
         &mut stdin,
         &json!({
             "jsonrpc": "2.0",

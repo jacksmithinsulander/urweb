@@ -2,7 +2,7 @@
 
 use crate::error_types::{Located, Span};
 use crate::primitives::Prim;
-use crate::source::{Con, Exp, Inference, Kind, LocCon, LocExp, LocPat, Pat};
+use crate::source::{Con, Exp, Inference, Kind, LocCon, LocExp, LocKind, LocPat, Pat};
 
 #[derive(Clone)]
 pub enum SqlSelectItem {
@@ -187,6 +187,68 @@ fn wildcard_table_record_kind(span: &Span) -> Kind {
 
 fn tuple_constructor(parts: Vec<LocCon>, span: &Span) -> LocCon {
     Located::new(Con::Tuple(parts), span.clone())
+}
+
+pub fn tuple_product_type_constructor(parts: Vec<LocCon>, span: &Span) -> Con {
+    let numbered_fields = parts
+        .into_iter()
+        .enumerate()
+        .map(|(index, part)| {
+            (
+                Located::new(Con::Name((index + 1).to_string()), span.clone()),
+                part,
+            )
+        })
+        .collect();
+    Con::TRecord(Box::new(Located::new(
+        Con::Record(numbered_fields),
+        span.clone(),
+    )))
+}
+
+pub fn constructor_lambda_from_param_list(
+    params: Vec<(String, LocKind)>,
+    rest: Box<LocCon>,
+    span: &Span,
+) -> Con {
+    if params.is_empty() {
+        return rest.node;
+    }
+    if params.len() == 1 {
+        let (name, kind) = params.into_iter().next().expect("single param");
+        return Con::Abs(name, Some(Box::new(kind)), rest);
+    }
+
+    let tuple_kind = Located::new(
+        Kind::Tuple(params.iter().map(|(_, kind)| kind.clone()).collect()),
+        span.clone(),
+    );
+    let tuple_variable = Located::new(Con::Var(Vec::new(), "$x".to_string()), span.clone());
+    let nested_body = params
+        .iter()
+        .rev()
+        .cloned()
+        .fold(*rest, |body, (name, kind)| {
+            Located::new(
+                Con::Abs(name, Some(Box::new(kind)), Box::new(body)),
+                span.clone(),
+            )
+        });
+    let applied_body = params
+        .iter()
+        .enumerate()
+        .fold(nested_body, |body, (index, _)| {
+            let projection = Located::new(
+                Con::Proj(Box::new(tuple_variable.clone()), index + 1),
+                span.clone(),
+            );
+            Located::new(Con::App(Box::new(body), Box::new(projection)), span.clone())
+        });
+    Con::Abs(
+        "$x".to_string(),
+        Some(Box::new(tuple_kind)),
+        Box::new(applied_body),
+    )
 }
 
 fn row_record_constructor(fields: Vec<(LocCon, LocCon)>, span: &Span) -> LocCon {

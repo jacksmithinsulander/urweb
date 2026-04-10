@@ -35,7 +35,8 @@ use crate::diagnostics::{DiagnosticId, DiagnosticPayload};
 use crate::elaborated as elab;
 use crate::elaborated::disjointness_analysis as disjoint;
 use crate::elaborated::environment::{
-    hnorm_con_expression_head, hnorm_sgn, new_named_id, ConstructorInfo, Env, VarLookup,
+    hnorm_con_expression_head, hnorm_sgn, new_named_id, resolve_modproj_constructor_definition,
+    resolve_modproj_constructor_id, ConstructorInfo, Env, VarLookup,
 };
 use crate::elaborated::type_operations::{
     cons_eq_simple, hnorm_con, lift_kind_in_con, mlift_con_in_con, occurs_cunif, reduce_con,
@@ -897,6 +898,20 @@ fn sgi_find_str<'a>(
     None
 }
 
+fn sgi_find_sgn<'a>(
+    sgis: &'a [elab::LocatedSignatureItem],
+    x: &str,
+) -> Option<&'a elab::SignatureItem> {
+    for sgi in sgis {
+        if let elab::SignatureItem::Signature(name, _, _) = &sgi.node {
+            if name == x {
+                return Some(&sgi.node);
+            }
+        }
+    }
+    None
+}
+
 fn sgi_find_datatype<'a>(
     sgis: &'a [elab::LocatedSignatureItem],
     x: &str,
@@ -911,6 +926,390 @@ fn sgi_find_datatype<'a>(
         }
     }
     None
+}
+
+fn signature_local_constructor_projection_names(
+    signature_items: &[elab::LocatedSignatureItem],
+) -> HashMap<usize, String> {
+    let mut projection_names = HashMap::new();
+    for signature_item in signature_items {
+        match &signature_item.node {
+            elab::SignatureItem::ConAbs(name, id, _)
+            | elab::SignatureItem::Constructor(name, id, _, _)
+            | elab::SignatureItem::ClassAbs(name, id, _)
+            | elab::SignatureItem::Class(name, id, _, _) => {
+                projection_names.insert(*id, name.clone());
+            }
+            elab::SignatureItem::Datatype(datatypes) => {
+                for datatype in datatypes {
+                    projection_names.insert(datatype.id, datatype.name.clone());
+                }
+            }
+            elab::SignatureItem::DatatypeImp { name, id, .. } => {
+                projection_names.insert(*id, name.clone());
+            }
+            _ => {}
+        }
+    }
+    projection_names
+}
+
+fn project_signature_constructor_to_module_inner(
+    constructor: &elab::LocatedConstructor,
+    projection_names: &HashMap<usize, String>,
+    root_id: usize,
+    sub_path: &[String],
+) -> elab::LocatedConstructor {
+    let span = constructor.span.clone();
+    let projected_constructor = match &constructor.node {
+        elab::Constructor::TFun(domain, range) => elab::Constructor::TFun(
+            Box::new(project_signature_constructor_to_module_inner(
+                domain,
+                projection_names,
+                root_id,
+                sub_path,
+            )),
+            Box::new(project_signature_constructor_to_module_inner(
+                range,
+                projection_names,
+                root_id,
+                sub_path,
+            )),
+        ),
+        elab::Constructor::TCFun(explicitness, name, kind, body) => elab::Constructor::TCFun(
+            *explicitness,
+            name.clone(),
+            kind.clone(),
+            Box::new(project_signature_constructor_to_module_inner(
+                body,
+                projection_names,
+                root_id,
+                sub_path,
+            )),
+        ),
+        elab::Constructor::TRecord(row) => elab::Constructor::TRecord(Box::new(
+            project_signature_constructor_to_module_inner(row, projection_names, root_id, sub_path),
+        )),
+        elab::Constructor::TDisjoint(left, right, body) => elab::Constructor::TDisjoint(
+            Box::new(project_signature_constructor_to_module_inner(
+                left,
+                projection_names,
+                root_id,
+                sub_path,
+            )),
+            Box::new(project_signature_constructor_to_module_inner(
+                right,
+                projection_names,
+                root_id,
+                sub_path,
+            )),
+            Box::new(project_signature_constructor_to_module_inner(
+                body,
+                projection_names,
+                root_id,
+                sub_path,
+            )),
+        ),
+        elab::Constructor::Named(id) => match projection_names.get(id) {
+            Some(name) => elab::Constructor::ModProj(root_id, sub_path.to_vec(), name.clone()),
+            None => elab::Constructor::Named(*id),
+        },
+        elab::Constructor::App(function_constructor, argument_constructor) => {
+            elab::Constructor::App(
+                Box::new(project_signature_constructor_to_module_inner(
+                    function_constructor,
+                    projection_names,
+                    root_id,
+                    sub_path,
+                )),
+                Box::new(project_signature_constructor_to_module_inner(
+                    argument_constructor,
+                    projection_names,
+                    root_id,
+                    sub_path,
+                )),
+            )
+        }
+        elab::Constructor::Abs(name, kind, body) => elab::Constructor::Abs(
+            name.clone(),
+            kind.clone(),
+            Box::new(project_signature_constructor_to_module_inner(
+                body,
+                projection_names,
+                root_id,
+                sub_path,
+            )),
+        ),
+        elab::Constructor::KAbs(name, body) => elab::Constructor::KAbs(
+            name.clone(),
+            Box::new(project_signature_constructor_to_module_inner(
+                body,
+                projection_names,
+                root_id,
+                sub_path,
+            )),
+        ),
+        elab::Constructor::KApp(function_constructor, kind) => elab::Constructor::KApp(
+            Box::new(project_signature_constructor_to_module_inner(
+                function_constructor,
+                projection_names,
+                root_id,
+                sub_path,
+            )),
+            kind.clone(),
+        ),
+        elab::Constructor::TKFun(name, body) => elab::Constructor::TKFun(
+            name.clone(),
+            Box::new(project_signature_constructor_to_module_inner(
+                body,
+                projection_names,
+                root_id,
+                sub_path,
+            )),
+        ),
+        elab::Constructor::Record(kind, fields) => elab::Constructor::Record(
+            kind.clone(),
+            fields
+                .iter()
+                .map(|(field_name, field_type)| {
+                    (
+                        project_signature_constructor_to_module_inner(
+                            field_name,
+                            projection_names,
+                            root_id,
+                            sub_path,
+                        ),
+                        project_signature_constructor_to_module_inner(
+                            field_type,
+                            projection_names,
+                            root_id,
+                            sub_path,
+                        ),
+                    )
+                })
+                .collect(),
+        ),
+        elab::Constructor::Concat(left, right) => elab::Constructor::Concat(
+            Box::new(project_signature_constructor_to_module_inner(
+                left,
+                projection_names,
+                root_id,
+                sub_path,
+            )),
+            Box::new(project_signature_constructor_to_module_inner(
+                right,
+                projection_names,
+                root_id,
+                sub_path,
+            )),
+        ),
+        elab::Constructor::Tuple(items) => elab::Constructor::Tuple(
+            items
+                .iter()
+                .map(|item| {
+                    project_signature_constructor_to_module_inner(
+                        item,
+                        projection_names,
+                        root_id,
+                        sub_path,
+                    )
+                })
+                .collect(),
+        ),
+        elab::Constructor::Proj(constructor, index) => elab::Constructor::Proj(
+            Box::new(project_signature_constructor_to_module_inner(
+                constructor,
+                projection_names,
+                root_id,
+                sub_path,
+            )),
+            *index,
+        ),
+        elab::Constructor::Unif(_, _, _, _, reference) => {
+            let guard = crate::compiler_diagnostics::lock_for_compile(
+                reference.as_ref(),
+                "project signature constructor to module",
+            );
+            match &*guard {
+                elab::CUnif::Known(known_constructor) => {
+                    return project_signature_constructor_to_module_inner(
+                        known_constructor,
+                        projection_names,
+                        root_id,
+                        sub_path,
+                    );
+                }
+                elab::CUnif::Unknown => constructor.node.clone(),
+            }
+        }
+        _ => constructor.node.clone(),
+    };
+    Located::new(projected_constructor, span)
+}
+
+fn project_signature_constructor_to_module(
+    constructor: &elab::LocatedConstructor,
+    signature_items: &[elab::LocatedSignatureItem],
+    root_id: usize,
+    sub_path: &[String],
+) -> elab::LocatedConstructor {
+    let projection_names = signature_local_constructor_projection_names(signature_items);
+    project_signature_constructor_to_module_inner(constructor, &projection_names, root_id, sub_path)
+}
+
+fn unravel_structure_path(structure: &elab::LocatedStructure) -> Option<(usize, Vec<String>)> {
+    match &structure.node {
+        elab::Structure::Var(id) => Some((*id, Vec::new())),
+        elab::Structure::Proj(base, field) => {
+            let (root_id, mut sub_path) = unravel_structure_path(base)?;
+            sub_path.push(field.clone());
+            Some((root_id, sub_path))
+        }
+        _ => None,
+    }
+}
+
+fn selfify_signature(
+    elaboration_environment: &Env,
+    root_id: usize,
+    sub_path: &[String],
+    signature: &elab::LocatedSignature,
+) -> elab::LocatedSignature {
+    let normalized_signature = hnorm_sgn(elaboration_environment, signature);
+    let span = normalized_signature.span.clone();
+    let selfified_signature = match &normalized_signature.node {
+        elab::Signature::Const(signature_items) => {
+            let mut selfified_items = Vec::new();
+            for signature_item in signature_items {
+                match &signature_item.node {
+                    elab::SignatureItem::ConAbs(name, id, kind) => {
+                        let definition = Located::new(
+                            elab::Constructor::ModProj(root_id, sub_path.to_vec(), name.clone()),
+                            signature_item.span.clone(),
+                        );
+                        selfified_items.push(Located::new(
+                            elab::SignatureItem::Constructor(
+                                name.clone(),
+                                *id,
+                                kind.clone(),
+                                definition,
+                            ),
+                            signature_item.span.clone(),
+                        ));
+                    }
+                    elab::SignatureItem::Datatype(datatypes) => {
+                        for datatype in datatypes {
+                            selfified_items.push(Located::new(
+                                elab::SignatureItem::DatatypeImp {
+                                    name: datatype.name.clone(),
+                                    id: datatype.id,
+                                    params: datatype.params.clone(),
+                                    orig_mod: root_id,
+                                    orig_path: sub_path.to_vec(),
+                                    orig_name: datatype.name.clone(),
+                                    orig_constrs_path: sub_path.to_vec(),
+                                    constrs: datatype.constrs.clone(),
+                                },
+                                signature_item.span.clone(),
+                            ));
+                        }
+                    }
+                    elab::SignatureItem::ClassAbs(name, id, kind) => {
+                        let definition = Located::new(
+                            elab::Constructor::ModProj(root_id, sub_path.to_vec(), name.clone()),
+                            signature_item.span.clone(),
+                        );
+                        selfified_items.push(Located::new(
+                            elab::SignatureItem::Class(name.clone(), *id, kind.clone(), definition),
+                            signature_item.span.clone(),
+                        ));
+                    }
+                    elab::SignatureItem::Structure(import_mode, name, id, nested_signature) => {
+                        let mut nested_path = sub_path.to_vec();
+                        nested_path.push(name.clone());
+                        selfified_items.push(Located::new(
+                            elab::SignatureItem::Structure(
+                                *import_mode,
+                                name.clone(),
+                                *id,
+                                selfify_signature(
+                                    elaboration_environment,
+                                    root_id,
+                                    &nested_path,
+                                    nested_signature,
+                                ),
+                            ),
+                            signature_item.span.clone(),
+                        ));
+                    }
+                    _ => selfified_items.push(signature_item.clone()),
+                }
+            }
+            elab::Signature::Const(selfified_items)
+        }
+        _ => normalized_signature.node.clone(),
+    };
+    Located::new(selfified_signature, span)
+}
+
+fn selfify_signature_at(
+    elaboration_environment: &Env,
+    structure: &elab::LocatedStructure,
+    signature: &elab::LocatedSignature,
+) -> elab::LocatedSignature {
+    match unravel_structure_path(structure) {
+        Some((root_id, sub_path)) => {
+            selfify_signature(elaboration_environment, root_id, &sub_path, signature)
+        }
+        None => signature.clone(),
+    }
+}
+
+fn munge_functor_parameter_name(
+    signature_items: &[elab::LocatedSignatureItem],
+    parameter_name: &str,
+) -> String {
+    let mut candidate = parameter_name.to_string();
+    while signature_items.iter().any(|signature_item| {
+        matches!(
+            &signature_item.node,
+            elab::SignatureItem::Structure(_, existing_name, _, _) if existing_name == &candidate
+        )
+    }) {
+        candidate = format!("?{candidate}");
+    }
+    candidate
+}
+
+fn assert_projected_signature_constraints(
+    elaboration_context: &mut ElabCtx,
+    elaboration_environment: &Env,
+    disjointness_environment: &disjoint::DisjointEnv,
+    root_module_id: usize,
+    path: &[String],
+    span: &Span,
+) -> disjoint::DisjointEnv {
+    let Some(constraints) = crate::elaborated::environment::projected_signature_constraints(
+        elaboration_environment,
+        root_module_id,
+        path,
+    ) else {
+        elaboration_context.error(
+            span.clone(),
+            DiagnosticPayload::new(
+                DiagnosticId::SignatureNotValidForOpenConstraints,
+                Vec::new(),
+            ),
+        );
+        return disjointness_environment.clone();
+    };
+
+    let mut updated_disjointness_environment = disjointness_environment.clone();
+    for (left, right) in constraints {
+        updated_disjointness_environment =
+            disjoint::assert(left, right, updated_disjointness_environment);
+    }
+    updated_disjointness_environment
 }
 
 // ---------------------------------------------------------------------------
@@ -1602,6 +2001,48 @@ fn elab_con_var(
         }
     }
 
+    if let Some(datatype) = sgi_find_datatype(&signature_items, x) {
+        let span_for_kind = span.clone();
+        let kind_type = Located::new(elab::Kind::Type, span_for_kind.clone());
+        let datatype_kind = datatype
+            .params
+            .iter()
+            .fold(kind_type.clone(), |accumulated, _| {
+                Located::new(
+                    elab::Kind::Arrow(Box::new(kind_type.clone()), Box::new(accumulated)),
+                    span_for_kind.clone(),
+                )
+            });
+        let datatype_projection = Located::new(
+            elab::Constructor::ModProj(structure_root_id, ms[1..].to_vec(), x.to_string()),
+            span.clone(),
+        );
+        let (headed_constructor, headed_kind) = elab_con_head(datatype_projection, datatype_kind);
+        return (headed_constructor, headed_kind);
+    }
+
+    for signature_item in &signature_items {
+        if let elab::SignatureItem::DatatypeImp { name, params, .. } = &signature_item.node {
+            if name == x {
+                let span_for_kind = span.clone();
+                let kind_type = Located::new(elab::Kind::Type, span_for_kind.clone());
+                let datatype_kind = params.iter().fold(kind_type.clone(), |accumulated, _| {
+                    Located::new(
+                        elab::Kind::Arrow(Box::new(kind_type.clone()), Box::new(accumulated)),
+                        span_for_kind.clone(),
+                    )
+                });
+                let datatype_projection = Located::new(
+                    elab::Constructor::ModProj(structure_root_id, ms[1..].to_vec(), x.to_string()),
+                    span.clone(),
+                );
+                let (headed_constructor, headed_kind) =
+                    elab_con_head(datatype_projection, datatype_kind);
+                return (headed_constructor, headed_kind);
+            }
+        }
+    }
+
     elaboration_context.error(
         span.clone(),
         DiagnosticPayload::new(
@@ -1629,8 +2070,8 @@ fn resolve_module_path(
         return None;
     }
     let first = &ms[0];
-    let (root_id, mut sgn) = match elaboration_environment.lookup_str(first) {
-        Some((sid, s)) => (*sid, s.clone()),
+    let root_id = match elaboration_environment.lookup_str(first) {
+        Some((sid, _)) => *sid,
         None => {
             elaboration_context.error(
                 span.clone(),
@@ -1639,60 +2080,21 @@ fn resolve_module_path(
             return None;
         }
     };
-
-    // Chase remaining path components to get items of the final module
-    let hsgn = hnorm_sgn(elaboration_environment, &sgn);
-    let mut items = match &hsgn.node {
-        elab::Signature::Const(sgis) => sgis.clone(),
-        _ => {
+    let items = match crate::elaborated::environment::projected_signature_items(
+        elaboration_environment,
+        root_id,
+        &ms[1..],
+    ) {
+        Some(items) => items,
+        None => {
+            let missing = ms.last().cloned().unwrap_or_else(|| first.clone());
             elaboration_context.error(
                 span.clone(),
-                DiagnosticPayload::new(
-                    DiagnosticId::ElabModuleNonConstSignature,
-                    vec![first.clone()],
-                ),
+                DiagnosticPayload::new(DiagnosticId::ElabUnboundModule, vec![missing]),
             );
             return None;
         }
     };
-
-    for m in &ms[1..] {
-        if let Some(sgi) = sgi_find_str(&items, m) {
-            match sgi {
-                elab::SignatureItem::Structure(_, _, _, inner_sgn) => {
-                    sgn = inner_sgn.clone();
-                    let hn = hnorm_sgn(elaboration_environment, &sgn);
-                    items = match &hn.node {
-                        elab::Signature::Const(sgis) => sgis.clone(),
-                        _ => {
-                            elaboration_context.error(
-                                span.clone(),
-                                DiagnosticPayload::new(
-                                    DiagnosticId::ElabSubModuleNonConstSignature,
-                                    vec![m.clone()],
-                                ),
-                            );
-                            return None;
-                        }
-                    };
-                }
-                _ => {
-                    elaboration_context.error(
-                        span.clone(),
-                        DiagnosticPayload::new(DiagnosticId::ElabNotAStructure, vec![m.clone()]),
-                    );
-                    return None;
-                }
-            }
-        } else {
-            elaboration_context.error(
-                span.clone(),
-                DiagnosticPayload::new(DiagnosticId::ElabUnboundModule, vec![m.clone()]),
-            );
-            return None;
-        }
-    }
-
     Some((root_id, items))
 }
 
@@ -1787,13 +2189,16 @@ pub fn kindof(
                 }
             }
         }
-        elab::Constructor::ModProj(structure_id, _module_path_tail, exported_name) => {
-            if let Ok((_structure_name, exported_signature)) =
-                elaboration_environment.lookup_str_named(*structure_id)
+        elab::Constructor::ModProj(structure_id, module_path_tail, exported_name) => {
+            if let Some(flattened_items) =
+                crate::elaborated::environment::projected_signature_items_shared(
+                    elaboration_environment,
+                    *structure_id,
+                    module_path_tail,
+                )
             {
-                let flattened_items =
-                    get_sgn_const_items(elaboration_environment, exported_signature);
-                if let Some(signature_item) = sgi_find_con(&flattened_items, exported_name) {
+                if let Some(signature_item) = sgi_find_con(flattened_items.as_ref(), exported_name)
+                {
                     match signature_item {
                         elab::SignatureItem::ConAbs(_, _, item_kind)
                         | elab::SignatureItem::Constructor(_, _, item_kind, _) => {
@@ -1804,6 +2209,41 @@ pub fn kindof(
                             return kind_for_class_constructor_head(&span, item_kind);
                         }
                         _ => {}
+                    }
+                }
+                if let Some(datatype) = sgi_find_datatype(flattened_items.as_ref(), exported_name) {
+                    let kind_type = Located::new(elab::Kind::Type, span.clone());
+                    return datatype.params.iter().fold(
+                        kind_type.clone(),
+                        |accumulated_kind, _| {
+                            Located::new(
+                                elab::Kind::Arrow(
+                                    Box::new(kind_type.clone()),
+                                    Box::new(accumulated_kind),
+                                ),
+                                span.clone(),
+                            )
+                        },
+                    );
+                }
+                for signature_item in flattened_items.as_ref() {
+                    if let elab::SignatureItem::DatatypeImp { name, params, .. } =
+                        &signature_item.node
+                    {
+                        if name == exported_name {
+                            let kind_type = Located::new(elab::Kind::Type, span.clone());
+                            return params
+                                .iter()
+                                .fold(kind_type.clone(), |accumulated_kind, _| {
+                                    Located::new(
+                                        elab::Kind::Arrow(
+                                            Box::new(kind_type.clone()),
+                                            Box::new(accumulated_kind),
+                                        ),
+                                        span.clone(),
+                                    )
+                                });
+                        }
                     }
                 }
             }
@@ -1833,7 +2273,7 @@ pub fn kindof(
         elab::Constructor::Abs(binder_name, domain_kind, body) => {
             let environment_with_binder = elaboration_environment
                 .clone()
-                .push_c_rel(binder_name.clone(), *domain_kind.clone());
+                .push_c_rel(binder_name.clone(), domain_kind.clone().as_ref().clone());
             let body_kind = kindof(elaboration_context, &environment_with_binder, body);
             Located::new(
                 elab::Kind::Arrow(domain_kind.clone(), Box::new(body_kind)),
@@ -1988,6 +2428,111 @@ fn build_signature_realization_map(
         realization_map.insert(expected_id, replacement);
     }
     realization_map
+}
+
+fn extend_signature_realization_maps(
+    actual_items: &[elab::LocatedSignatureItem],
+    expected_items: &[elab::LocatedSignatureItem],
+    span: &Span,
+    constructor_realization_map: &mut HashMap<usize, elab::LocatedConstructor>,
+    value_realization_map: &mut HashMap<usize, usize>,
+    structure_realization_map: &mut HashMap<usize, usize>,
+    signature_realization_map: &mut HashMap<usize, usize>,
+) {
+    constructor_realization_map.extend(build_signature_realization_map(
+        actual_items,
+        expected_items,
+        span,
+    ));
+
+    for expected_item in expected_items {
+        match &expected_item.node {
+            elab::SignatureItem::Val(expected_name, expected_id, _) => {
+                let Some(elab::SignatureItem::Val(_actual_name, actual_id, _)) =
+                    sgi_find_val(actual_items, expected_name)
+                else {
+                    continue;
+                };
+                value_realization_map.insert(*expected_id, *actual_id);
+            }
+            elab::SignatureItem::Structure(_, expected_name, expected_id, expected_signature) => {
+                let Some(elab::SignatureItem::Structure(
+                    _,
+                    _actual_name,
+                    actual_id,
+                    actual_signature,
+                )) = sgi_find_str(actual_items, expected_name)
+                else {
+                    continue;
+                };
+                structure_realization_map.insert(*expected_id, *actual_id);
+                let actual_nested_items = get_sgn_const_items(&Env::empty(), actual_signature);
+                let expected_nested_items = get_sgn_const_items(&Env::empty(), expected_signature);
+                extend_signature_realization_maps(
+                    &actual_nested_items,
+                    &expected_nested_items,
+                    span,
+                    constructor_realization_map,
+                    value_realization_map,
+                    structure_realization_map,
+                    signature_realization_map,
+                );
+            }
+            elab::SignatureItem::Signature(expected_name, expected_id, expected_signature) => {
+                let Some(elab::SignatureItem::Signature(_actual_name, actual_id, actual_signature)) =
+                    sgi_find_sgn(actual_items, expected_name)
+                else {
+                    continue;
+                };
+                signature_realization_map.insert(*expected_id, *actual_id);
+                let actual_nested_items = get_sgn_const_items(&Env::empty(), actual_signature);
+                let expected_nested_items = get_sgn_const_items(&Env::empty(), expected_signature);
+                extend_signature_realization_maps(
+                    &actual_nested_items,
+                    &expected_nested_items,
+                    span,
+                    constructor_realization_map,
+                    value_realization_map,
+                    structure_realization_map,
+                    signature_realization_map,
+                );
+            }
+            _ => {}
+        }
+    }
+}
+
+fn build_recursive_signature_realization_maps(
+    actual_signature: &elab::LocatedSignature,
+    expected_signature: &elab::LocatedSignature,
+    span: &Span,
+) -> (
+    HashMap<usize, elab::LocatedConstructor>,
+    HashMap<usize, usize>,
+    HashMap<usize, usize>,
+    HashMap<usize, usize>,
+) {
+    let actual_items = get_sgn_const_items(&Env::empty(), actual_signature);
+    let expected_items = get_sgn_const_items(&Env::empty(), expected_signature);
+    let mut constructor_realization_map = HashMap::new();
+    let mut value_realization_map = HashMap::new();
+    let mut structure_realization_map = HashMap::new();
+    let mut signature_realization_map = HashMap::new();
+    extend_signature_realization_maps(
+        &actual_items,
+        &expected_items,
+        span,
+        &mut constructor_realization_map,
+        &mut value_realization_map,
+        &mut structure_realization_map,
+        &mut signature_realization_map,
+    );
+    (
+        constructor_realization_map,
+        value_realization_map,
+        structure_realization_map,
+        signature_realization_map,
+    )
 }
 
 fn realize_signature_constructor_named_ids_inner(
@@ -2437,6 +2982,571 @@ fn realize_signature_named_ids(
     Located::new(realized_signature, span)
 }
 
+fn realize_signature_constructor_structure_ids(
+    constructor: &elab::LocatedConstructor,
+    structure_realization_map: &HashMap<usize, usize>,
+) -> elab::LocatedConstructor {
+    let span = constructor.span.clone();
+    match &constructor.node {
+        elab::Constructor::TFun(domain, codomain) => Located::new(
+            elab::Constructor::TFun(
+                Box::new(realize_signature_constructor_structure_ids(
+                    domain,
+                    structure_realization_map,
+                )),
+                Box::new(realize_signature_constructor_structure_ids(
+                    codomain,
+                    structure_realization_map,
+                )),
+            ),
+            span,
+        ),
+        elab::Constructor::TCFun(explicitness, name, kind, body) => Located::new(
+            elab::Constructor::TCFun(
+                *explicitness,
+                name.clone(),
+                kind.clone(),
+                Box::new(realize_signature_constructor_structure_ids(
+                    body,
+                    structure_realization_map,
+                )),
+            ),
+            span,
+        ),
+        elab::Constructor::TRecord(row) => Located::new(
+            elab::Constructor::TRecord(Box::new(realize_signature_constructor_structure_ids(
+                row,
+                structure_realization_map,
+            ))),
+            span,
+        ),
+        elab::Constructor::TDisjoint(left_row, right_row, body) => Located::new(
+            elab::Constructor::TDisjoint(
+                Box::new(realize_signature_constructor_structure_ids(
+                    left_row,
+                    structure_realization_map,
+                )),
+                Box::new(realize_signature_constructor_structure_ids(
+                    right_row,
+                    structure_realization_map,
+                )),
+                Box::new(realize_signature_constructor_structure_ids(
+                    body,
+                    structure_realization_map,
+                )),
+            ),
+            span,
+        ),
+        elab::Constructor::App(function_constructor, argument_constructor) => Located::new(
+            elab::Constructor::App(
+                Box::new(realize_signature_constructor_structure_ids(
+                    function_constructor,
+                    structure_realization_map,
+                )),
+                Box::new(realize_signature_constructor_structure_ids(
+                    argument_constructor,
+                    structure_realization_map,
+                )),
+            ),
+            span,
+        ),
+        elab::Constructor::Abs(name, kind, body) => Located::new(
+            elab::Constructor::Abs(
+                name.clone(),
+                kind.clone(),
+                Box::new(realize_signature_constructor_structure_ids(
+                    body,
+                    structure_realization_map,
+                )),
+            ),
+            span,
+        ),
+        elab::Constructor::KAbs(name, body) => Located::new(
+            elab::Constructor::KAbs(
+                name.clone(),
+                Box::new(realize_signature_constructor_structure_ids(
+                    body,
+                    structure_realization_map,
+                )),
+            ),
+            span,
+        ),
+        elab::Constructor::KApp(function_constructor, kind_argument) => Located::new(
+            elab::Constructor::KApp(
+                Box::new(realize_signature_constructor_structure_ids(
+                    function_constructor,
+                    structure_realization_map,
+                )),
+                kind_argument.clone(),
+            ),
+            span,
+        ),
+        elab::Constructor::TKFun(name, body) => Located::new(
+            elab::Constructor::TKFun(
+                name.clone(),
+                Box::new(realize_signature_constructor_structure_ids(
+                    body,
+                    structure_realization_map,
+                )),
+            ),
+            span,
+        ),
+        elab::Constructor::Record(row_kind, fields) => Located::new(
+            elab::Constructor::Record(
+                row_kind.clone(),
+                fields
+                    .iter()
+                    .map(|(field_name, field_type)| {
+                        (
+                            realize_signature_constructor_structure_ids(
+                                field_name,
+                                structure_realization_map,
+                            ),
+                            realize_signature_constructor_structure_ids(
+                                field_type,
+                                structure_realization_map,
+                            ),
+                        )
+                    })
+                    .collect(),
+            ),
+            span,
+        ),
+        elab::Constructor::Concat(left_row, right_row) => Located::new(
+            elab::Constructor::Concat(
+                Box::new(realize_signature_constructor_structure_ids(
+                    left_row,
+                    structure_realization_map,
+                )),
+                Box::new(realize_signature_constructor_structure_ids(
+                    right_row,
+                    structure_realization_map,
+                )),
+            ),
+            span,
+        ),
+        elab::Constructor::Tuple(elements) => Located::new(
+            elab::Constructor::Tuple(
+                elements
+                    .iter()
+                    .map(|element| {
+                        realize_signature_constructor_structure_ids(
+                            element,
+                            structure_realization_map,
+                        )
+                    })
+                    .collect(),
+            ),
+            span,
+        ),
+        elab::Constructor::Proj(base, index) => Located::new(
+            elab::Constructor::Proj(
+                Box::new(realize_signature_constructor_structure_ids(
+                    base,
+                    structure_realization_map,
+                )),
+                *index,
+            ),
+            span,
+        ),
+        elab::Constructor::ModProj(module_id, path, name) => Located::new(
+            elab::Constructor::ModProj(
+                structure_realization_map
+                    .get(module_id)
+                    .copied()
+                    .unwrap_or(*module_id),
+                path.clone(),
+                name.clone(),
+            ),
+            span,
+        ),
+        _ => constructor.clone(),
+    }
+}
+
+fn realize_signature_structure_ids(
+    signature: &elab::LocatedSignature,
+    structure_realization_map: &HashMap<usize, usize>,
+) -> elab::LocatedSignature {
+    let span = signature.span.clone();
+    let realized_signature = match &signature.node {
+        elab::Signature::Const(items) => elab::Signature::Const(
+            items
+                .iter()
+                .map(|item| {
+                    let item_span = item.span.clone();
+                    let realized_item = match &item.node {
+                        elab::SignatureItem::ConAbs(name, id, kind) => {
+                            elab::SignatureItem::ConAbs(name.clone(), *id, kind.clone())
+                        }
+                        elab::SignatureItem::Constructor(name, id, kind, constructor) => {
+                            elab::SignatureItem::Constructor(
+                                name.clone(),
+                                *id,
+                                kind.clone(),
+                                realize_signature_constructor_structure_ids(
+                                    constructor,
+                                    structure_realization_map,
+                                ),
+                            )
+                        }
+                        elab::SignatureItem::Datatype(datatypes) => elab::SignatureItem::Datatype(
+                            datatypes
+                                .iter()
+                                .map(|datatype| elab::DatatypeDecl {
+                                    name: datatype.name.clone(),
+                                    id: datatype.id,
+                                    params: datatype.params.clone(),
+                                    constrs: datatype
+                                        .constrs
+                                        .iter()
+                                        .map(|(name, id, constructor_type)| {
+                                            (
+                                                name.clone(),
+                                                *id,
+                                                constructor_type.as_ref().map(|constructor| {
+                                                    realize_signature_constructor_structure_ids(
+                                                        constructor,
+                                                        structure_realization_map,
+                                                    )
+                                                }),
+                                            )
+                                        })
+                                        .collect(),
+                                })
+                                .collect(),
+                        ),
+                        elab::SignatureItem::DatatypeImp {
+                            name,
+                            id,
+                            params,
+                            orig_mod,
+                            orig_path,
+                            orig_name,
+                            orig_constrs_path,
+                            constrs,
+                        } => elab::SignatureItem::DatatypeImp {
+                            name: name.clone(),
+                            id: *id,
+                            params: params.clone(),
+                            orig_mod: *orig_mod,
+                            orig_path: orig_path.clone(),
+                            orig_name: orig_name.clone(),
+                            orig_constrs_path: orig_constrs_path.clone(),
+                            constrs: constrs
+                                .iter()
+                                .map(|(name, constructor_id, constructor_type)| {
+                                    (
+                                        name.clone(),
+                                        *constructor_id,
+                                        constructor_type.as_ref().map(|constructor| {
+                                            realize_signature_constructor_structure_ids(
+                                                constructor,
+                                                structure_realization_map,
+                                            )
+                                        }),
+                                    )
+                                })
+                                .collect(),
+                        },
+                        elab::SignatureItem::Val(name, id, constructor) => {
+                            elab::SignatureItem::Val(
+                                name.clone(),
+                                *id,
+                                realize_signature_constructor_structure_ids(
+                                    constructor,
+                                    structure_realization_map,
+                                ),
+                            )
+                        }
+                        elab::SignatureItem::Structure(import_mode, name, id, nested_signature) => {
+                            elab::SignatureItem::Structure(
+                                *import_mode,
+                                name.clone(),
+                                structure_realization_map.get(id).copied().unwrap_or(*id),
+                                realize_signature_structure_ids(
+                                    nested_signature,
+                                    structure_realization_map,
+                                ),
+                            )
+                        }
+                        elab::SignatureItem::Signature(name, id, nested_signature) => {
+                            elab::SignatureItem::Signature(
+                                name.clone(),
+                                *id,
+                                realize_signature_structure_ids(
+                                    nested_signature,
+                                    structure_realization_map,
+                                ),
+                            )
+                        }
+                        elab::SignatureItem::Constraint(left_constructor, right_constructor) => {
+                            elab::SignatureItem::Constraint(
+                                realize_signature_constructor_structure_ids(
+                                    left_constructor,
+                                    structure_realization_map,
+                                ),
+                                realize_signature_constructor_structure_ids(
+                                    right_constructor,
+                                    structure_realization_map,
+                                ),
+                            )
+                        }
+                        elab::SignatureItem::ClassAbs(name, id, kind) => {
+                            elab::SignatureItem::ClassAbs(name.clone(), *id, kind.clone())
+                        }
+                        elab::SignatureItem::Class(name, id, kind, constructor) => {
+                            elab::SignatureItem::Class(
+                                name.clone(),
+                                *id,
+                                kind.clone(),
+                                realize_signature_constructor_structure_ids(
+                                    constructor,
+                                    structure_realization_map,
+                                ),
+                            )
+                        }
+                    };
+                    Located::new(realized_item, item_span)
+                })
+                .collect(),
+        ),
+        elab::Signature::Var(id) => elab::Signature::Var(*id),
+        elab::Signature::Fun(name, id, domain, range) => elab::Signature::Fun(
+            name.clone(),
+            structure_realization_map.get(id).copied().unwrap_or(*id),
+            Box::new(realize_signature_structure_ids(
+                domain,
+                structure_realization_map,
+            )),
+            Box::new(realize_signature_structure_ids(
+                range,
+                structure_realization_map,
+            )),
+        ),
+        elab::Signature::Where(signature, modules, field, constructor) => elab::Signature::Where(
+            Box::new(realize_signature_structure_ids(
+                signature,
+                structure_realization_map,
+            )),
+            modules.clone(),
+            field.clone(),
+            realize_signature_constructor_structure_ids(constructor, structure_realization_map),
+        ),
+        elab::Signature::Proj(module_id, path, name) => elab::Signature::Proj(
+            structure_realization_map
+                .get(module_id)
+                .copied()
+                .unwrap_or(*module_id),
+            path.clone(),
+            name.clone(),
+        ),
+        elab::Signature::Error => elab::Signature::Error,
+    };
+    Located::new(realized_signature, span)
+}
+
+fn realized_constructor_item_id(
+    constructor_realization_map: &HashMap<usize, elab::LocatedConstructor>,
+    expected_id: usize,
+) -> usize {
+    match constructor_realization_map.get(&expected_id) {
+        Some(elab::Located {
+            node: elab::Constructor::Named(actual_id),
+            ..
+        }) => *actual_id,
+        _ => expected_id,
+    }
+}
+
+fn realize_ascribed_signature_item(
+    signature_item: &elab::LocatedSignatureItem,
+    constructor_realization_map: &HashMap<usize, elab::LocatedConstructor>,
+    value_realization_map: &HashMap<usize, usize>,
+    structure_realization_map: &HashMap<usize, usize>,
+    signature_realization_map: &HashMap<usize, usize>,
+) -> elab::LocatedSignatureItem {
+    let span = signature_item.span.clone();
+    let realized_item = match &signature_item.node {
+        elab::SignatureItem::ConAbs(name, id, kind) => elab::SignatureItem::ConAbs(
+            name.clone(),
+            realized_constructor_item_id(constructor_realization_map, *id),
+            kind.clone(),
+        ),
+        elab::SignatureItem::Constructor(name, id, kind, constructor) => {
+            elab::SignatureItem::Constructor(
+                name.clone(),
+                realized_constructor_item_id(constructor_realization_map, *id),
+                kind.clone(),
+                realize_signature_constructor_named_ids(constructor, constructor_realization_map),
+            )
+        }
+        elab::SignatureItem::Datatype(datatypes) => elab::SignatureItem::Datatype(
+            datatypes
+                .iter()
+                .map(|datatype| {
+                    realize_signature_datatype_decl_named_ids(datatype, constructor_realization_map)
+                })
+                .collect(),
+        ),
+        elab::SignatureItem::DatatypeImp {
+            name,
+            id,
+            params,
+            orig_mod,
+            orig_path,
+            orig_name,
+            orig_constrs_path,
+            constrs,
+        } => {
+            let realized_constructors = constrs
+                .iter()
+                .map(|(constructor_name, constructor_id, constructor_type)| {
+                    let realized_constructor_type = constructor_type.as_ref().map(|constructor| {
+                        realize_signature_constructor_named_ids(
+                            constructor,
+                            constructor_realization_map,
+                        )
+                    });
+                    (
+                        constructor_name.clone(),
+                        *constructor_id,
+                        realized_constructor_type,
+                    )
+                })
+                .collect();
+            elab::SignatureItem::DatatypeImp {
+                name: name.clone(),
+                id: *id,
+                params: params.clone(),
+                orig_mod: *orig_mod,
+                orig_path: orig_path.clone(),
+                orig_name: orig_name.clone(),
+                orig_constrs_path: orig_constrs_path.clone(),
+                constrs: realized_constructors,
+            }
+        }
+        elab::SignatureItem::Val(name, id, constructor) => elab::SignatureItem::Val(
+            name.clone(),
+            value_realization_map.get(id).copied().unwrap_or(*id),
+            realize_signature_constructor_named_ids(constructor, constructor_realization_map),
+        ),
+        elab::SignatureItem::Structure(import_mode, name, id, signature) => {
+            elab::SignatureItem::Structure(
+                *import_mode,
+                name.clone(),
+                structure_realization_map.get(id).copied().unwrap_or(*id),
+                realize_ascribed_signature(
+                    signature,
+                    constructor_realization_map,
+                    value_realization_map,
+                    structure_realization_map,
+                    signature_realization_map,
+                ),
+            )
+        }
+        elab::SignatureItem::Signature(name, id, signature) => elab::SignatureItem::Signature(
+            name.clone(),
+            signature_realization_map.get(id).copied().unwrap_or(*id),
+            realize_ascribed_signature(
+                signature,
+                constructor_realization_map,
+                value_realization_map,
+                structure_realization_map,
+                signature_realization_map,
+            ),
+        ),
+        elab::SignatureItem::Constraint(left_constructor, right_constructor) => {
+            elab::SignatureItem::Constraint(
+                realize_signature_constructor_named_ids(
+                    left_constructor,
+                    constructor_realization_map,
+                ),
+                realize_signature_constructor_named_ids(
+                    right_constructor,
+                    constructor_realization_map,
+                ),
+            )
+        }
+        elab::SignatureItem::ClassAbs(name, id, kind) => elab::SignatureItem::ClassAbs(
+            name.clone(),
+            realized_constructor_item_id(constructor_realization_map, *id),
+            kind.clone(),
+        ),
+        elab::SignatureItem::Class(name, id, kind, constructor) => elab::SignatureItem::Class(
+            name.clone(),
+            realized_constructor_item_id(constructor_realization_map, *id),
+            kind.clone(),
+            realize_signature_constructor_named_ids(constructor, constructor_realization_map),
+        ),
+    };
+    Located::new(realized_item, span)
+}
+
+fn realize_ascribed_signature(
+    signature: &elab::LocatedSignature,
+    constructor_realization_map: &HashMap<usize, elab::LocatedConstructor>,
+    value_realization_map: &HashMap<usize, usize>,
+    structure_realization_map: &HashMap<usize, usize>,
+    signature_realization_map: &HashMap<usize, usize>,
+) -> elab::LocatedSignature {
+    let span = signature.span.clone();
+    let realized_signature = match &signature.node {
+        elab::Signature::Const(signature_items) => elab::Signature::Const(
+            signature_items
+                .iter()
+                .map(|signature_item| {
+                    realize_ascribed_signature_item(
+                        signature_item,
+                        constructor_realization_map,
+                        value_realization_map,
+                        structure_realization_map,
+                        signature_realization_map,
+                    )
+                })
+                .collect(),
+        ),
+        elab::Signature::Var(id) => elab::Signature::Var(*id),
+        elab::Signature::Fun(name, id, domain, range) => elab::Signature::Fun(
+            name.clone(),
+            structure_realization_map.get(id).copied().unwrap_or(*id),
+            Box::new(realize_ascribed_signature(
+                domain,
+                constructor_realization_map,
+                value_realization_map,
+                structure_realization_map,
+                signature_realization_map,
+            )),
+            Box::new(realize_ascribed_signature(
+                range,
+                constructor_realization_map,
+                value_realization_map,
+                structure_realization_map,
+                signature_realization_map,
+            )),
+        ),
+        elab::Signature::Where(signature, modules, name, constructor) => elab::Signature::Where(
+            Box::new(realize_ascribed_signature(
+                signature,
+                constructor_realization_map,
+                value_realization_map,
+                structure_realization_map,
+                signature_realization_map,
+            )),
+            modules.clone(),
+            name.clone(),
+            realize_signature_constructor_named_ids(constructor, constructor_realization_map),
+        ),
+        elab::Signature::Proj(id, modules, name) => elab::Signature::Proj(
+            structure_realization_map.get(id).copied().unwrap_or(*id),
+            modules.clone(),
+            name.clone(),
+        ),
+        elab::Signature::Error => elab::Signature::Error,
+    };
+    Located::new(realized_signature, span)
+}
+
 // ---------------------------------------------------------------------------
 // Constructor unification (unifyCons)
 // ---------------------------------------------------------------------------
@@ -2573,6 +3683,49 @@ fn debug_constructor_head_name(
             normalized_head_text,
             crate::elaborated::type_display::format_constructor(&normalized_constructor)
         ),
+    }
+}
+
+fn constructors_share_projection_identity(
+    elaboration_environment: &Env,
+    left_constructor: &elab::LocatedConstructor,
+    right_constructor: &elab::LocatedConstructor,
+) -> bool {
+    match (&left_constructor.node, &right_constructor.node) {
+        (elab::Constructor::Named(left_id), elab::Constructor::Named(right_id)) => {
+            left_id == right_id
+        }
+        (elab::Constructor::Named(named_id), elab::Constructor::ModProj(module_id, path, name))
+        | (elab::Constructor::ModProj(module_id, path, name), elab::Constructor::Named(named_id)) => {
+            resolve_modproj_constructor_id(elaboration_environment, *module_id, path, name)
+                == Some(*named_id)
+        }
+        (
+            elab::Constructor::ModProj(left_module_id, left_path, left_name),
+            elab::Constructor::ModProj(right_module_id, right_path, right_name),
+        ) => {
+            (left_module_id == right_module_id
+                && left_path == right_path
+                && left_name == right_name)
+                || match (
+                    resolve_modproj_constructor_id(
+                        elaboration_environment,
+                        *left_module_id,
+                        left_path,
+                        left_name,
+                    ),
+                    resolve_modproj_constructor_id(
+                        elaboration_environment,
+                        *right_module_id,
+                        right_path,
+                        right_name,
+                    ),
+                ) {
+                    (Some(left_id), Some(right_id)) => left_id == right_id,
+                    _ => false,
+                }
+        }
+        _ => false,
     }
 }
 
@@ -3171,6 +4324,17 @@ fn unify_cons_inner(
             ) = elab::CUnif::Known(Box::new(adjusted));
             Ok(())
         }
+        (elab::Constructor::Named(_), elab::Constructor::ModProj(_, _, _))
+        | (elab::Constructor::ModProj(_, _, _), elab::Constructor::Named(_))
+        | (elab::Constructor::ModProj(_, _, _), elab::Constructor::ModProj(_, _, _))
+            if constructors_share_projection_identity(
+                elaboration_environment,
+                &left_normalized,
+                &right_normalized,
+            ) =>
+        {
+            Ok(())
+        }
 
         (elab::Constructor::Named(n1), elab::Constructor::Named(n2)) => {
             if n1 == n2 {
@@ -3253,6 +4417,74 @@ fn unify_cons_inner(
                     diagnostic_span,
                     left_constructor,
                     &rc2,
+                    recursion_depth + 1,
+                );
+            }
+            Err(Box::new(
+                FailedToUnifyConstructors::IncompatibleConstructors(
+                    left_normalized,
+                    right_normalized,
+                ),
+            ))
+        }
+        (elab::Constructor::ModProj(module_id, path, name), _) => {
+            if let Some(definition) = resolve_modproj_constructor_definition(
+                elaboration_environment,
+                *module_id,
+                path,
+                name,
+            ) {
+                return unify_cons_inner(
+                    elaboration_context,
+                    elaboration_environment,
+                    diagnostic_span,
+                    &definition,
+                    &right_normalized,
+                    recursion_depth + 1,
+                );
+            }
+            let reduced_left = reduce_con(left_normalized.clone());
+            if !cons_eq_simple(&reduced_left, &left_normalized) {
+                return unify_cons_inner(
+                    elaboration_context,
+                    elaboration_environment,
+                    diagnostic_span,
+                    &reduced_left,
+                    right_constructor,
+                    recursion_depth + 1,
+                );
+            }
+            Err(Box::new(
+                FailedToUnifyConstructors::IncompatibleConstructors(
+                    left_normalized,
+                    right_normalized,
+                ),
+            ))
+        }
+        (_, elab::Constructor::ModProj(module_id, path, name)) => {
+            if let Some(definition) = resolve_modproj_constructor_definition(
+                elaboration_environment,
+                *module_id,
+                path,
+                name,
+            ) {
+                return unify_cons_inner(
+                    elaboration_context,
+                    elaboration_environment,
+                    diagnostic_span,
+                    &left_normalized,
+                    &definition,
+                    recursion_depth + 1,
+                );
+            }
+            let reduced_right = reduce_con(right_normalized.clone());
+            if !cons_eq_simple(&reduced_right, &right_normalized) {
+                return unify_cons_inner(
+                    elaboration_context,
+                    elaboration_environment,
+                    diagnostic_span,
+                    left_constructor,
+                    &reduced_right,
                     recursion_depth + 1,
                 );
             }
@@ -3880,6 +5112,49 @@ fn unify_rows(
     // Since RecordSummary.unifs only holds nl=0 Unifs, no squish is needed: nl=0 means
     // the unif was created at the outermost scope, so the solution needs no index adjustment.
     // Solution: r := unsummarize(right remaining fields ++ right unifs ++ right others).
+    if left_summary.unifs.len() == 1
+        && right_summary.unifs.len() == 1
+        && left_summary.others.is_empty()
+        && right_summary.others.is_empty()
+    {
+        let left_row_tail_cell = match &left_summary.unifs[0].node {
+            elab::Constructor::Unif(_, _, _, _, row_tail_cell) => row_tail_cell.clone(),
+            _ => unreachable!("RecordSummary.unifs must contain Constructor::Unif nodes"),
+        };
+        let right_row_tail_cell = match &right_summary.unifs[0].node {
+            elab::Constructor::Unif(_, _, _, _, row_tail_cell) => row_tail_cell.clone(),
+            _ => unreachable!("RecordSummary.unifs must contain Constructor::Unif nodes"),
+        };
+        if Arc::ptr_eq(&left_row_tail_cell, &right_row_tail_cell) {
+            let mut right_fields_remaining = right_summary.fields.clone();
+            let mut all_left_fields_matched = true;
+            for (field_name_left, field_type_left) in &left_summary.fields {
+                if let Some(pos) = right_fields_remaining.iter().position(
+                    |(field_name_right, field_type_right)| {
+                        row_field_pair_matches(
+                            elaboration_context,
+                            elaboration_environment,
+                            diagnostic_span,
+                            field_name_left,
+                            field_type_left,
+                            field_name_right,
+                            field_type_right,
+                            recursion_depth,
+                        )
+                    },
+                ) {
+                    right_fields_remaining.remove(pos);
+                } else {
+                    all_left_fields_matched = false;
+                    break;
+                }
+            }
+            if all_left_fields_matched && right_fields_remaining.is_empty() {
+                return Ok(());
+            }
+        }
+    }
+
     if left_summary.unifs.len() == 1 && left_summary.others.is_empty() {
         // Extract the Unif cell from the stored nl=0 located constructor.
         let row_tail_cell = match &left_summary.unifs[0].node {
@@ -6192,8 +7467,15 @@ fn elab_exp_inner(
                 Located::new(elab::Kind::Type, span.clone()),
                 "_",
             );
-            let r = Arc::new(Mutex::new(None::<elab::LocatedExpression>));
-            (Located::new(elab::Expression::Unif(r), span), t)
+            let result_ref: Arc<Mutex<Option<elab::LocatedExpression>>> =
+                Arc::new(Mutex::new(None));
+            elaboration_context.constraints.push(Constraint::TypeClass {
+                span: span.clone(),
+                elaboration_environment: elaboration_environment.clone(),
+                class: t.clone(),
+                result: result_ref.clone(),
+            });
+            (Located::new(elab::Expression::Unif(result_ref), span), t)
         }
 
         source::Exp::Hole => {
@@ -6806,6 +8088,7 @@ fn elab_exp_var(
         };
 
     if let Some(elab::SignatureItem::Val(_, _id, t)) = sgi_find_val(&items, x) {
+        let projected_type = project_signature_constructor_to_module(t, &items, str_id, &ms[1..]);
         let e = Located::new(
             elab::Expression::ModProj(str_id, ms[1..].to_vec(), x.to_string()),
             span.clone(),
@@ -6815,7 +8098,7 @@ fn elab_exp_var(
             elaboration_environment,
             disjointness_environment,
             e,
-            t.clone(),
+            projected_type,
             span,
             inference,
         );
@@ -7340,7 +8623,11 @@ pub fn elab_sgn_item(
     elaboration_environment: &Env,
     disjointness_environment: &disjoint::DisjointEnv,
     sgi: &source::LocSgnItem,
-) -> (Option<elab::LocatedSignatureItem>, Env) {
+) -> (
+    Option<elab::LocatedSignatureItem>,
+    Env,
+    disjoint::DisjointEnv,
+) {
     let span = sgi.span.clone();
     match &sgi.node {
         source::SgnItem::ConAbs(x, k) => {
@@ -7354,7 +8641,7 @@ pub fn elab_sgn_item(
                     .clone()
                     .push_c_named(x.clone(), ke.clone(), None);
             let result = Located::new(elab::SignatureItem::ConAbs(x.clone(), id, ke), span);
-            (Some(result), new_env)
+            (Some(result), new_env, disjointness_environment.clone())
         }
         source::SgnItem::Con(x, opt_k, c) => {
             let (ce, ck) = elab_con(elaboration_context, elaboration_environment, c);
@@ -7384,7 +8671,7 @@ pub fn elab_sgn_item(
                 elab::SignatureItem::Constructor(x.clone(), id, stored_kind, stored_constructor),
                 span,
             );
-            (Some(result), new_env)
+            (Some(result), new_env, disjointness_environment.clone())
         }
         source::SgnItem::Val(x, t) => {
             let (te, _) = elab_con(elaboration_context, elaboration_environment, t);
@@ -7393,7 +8680,7 @@ pub fn elab_sgn_item(
                 .clone()
                 .push_e_named(x.clone(), stored_type.clone());
             let result = Located::new(elab::SignatureItem::Val(x.clone(), id, stored_type), span);
-            (Some(result), new_env)
+            (Some(result), new_env, disjointness_environment.clone())
         }
         source::SgnItem::Str(x, sgn) => {
             let prev_in_sig = elaboration_context.in_signature;
@@ -7408,11 +8695,19 @@ pub fn elab_sgn_item(
             let (new_env, id) = elaboration_environment
                 .clone()
                 .push_str_named(x.clone(), sgne.clone());
+            let new_denv = assert_projected_signature_constraints(
+                elaboration_context,
+                &new_env,
+                disjointness_environment,
+                id,
+                &[],
+                &span,
+            );
             let result = Located::new(
                 elab::SignatureItem::Structure(elab::ImportMode::Import, x.clone(), id, sgne),
                 span,
             );
-            (Some(result), new_env)
+            (Some(result), new_env, new_denv)
         }
         source::SgnItem::Sgn(x, sgn) => {
             let sgne = elab_sgn(
@@ -7425,7 +8720,7 @@ pub fn elab_sgn_item(
                 .clone()
                 .push_sgn_named(x.clone(), sgne.clone());
             let result = Located::new(elab::SignatureItem::Signature(x.clone(), id, sgne), span);
-            (Some(result), new_env)
+            (Some(result), new_env, disjointness_environment.clone())
         }
         source::SgnItem::Include(sgn) => {
             // Include expands the signature items
@@ -7437,25 +8732,36 @@ pub fn elab_sgn_item(
             );
             // We return None and handle include by returning the sgn's items
             // For simplicity, wrap in a Structure with a fresh name
-            (None, elaboration_environment.clone())
+            (
+                None,
+                elaboration_environment.clone(),
+                disjointness_environment.clone(),
+            )
         }
         source::SgnItem::Constraint(c1, c2) => {
             let (c1e, _) = elab_con(elaboration_context, elaboration_environment, c1);
             let (c2e, _) = elab_con(elaboration_context, elaboration_environment, c2);
+            let new_denv =
+                disjoint::assert(c1e.clone(), c2e.clone(), disjointness_environment.clone());
             let result = Located::new(elab::SignatureItem::Constraint(c1e, c2e), span);
-            (Some(result), elaboration_environment.clone())
+            (Some(result), elaboration_environment.clone(), new_denv)
         }
         source::SgnItem::Datatype(dts) => {
-            elab_datatype_sig(elaboration_context, elaboration_environment, dts, &span)
+            let (result, new_env) =
+                elab_datatype_sig(elaboration_context, elaboration_environment, dts, &span);
+            (result, new_env, disjointness_environment.clone())
         }
-        source::SgnItem::DatatypeImp(x, ms, y) => elab_datatype_imp_sig(
-            elaboration_context,
-            elaboration_environment,
-            x,
-            ms,
-            y,
-            &span,
-        ),
+        source::SgnItem::DatatypeImp(x, ms, y) => {
+            let (result, new_env) = elab_datatype_imp_sig(
+                elaboration_context,
+                elaboration_environment,
+                x,
+                ms,
+                y,
+                &span,
+            );
+            (result, new_env, disjointness_environment.clone())
+        }
         source::SgnItem::ClassAbs(x, k) => {
             let ke = normalize_signature_kind(&elab_kind(
                 elaboration_context,
@@ -7468,7 +8774,7 @@ pub fn elab_sgn_item(
                     .push_c_named(x.clone(), ke.clone(), None); // store parameter kind; see elab_con_var Named + is_class
             new_env = new_env.push_class(id);
             let result = Located::new(elab::SignatureItem::ClassAbs(x.clone(), id, ke), span);
-            (Some(result), new_env)
+            (Some(result), new_env, disjointness_environment.clone())
         }
         source::SgnItem::Class(x, k, c) => {
             let ke = normalize_signature_kind(&elab_kind(
@@ -7488,17 +8794,73 @@ pub fn elab_sgn_item(
                 elab::SignatureItem::Class(x.clone(), id, ke, stored_constructor),
                 span,
             );
-            (Some(result), new_env)
+            (Some(result), new_env, disjointness_environment.clone())
         }
         source::SgnItem::Table(x, c, _pk_e, _unique_e) => {
-            // Table in signature: like Val
-            let (ce, _) = elab_con(elaboration_context, elaboration_environment, c);
-            let stored_type = normalize_signature_constructor(&ce);
+            let (declared_con, declared_kind) =
+                elab_con(elaboration_context, elaboration_environment, c);
+            let (ce, ck) = match &declared_con.node {
+                elab::Constructor::TRecord(row) => {
+                    let row = row.as_ref().clone();
+                    let row_kind = kindof(elaboration_context, elaboration_environment, &row);
+                    (row, row_kind)
+                }
+                _ => (declared_con, declared_kind),
+            };
+            check_kind(
+                elaboration_context,
+                elaboration_environment,
+                &span,
+                &ce,
+                &ck,
+                &Located::new(
+                    elab::Kind::Record(Box::new(Located::new(elab::Kind::Type, span.clone()))),
+                    span.clone(),
+                ),
+            );
+            let constraint_kind = Located::new(
+                elab::Kind::Record(Box::new(Located::new(
+                    elab::Kind::Record(Box::new(Located::new(elab::Kind::Unit, span.clone()))),
+                    span.clone(),
+                ))),
+                span.clone(),
+            );
+            let primary_key = fresh_cunif(
+                elaboration_environment,
+                span.clone(),
+                constraint_kind.clone(),
+                "primary_key",
+            );
+            let uniques = fresh_cunif(
+                elaboration_environment,
+                span.clone(),
+                constraint_kind,
+                "uniques",
+            );
+            let stored_type = normalize_signature_constructor(&Located::new(
+                elab::Constructor::App(
+                    Box::new(Located::new(
+                        elab::Constructor::App(
+                            Box::new(basis_named_con(elaboration_environment, &span, "sql_table")),
+                            Box::new(ce.clone()),
+                        ),
+                        span.clone(),
+                    )),
+                    Box::new(Located::new(
+                        elab::Constructor::Concat(
+                            Box::new(primary_key.clone()),
+                            Box::new(uniques.clone()),
+                        ),
+                        span.clone(),
+                    )),
+                ),
+                span.clone(),
+            ));
             let (new_env, id) = elaboration_environment
                 .clone()
                 .push_e_named(x.clone(), stored_type.clone());
             let result = Located::new(elab::SignatureItem::Val(x.clone(), id, stored_type), span);
-            (Some(result), new_env)
+            (Some(result), new_env, disjointness_environment.clone())
         }
 
         source::SgnItem::Functor(functor_name, arg_name, s1, s2) => {
@@ -7511,12 +8873,15 @@ pub fn elab_sgn_item(
             let (env_for_ran, arg_id) = elaboration_environment
                 .clone()
                 .push_str_named(arg_name.clone(), dome.clone());
-            let rane = elab_sgn(
+            let denv_for_ran = assert_projected_signature_constraints(
                 elaboration_context,
                 &env_for_ran,
                 disjointness_environment,
-                s2,
+                arg_id,
+                &[],
+                &span,
             );
+            let rane = elab_sgn(elaboration_context, &env_for_ran, &denv_for_ran, s2);
             let fun_sgn = Located::new(
                 elab::Signature::Fun(arg_name.clone(), arg_id, Box::new(dome), Box::new(rane)),
                 span.clone(),
@@ -7533,7 +8898,7 @@ pub fn elab_sgn_item(
                 ),
                 span,
             );
-            (Some(result), new_env)
+            (Some(result), new_env, disjointness_environment.clone())
         }
     }
 }
@@ -7678,11 +9043,13 @@ pub fn elab_sgn(
     match &sgn.node {
         source::Sgn::Const(sgis) => {
             let mut cur_env = elaboration_environment.clone();
+            let mut cur_denv = disjointness_environment.clone();
             let mut elab_sgis: Vec<elab::LocatedSignatureItem> = Vec::new();
             for sgi in sgis {
-                let (sgi_opt, new_env) =
-                    elab_sgn_item(elaboration_context, &cur_env, disjointness_environment, sgi);
+                let (sgi_opt, new_env, new_denv) =
+                    elab_sgn_item(elaboration_context, &cur_env, &cur_denv, sgi);
                 cur_env = new_env;
+                cur_denv = new_denv;
                 if let Some(s) = sgi_opt {
                     elab_sgis.push(s);
                 }
@@ -7710,7 +9077,15 @@ pub fn elab_sgn(
             let (env2, id) = elaboration_environment
                 .clone()
                 .push_str_named(x.clone(), dome.clone());
-            let rane = elab_sgn(elaboration_context, &env2, disjointness_environment, ran);
+            let denv2 = assert_projected_signature_constraints(
+                elaboration_context,
+                &env2,
+                disjointness_environment,
+                id,
+                &[],
+                &span,
+            );
+            let rane = elab_sgn(elaboration_context, &env2, &denv2, ran);
             Located::new(
                 elab::Signature::Fun(x.clone(), id, Box::new(dome), Box::new(rane)),
                 span,
@@ -7812,12 +9187,14 @@ pub fn sub_sgn(
                 *id1,
                 *dom1.clone(),
             );
+            let realized_expected_range =
+                realize_signature_structure_ids(ran2, &HashMap::from([(*_id2, *id1)]));
             sub_sgn(
                 elaboration_context,
                 &env2,
                 disjointness_environment,
                 ran1,
-                ran2,
+                &realized_expected_range,
                 span,
             );
         }
@@ -8376,13 +9753,30 @@ pub fn elab_decl(
             (vec![decl_out], elaboration_environment.clone(), new_denv)
         }
 
-        source::Decl::OpenConstraints(_m, _ms) => {
-            // Simplified: no-op for now
-            (
-                vec![],
-                elaboration_environment.clone(),
-                disjointness_environment.clone(),
-            )
+        source::Decl::OpenConstraints(m, ms) => {
+            let all_ms: Vec<String> = std::iter::once(m.clone())
+                .chain(ms.iter().cloned())
+                .collect();
+            match resolve_module_path(elaboration_context, elaboration_environment, &all_ms, &span)
+            {
+                Some((str_id, _)) => (
+                    vec![],
+                    elaboration_environment.clone(),
+                    assert_projected_signature_constraints(
+                        elaboration_context,
+                        elaboration_environment,
+                        disjointness_environment,
+                        str_id,
+                        &all_ms[1..],
+                        &span,
+                    ),
+                ),
+                None => (
+                    vec![],
+                    elaboration_environment.clone(),
+                    disjointness_environment.clone(),
+                ),
+            }
         }
 
         source::Decl::Export(str_body) => {
@@ -8415,7 +9809,7 @@ pub fn elab_decl(
             let nt = new_named_id();
             let (new_env, id) = elaboration_environment.clone().push_e_named(
                 x.clone(),
-                basis_named_con(elaboration_environment, &span, "int"),
+                basis_named_con(elaboration_environment, &span, "sql_sequence"),
             );
             let decl_out = Located::new(elab::Declaration::Sequence(nt, x.clone(), id), span);
             (vec![decl_out], new_env, disjointness_environment.clone())
@@ -8636,21 +10030,82 @@ fn elab_str_decl(
             sgn,
         )
     });
+    let structure_body = ascribed_sgn.as_ref().map_or_else(
+        || str_body.clone(),
+        |ascribed_signature| wildify_str(elaboration_environment, str_body, ascribed_signature),
+    );
     let (str_e, inferred_sgn) = elab_str(
         elaboration_context,
         elaboration_environment,
         disjointness_environment,
-        str_body,
-        ascribed_sgn.as_ref(),
+        &structure_body,
+        None,
     );
-    let (new_env, id) = elaboration_environment
-        .clone()
-        .push_str_named(x.to_string(), inferred_sgn.clone());
+    let actual_signature = selfify_signature_at(elaboration_environment, &str_e, &inferred_sgn);
+    if let Some(ascribed_signature) = ascribed_sgn.as_ref() {
+        sub_sgn(
+            elaboration_context,
+            elaboration_environment,
+            disjointness_environment,
+            &actual_signature,
+            ascribed_signature,
+            span,
+        );
+    }
+    let id = new_named_id();
+    // Match the SML elaborator: after checking an explicit ascription, bind the
+    // structure at the ascribed interface, but reuse the implementation's
+    // realized ids so nested module paths still resolve correctly later.
+    let bound_signature = match ascribed_sgn {
+        Some(ascribed_signature) => {
+            let (
+                constructor_realization_map,
+                value_realization_map,
+                structure_realization_map,
+                signature_realization_map,
+            ) = build_recursive_signature_realization_maps(
+                &actual_signature,
+                &ascribed_signature,
+                span,
+            );
+            realize_ascribed_signature(
+                &ascribed_signature,
+                &constructor_realization_map,
+                &value_realization_map,
+                &structure_realization_map,
+                &signature_realization_map,
+            )
+        }
+        None => actual_signature.clone(),
+    };
+    let new_env = elaboration_environment.clone().push_str_named_as(
+        x.to_string(),
+        id,
+        bound_signature.clone(),
+    );
     let decl_out = Located::new(
-        elab::Declaration::Structure(x.to_string(), id, inferred_sgn, str_e),
+        elab::Declaration::Structure(x.to_string(), id, bound_signature, str_e),
         span.clone(),
     );
-    (vec![decl_out], new_env, disjointness_environment.clone())
+    let new_denv = match &decl_out.node {
+        elab::Declaration::Structure(_, structure_id, _, structure)
+            if matches!(
+                &structure.node,
+                elab::Structure::Const(_) | elab::Structure::App(_, _)
+            ) =>
+        {
+            assert_projected_signature_constraints(
+                elaboration_context,
+                &new_env,
+                disjointness_environment,
+                *structure_id,
+                &[],
+                span,
+            )
+        }
+        _ => disjointness_environment.clone(),
+    };
+    (vec![decl_out], new_env, new_denv)
 }
 
 fn elab_open(
@@ -8682,7 +10137,15 @@ fn elab_open(
             &ms[ms.len() - 1],
         );
     }
-    (vec![], new_env, disjointness_environment.clone())
+    let new_denv = assert_projected_signature_constraints(
+        elaboration_context,
+        &new_env,
+        disjointness_environment,
+        str_id,
+        &ms[1..],
+        span,
+    );
+    (vec![], new_env, new_denv)
 }
 
 /// Bind one elaborated signature item into `named_c` / `named_e` when `open`ing a structure.
@@ -8811,18 +10274,47 @@ fn elab_table_decl(
     unique_e: &source::LocExp,
     span: &Span,
 ) -> (Vec<elab::LocatedDeclaration>, Env, disjoint::DisjointEnv) {
-    let (ce, _) = elab_con(elaboration_context, elaboration_environment, c);
-    let (pk_ee, pk_et) = elab_exp(
-        elaboration_context,
-        elaboration_environment,
-        disjointness_environment,
-        pk_e,
+    let (declared_con, declared_kind) = elab_con(elaboration_context, elaboration_environment, c);
+    let (ce, ck) = match &declared_con.node {
+        elab::Constructor::TRecord(row) => {
+            let row = row.as_ref().clone();
+            let row_kind = kindof(elaboration_context, elaboration_environment, &row);
+            (row, row_kind)
+        }
+        _ => (declared_con, declared_kind),
+    };
+    let constraint_kind = Located::new(
+        elab::Kind::Record(Box::new(Located::new(
+            elab::Kind::Record(Box::new(Located::new(elab::Kind::Unit, span.clone()))),
+            span.clone(),
+        ))),
+        span.clone(),
     );
-    let (_unique_ee, unique_et) = elab_exp(
-        elaboration_context,
+    let primary_key = fresh_cunif(
         elaboration_environment,
-        disjointness_environment,
-        unique_e,
+        span.clone(),
+        constraint_kind.clone(),
+        "primary_key",
+    );
+    let uniques = fresh_cunif(
+        elaboration_environment,
+        span.clone(),
+        constraint_kind,
+        "uniques",
+    );
+    let sql_table_constructor = basis_named_con(elaboration_environment, span, "sql_table");
+    let table_type = Located::new(
+        elab::Constructor::App(
+            Box::new(Located::new(
+                elab::Constructor::App(Box::new(sql_table_constructor), Box::new(ce.clone())),
+                span.clone(),
+            )),
+            Box::new(Located::new(
+                elab::Constructor::Concat(Box::new(primary_key.clone()), Box::new(uniques.clone())),
+                span.clone(),
+            )),
+        ),
+        span.clone(),
     );
 
     let mod_id = elaboration_environment
@@ -8830,13 +10322,82 @@ fn elab_table_decl(
         .map(|(id, _)| *id)
         .unwrap_or(0);
     let _nt = new_named_id();
-    let (new_env, id) = elaboration_environment
+    let (pre_env, id) = elaboration_environment
         .clone()
-        .push_e_named(x.to_string(), ce.clone());
+        .push_e_named(x.to_string(), table_type);
 
-    // pk_con and unique_con are type annotations for pk and unique constraints
-    let pk_con = pk_et;
-    let unique_con = unique_et;
+    let (pk_ee, pk_et) = elab_exp(
+        elaboration_context,
+        &pre_env,
+        disjointness_environment,
+        pk_e,
+    );
+    let (unique_ee, unique_et) = elab_exp(
+        elaboration_context,
+        &pre_env,
+        disjointness_environment,
+        unique_e,
+    );
+    check_kind(
+        elaboration_context,
+        elaboration_environment,
+        span,
+        &ce,
+        &ck,
+        &Located::new(
+            elab::Kind::Record(Box::new(Located::new(elab::Kind::Type, span.clone()))),
+            span.clone(),
+        ),
+    );
+
+    let primary_key_constructor = Located::new(
+        elab::Constructor::App(
+            Box::new(Located::new(
+                elab::Constructor::App(
+                    Box::new(basis_named_con(
+                        elaboration_environment,
+                        span,
+                        "primary_key",
+                    )),
+                    Box::new(ce.clone()),
+                ),
+                span.clone(),
+            )),
+            Box::new(primary_key.clone()),
+        ),
+        span.clone(),
+    );
+    let sql_constraints_constructor = Located::new(
+        elab::Constructor::App(
+            Box::new(Located::new(
+                elab::Constructor::App(
+                    Box::new(basis_named_con(
+                        elaboration_environment,
+                        span,
+                        "sql_constraints",
+                    )),
+                    Box::new(ce.clone()),
+                ),
+                span.clone(),
+            )),
+            Box::new(uniques.clone()),
+        ),
+        span.clone(),
+    );
+    check_con(
+        elaboration_context,
+        elaboration_environment,
+        &pk_e.span,
+        &pk_et,
+        &primary_key_constructor,
+    );
+    check_con(
+        elaboration_context,
+        elaboration_environment,
+        &unique_e.span,
+        &unique_et,
+        &sql_constraints_constructor,
+    );
 
     let decl_out = Located::new(
         elab::Declaration::Table {
@@ -8845,13 +10406,13 @@ fn elab_table_decl(
             name_id: id,
             con: ce,
             exp: pk_ee.clone(),
-            pk_con,
-            pk_exp: pk_ee,
-            unique_con,
+            pk_con: primary_key,
+            pk_exp: unique_ee,
+            unique_con: uniques,
         },
         span.clone(),
     );
-    (vec![decl_out], new_env, disjointness_environment.clone())
+    (vec![decl_out], pre_env, disjointness_environment.clone())
 }
 
 fn build_ascription_environment(
@@ -8870,6 +10431,320 @@ fn build_ascription_environment(
         }
         None => base_environment.clone(),
     }
+}
+
+fn source_pattern_bound_names(pattern: &source::LocPat, names: &mut HashSet<String>) {
+    match &pattern.node {
+        source::Pat::Var(name) => {
+            names.insert(name.clone());
+        }
+        source::Pat::Con(_, _, inner) => {
+            if let Some(inner_pattern) = inner {
+                source_pattern_bound_names(inner_pattern, names);
+            }
+        }
+        source::Pat::Record(fields, _open) => {
+            for (_, field_pattern) in fields {
+                source_pattern_bound_names(field_pattern, names);
+            }
+        }
+        source::Pat::Annot(inner_pattern, _) => {
+            source_pattern_bound_names(inner_pattern, names);
+        }
+        source::Pat::Prim(_) => {}
+    }
+}
+
+fn source_decl_is_constructor_like(decl: &source::Decl) -> bool {
+    matches!(
+        decl,
+        source::Decl::Con(_, _, _)
+            | source::Decl::Datatype(_)
+            | source::Decl::DatatypeImp(_, _, _)
+            | source::Decl::Str(_, _, _, _, _)
+            | source::Decl::Constraint(_, _)
+    )
+}
+
+fn collect_source_decl_bindings(
+    decl: &source::LocDecl,
+    constructor_names: &mut HashSet<String>,
+    value_names: &mut HashSet<String>,
+) {
+    match &decl.node {
+        source::Decl::Con(name, _, _) | source::Decl::DatatypeImp(name, _, _) => {
+            constructor_names.insert(name.clone());
+        }
+        source::Decl::Datatype(datatypes) => {
+            for datatype in datatypes {
+                constructor_names.insert(datatype.name.clone());
+            }
+        }
+        source::Decl::Val(pattern, _) => {
+            source_pattern_bound_names(pattern, value_names);
+        }
+        source::Decl::ValRec(bindings) => {
+            for (name, _, _) in bindings {
+                value_names.insert(name.clone());
+            }
+        }
+        source::Decl::Table(name, _, _, _)
+        | source::Decl::Sequence(name)
+        | source::Decl::View(name, _)
+        | source::Decl::Cookie(name, _)
+        | source::Decl::Style(name)
+        | source::Decl::Ffi(name, _, _) => {
+            value_names.insert(name.clone());
+        }
+        _ => {}
+    }
+}
+
+fn decompile_source_kind(kind: &elab::LocatedKind) -> Option<source::LocKind> {
+    let span = kind.span.clone();
+    let source_kind = match hnorm_kind(kind.clone()).node {
+        elab::Kind::Type => source::Kind::Type,
+        elab::Kind::Arrow(domain, range) => source::Kind::Arrow(
+            Box::new(decompile_source_kind(&domain)?),
+            Box::new(decompile_source_kind(&range)?),
+        ),
+        elab::Kind::Name => source::Kind::Name,
+        elab::Kind::Record(inner) => source::Kind::Record(Box::new(decompile_source_kind(&inner)?)),
+        elab::Kind::Unit => source::Kind::Unit,
+        elab::Kind::Tuple(items) => source::Kind::Tuple(
+            items
+                .iter()
+                .map(decompile_source_kind)
+                .collect::<Option<Vec<_>>>()?,
+        ),
+        elab::Kind::Unif(_, _, reference) | elab::Kind::TupleUnif(_, _, reference) => {
+            let guard = crate::compiler_diagnostics::lock_for_compile(
+                reference.as_ref(),
+                "decompile source kind",
+            );
+            match &*guard {
+                elab::KUnif::Known(known_kind) => {
+                    return decompile_source_kind(known_kind);
+                }
+                elab::KUnif::Unknown => return None,
+            }
+        }
+        elab::Kind::Error | elab::Kind::Rel(_) | elab::Kind::Fun(_, _) => return None,
+    };
+    Some(Located::new(source_kind, span))
+}
+
+fn decompile_source_constructor(
+    elaboration_environment: &Env,
+    constructor: &elab::LocatedConstructor,
+) -> Option<source::LocCon> {
+    fn decompile_inner(
+        elaboration_environment: &Env,
+        constructor: &elab::LocatedConstructor,
+    ) -> Option<source::LocCon> {
+        let span = constructor.span.clone();
+        let source_constructor = match &constructor.node {
+            elab::Constructor::TFun(domain, range) => source::Con::TFun(
+                Box::new(decompile_inner(elaboration_environment, domain)?),
+                Box::new(decompile_inner(elaboration_environment, range)?),
+            ),
+            elab::Constructor::TCFun(explicitness, name, kind, body) => source::Con::TCFun(
+                match explicitness {
+                    elab::Explicitness::Explicit => source::Explicitness::Explicit,
+                    elab::Explicitness::Implicit => source::Explicitness::Implicit,
+                },
+                name.clone(),
+                Box::new(decompile_source_kind(kind)?),
+                Box::new(decompile_inner(elaboration_environment, body)?),
+            ),
+            elab::Constructor::TRecord(row) => {
+                source::Con::TRecord(Box::new(decompile_inner(elaboration_environment, row)?))
+            }
+            elab::Constructor::TDisjoint(left, right, body) => source::Con::TDisjoint(
+                Box::new(decompile_inner(elaboration_environment, left)?),
+                Box::new(decompile_inner(elaboration_environment, right)?),
+                Box::new(decompile_inner(elaboration_environment, body)?),
+            ),
+            elab::Constructor::Rel(index) => {
+                let (name, _) = elaboration_environment.lookup_c_rel(*index).ok()?;
+                source::Con::Var(Vec::new(), name.clone())
+            }
+            elab::Constructor::Named(id) => {
+                let (name, _, _) = elaboration_environment.lookup_c_named(*id).ok()?;
+                source::Con::Var(Vec::new(), name.clone())
+            }
+            elab::Constructor::ModProj(module_id, path, name) => {
+                let (module_name, _) = elaboration_environment.lookup_str_named(*module_id).ok()?;
+                let mut modules = vec![module_name.clone()];
+                modules.extend(path.clone());
+                source::Con::Var(modules, name.clone())
+            }
+            elab::Constructor::App(function_constructor, argument_constructor) => source::Con::App(
+                Box::new(decompile_inner(
+                    elaboration_environment,
+                    function_constructor,
+                )?),
+                Box::new(decompile_inner(
+                    elaboration_environment,
+                    argument_constructor,
+                )?),
+            ),
+            elab::Constructor::Abs(name, kind, body) => source::Con::Abs(
+                name.clone(),
+                Some(Box::new(decompile_source_kind(kind)?)),
+                Box::new(decompile_inner(elaboration_environment, body)?),
+            ),
+            elab::Constructor::KAbs(name, body) => source::Con::KAbs(
+                name.clone(),
+                Box::new(decompile_inner(elaboration_environment, body)?),
+            ),
+            elab::Constructor::KApp(function_constructor, _kind) => {
+                return decompile_inner(elaboration_environment, function_constructor);
+            }
+            elab::Constructor::TKFun(name, body) => source::Con::TKFun(
+                name.clone(),
+                Box::new(decompile_inner(elaboration_environment, body)?),
+            ),
+            elab::Constructor::Name(name) => source::Con::Name(name.clone()),
+            elab::Constructor::Record(_, fields) => source::Con::Record(
+                fields
+                    .iter()
+                    .map(|(field_name, field_type)| {
+                        Some((
+                            decompile_inner(elaboration_environment, field_name)?,
+                            decompile_inner(elaboration_environment, field_type)?,
+                        ))
+                    })
+                    .collect::<Option<Vec<_>>>()?,
+            ),
+            elab::Constructor::Concat(left, right) => source::Con::Concat(
+                Box::new(decompile_inner(elaboration_environment, left)?),
+                Box::new(decompile_inner(elaboration_environment, right)?),
+            ),
+            elab::Constructor::Map(_, _) => source::Con::Map,
+            elab::Constructor::Unit => source::Con::Unit,
+            elab::Constructor::Tuple(items) => source::Con::Tuple(
+                items
+                    .iter()
+                    .map(|item| decompile_inner(elaboration_environment, item))
+                    .collect::<Option<Vec<_>>>()?,
+            ),
+            elab::Constructor::Proj(constructor, index) => source::Con::Proj(
+                Box::new(decompile_inner(elaboration_environment, constructor)?),
+                *index,
+            ),
+            elab::Constructor::Unif(_, _, _, _, reference) => {
+                let guard = crate::compiler_diagnostics::lock_for_compile(
+                    reference.as_ref(),
+                    "decompile source constructor",
+                );
+                match &*guard {
+                    elab::CUnif::Known(known_constructor) => {
+                        return decompile_inner(elaboration_environment, known_constructor);
+                    }
+                    elab::CUnif::Unknown => return None,
+                }
+            }
+            elab::Constructor::Error => return None,
+        };
+        Some(Located::new(source_constructor, span))
+    }
+
+    decompile_inner(elaboration_environment, &hnorm_con(constructor.clone()))
+}
+
+fn signature_value_can_be_synthesized(
+    elaboration_environment: &Env,
+    constructor: &elab::LocatedConstructor,
+) -> bool {
+    let normalized_constructor =
+        hnorm_con_expression_head(elaboration_environment, constructor.clone());
+    is_class_or_folder(elaboration_environment, &normalized_constructor)
+}
+
+fn wildify_str(
+    elaboration_environment: &Env,
+    structure: &source::LocStr,
+    formal_signature: &elab::LocatedSignature,
+) -> source::LocStr {
+    let normalized_signature = hnorm_sgn(elaboration_environment, formal_signature);
+    let source::Str::Const(declarations) = &structure.node else {
+        return structure.clone();
+    };
+    let elab::Signature::Const(signature_items) = &normalized_signature.node else {
+        return structure.clone();
+    };
+
+    let ascription_environment =
+        build_ascription_environment(elaboration_environment, Some(&normalized_signature));
+    let mut constructor_names = HashSet::new();
+    let mut value_names = HashSet::new();
+    for declaration in declarations {
+        collect_source_decl_bindings(declaration, &mut constructor_names, &mut value_names);
+    }
+
+    let mut synthetic_declarations = Vec::new();
+    for signature_item in signature_items {
+        match &signature_item.node {
+            elab::SignatureItem::ConAbs(name, _, kind)
+            | elab::SignatureItem::Constructor(name, _, kind, _)
+            | elab::SignatureItem::ClassAbs(name, _, kind)
+            | elab::SignatureItem::Class(name, _, kind, _) => {
+                if constructor_names.contains(name) {
+                    continue;
+                }
+                let Some(source_kind) = decompile_source_kind(kind) else {
+                    continue;
+                };
+                let wildcard_constructor = Located::new(
+                    source::Con::Wild(Box::new(source_kind)),
+                    signature_item.span.clone(),
+                );
+                synthetic_declarations.push(Located::new(
+                    source::Decl::Con(name.clone(), None, wildcard_constructor),
+                    structure.span.clone(),
+                ));
+                constructor_names.insert(name.clone());
+            }
+            elab::SignatureItem::Val(name, _, constructor) => {
+                if value_names.contains(name)
+                    || !signature_value_can_be_synthesized(&ascription_environment, constructor)
+                {
+                    continue;
+                }
+                let Some(source_type) =
+                    decompile_source_constructor(&ascription_environment, constructor)
+                else {
+                    continue;
+                };
+                let wildcard_expression = Located::new(source::Exp::Wild, structure.span.clone());
+                let annotated_expression = Located::new(
+                    source::Exp::Annot(Box::new(wildcard_expression), source_type),
+                    structure.span.clone(),
+                );
+                let pattern = Located::new(source::Pat::Var(name.clone()), structure.span.clone());
+                synthetic_declarations.push(Located::new(
+                    source::Decl::Val(pattern, annotated_expression),
+                    structure.span.clone(),
+                ));
+                value_names.insert(name.clone());
+            }
+            _ => {}
+        }
+    }
+
+    if synthetic_declarations.is_empty() {
+        return structure.clone();
+    }
+
+    let insert_index = declarations
+        .iter()
+        .rposition(|declaration| source_decl_is_constructor_like(&declaration.node))
+        .map(|index| index + 1)
+        .unwrap_or(0);
+    let mut new_declarations = declarations.clone();
+    new_declarations.splice(insert_index..insert_index, synthetic_declarations);
+    Located::new(source::Str::Const(new_declarations), structure.span.clone())
 }
 
 // ---------------------------------------------------------------------------
@@ -8987,7 +10862,7 @@ pub fn elab_str(
                 elaborated_signature_error_at_span(span),
             )
         }
-        source::Str::Fun(x, sgn, _opt_result_sgn, body) => {
+        source::Str::Fun(x, sgn, opt_result_sgn, body) => {
             let sgne = elab_sgn(
                 elaboration_context,
                 elaboration_environment,
@@ -8997,25 +10872,48 @@ pub fn elab_str(
             let (env2, param_id) = elaboration_environment
                 .clone()
                 .push_str_named(x.clone(), sgne.clone());
-            let (bodye, body_sgn) = elab_str(
+            let denv2 = assert_projected_signature_constraints(
                 elaboration_context,
                 &env2,
                 disjointness_environment,
-                body,
-                None,
+                param_id,
+                &[],
+                &span,
             );
+            let (bodye, actual_body_sgn) = elab_str(elaboration_context, &env2, &denv2, body, None);
+            let formal_body_sgn = match opt_result_sgn {
+                Some(result_signature) => {
+                    let formal_signature =
+                        elab_sgn(elaboration_context, &env2, &denv2, result_signature);
+                    sub_sgn(
+                        elaboration_context,
+                        &env2,
+                        &denv2,
+                        &actual_body_sgn,
+                        &formal_signature,
+                        &span,
+                    );
+                    formal_signature
+                }
+                None => actual_body_sgn.clone(),
+            };
             let str_out = Located::new(
                 elab::Structure::Fun(
                     x.clone(),
                     param_id,
                     sgne.clone(),
-                    body_sgn.clone(),
+                    formal_body_sgn.clone(),
                     Box::new(bodye),
                 ),
                 span.clone(),
             );
             let fun_sgn = Located::new(
-                elab::Signature::Fun(x.clone(), param_id, Box::new(sgne), Box::new(body_sgn)),
+                elab::Signature::Fun(
+                    x.clone(),
+                    param_id,
+                    Box::new(sgne),
+                    Box::new(formal_body_sgn),
+                ),
                 span,
             );
             (str_out, fun_sgn)
@@ -9028,32 +10926,55 @@ pub fn elab_str(
                 str1,
                 None,
             );
-            let (str2e, str2sgn) = elab_str(
-                elaboration_context,
-                elaboration_environment,
-                disjointness_environment,
-                str2,
-                None,
-            );
             // str1sgn must be a functor
             let str1sgnn = hnorm_sgn(elaboration_environment, &str1sgn);
-            match str1sgnn.node {
-                elab::Signature::Fun(_, _param_id, dom, ran) => {
+            match &str1sgnn.node {
+                elab::Signature::Fun(parameter_name, param_id, dom, ran) => {
+                    let wildified_argument =
+                        wildify_str(elaboration_environment, str2, dom.as_ref());
+                    let (str2e, str2sgn) = elab_str(
+                        elaboration_context,
+                        elaboration_environment,
+                        disjointness_environment,
+                        &wildified_argument,
+                        None,
+                    );
                     sub_sgn(
                         elaboration_context,
                         elaboration_environment,
                         disjointness_environment,
                         &str2sgn,
-                        &dom,
+                        dom,
                         &span,
                     );
+                    let selfified_argument_signature =
+                        selfify_signature_at(elaboration_environment, &str2e, &str2sgn);
                     let str_out = Located::new(
                         elab::Structure::App(Box::new(str1e), Box::new(str2e)),
                         span.clone(),
                     );
-                    // Substitute str2 for the param in ran
-                    // Simplified: return ran as-is
-                    (str_out, *ran)
+                    let normalized_range = hnorm_sgn(elaboration_environment, ran);
+                    let result_signature = match &normalized_range.node {
+                        elab::Signature::Const(signature_items) => {
+                            let parameter_binding_name =
+                                munge_functor_parameter_name(signature_items, parameter_name);
+                            let mut result_items = Vec::with_capacity(signature_items.len() + 1);
+                            result_items.push(Located::new(
+                                elab::SignatureItem::Structure(
+                                    elab::ImportMode::Skip,
+                                    parameter_binding_name,
+                                    *param_id,
+                                    selfified_argument_signature,
+                                ),
+                                span.clone(),
+                            ));
+                            result_items.extend(signature_items.clone());
+                            Located::new(elab::Signature::Const(result_items), span.clone())
+                        }
+                        elab::Signature::Error => elaborated_signature_error_at_span(span.clone()),
+                        _ => normalized_range,
+                    };
+                    (str_out, result_signature)
                 }
                 _ => {
                     elaboration_context.error(
@@ -9765,6 +11686,25 @@ fn try_resolve_class_rule(
     }
 }
 
+fn normalize_class_goal(class: elab::LocatedConstructor) -> elab::LocatedConstructor {
+    let class = hnorm_con(class);
+    match class.node {
+        elab::Constructor::App(function_constructor, argument_constructor) => {
+            let span = class.span.clone();
+            let function_constructor = hnorm_con(*function_constructor);
+            let argument_constructor = hnorm_con(*argument_constructor);
+            Located::new(
+                elab::Constructor::App(
+                    Box::new(function_constructor),
+                    Box::new(argument_constructor),
+                ),
+                span,
+            )
+        }
+        _ => class,
+    }
+}
+
 fn resolve_class(
     elaboration_environment: &Env,
     class: &elab::LocatedConstructor,
@@ -9773,38 +11713,53 @@ fn resolve_class(
     if let Some(folder_witness) = resolve_folder_witness(elaboration_environment, class, span) {
         return Some(folder_witness);
     }
-    // Try all classes in the environment
-    for rules in elaboration_environment.classes().values() {
-        let class_n = hnorm_con(class.clone());
-        // Try closed rules first
-        for (quantifier_kinds, hyps, head, witness) in &rules.closed_rules {
-            if let Some(resolved) = try_resolve_class_rule(
-                // try each closed rule in turn
-                elaboration_environment,
-                &class_n,
-                span,
-                quantifier_kinds,
-                hyps,
-                head,
-                witness,
-            ) {
-                return Some(resolved); // return immediately on first match
+    let class_n = normalize_class_goal(class.clone());
+    if let elab::Constructor::TRecord(row) = &class_n.node {
+        let row = hnorm_con((**row).clone());
+        if let elab::Constructor::Record(_, fields) = row.node {
+            let mut witnesses = Vec::with_capacity(fields.len());
+            for (field_name, field_class) in fields {
+                let field_class = normalize_class_goal(field_class);
+                let Some((field_witness, _matched_head)) =
+                    resolve_class(elaboration_environment, &field_class, span)
+                else {
+                    return None;
+                };
+                witnesses.push((field_name, field_witness, field_class));
             }
+            return Some((
+                Located::new(elab::Expression::Record(witnesses), class_n.span.clone()),
+                class_n,
+            ));
         }
-        // Then open rules
-        for (quantifier_kinds, hyps, head, witness) in &rules.open_rules {
-            if let Some(resolved) = try_resolve_class_rule(
-                // try each open rule in turn
-                elaboration_environment,
-                &class_n,
-                span,
-                quantifier_kinds,
-                hyps,
-                head,
-                witness,
-            ) {
-                return Some(resolved); // return immediately on first match
-            }
+    }
+    let Some(rules) = elaboration_environment.class_rules_for_constructor(&class_n) else {
+        return None;
+    };
+    for (quantifier_kinds, hyps, head, witness) in &rules.closed_rules {
+        if let Some(resolved) = try_resolve_class_rule(
+            elaboration_environment,
+            &class_n,
+            span,
+            quantifier_kinds,
+            hyps,
+            head,
+            witness,
+        ) {
+            return Some(resolved);
+        }
+    }
+    for (quantifier_kinds, hyps, head, witness) in &rules.open_rules {
+        if let Some(resolved) = try_resolve_class_rule(
+            elaboration_environment,
+            &class_n,
+            span,
+            quantifier_kinds,
+            hyps,
+            head,
+            witness,
+        ) {
+            return Some(resolved);
         }
     }
     None
@@ -11409,6 +13364,88 @@ mod tests {
     }
 
     #[test]
+    fn unify_rows_accepts_permuted_fields_with_shared_tail() -> anyhow::Result<()> {
+        let span = crate::error_types::Span::dummy();
+        let type_kind = Located::new(elab::Kind::Type, span.clone());
+        let row_kind = Located::new(
+            elab::Kind::Record(Box::new(type_kind.clone())),
+            span.clone(),
+        );
+        let elaboration_environment = Env::empty();
+        let mut elaboration_context = ElabCtx::new();
+        let shared_tail = fresh_cunif(
+            &elaboration_environment,
+            span.clone(),
+            row_kind.clone(),
+            "shared_tail",
+        );
+        let body_field = (
+            Located::new(elab::Constructor::Name("Body".into()), span.clone()),
+            Located::new(elab::Constructor::Unit, span.clone()),
+        );
+        let dyn_field = (
+            Located::new(elab::Constructor::Name("Dyn".into()), span.clone()),
+            Located::new(elab::Constructor::Unit, span.clone()),
+        );
+        let left_row = Located::new(
+            elab::Constructor::Concat(
+                Box::new(Located::new(
+                    elab::Constructor::Record(Box::new(row_kind.clone()), vec![body_field.clone()]),
+                    span.clone(),
+                )),
+                Box::new(Located::new(
+                    elab::Constructor::Concat(
+                        Box::new(Located::new(
+                            elab::Constructor::Record(
+                                Box::new(row_kind.clone()),
+                                vec![dyn_field.clone()],
+                            ),
+                            span.clone(),
+                        )),
+                        Box::new(shared_tail.clone()),
+                    ),
+                    span.clone(),
+                )),
+            ),
+            span.clone(),
+        );
+        let right_row = Located::new(
+            elab::Constructor::Concat(
+                Box::new(Located::new(
+                    elab::Constructor::Record(Box::new(row_kind.clone()), vec![dyn_field]),
+                    span.clone(),
+                )),
+                Box::new(Located::new(
+                    elab::Constructor::Concat(
+                        Box::new(Located::new(
+                            elab::Constructor::Record(Box::new(row_kind), vec![body_field]),
+                            span.clone(),
+                        )),
+                        Box::new(shared_tail),
+                    ),
+                    span.clone(),
+                )),
+            ),
+            span.clone(),
+        );
+
+        let result = unify_rows(
+            &mut elaboration_context,
+            &elaboration_environment,
+            &span,
+            &left_row,
+            &right_row,
+            0,
+        );
+        assert!(
+            result.is_ok(),
+            "permuted known fields over the same shared tail should unify: {:?}",
+            result
+        );
+        Ok(())
+    }
+
+    #[test]
     fn sub_sgn_realizes_expected_abstract_constructor_ids_through_actual_items(
     ) -> anyhow::Result<()> {
         // test returns Result to allow ? propagation
@@ -11642,6 +13679,97 @@ mod tests {
     }
 
     #[test]
+    fn sub_sgn_rewrites_expected_functor_range_module_ids() -> anyhow::Result<()> {
+        let span = crate::error_types::Span::dummy();
+        let type_kind = Located::new(elab::Kind::Type, span.clone());
+        let actual_domain_constructor_id = 6000;
+        let expected_domain_constructor_id = 6001;
+        let actual_functor_module_id = 6100;
+        let expected_functor_module_id = 6101;
+
+        let actual_domain = Located::new(
+            elab::Signature::Const(vec![Located::new(
+                elab::SignatureItem::ConAbs(
+                    "t".into(),
+                    actual_domain_constructor_id,
+                    type_kind.clone(),
+                ),
+                span.clone(),
+            )]),
+            span.clone(),
+        );
+        let expected_domain = Located::new(
+            elab::Signature::Const(vec![Located::new(
+                elab::SignatureItem::ConAbs(
+                    "t".into(),
+                    expected_domain_constructor_id,
+                    type_kind.clone(),
+                ),
+                span.clone(),
+            )]),
+            span.clone(),
+        );
+        let actual_projected_type = Located::new(
+            elab::Constructor::ModProj(actual_functor_module_id, Vec::new(), "t".into()),
+            span.clone(),
+        );
+        let expected_projected_type = Located::new(
+            elab::Constructor::ModProj(expected_functor_module_id, Vec::new(), "t".into()),
+            span.clone(),
+        );
+        let actual_range = Located::new(
+            elab::Signature::Const(vec![Located::new(
+                elab::SignatureItem::Val("x".into(), 6200, actual_projected_type),
+                span.clone(),
+            )]),
+            span.clone(),
+        );
+        let expected_range = Located::new(
+            elab::Signature::Const(vec![Located::new(
+                elab::SignatureItem::Val("x".into(), 6201, expected_projected_type),
+                span.clone(),
+            )]),
+            span.clone(),
+        );
+        let actual_signature = Located::new(
+            elab::Signature::Fun(
+                "M".into(),
+                actual_functor_module_id,
+                Box::new(actual_domain),
+                Box::new(actual_range),
+            ),
+            span.clone(),
+        );
+        let expected_signature = Located::new(
+            elab::Signature::Fun(
+                "M".into(),
+                expected_functor_module_id,
+                Box::new(expected_domain),
+                Box::new(expected_range),
+            ),
+            span.clone(),
+        );
+
+        let elaboration_environment = Env::empty();
+        let disjointness_environment = disjoint::empty_env();
+        let mut elaboration_context = ElabCtx::new();
+        sub_sgn(
+            &mut elaboration_context,
+            &elaboration_environment,
+            &disjointness_environment,
+            &actual_signature,
+            &expected_signature,
+            &span,
+        );
+        assert!(
+            elaboration_context.errors.is_empty(),
+            "expected functor range module ids to be realized before comparison: {:?}",
+            elaboration_context.errors
+        );
+        Ok(())
+    }
+
+    #[test]
     fn deep_normalize_constructor_reduces_rebuilt_kapp_then_app_redex() -> anyhow::Result<()> {
         // test returns Result to allow ? propagation
         let span = crate::error_types::Span::dummy();
@@ -11825,6 +13953,54 @@ mod tests {
     }
 
     #[test]
+    fn structure_ascription_binds_only_the_ascribed_interface() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
+        let mut parse_errors = ErrorReporter::new_silent();
+        let Some(file) = crate::parse::parse_ur(
+            "structure_ascription_binds_only_the_ascribed_interface.ur",
+            concat!(
+                "structure M : sig end = struct\n",
+                "    val leaked = 1\n",
+                "end\n",
+            ),
+            &mut parse_errors,
+            crate::db::ProjectDb::default(),
+        ) else {
+            panic!("parse_ur failed: {:?}", parse_errors.errors);
+        };
+        let declaration = file
+            .first()
+            .unwrap_or_else(|| panic!("expected one structure declaration, got {:?}", file));
+
+        let mut elaboration_context = ElabCtx::new();
+        let elaboration_environment = Env::empty();
+        let disjointness_environment = disjoint::empty_env();
+        let (_elaborated_declarations, elaboration_environment, _disjointness_environment) =
+            elab_decl(
+                &mut elaboration_context,
+                &elaboration_environment,
+                &disjointness_environment,
+                declaration,
+            );
+
+        assert!(
+            elaboration_context.errors.is_empty(),
+            "structure declaration should elaborate cleanly: {:?}",
+            elaboration_context.errors
+        );
+        let (_module_id, signature) = elaboration_environment
+            .lookup_str("M")
+            .unwrap_or_else(|| panic!("expected M to be bound after elaboration"));
+        let items = get_sgn_const_items(&elaboration_environment, signature);
+        assert!(
+            sgi_find_val(&items, "leaked").is_none(),
+            "explicit structure ascription should hide unmentioned values; got {:?}",
+            items
+        );
+        Ok(())
+    }
+
+    #[test]
     fn basis_open_fields_of_resolution_keeps_matched_unifier_bindings() -> anyhow::Result<()> {
         // test returns Result to allow ? propagation
         let Some(fixture) = cached_test_basis_open_fixture() else {
@@ -11901,6 +14077,325 @@ mod tests {
             "successful fieldsOf resolution should keep the solved row constructor binding",
         );
         Ok(()) // return success to the test harness
+    }
+
+    #[test]
+    fn basis_open_resolves_record_of_fields_of_witnesses() -> anyhow::Result<()> {
+        let Some(fixture) = cached_test_basis_open_fixture() else {
+            return Ok(());
+        };
+        let span = fixture.basis_decl_span.clone();
+        let fields_of_id = match fixture.elaboration_environment.lookup_c("fieldsOf") {
+            VarLookup::Named(id, _) => id,
+            _ => panic!("expected fieldsOf class in env after open Basis"),
+        };
+        let build_field_goal = |label: &str,
+                                table_name: &str,
+                                row_name: &str|
+         -> (elab::LocatedConstructor, elab::LocatedConstructor) {
+            let table_type = fresh_cunif(
+                &fixture.elaboration_environment,
+                span.clone(),
+                Located::new(elab::Kind::Type, span.clone()),
+                table_name,
+            );
+            let row_type = fresh_cunif(
+                &fixture.elaboration_environment,
+                span.clone(),
+                Located::new(
+                    elab::Kind::Record(Box::new(Located::new(elab::Kind::Type, span.clone()))),
+                    span.clone(),
+                ),
+                row_name,
+            );
+            let field_goal = Located::new(
+                elab::Constructor::App(
+                    Box::new(Located::new(
+                        elab::Constructor::App(
+                            Box::new(Located::new(
+                                elab::Constructor::Named(fields_of_id),
+                                span.clone(),
+                            )),
+                            Box::new(table_type),
+                        ),
+                        span.clone(),
+                    )),
+                    Box::new(row_type),
+                ),
+                span.clone(),
+            );
+            (
+                Located::new(elab::Constructor::Name(label.to_string()), span.clone()),
+                field_goal,
+            )
+        };
+        let row_kind = Located::new(elab::Kind::Type, span.clone());
+        let field_a = build_field_goal("A", "table_type_a", "row_type_a");
+        let field_b = build_field_goal("B", "table_type_b", "row_type_b");
+        let class_goal = Located::new(
+            elab::Constructor::TRecord(Box::new(Located::new(
+                elab::Constructor::Record(Box::new(row_kind), vec![field_a, field_b]),
+                span.clone(),
+            ))),
+            span.clone(),
+        );
+
+        let Some((witness, matched_head)) =
+            resolve_class(&fixture.elaboration_environment, &class_goal, &span)
+        else {
+            panic!("record-shaped fieldsOf witness should resolve");
+        };
+
+        match witness.node {
+            elab::Expression::Record(fields) => {
+                assert_eq!(fields.len(), 2, "expected one witness per record field");
+                assert!(
+                    matches!(fields[0].0.node, elab::Constructor::Name(ref name) if name == "A")
+                );
+                assert!(
+                    matches!(fields[1].0.node, elab::Constructor::Name(ref name) if name == "B")
+                );
+            }
+            other_expression => panic!(
+                "record-shaped class goal should elaborate to a record witness, got {:?}",
+                other_expression
+            ),
+        }
+        assert!(
+            unify_cons(
+                &mut ElabCtx::new(),
+                &fixture.elaboration_environment,
+                &span,
+                &class_goal,
+                &matched_head,
+            )
+            .is_ok(),
+            "resolved record witness should preserve the original goal shape",
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn basis_open_unifies_named_constructor_with_projected_basis_constructor() -> anyhow::Result<()>
+    {
+        let Some(fixture) = cached_test_basis_open_fixture() else {
+            return Ok(());
+        };
+        let span = fixture.basis_decl_span.clone();
+        let basis_id = match fixture.elaboration_environment.lookup_str("Basis") {
+            Some((id, _)) => *id,
+            None => panic!("expected Basis structure after boot elaboration"),
+        };
+        let xml_id = match fixture.elaboration_environment.lookup_c("xml") {
+            VarLookup::Named(id, _) => id,
+            other_lookup => panic!("expected opened xml constructor, got {:?}", other_lookup),
+        };
+        let named_xml = Located::new(elab::Constructor::Named(xml_id), span.clone());
+        let projected_xml = Located::new(
+            elab::Constructor::ModProj(basis_id, Vec::new(), "xml".to_string()),
+            span.clone(),
+        );
+
+        assert!(
+            unify_cons(
+                &mut ElabCtx::new(),
+                &fixture.elaboration_environment,
+                &span,
+                &named_xml,
+                &projected_xml,
+            )
+            .is_ok(),
+            "opened Basis.xml constructor should unify with its module projection",
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn basis_open_resolves_projected_fields_of_class_head() -> anyhow::Result<()> {
+        let Some(fixture) = cached_test_basis_open_fixture() else {
+            return Ok(());
+        };
+        let span = fixture.basis_decl_span.clone();
+        let basis_id = match fixture.elaboration_environment.lookup_str("Basis") {
+            Some((id, _)) => *id,
+            None => panic!("expected Basis structure after boot elaboration"),
+        };
+        let table_type = fresh_cunif(
+            &fixture.elaboration_environment,
+            span.clone(),
+            Located::new(elab::Kind::Type, span.clone()),
+            "table_type",
+        );
+        let row_type = fresh_cunif(
+            &fixture.elaboration_environment,
+            span.clone(),
+            Located::new(
+                elab::Kind::Record(Box::new(Located::new(elab::Kind::Type, span.clone()))),
+                span.clone(),
+            ),
+            "row_type",
+        );
+        let class_goal = Located::new(
+            elab::Constructor::App(
+                Box::new(Located::new(
+                    elab::Constructor::App(
+                        Box::new(Located::new(
+                            elab::Constructor::ModProj(
+                                basis_id,
+                                Vec::new(),
+                                "fieldsOf".to_string(),
+                            ),
+                            span.clone(),
+                        )),
+                        Box::new(table_type),
+                    ),
+                    span.clone(),
+                )),
+                Box::new(row_type),
+            ),
+            span.clone(),
+        );
+
+        assert!(
+            resolve_class(&fixture.elaboration_environment, &class_goal, &span).is_some(),
+            "Basis.fieldsOf should resolve through the same class bucket as opened fieldsOf",
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn basis_open_resolves_projected_fields_of_over_projected_sql_table() -> anyhow::Result<()> {
+        let Some(fixture) = cached_test_basis_open_fixture() else {
+            return Ok(());
+        };
+        let span = fixture.basis_decl_span.clone();
+        let basis_id = match fixture.elaboration_environment.lookup_str("Basis") {
+            Some((id, _)) => *id,
+            None => panic!("expected Basis structure after boot elaboration"),
+        };
+        let row_kind = Located::new(
+            elab::Kind::Record(Box::new(Located::new(elab::Kind::Type, span.clone()))),
+            span.clone(),
+        );
+        let keys_kind = Located::new(
+            elab::Kind::Record(Box::new(Located::new(
+                elab::Kind::Record(Box::new(Located::new(elab::Kind::Unit, span.clone()))),
+                span.clone(),
+            ))),
+            span.clone(),
+        );
+        let row_type = fresh_cunif(
+            &fixture.elaboration_environment,
+            span.clone(),
+            row_kind,
+            "fs",
+        );
+        let key_row = fresh_cunif(
+            &fixture.elaboration_environment,
+            span.clone(),
+            keys_kind,
+            "keys",
+        );
+        let table_type = Located::new(
+            elab::Constructor::App(
+                Box::new(Located::new(
+                    elab::Constructor::App(
+                        Box::new(Located::new(
+                            elab::Constructor::ModProj(
+                                basis_id,
+                                Vec::new(),
+                                "sql_table".to_string(),
+                            ),
+                            span.clone(),
+                        )),
+                        Box::new(row_type.clone()),
+                    ),
+                    span.clone(),
+                )),
+                Box::new(key_row),
+            ),
+            span.clone(),
+        );
+        let class_goal = Located::new(
+            elab::Constructor::App(
+                Box::new(Located::new(
+                    elab::Constructor::App(
+                        Box::new(Located::new(
+                            elab::Constructor::ModProj(
+                                basis_id,
+                                Vec::new(),
+                                "fieldsOf".to_string(),
+                            ),
+                            span.clone(),
+                        )),
+                        Box::new(table_type),
+                    ),
+                    span.clone(),
+                )),
+                Box::new(row_type),
+            ),
+            span.clone(),
+        );
+        let fields_of_id = crate::elaborated::environment::resolve_modproj_constructor_id(
+            &fixture.elaboration_environment,
+            basis_id,
+            &[],
+            "fieldsOf",
+        )
+        .unwrap_or_else(|| panic!("expected Basis.fieldsOf constructor id"));
+        let fields_rules = fixture
+            .elaboration_environment
+            .classes()
+            .get(&crate::elaborated::environment::ClassName::Named(
+                fields_of_id,
+            ))
+            .unwrap_or_else(|| panic!("expected fieldsOf class rules"));
+        let all_closed_heads: Vec<String> = fields_rules
+            .closed_rules
+            .iter()
+            .map(|(quantifier_kinds, hypotheses, head, _)| {
+                let (inst_head, _inst_hyps) = instantiate_rule(
+                    &fixture.elaboration_environment,
+                    quantifier_kinds,
+                    hypotheses,
+                    head,
+                    &span,
+                );
+                crate::elaborated::type_display::format_constructor(&inst_head)
+            })
+            .collect();
+        let matched_closed_heads: Vec<String> = fields_rules
+            .closed_rules
+            .iter()
+            .filter_map(|(quantifier_kinds, hypotheses, head, _)| {
+                let (inst_head, _inst_hyps) = instantiate_rule(
+                    &fixture.elaboration_environment,
+                    quantifier_kinds,
+                    hypotheses,
+                    head,
+                    &span,
+                );
+                if try_match_class(
+                    &fixture.elaboration_environment,
+                    &class_goal,
+                    &inst_head,
+                    quantifier_kinds.len(),
+                ) {
+                    Some(crate::elaborated::type_display::format_constructor(
+                        &inst_head,
+                    ))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        assert!(
+            resolve_class(&fixture.elaboration_environment, &class_goal, &span).is_some(),
+            "Basis.fieldsOf (Basis.sql_table fs keys) fs should resolve through projected heads; class_goal={} all_closed_heads={all_closed_heads:?} matched_closed_heads={matched_closed_heads:?}",
+            crate::elaborated::type_display::format_constructor(&class_goal),
+        );
+        Ok(())
     }
 
     #[test]
@@ -12841,5 +15336,92 @@ mod tests {
             "local mapU module/signature pair elaboration failed: {errors:?}"
         );
         Ok(()) // return success to the test harness
+    }
+
+    #[test]
+    fn signature_table_item_elaborates_to_sql_table_value_type() -> anyhow::Result<()> {
+        let Some(fixture) = cached_test_basis_open_fixture() else {
+            return Ok(());
+        };
+        let span = crate::error_types::Span::dummy();
+        let row_constructor = Located::new(
+            source::Con::Record(vec![(
+                Located::new(source::Con::Name("Id".to_string()), span.clone()),
+                Located::new(
+                    source::Con::Var(Vec::new(), "int".to_string()),
+                    span.clone(),
+                ),
+            )]),
+            span.clone(),
+        );
+        let empty_record_expression =
+            Located::new(source::Exp::Record(Vec::new(), false), span.clone());
+        let signature_item = Located::new(
+            source::SgnItem::Table(
+                "tab".to_string(),
+                row_constructor,
+                empty_record_expression.clone(),
+                empty_record_expression,
+            ),
+            span.clone(),
+        );
+
+        let mut elaboration_context = ElabCtx::new();
+        let (result, new_env, _) = elab_sgn_item(
+            &mut elaboration_context,
+            &fixture.elaboration_environment,
+            &fixture.disjointness_environment,
+            &signature_item,
+        );
+        assert!(
+            elaboration_context.errors.is_empty(),
+            "signature table elaboration should not record errors, got {:?}",
+            elaboration_context.errors
+        );
+
+        let Some(result) = result else {
+            panic!("expected a signature item from table elaboration");
+        };
+        let elab::SignatureItem::Val(name, _id, value_type) = &result.node else {
+            panic!(
+                "expected table signature item to elaborate as a value signature, got {:?}",
+                result.node
+            );
+        };
+        assert_eq!(name, "tab");
+
+        let normalized_type = deep_normalize_constructor(&new_env, value_type.clone());
+        let elab::Constructor::App(sql_table_with_fields, key_constraints) = &normalized_type.node
+        else {
+            panic!(
+                "expected table signature type to be an application, got {}",
+                crate::elaborated::type_display::format_constructor(&normalized_type)
+            );
+        };
+        let elab::Constructor::App(sql_table_head, row_type) = &sql_table_with_fields.node else {
+            panic!(
+                "expected table signature type to be `sql_table row keys`, got {}",
+                crate::elaborated::type_display::format_constructor(&normalized_type)
+            );
+        };
+        assert!(
+            matches!(
+                sql_table_head.node,
+                elab::Constructor::Named(_) | elab::Constructor::ModProj(_, _, _)
+            ),
+            "expected `sql_table` head, got {}",
+            crate::elaborated::type_display::format_constructor(sql_table_head)
+        );
+        assert!(
+            matches!(row_type.node, elab::Constructor::Record(_, _)),
+            "expected raw row constructor under `sql_table`, got {}",
+            crate::elaborated::type_display::format_constructor(row_type)
+        );
+        assert!(
+            matches!(key_constraints.node, elab::Constructor::Concat(_, _)),
+            "expected key constraints to remain a concatenation, got {}",
+            crate::elaborated::type_display::format_constructor(key_constraints)
+        );
+        Ok(())
     }
 }
