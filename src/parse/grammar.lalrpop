@@ -14,6 +14,7 @@ use crate::error_types::{Located, Span};
 use crate::source::*;
 use crate::parse::grammar_helpers::{
     con_record_field_pun,
+    constructor_lambda_from_param_list,
     desugar_monadic_bind,
     desugar_simple_sql_select,
     exp_var_from_dotted_at_path,
@@ -22,6 +23,7 @@ use crate::parse::grammar_helpers::{
     sql_integer_expression,
     sql_is_null_expression,
     sql_current_timestamp_expression,
+    tuple_product_type_constructor,
 };
 use crate::parse::xml_helpers::{
     XmlAttr, XmlAttrsAcc, FunParam, capitalize_attr, xml_attrs_empty, xml_attrs_push, xml_desugar_tag_open,
@@ -505,16 +507,9 @@ ConNode: Con = {
     <l:@L> "(" <c:ConInParen> ")" "::" <k:Kind> <r:@R> =>
         Con::Annot(Box::new(Located::new(c, Span::from_offsets("", l, r, &[]))), Box::new(k)),
 
-    // product/tuple type: `A * B`  →  Tuple([A, B])
-    // Right-associative; flattens nested tuples so `A * B * C` = Tuple([A, B, C]).
-    <c1:AppCon> "*" <c2:Con> => {
-        let mut parts = vec![c1];
-        match c2.node {
-            Con::Tuple(mut rest) => parts.append(&mut rest),
-            other => parts.push(Located::new(other, c2.span)),
-        }
-        Con::Tuple(parts)
-    },
+    // Product type: `A * B`  →  `{1 : A, 2 : B}` in source AST form `TRecord(CRecord ...)`.
+    <l:@L> <parts:ConProductParts> <r:@R> =>
+        tuple_product_type_constructor(parts, &Span::from_offsets("", l, r, &[])),
 
     // function type
     <c1:AppCon> "->" <c2:Con> => Con::TFun(Box::new(c1), Box::new(c2)),
@@ -544,12 +539,10 @@ ConNode: Con = {
         Con::Abs("_".into(), Some(Box::new(k)), rest),
     "fn" "_" <rest:ConFnRest> =>
         Con::Abs("_".into(), None, rest),
-    // multi-param constructor lambda: `fn (a :: K1, b :: K2) => body` (also single `(a :: K)`)
-    "fn" "(" <params:ConLamParamList> ")" <rest:ConFnRest> => {
-        params.into_iter().rev().fold((*rest).node, |acc_node, (nm, k)| {
-            Con::Abs(nm, Some(Box::new(k)), Box::new(Located::dummy(acc_node)))
-        })
-    },
+    // multi-param constructor lambda: `fn (a :: K1, b :: K2) => body`
+    // becomes a single tuple-binder with projections, matching `urweb.grm`.
+    <l:@L> "fn" "(" <params:ConLamParamList> ")" <rest:ConFnRest> <r:@R> =>
+        constructor_lambda_from_param_list(params, rest, &Span::from_offsets("", l, r, &[])),
 
     // concatenation
     <c1:AppCon> "++" <c2:Con> => Con::Concat(Box::new(c1), Box::new(c2)),
@@ -573,10 +566,11 @@ ConFnRest: Box<LocCon> = {
     <l:@L> "_" <rest:ConFnRest> <r:@R> =>
         Box::new(Located::new(Con::Abs("_".into(), None, rest), Span::from_offsets("", l, r, &[]))),
     <l:@L> "(" <params:ConLamParamList> ")" <rest:ConFnRest> <r:@R> => {
-        let inner = params.into_iter().rev().fold((*rest).node, |acc_node, (nm, k)| {
-            Con::Abs(nm, Some(Box::new(k)), Box::new(Located::dummy(acc_node)))
-        });
-        Box::new(Located::new(inner, Span::from_offsets("", l, r, &[])))
+        let span = Span::from_offsets("", l, r, &[]);
+        Box::new(Located::new(
+            constructor_lambda_from_param_list(params, rest, &span),
+            span,
+        ))
     },
 };
 
@@ -711,6 +705,15 @@ ConInParen: Con = {
 ConList2: Vec<LocCon> = {
     <c1:Con> "," <c2:Con> => vec![c1, c2],
     <cs:ConList2> "," <c:Con> => { let mut v = cs; v.push(c); v },
+};
+
+ConProductParts: Vec<LocCon> = {
+    <c1:AppCon> "*" <c2:AppCon> => vec![c1, c2],
+    <c1:AppCon> "*" <rest:ConProductParts> => {
+        let mut parts = vec![c1];
+        parts.extend(rest);
+        parts
+    },
 };
 
 /// A single `nm :: K` or `nm ::: K` binder for multi-param con lambda.

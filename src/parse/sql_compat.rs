@@ -1,4 +1,5 @@
 use crate::db::ProjectDb;
+use crate::diagnostics::{DiagnosticId, DiagnosticPayload};
 use crate::error_types::{ErrorReporter, Located, Span};
 use crate::parse::grammar_helpers::{
     desugar_sql_delete_expression, desugar_sql_insert_expression, desugar_sql_select_query,
@@ -8,7 +9,7 @@ use crate::parse::grammar_helpers::{
     sql_table_reference_with_alias, sql_true_expression, SqlJoinKind, SqlSelectSpec,
 };
 use crate::primitives::{Prim, StringMode};
-use crate::source::{Decl, Exp, File, Inference, LocCon, LocExp, Pat};
+use crate::source::{Con, Decl, Exp, File, Inference, Kind, LocCon, LocExp, Pat};
 
 const SQL_PLACEHOLDER_NAME: &str = "sql_demo_placeholder_compat";
 const SYNTHETIC_SQL_EXPR_FILE: &str = "<sql-compat-expr>";
@@ -253,43 +254,575 @@ pub fn rewrite_legacy_sql_placeholders(source_text: &str) -> String {
     rewrite_view_select_forms(&rewrite_parenthesized_sql_forms(source_text))
 }
 
-fn parse_expression_fragment(source_text: &str) -> Result<LocExp, String> {
-    let mut errors = ErrorReporter::new_silent();
-    let wrapped = format!("val {SYNTHETIC_SQL_EXPR_BINDER} = {source_text}\n");
+fn parse_expression_fragment(source_text: &str) -> Result<LocExp, DiagnosticPayload> {
+    let mut errors = ErrorReporter::new_silent(); // Silent reporter: errors collected in Vec, not printed.
+    let wrapped = format!("val {SYNTHETIC_SQL_EXPR_BINDER} = {source_text}\n"); // Wrap fragment as a val declaration for the full parser.
     let Some(file) = crate::parse::parse_ur(
         SYNTHETIC_SQL_EXPR_FILE,
         &wrapped,
         &mut errors,
         ProjectDb::default(),
     ) else {
-        return Err(format!("expression fragment parse failed: {errors:?}"));
+        return Err(DiagnosticPayload::new(
+            DiagnosticId::SqlCompatExprFragmentParseFailed,
+            vec![format!("{errors:?}")], // Parser error details substituted into {0}.
+        ));
     };
     match &file[0].node {
         Decl::Val(pattern, expression) => match &pattern.node {
-            Pat::Var(name) if name == SYNTHETIC_SQL_EXPR_BINDER => Ok(expression.clone()),
-            _ => Err("expression fragment wrapper pattern mismatch".to_string()),
+            Pat::Var(name) if name == SYNTHETIC_SQL_EXPR_BINDER => Ok(expression.clone()), // Happy path: extracted expression.
+            _ => Err(DiagnosticPayload::new(
+                DiagnosticId::SqlCompatExprFragmentPatternMismatch,
+                vec![], // No template arguments needed for this invariant failure.
+            )),
         },
-        _ => Err("expression fragment wrapper declaration mismatch".to_string()),
+        _ => Err(DiagnosticPayload::new(
+            DiagnosticId::SqlCompatExprFragmentDeclMismatch,
+            vec![], // No template arguments needed for this invariant failure.
+        )),
     }
 }
 
-fn parse_constructor_fragment(source_text: &str) -> Result<LocCon, String> {
-    let mut errors = ErrorReporter::new_silent();
-    let wrapped = format!("con {SYNTHETIC_SQL_CON_BINDER} = {source_text}\n");
+fn parse_constructor_fragment(source_text: &str) -> Result<LocCon, DiagnosticPayload> {
+    let mut errors = ErrorReporter::new_silent(); // Silent reporter: errors collected in Vec, not printed.
+    let wrapped = format!("con {SYNTHETIC_SQL_CON_BINDER} = {source_text}\n"); // Wrap fragment as a con declaration for the full parser.
     let Some(file) = crate::parse::parse_ur(
         SYNTHETIC_SQL_CON_FILE,
         &wrapped,
         &mut errors,
         ProjectDb::default(),
     ) else {
-        return Err(format!("constructor fragment parse failed: {errors:?}"));
+        return Err(DiagnosticPayload::new(
+            DiagnosticId::SqlCompatConFragmentParseFailed,
+            vec![format!("{errors:?}")], // Parser error details substituted into {0}.
+        ));
     };
     match &file[0].node {
         Decl::Con(name, _, constructor) if name == SYNTHETIC_SQL_CON_BINDER => {
-            Ok(constructor.clone())
+            Ok(constructor.clone()) // Happy path: extracted constructor.
         }
-        _ => Err("constructor fragment wrapper declaration mismatch".to_string()),
+        _ => Err(DiagnosticPayload::new(
+            DiagnosticId::SqlCompatConFragmentDeclMismatch,
+            vec![], // No template arguments needed for this invariant failure.
+        )),
     }
+}
+
+fn basis_var_expression(name: &str, inference: Inference, span: &Span) -> LocExp {
+    Located::new(
+        Exp::Var(vec!["Basis".into()], name.to_string(), inference),
+        span.clone(),
+    )
+}
+
+fn basis_name_constructor(name: &str, span: &Span) -> LocCon {
+    Located::new(Con::Name(name.to_string()), span.clone())
+}
+
+fn wildcard_type_constructor(span: &Span) -> LocCon {
+    Located::new(
+        Con::Wild(Box::new(Located::new(Kind::Type, span.clone()))),
+        span.clone(),
+    )
+}
+
+fn record_constructor(fields: Vec<(LocCon, LocCon)>, span: &Span) -> LocCon {
+    Located::new(Con::Record(fields), span.clone())
+}
+
+fn record_expression(fields: Vec<(LocCon, LocExp)>, span: &Span) -> LocExp {
+    Located::new(Exp::Record(fields, false), span.clone())
+}
+
+fn apply_expression(function: LocExp, argument: LocExp, span: &Span) -> LocExp {
+    Located::new(
+        Exp::App(Box::new(function), Box::new(argument)),
+        span.clone(),
+    )
+}
+
+fn constructor_apply_expression(function: LocExp, argument: LocCon, span: &Span) -> LocExp {
+    Located::new(Exp::CApp(Box::new(function), argument), span.clone())
+}
+
+fn disjoint_apply_expression(expression: LocExp, span: &Span) -> LocExp {
+    Located::new(Exp::DisjointApp(Box::new(expression)), span.clone())
+}
+
+fn strip_optional_trailing_comma(source_text: &str) -> &str {
+    source_text.trim().trim_end_matches(',').trim_end()
+}
+
+fn parse_table_name_constructor(
+    source_text: &str,
+    span: &Span,
+) -> Result<LocCon, DiagnosticPayload> {
+    let trimmed = source_text.trim();
+    if trimmed.starts_with('{') && trimmed.ends_with('}') {
+        return parse_constructor_fragment(&trimmed[1..trimmed.len() - 1]);
+    }
+    Ok(basis_name_constructor(trimmed, span))
+}
+
+fn parse_table_name_list(source_text: &str, span: &Span) -> Result<Vec<LocCon>, DiagnosticPayload> {
+    let trimmed = source_text.trim();
+    let inner = if trimmed.starts_with('(') && trimmed.ends_with(')') {
+        &trimmed[1..trimmed.len() - 1]
+    } else {
+        trimmed
+    };
+    split_top_level_commas(inner)
+        .into_iter()
+        .map(|part| parse_table_name_constructor(&part, span))
+        .collect()
+}
+
+fn default_no_primary_key_expression(span: &Span) -> LocExp {
+    basis_var_expression("no_primary_key", Inference::Infer, span)
+}
+
+fn default_no_constraint_expression(span: &Span) -> LocExp {
+    basis_var_expression("no_constraint", Inference::Infer, span)
+}
+
+fn build_primary_key_expression(
+    names: &[LocCon],
+    span: &Span,
+) -> Result<LocExp, DiagnosticPayload> {
+    let Some(first_name) = names.first().cloned() else {
+        return Err(DiagnosticPayload::new(
+            DiagnosticId::SqlCompatUnsupportedPlaceholder,
+            vec!["PRIMARY KEY clause is missing its column names".to_string()],
+        ));
+    };
+    let rest_names = names
+        .iter()
+        .skip(1)
+        .cloned()
+        .map(|name| (name, wildcard_type_constructor(span)))
+        .collect();
+    let witness_fields = names
+        .iter()
+        .cloned()
+        .map(|name| (name, Located::new(Exp::Wild, span.clone())))
+        .collect();
+    let mut expression = basis_var_expression("primary_key", Inference::TypesOnly, span);
+    expression = constructor_apply_expression(expression, first_name, span);
+    expression =
+        constructor_apply_expression(expression, record_constructor(rest_names, span), span);
+    expression = disjoint_apply_expression(expression, span);
+    expression = disjoint_apply_expression(expression, span);
+    Ok(apply_expression(
+        expression,
+        record_expression(witness_fields, span),
+        span,
+    ))
+}
+
+fn build_unique_constraint_expression(
+    names: &[LocCon],
+    span: &Span,
+) -> Result<LocExp, DiagnosticPayload> {
+    let Some(first_name) = names.first().cloned() else {
+        return Err(DiagnosticPayload::new(
+            DiagnosticId::SqlCompatUnsupportedPlaceholder,
+            vec!["UNIQUE clause is missing its column names".to_string()],
+        ));
+    };
+    let rest_names = names
+        .iter()
+        .skip(1)
+        .cloned()
+        .map(|name| (name, wildcard_type_constructor(span)))
+        .collect();
+    let mut expression = basis_var_expression("unique", Inference::Infer, span);
+    expression = constructor_apply_expression(expression, first_name, span);
+    Ok(constructor_apply_expression(
+        expression,
+        record_constructor(rest_names, span),
+        span,
+    ))
+}
+
+fn build_foreign_key_matching_expression(
+    source_names: &[LocCon],
+    referenced_names: &[LocCon],
+    span: &Span,
+) -> Result<LocExp, DiagnosticPayload> {
+    if source_names.len() != referenced_names.len() {
+        return Err(DiagnosticPayload::new(
+            DiagnosticId::SqlCompatUnsupportedPlaceholder,
+            vec![format!(
+                "FOREIGN KEY column list length mismatch: {} vs {}",
+                source_names.len(),
+                referenced_names.len()
+            )],
+        ));
+    }
+    let mut matching = basis_var_expression("mat_nil", Inference::Infer, span);
+    for (source_name, referenced_name) in source_names
+        .iter()
+        .cloned()
+        .zip(referenced_names.iter().cloned())
+        .rev()
+    {
+        let mut cons = basis_var_expression("mat_cons", Inference::Infer, span);
+        cons = constructor_apply_expression(cons, source_name, span);
+        cons = constructor_apply_expression(cons, referenced_name, span);
+        matching = apply_expression(cons, matching, span);
+    }
+    Ok(matching)
+}
+
+fn parse_reference_table_expression(
+    source_text: &str,
+    span: &Span,
+) -> Result<LocExp, DiagnosticPayload> {
+    let trimmed = source_text.trim();
+    if trimmed.starts_with("{{") && trimmed.ends_with("}}") {
+        return parse_expression_fragment(&trimmed[2..trimmed.len() - 2]);
+    }
+    Ok(Located::new(
+        Exp::Var(vec![], trimmed.to_string(), Inference::Infer),
+        span.clone(),
+    ))
+}
+
+fn parse_propagation_rule(source_text: &str, span: &Span) -> Result<LocExp, DiagnosticPayload> {
+    match source_text.trim() {
+        "NO ACTION" => Ok(basis_var_expression("no_action", Inference::Infer, span)),
+        "RESTRICT" => Ok(basis_var_expression("restrict", Inference::Infer, span)),
+        "CASCADE" => Ok(basis_var_expression("cascade", Inference::Infer, span)),
+        "SET NULL" => Ok(basis_var_expression("set_null", Inference::Infer, span)),
+        other => Err(DiagnosticPayload::new(
+            DiagnosticId::SqlCompatUnsupportedPlaceholder,
+            vec![format!(
+                "Unsupported propagation rule in FOREIGN KEY clause: {other}"
+            )],
+        )),
+    }
+}
+
+fn parse_foreign_key_modes(
+    source_text: &str,
+    span: &Span,
+) -> Result<(LocExp, LocExp), DiagnosticPayload> {
+    let mut on_delete = basis_var_expression("no_action", Inference::Infer, span);
+    let mut on_update = basis_var_expression("no_action", Inference::Infer, span);
+    let trimmed = source_text.trim();
+    if trimmed.is_empty() {
+        return Ok((on_delete, on_update));
+    }
+
+    let tokens: Vec<&str> = trimmed.split_whitespace().collect();
+    let mut index = 0usize;
+    while index < tokens.len() {
+        if tokens.get(index) != Some(&"ON") {
+            return Err(DiagnosticPayload::new(
+                DiagnosticId::SqlCompatUnsupportedPlaceholder,
+                vec![format!("Unsupported FOREIGN KEY mode syntax: {trimmed}")],
+            ));
+        }
+        let kind = tokens.get(index + 1).copied().ok_or_else(|| {
+            DiagnosticPayload::new(
+                DiagnosticId::SqlCompatUnsupportedPlaceholder,
+                vec![format!("Incomplete FOREIGN KEY mode syntax: {trimmed}")],
+            )
+        })?;
+        let rule_start = index + 2;
+        let rule_text = if tokens.get(rule_start) == Some(&"NO")
+            && tokens.get(rule_start + 1) == Some(&"ACTION")
+        {
+            index += 4;
+            "NO ACTION".to_string()
+        } else if tokens.get(rule_start) == Some(&"SET")
+            && tokens.get(rule_start + 1) == Some(&"NULL")
+        {
+            index += 4;
+            "SET NULL".to_string()
+        } else {
+            let rule = tokens.get(rule_start).copied().ok_or_else(|| {
+                DiagnosticPayload::new(
+                    DiagnosticId::SqlCompatUnsupportedPlaceholder,
+                    vec![format!("Incomplete FOREIGN KEY mode syntax: {trimmed}")],
+                )
+            })?;
+            index += 3;
+            rule.to_string()
+        };
+        let parsed_rule = parse_propagation_rule(&rule_text, span)?;
+        match kind {
+            "DELETE" => on_delete = parsed_rule,
+            "UPDATE" => on_update = parsed_rule,
+            _ => {
+                return Err(DiagnosticPayload::new(
+                    DiagnosticId::SqlCompatUnsupportedPlaceholder,
+                    vec![format!(
+                        "Unsupported FOREIGN KEY mode kind `{kind}` in: {trimmed}"
+                    )],
+                ))
+            }
+        }
+    }
+
+    Ok((on_delete, on_update))
+}
+
+fn build_foreign_key_constraint_expression(
+    source_names: &[LocCon],
+    reference_table: LocExp,
+    referenced_names: &[LocCon],
+    mode_text: &str,
+    span: &Span,
+) -> Result<LocExp, DiagnosticPayload> {
+    let matching = build_foreign_key_matching_expression(source_names, referenced_names, span)?;
+    let (on_delete, on_update) = parse_foreign_key_modes(mode_text, span)?;
+    let propagation = record_expression(
+        vec![
+            (basis_name_constructor("OnDelete", span), on_delete),
+            (basis_name_constructor("OnUpdate", span), on_update),
+        ],
+        span,
+    );
+    let with_matching = apply_expression(
+        basis_var_expression("foreign_key", Inference::Infer, span),
+        matching,
+        span,
+    );
+    let with_table = apply_expression(with_matching, reference_table, span);
+    Ok(apply_expression(with_table, propagation, span))
+}
+
+fn parse_single_constraint_expression(
+    source_text: &str,
+    span: &Span,
+) -> Result<LocExp, DiagnosticPayload> {
+    let trimmed = strip_optional_trailing_comma(source_text);
+    if let Some(rest) = trimmed.strip_prefix("UNIQUE ") {
+        let names = parse_table_name_list(rest, span)?;
+        return build_unique_constraint_expression(&names, span);
+    }
+    if let Some(rest) = trimmed.strip_prefix("CHECK ") {
+        let parsed_check_expression = parse_sql_value(rest, span).map_err(|inner| {
+            DiagnosticPayload::new(
+                DiagnosticId::SqlCompatUnsupportedPlaceholder,
+                vec![format!(
+                    "CHECK clause `{trimmed}` could not be parsed ({inner:?})"
+                )],
+            )
+        })?;
+        return Ok(apply_expression(
+            basis_var_expression("check", Inference::Infer, span),
+            parsed_check_expression,
+            span,
+        ));
+    }
+    if let Some(rest) = trimmed.strip_prefix("FOREIGN KEY ") {
+        let (source_name_text, reference_text) =
+            split_top_level(rest, "REFERENCES").ok_or_else(|| {
+                DiagnosticPayload::new(
+                    DiagnosticId::SqlCompatUnsupportedPlaceholder,
+                    vec![format!(
+                        "FOREIGN KEY clause is missing REFERENCES: {trimmed}"
+                    )],
+                )
+            })?;
+        let source_names = parse_table_name_list(&source_name_text, span)?;
+        let open_paren_index = reference_text.find('(').ok_or_else(|| {
+            DiagnosticPayload::new(
+                DiagnosticId::SqlCompatUnsupportedPlaceholder,
+                vec![format!(
+                    "FOREIGN KEY REFERENCES clause is missing its referenced column list: {trimmed}"
+                )],
+            )
+        })?;
+        let close_paren_index = find_matching_rparen(
+            &reference_text,
+            reference_text.as_bytes(),
+            open_paren_index,
+            reference_text.len(),
+        )
+        .ok_or_else(|| {
+            DiagnosticPayload::new(
+                DiagnosticId::SqlCompatUnsupportedPlaceholder,
+                vec![format!(
+                    "FOREIGN KEY REFERENCES clause is missing its closing parenthesis: {trimmed}"
+                )],
+            )
+        })?;
+        let reference_table =
+            parse_reference_table_expression(&reference_text[..open_paren_index], span)?;
+        let referenced_names = parse_table_name_list(
+            &reference_text[open_paren_index + 1..close_paren_index - 1],
+            span,
+        )?;
+        let mode_text = reference_text[close_paren_index..].trim();
+        return build_foreign_key_constraint_expression(
+            &source_names,
+            reference_table,
+            &referenced_names,
+            mode_text,
+            span,
+        );
+    }
+    if trimmed.starts_with("{{") && trimmed.ends_with("}}") {
+        return parse_expression_fragment(&trimmed[2..trimmed.len() - 2]);
+    }
+    Err(DiagnosticPayload::new(
+        DiagnosticId::SqlCompatUnsupportedPlaceholder,
+        vec![format!("Unsupported table constraint clause: {trimmed}")],
+    ))
+}
+
+fn wrap_named_constraint(
+    constraint_name: LocCon,
+    constraint_expression: LocExp,
+    span: &Span,
+) -> LocExp {
+    let with_name = constructor_apply_expression(
+        basis_var_expression("one_constraint", Inference::Infer, span),
+        constraint_name,
+        span,
+    );
+    apply_expression(with_name, constraint_expression, span)
+}
+
+fn join_constraint_expressions(left: LocExp, right: LocExp, span: &Span) -> LocExp {
+    let with_left = apply_expression(
+        basis_var_expression("join_constraints", Inference::Infer, span),
+        left,
+        span,
+    );
+    apply_expression(with_left, right, span)
+}
+
+fn parse_table_constraint_lines(
+    constraint_lines: &[&str],
+    span: &Span,
+) -> Result<(LocExp, LocExp), DiagnosticPayload> {
+    let mut primary_key_expression = default_no_primary_key_expression(span);
+    let mut constraint_expression = default_no_constraint_expression(span);
+    let mut saw_constraint = false;
+
+    for line in constraint_lines {
+        let trimmed = strip_optional_trailing_comma(line.trim_start());
+        if let Some(rest) = trimmed.strip_prefix("PRIMARY KEY ") {
+            primary_key_expression = if rest.starts_with("{{") && rest.ends_with("}}") {
+                parse_expression_fragment(&rest[2..rest.len() - 2])?
+            } else {
+                build_primary_key_expression(&parse_table_name_list(rest, span)?, span)?
+            };
+            continue;
+        }
+        if let Some(rest) = trimmed.strip_prefix("CONSTRAINT ") {
+            let Some(space_index) = rest.find(char::is_whitespace) else {
+                return Err(DiagnosticPayload::new(
+                    DiagnosticId::SqlCompatUnsupportedPlaceholder,
+                    vec![format!("Malformed CONSTRAINT clause: {trimmed}")],
+                ));
+            };
+            let constraint_name = parse_table_name_constructor(&rest[..space_index], span)?;
+            let inner_expression =
+                parse_single_constraint_expression(rest[space_index..].trim_start(), span)?;
+            let named_constraint = wrap_named_constraint(constraint_name, inner_expression, span);
+            constraint_expression = if saw_constraint {
+                join_constraint_expressions(constraint_expression, named_constraint, span)
+            } else {
+                named_constraint
+            };
+            saw_constraint = true;
+            continue;
+        }
+        return Err(DiagnosticPayload::new(
+            DiagnosticId::SqlCompatUnsupportedPlaceholder,
+            vec![format!("Unsupported table constraint line: {trimmed}")],
+        ));
+    }
+
+    Ok((primary_key_expression, constraint_expression))
+}
+
+fn is_table_constraint_line(trimmed: &str) -> bool {
+    trimmed.starts_with("PRIMARY ")
+        || trimmed.starts_with("PRIMARY\t")
+        || trimmed.starts_with("CONSTRAINT ")
+        || trimmed.starts_with("CONSTRAINT\t")
+        || trimmed.starts_with("UNIQUE ")
+        || trimmed.starts_with("UNIQUE\t")
+        || trimmed.starts_with("CHECK ")
+        || trimmed.starts_with("CHECK\t")
+}
+
+fn repair_table_constraints_in_structure(
+    source_lines: &[&str],
+    structure_expression: &mut crate::source::LocStr,
+) -> Result<(), DiagnosticPayload> {
+    match &mut structure_expression.node {
+        crate::source::Str::Const(declarations) => {
+            repair_table_constraints_in_file(source_lines, declarations)
+        }
+        crate::source::Str::Proj(inner, _) => {
+            repair_table_constraints_in_structure(source_lines, inner)
+        }
+        crate::source::Str::Fun(_, _, _, body) => {
+            repair_table_constraints_in_structure(source_lines, body)
+        }
+        crate::source::Str::App(left, right) => {
+            repair_table_constraints_in_structure(source_lines, left)?;
+            repair_table_constraints_in_structure(source_lines, right)
+        }
+        crate::source::Str::Var(_) => Ok(()),
+    }
+}
+
+pub fn repair_table_constraints_in_file(
+    source_lines: &[&str],
+    file: &mut File,
+) -> Result<(), DiagnosticPayload> {
+    for declaration in file {
+        match &mut declaration.node {
+            Decl::Table(_, _, primary_key_expression, constraint_expression) => {
+                let first_constraint_line = declaration.span.last.line as usize;
+                let collected_lines: Vec<&str> = source_lines
+                    .iter()
+                    .skip(first_constraint_line)
+                    .take_while(|line| is_table_constraint_line(line.trim_start()))
+                    .copied()
+                    .collect();
+                let (parsed_primary_key, parsed_constraints) =
+                    parse_table_constraint_lines(&collected_lines, &declaration.span)?;
+                *primary_key_expression = parsed_primary_key;
+                *constraint_expression = parsed_constraints;
+            }
+            Decl::Export(structure_expression) => {
+                repair_table_constraints_in_structure(source_lines, structure_expression)?
+            }
+            Decl::Str(_, _, _, structure_expression, _) | Decl::OpenStr(structure_expression) => {
+                repair_table_constraints_in_structure(source_lines, structure_expression)?
+            }
+            Decl::Val(_, _)
+            | Decl::ValRec(_)
+            | Decl::View(_, _)
+            | Decl::Policy(_)
+            | Decl::Con(_, _, _)
+            | Decl::Datatype(_)
+            | Decl::DatatypeImp(_, _, _)
+            | Decl::Sgn(_, _)
+            | Decl::FfiStr(_, _, _)
+            | Decl::Open(_, _)
+            | Decl::Constraint(_, _)
+            | Decl::OpenConstraints(_, _)
+            | Decl::Sequence(_)
+            | Decl::Index(_, _, _)
+            | Decl::Task(_, _)
+            | Decl::Database(_)
+            | Decl::Cookie(_, _)
+            | Decl::Style(_)
+            | Decl::OnError(_, _, _)
+            | Decl::Ffi(_, _, _) => {}
+        }
+    }
+    Ok(())
 }
 
 fn trim_wrapping_parens(source_text: &str) -> &str {
@@ -430,7 +963,7 @@ fn split_top_level_commas(source_text: &str) -> Vec<String> {
     parts
 }
 
-fn parse_sql_value(source_text: &str, span: &Span) -> Result<LocExp, String> {
+fn parse_sql_value(source_text: &str, span: &Span) -> Result<LocExp, DiagnosticPayload> {
     let trimmed = trim_wrapping_parens(source_text);
     if let Some((left, right)) = split_top_level(trimmed, "OR") {
         let left_expression = parse_sql_value(&left, span)?;
@@ -460,6 +993,26 @@ fn parse_sql_value(source_text: &str, span: &Span) -> Result<LocExp, String> {
             span.clone(),
         ));
     }
+    if let Some((left, right)) = split_top_level(trimmed, "<>") {
+        let left_expression = parse_sql_value(&left, span)?;
+        let right_expression = parse_sql_value(&right, span)?;
+        return Ok(crate::parse::grammar_helpers::sql_binary_expression(
+            "ne",
+            left_expression,
+            right_expression,
+            span,
+        ));
+    }
+    if let Some((left, right)) = split_top_level(trimmed, ">=") {
+        let left_expression = parse_sql_value(&left, span)?;
+        let right_expression = parse_sql_value(&right, span)?;
+        return Ok(crate::parse::grammar_helpers::sql_binary_expression(
+            "ge",
+            left_expression,
+            right_expression,
+            span,
+        ));
+    }
     if let Some((left, right)) = split_top_level(trimmed, "=") {
         let left_expression = parse_sql_value(&left, span)?;
         let right_expression = parse_sql_value(&right, span)?;
@@ -470,11 +1023,31 @@ fn parse_sql_value(source_text: &str, span: &Span) -> Result<LocExp, String> {
             span,
         ));
     }
+    if let Some((left, right)) = split_top_level(trimmed, "<=") {
+        let left_expression = parse_sql_value(&left, span)?;
+        let right_expression = parse_sql_value(&right, span)?;
+        return Ok(crate::parse::grammar_helpers::sql_binary_expression(
+            "le",
+            left_expression,
+            right_expression,
+            span,
+        ));
+    }
     if let Some((left, right)) = split_top_level(trimmed, ">") {
         let left_expression = parse_sql_value(&left, span)?;
         let right_expression = parse_sql_value(&right, span)?;
         return Ok(crate::parse::grammar_helpers::sql_binary_expression(
             "gt",
+            left_expression,
+            right_expression,
+            span,
+        ));
+    }
+    if let Some((left, right)) = split_top_level(trimmed, "<") {
+        let left_expression = parse_sql_value(&left, span)?;
+        let right_expression = parse_sql_value(&right, span)?;
+        return Ok(crate::parse::grammar_helpers::sql_binary_expression(
+            "lt",
             left_expression,
             right_expression,
             span,
@@ -519,7 +1092,12 @@ fn parse_sql_value(source_text: &str, span: &Span) -> Result<LocExp, String> {
         if let Some((table_name_text, field_text)) = trimmed.split_once(".{{") {
             let con_text = field_text
                 .strip_suffix("}}")
-                .ok_or_else(|| format!("dynamic SQL field missing closing braces: {trimmed}"))?
+                .ok_or_else(|| {
+                    DiagnosticPayload::new(
+                        DiagnosticId::SqlCompatDynamicFieldMissingBraces,
+                        vec![trimmed.to_string()], // Offending field text substituted into {0}.
+                    )
+                })?
                 .trim();
             let field_constructor = parse_constructor_fragment(con_text)?;
             return Ok(sql_dynamic_field_expression(
@@ -531,7 +1109,12 @@ fn parse_sql_value(source_text: &str, span: &Span) -> Result<LocExp, String> {
         if let Some((table_name_text, field_text)) = trimmed.split_once(".{") {
             let con_text = field_text
                 .strip_suffix('}')
-                .ok_or_else(|| format!("SQL field missing closing brace: {trimmed}"))?
+                .ok_or_else(|| {
+                    DiagnosticPayload::new(
+                        DiagnosticId::SqlCompatFieldMissingBrace,
+                        vec![trimmed.to_string()], // Offending field text substituted into {0}.
+                    )
+                })?
                 .trim();
             let field_constructor = parse_constructor_fragment(con_text)?;
             return Ok(sql_dynamic_field_expression(
@@ -560,10 +1143,13 @@ fn parse_sql_value(source_text: &str, span: &Span) -> Result<LocExp, String> {
     if let Ok(expression) = parse_expression_fragment(trimmed) {
         return Ok(expression);
     }
-    Err(format!("unsupported SQL expression: {trimmed}"))
+    Err(DiagnosticPayload::new(
+        DiagnosticId::SqlCompatUnsupportedExpression,
+        vec![trimmed.to_string()], // Unsupported expression text substituted into {0}.
+    ))
 }
 
-fn parse_select_spec(source_text: &str, span: &Span) -> Result<SqlSelectSpec, String> {
+fn parse_select_spec(source_text: &str, span: &Span) -> Result<SqlSelectSpec, DiagnosticPayload> {
     let trimmed = source_text.trim();
     if trimmed == "*" {
         return Ok(SqlSelectSpec::Star);
@@ -578,7 +1164,12 @@ fn parse_select_spec(source_text: &str, span: &Span) -> Result<SqlSelectSpec, St
         if let Some((table_name_text, field_text)) = item_text.split_once(".{{") {
             let con_text = field_text
                 .strip_suffix("}}")
-                .ok_or_else(|| format!("dynamic SELECT field missing closing braces: {item_text}"))?
+                .ok_or_else(|| {
+                    DiagnosticPayload::new(
+                        DiagnosticId::SqlCompatDynamicSelectFieldMissingBraces,
+                        vec![item_text.clone()], // Offending SELECT item text substituted into {0}.
+                    )
+                })?
                 .trim();
             let field_constructor = parse_constructor_fragment(con_text)?;
             items.push(sql_select_dynamic_fields_item(
@@ -593,16 +1184,23 @@ fn parse_select_spec(source_text: &str, span: &Span) -> Result<SqlSelectSpec, St
             items.push(sql_select_single_field_item(table_name, field_name, span));
             continue;
         }
-        return Err(format!("unsupported select item: {item_text}"));
+        return Err(DiagnosticPayload::new(
+            DiagnosticId::SqlCompatUnsupportedSelectItem,
+            vec![item_text], // Unsupported SELECT item text substituted into {0}.
+        ));
     }
     Ok(SqlSelectSpec::Items(items))
 }
 
-fn parse_from_clause(source_text: &str, span: &Span) -> Result<(Vec<String>, LocExp), String> {
+fn parse_from_clause(
+    source_text: &str,
+    span: &Span,
+) -> Result<(Vec<String>, LocExp), DiagnosticPayload> {
     if let Some((left, right)) = split_top_level(source_text, "LEFT JOIN") {
         let left_from = parse_from_clause(&left, span)?;
-        let (right_source, on_clause) = split_top_level(&right, "ON")
-            .ok_or_else(|| "LEFT JOIN missing ON clause".to_string())?;
+        let (right_source, on_clause) = split_top_level(&right, "ON").ok_or_else(|| {
+            DiagnosticPayload::new(DiagnosticId::SqlCompatLeftJoinMissingOn, vec![])
+        })?; // No template arguments for this structural error.
         let right_from = parse_from_clause(&right_source, span)?;
         let predicate = parse_sql_value(&on_clause, span)?;
         return Ok(sql_join_expression(
@@ -615,8 +1213,8 @@ fn parse_from_clause(source_text: &str, span: &Span) -> Result<(Vec<String>, Loc
     }
     if let Some((left, right)) = split_top_level(source_text, "JOIN") {
         let left_from = parse_from_clause(&left, span)?;
-        let (right_source, on_clause) =
-            split_top_level(&right, "ON").ok_or_else(|| "JOIN missing ON clause".to_string())?;
+        let (right_source, on_clause) = split_top_level(&right, "ON")
+            .ok_or_else(|| DiagnosticPayload::new(DiagnosticId::SqlCompatJoinMissingOn, vec![]))?; // No template arguments for this structural error.
         let right_from = parse_from_clause(&right_source, span)?;
         let predicate = parse_sql_value(&on_clause, span)?;
         return Ok(sql_join_expression(
@@ -650,9 +1248,9 @@ fn parse_from_clause(source_text: &str, span: &Span) -> Result<(Vec<String>, Loc
     }
 }
 
-fn parse_select_payload(source_text: &str, span: &Span) -> Result<Exp, String> {
-    let (select_text, from_and_where) =
-        split_top_level(source_text, "FROM").ok_or_else(|| "SELECT missing FROM".to_string())?;
+fn parse_select_payload(source_text: &str, span: &Span) -> Result<Exp, DiagnosticPayload> {
+    let (select_text, from_and_where) = split_top_level(source_text, "FROM")
+        .ok_or_else(|| DiagnosticPayload::new(DiagnosticId::SqlCompatSelectMissingFrom, vec![]))?; // No template arguments for this structural error.
     let (from_text, where_text) = match split_top_level(&from_and_where, "WHERE") {
         Some((from_clause, where_clause)) => (from_clause, Some(where_clause)),
         None => (from_and_where, None),
@@ -672,16 +1270,16 @@ fn parse_select_payload(source_text: &str, span: &Span) -> Result<Exp, String> {
     ))
 }
 
-fn parse_insert_payload(source_text: &str, span: &Span) -> Result<Exp, String> {
+fn parse_insert_payload(source_text: &str, span: &Span) -> Result<Exp, DiagnosticPayload> {
     let after_into = source_text
         .trim_start_matches("INSERT")
         .trim()
         .strip_prefix("INTO")
-        .ok_or_else(|| "INSERT missing INTO".to_string())?
+        .ok_or_else(|| DiagnosticPayload::new(DiagnosticId::SqlCompatInsertMissingInto, vec![]))? // No template arguments for this structural error.
         .trim();
-    let open_fields = after_into
-        .find('(')
-        .ok_or_else(|| "INSERT missing field list".to_string())?;
+    let open_fields = after_into.find('(').ok_or_else(|| {
+        DiagnosticPayload::new(DiagnosticId::SqlCompatInsertMissingFieldList, vec![])
+    })?; // No template arguments for this structural error.
     let table_name = after_into[..open_fields].trim().to_string();
     let close_fields = find_matching_rparen(
         after_into,
@@ -689,15 +1287,20 @@ fn parse_insert_payload(source_text: &str, span: &Span) -> Result<Exp, String> {
         open_fields,
         after_into.len(),
     )
-    .ok_or_else(|| "INSERT field list missing closing paren".to_string())?;
+    .ok_or_else(|| {
+        DiagnosticPayload::new(DiagnosticId::SqlCompatInsertFieldListMissingParen, vec![])
+    })?; // No template arguments for this structural error.
     let field_text = &after_into[open_fields + 1..close_fields - 1];
     let after_fields = after_into[close_fields..].trim();
     let values_payload = after_fields
         .strip_prefix("VALUES")
-        .ok_or_else(|| "INSERT missing VALUES".to_string())?
+        .ok_or_else(|| DiagnosticPayload::new(DiagnosticId::SqlCompatInsertMissingValues, vec![]))? // No template arguments for this structural error.
         .trim();
     if !values_payload.starts_with('(') {
-        return Err("INSERT values missing opening paren".to_string());
+        return Err(DiagnosticPayload::new(
+            DiagnosticId::SqlCompatInsertValuesMissingOpenParen,
+            vec![], // No template arguments for this structural error.
+        ));
     }
     let close_values = find_matching_rparen(
         values_payload,
@@ -705,7 +1308,9 @@ fn parse_insert_payload(source_text: &str, span: &Span) -> Result<Exp, String> {
         0,
         values_payload.len(),
     )
-    .ok_or_else(|| "INSERT values missing closing paren".to_string())?;
+    .ok_or_else(|| {
+        DiagnosticPayload::new(DiagnosticId::SqlCompatInsertValuesMissingCloseParen, vec![])
+    })?; // No template arguments for this structural error.
     let value_text = &values_payload[1..close_values - 1];
     let fields = split_top_level_commas(field_text);
     let mut values = Vec::new();
@@ -717,29 +1322,30 @@ fn parse_insert_payload(source_text: &str, span: &Span) -> Result<Exp, String> {
     ))
 }
 
-fn parse_delete_payload(source_text: &str, span: &Span) -> Result<Exp, String> {
+fn parse_delete_payload(source_text: &str, span: &Span) -> Result<Exp, DiagnosticPayload> {
     let after_delete = source_text
         .trim_start_matches("DELETE")
         .trim()
         .strip_prefix("FROM")
-        .ok_or_else(|| "DELETE missing FROM".to_string())?
+        .ok_or_else(|| DiagnosticPayload::new(DiagnosticId::SqlCompatDeleteMissingFrom, vec![]))? // No template arguments for this structural error.
         .trim();
-    let (table_name, predicate_text) =
-        split_top_level(after_delete, "WHERE").ok_or_else(|| "DELETE missing WHERE".to_string())?;
+    let (table_name, predicate_text) = split_top_level(after_delete, "WHERE")
+        .ok_or_else(|| DiagnosticPayload::new(DiagnosticId::SqlCompatDeleteMissingWhere, vec![]))?; // No template arguments for this structural error.
     let predicate = parse_sql_value(&predicate_text, span)?;
     Ok(desugar_sql_delete_expression(table_name, predicate, span))
 }
 
-fn parse_update_payload(source_text: &str, span: &Span) -> Result<Exp, String> {
+fn parse_update_payload(source_text: &str, span: &Span) -> Result<Exp, DiagnosticPayload> {
     let after_update = source_text.trim_start_matches("UPDATE").trim();
-    let (table_name, set_and_where) =
-        split_top_level(after_update, "SET").ok_or_else(|| "UPDATE missing SET".to_string())?;
+    let (table_name, set_and_where) = split_top_level(after_update, "SET")
+        .ok_or_else(|| DiagnosticPayload::new(DiagnosticId::SqlCompatUpdateMissingSet, vec![]))?; // No template arguments for this structural error.
     let (assignment_text, predicate_text) = split_top_level(&set_and_where, "WHERE")
-        .ok_or_else(|| "UPDATE missing WHERE".to_string())?;
+        .ok_or_else(|| DiagnosticPayload::new(DiagnosticId::SqlCompatUpdateMissingWhere, vec![]))?; // No template arguments for this structural error.
     let mut assignments = Vec::new();
     for assignment in split_top_level_commas(&assignment_text) {
-        let (field_name, value_text) = split_top_level(&assignment, "=")
-            .ok_or_else(|| "UPDATE assignment missing =".to_string())?;
+        let (field_name, value_text) = split_top_level(&assignment, "=").ok_or_else(|| {
+            DiagnosticPayload::new(DiagnosticId::SqlCompatUpdateAssignmentMissingEquals, vec![])
+        })?; // No template arguments for this structural error.
         assignments.push((field_name, parse_sql_value(&value_text, span)?));
     }
     let predicate = parse_sql_value(&predicate_text, span)?;
@@ -751,7 +1357,7 @@ fn parse_update_payload(source_text: &str, span: &Span) -> Result<Exp, String> {
     ))
 }
 
-fn parse_sql_payload(payload: &str, span: &Span) -> Result<Exp, String> {
+fn parse_sql_payload(payload: &str, span: &Span) -> Result<Exp, DiagnosticPayload> {
     let trimmed = payload.trim();
     if trimmed.starts_with("SELECT ") {
         return parse_select_payload(trimmed, span);
@@ -771,7 +1377,10 @@ fn parse_sql_payload(payload: &str, span: &Span) -> Result<Exp, String> {
     if let Some(sql_body) = trimmed.strip_prefix("SQL") {
         return Ok(parse_sql_value(sql_body.trim(), span)?.node);
     }
-    Err(format!("unsupported SQL placeholder payload: {trimmed}"))
+    Err(DiagnosticPayload::new(
+        DiagnosticId::SqlCompatUnsupportedPlaceholder,
+        vec![trimmed.to_string()], // Unsupported placeholder text substituted into {0}.
+    ))
 }
 
 fn decode_sql_placeholder(expression: &Exp) -> Option<(String, Span)> {
@@ -791,7 +1400,7 @@ fn decode_sql_placeholder(expression: &Exp) -> Option<(String, Span)> {
     }
 }
 
-fn repair_expression(expression: &mut LocExp) -> Result<(), String> {
+fn repair_expression(expression: &mut LocExp) -> Result<(), DiagnosticPayload> {
     match &mut expression.node {
         Exp::Annot(inner, _) => repair_expression(inner)?,
         Exp::App(function_expression, argument_expression) => {
@@ -845,7 +1454,7 @@ fn repair_expression(expression: &mut LocExp) -> Result<(), String> {
     Ok(())
 }
 
-pub fn repair_sql_placeholders_in_file(file: &mut File) -> Result<(), String> {
+pub fn repair_sql_placeholders_in_file(file: &mut File) -> Result<(), DiagnosticPayload> {
     for declaration in file {
         match &mut declaration.node {
             Decl::Val(_, expression) | Decl::View(_, expression) | Decl::Policy(expression) => {
@@ -887,7 +1496,9 @@ pub fn repair_sql_placeholders_in_file(file: &mut File) -> Result<(), String> {
     Ok(())
 }
 
-fn repair_structure(structure_expression: &mut crate::source::LocStr) -> Result<(), String> {
+fn repair_structure(
+    structure_expression: &mut crate::source::LocStr,
+) -> Result<(), DiagnosticPayload> {
     match &mut structure_expression.node {
         crate::source::Str::Const(declarations) => repair_sql_placeholders_in_file(declarations),
         crate::source::Str::Proj(inner, _) => repair_structure(inner),

@@ -28,6 +28,7 @@ use std::io::Write as _;
 
 use crate::diagnostics::{
     format_diagnostic_payload_for_user, DiagnosticId, DiagnosticLocale, DiagnosticPayload,
+    DiagnosticSeverity,
 };
 
 /// Minimum dash run width so banners never collapse to a tiny rule.
@@ -360,14 +361,25 @@ const ANSI_BOLD_CYAN: &str = "\x1b[1;36m";
 const ANSI_GREEN: &str = "\x1b[32m";
 /// Bold green `Hint:` label.
 const ANSI_BOLD_GREEN: &str = "\x1b[1;32m";
+/// Dimmed text for [`BannerTone::Debug`] banners (low-priority details).
+const ANSI_DIM: &str = "\x1b[2m";
 
-/// Banner emphasis: error-like vs warning.
+/// Banner emphasis: maps to [`DiagnosticSeverity`] so payload-driven severity controls color.
+///
+/// Previously this only distinguished `Error` from `Warning`. The full five-variant set lets
+/// callers signal informational, hint, and debug diagnostics with appropriate visual weight.
 #[derive(Clone, Copy)]
 enum BannerTone {
-    /// All error severities except warnings.
+    /// Hard error; bold red banner. Corresponds to [`DiagnosticSeverity::Error`].
     Error,
-    /// [`CompileError::WarningAt`] only.
+    /// Non-fatal warning; bold yellow banner. Corresponds to [`DiagnosticSeverity::Warning`].
     Warning,
+    /// Informational note; bold cyan banner. Corresponds to [`DiagnosticSeverity::Info`].
+    Info,
+    /// Supplemental suggestion; bold green banner. Corresponds to [`DiagnosticSeverity::Hint`].
+    Hint,
+    /// Internal detail; dimmed banner. Corresponds to [`DiagnosticSeverity::Debug`].
+    Debug,
 }
 
 impl BannerTone {
@@ -376,7 +388,53 @@ impl BannerTone {
         match self {
             BannerTone::Error => ANSI_BOLD_RED,
             BannerTone::Warning => ANSI_BOLD_YELLOW,
+            BannerTone::Info => ANSI_BOLD_CYAN, // Reuse existing cyan for informational banners.
+            BannerTone::Hint => ANSI_BOLD_GREEN, // Reuse existing bold green for hint banners.
+            BannerTone::Debug => ANSI_DIM,      // Dimmed so debug details don't dominate output.
         }
+    }
+}
+
+/// Map a [`DiagnosticSeverity`] to the corresponding [`BannerTone`] for terminal rendering.
+///
+/// # Arguments
+///
+/// * `severity` — Payload severity level.
+///
+/// # Returns
+///
+/// The [`BannerTone`] controlling ANSI color for the banner line.
+fn severity_to_banner_tone(severity: DiagnosticSeverity) -> BannerTone {
+    match severity {
+        DiagnosticSeverity::Error => BannerTone::Error,
+        DiagnosticSeverity::Warning => BannerTone::Warning,
+        DiagnosticSeverity::Info => BannerTone::Info,
+        DiagnosticSeverity::Hint => BannerTone::Hint,
+        DiagnosticSeverity::Debug => BannerTone::Debug,
+    }
+}
+
+/// Derive the [`BannerTone`] for a [`CompileError`] from its payload severity.
+///
+/// This is the single authoritative mapping used in [`format_compile_error_for_terminal`].
+///
+/// # Arguments
+///
+/// * `error` — The compile error whose payload drives color selection.
+///
+/// # Returns
+///
+/// [`BannerTone`] for the ANSI banner line.
+fn banner_tone_for(error: &CompileError) -> BannerTone {
+    match error {
+        CompileError::Plain(payload)
+        | CompileError::AtSpan { payload, .. }
+        | CompileError::ParseError { payload, .. }
+        | CompileError::TypeError { payload, .. }
+        | CompileError::SqlError { payload, .. }
+        | CompileError::XmlError { payload, .. }
+        | CompileError::WarningAt { payload, .. } => severity_to_banner_tone(payload.severity), // Payload severity drives color.
+        CompileError::Io(_) => BannerTone::Error, // I/O errors are always hard errors.
     }
 }
 
@@ -437,9 +495,10 @@ fn write_plain_diagnostic_colored_to_string(
     out: &mut String,
     category_label: &str,
     message: &str,
+    tone: BannerTone, // Caller-supplied tone drives ANSI color for the banner.
 ) -> fmt::Result {
     let banner_line = format_diagnostic_banner_line(category_label, "");
-    writeln!(out, "{}{}{}", ANSI_BOLD_RED, banner_line, ANSI_RESET)?;
+    writeln!(out, "{}{}{}", tone.ansi_open(), banner_line, ANSI_RESET)?; // Tone-driven color.
     writeln!(out)?;
     write_wrapped_explanation_to_string(out, message)?;
     Ok(())
@@ -473,11 +532,12 @@ fn format_compile_error_for_terminal_inner(
     if !use_color {
         return format_compile_error_for_user(error, locale);
     }
+    let tone = banner_tone_for(error); // Derive color from payload severity; single call covers all variants.
     let mut out = String::new();
     let write_result = match error {
         CompileError::Plain(_) => {
             let localized = error.localized_body(locale);
-            write_plain_diagnostic_colored_to_string(&mut out, "ERROR", localized.as_str())
+            write_plain_diagnostic_colored_to_string(&mut out, "ERROR", localized.as_str(), tone)
         }
         CompileError::AtSpan { span, .. } => {
             let localized = error.localized_body(locale);
@@ -486,7 +546,7 @@ fn format_compile_error_for_terminal_inner(
                 "ERROR",
                 span,
                 localized.as_str(),
-                BannerTone::Error,
+                tone,
             )
         }
         CompileError::ParseError { span, .. } => {
@@ -496,7 +556,7 @@ fn format_compile_error_for_terminal_inner(
                 "PARSE",
                 span,
                 localized.as_str(),
-                BannerTone::Error,
+                tone,
             )
         }
         CompileError::TypeError { span, .. } => {
@@ -506,7 +566,7 @@ fn format_compile_error_for_terminal_inner(
                 "TYPE",
                 span,
                 localized.as_str(),
-                BannerTone::Error,
+                tone,
             )
         }
         CompileError::SqlError { span, .. } => {
@@ -516,7 +576,7 @@ fn format_compile_error_for_terminal_inner(
                 "SQL",
                 span,
                 localized.as_str(),
-                BannerTone::Error,
+                tone,
             )
         }
         CompileError::XmlError { span, .. } => {
@@ -526,7 +586,7 @@ fn format_compile_error_for_terminal_inner(
                 "XML",
                 span,
                 localized.as_str(),
-                BannerTone::Error,
+                tone,
             )
         }
         CompileError::WarningAt { span, .. } => {
@@ -536,7 +596,7 @@ fn format_compile_error_for_terminal_inner(
                 "WARNING",
                 span,
                 localized.as_str(),
-                BannerTone::Warning,
+                tone,
             )
         }
         CompileError::Io(io_error) => write_io_error_colored_to_string(&mut out, io_error, locale),
@@ -1076,7 +1136,8 @@ impl CompileError {
     /// # Returns
     ///
     /// [`CompileError::WarningAt`].
-    pub fn warning_at(span: Span, payload: DiagnosticPayload) -> Self {
+    pub fn warning_at(span: Span, mut payload: DiagnosticPayload) -> Self {
+        payload.severity = DiagnosticSeverity::Warning; // Stamp Warning so banner_tone_for renders yellow.
         CompileError::WarningAt { span, payload }
     }
 
@@ -1094,10 +1155,11 @@ impl CompileError {
     /// [`CompileError::WarningAt`] with hint.
     pub fn warning_at_with_hint(
         span: Span,
-        payload: DiagnosticPayload,
+        mut payload: DiagnosticPayload,
         hint_id: DiagnosticId,
         hint_args: Vec<String>,
     ) -> Self {
+        payload.severity = DiagnosticSeverity::Warning; // Consistent with warning_at: stamp severity before building.
         CompileError::WarningAt {
             span,
             payload: payload.with_hint(hint_id, hint_args),
@@ -1175,6 +1237,7 @@ impl ErrorReporter {
 
     /// Store `error` and optionally print it immediately.
     pub fn report(&mut self, error: CompileError) {
+        emit_diagnostic_tracing_event(&error); // Structured tracing at severity-matched level for `-vvvv` filtering.
         if self.eprint {
             let rendered = format_compile_error_for_terminal(&error, self.diagnostic_locale); // Localized banner + body.
             let mut stderr_lock = std::io::stderr().lock(); // Avoid interleaving with other stderr users.
@@ -1318,6 +1381,66 @@ impl ErrorReporter {
     /// Nothing.
     pub fn reset(&mut self) {
         self.errors.clear();
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tracing integration for ErrorReporter
+// ---------------------------------------------------------------------------
+
+/// Short English category label for a [`CompileError`] used as the `kind` field in tracing events.
+///
+/// These labels are for developer/observability use only (not user-facing) so they remain in English
+/// per CLAUDE.md §8a.
+///
+/// # Arguments
+///
+/// * `error` — The compile error being classified.
+///
+/// # Returns
+///
+/// A stable lowercase string suitable for structured log field values.
+fn compile_error_kind_label(error: &CompileError) -> &'static str {
+    match error {
+        CompileError::Plain(_) => "plain", // Unlocated catalog-based error.
+        CompileError::AtSpan { .. } => "error", // Generic located error.
+        CompileError::ParseError { .. } => "parse", // Lex/parse failure.
+        CompileError::TypeError { .. } => "type", // Type elaboration failure.
+        CompileError::SqlError { .. } => "sql", // SQL/schema lowering failure.
+        CompileError::XmlError { .. } => "xml", // XML/markup diagnostic.
+        CompileError::WarningAt { .. } => "warning", // Non-fatal warning.
+        CompileError::Io(_) => "io",       // OS I/O error wrapper.
+    }
+}
+
+/// Emit a [`tracing`] event at the level matching the payload's [`DiagnosticSeverity`].
+///
+/// Called unconditionally from [`ErrorReporter::report`] so that structured logs mirror stderr
+/// output and `-vvv` / `RUST_LOG` filtering gates lower-severity diagnostics automatically.
+/// The event carries `kind` (category label) as a structured field; full rendering is left to
+/// the stderr path to avoid double rendering cost.
+///
+/// # Arguments
+///
+/// * `error` — The compile error that was just reported.
+fn emit_diagnostic_tracing_event(error: &CompileError) {
+    let kind = compile_error_kind_label(error); // Short stable label for the tracing `kind` field.
+    let severity = match error {
+        CompileError::Plain(payload)
+        | CompileError::AtSpan { payload, .. }
+        | CompileError::ParseError { payload, .. }
+        | CompileError::TypeError { payload, .. }
+        | CompileError::SqlError { payload, .. }
+        | CompileError::XmlError { payload, .. }
+        | CompileError::WarningAt { payload, .. } => payload.severity, // Severity from the catalog payload.
+        CompileError::Io(_) => DiagnosticSeverity::Error, // I/O errors are always hard errors.
+    };
+    match severity {
+        DiagnosticSeverity::Error => tracing::error!(kind, "diagnostic reported"), // Always visible.
+        DiagnosticSeverity::Warning => tracing::warn!(kind, "diagnostic reported"), // Always visible.
+        DiagnosticSeverity::Info => tracing::info!(kind, "diagnostic reported"), // Visible at -vv.
+        DiagnosticSeverity::Hint => tracing::info!(kind, "diagnostic reported"), // Visible at -vv.
+        DiagnosticSeverity::Debug => tracing::debug!(kind, "diagnostic reported"), // Visible at -vvv.
     }
 }
 

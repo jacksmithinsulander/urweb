@@ -105,11 +105,13 @@ pub fn lock_for_compile<'a, T>(mutex: &'a Mutex<T>, context: &str) -> CompileLoc
 ///
 /// Returns a [`InternalCompilerError`] so mutation tests can use `Default::default()` without orphan-rule issues on [`anyhow::Error`].
 pub fn internal_compiler_error(context: &str, detail: impl Display) -> InternalCompilerError {
-    InternalCompilerError(anyhow::anyhow!(
-        "Internal compiler problem ({context}): {detail}\n\
-         This is unexpected — your project may have triggered a compiler bug.\n\
-         Please report this with a small example if you can reproduce it."
-    ))
+    let locale = diagnostic_locale_for_cli(None); // Read URWEB_LANG env var; default English when absent.
+    let rendered = cli_diagnostic_text(
+        DiagnosticId::CompilerInternalBug,
+        vec![context.to_string(), detail.to_string()],
+        locale,
+    ); // Catalog-rendered and localized ICE message with context and detail substituted.
+    InternalCompilerError(anyhow::anyhow!("{rendered}"))
 }
 
 /// Record a recoverable internal assumption failure in a Core pass, or print the same catalog message if no reporter is threaded (unit tests and thin wrappers).

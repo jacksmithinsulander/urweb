@@ -56,6 +56,9 @@ mod grammar {
     include!(concat!(env!("OUT_DIR"), "/parse/grammar.rs"));
 }
 
+#[cfg(generated_parser)]
+// Only needed in the generated-parser code path where sql_compat errors are rendered.
+use crate::diagnostics::format_diagnostic_payload_for_user;
 use crate::diagnostics::{render_diagnostic_body, DiagnosticId, DiagnosticPayload};
 use crate::error_types::{CompileError, ErrorReporter, Span};
 use crate::source::{File, LocSgnItem};
@@ -1234,9 +1237,10 @@ pub fn rewrite_bare_kind_binders(source_text: &str) -> String {
 ///
 /// In Ur/Web, `table name : {fields}` declarations may be followed by indented
 /// SQL constraint clauses (`PRIMARY KEY ...`, `CONSTRAINT ...`, `UNIQUE ...`, `CHECK ...`).
-/// These clauses are not part of the Ur/Web AST but are SQL DDL extras.  The Rust
-/// parser would otherwise consume the UIDENT tokens as constructor applications of
-/// the table type.  Stripping them here keeps the grammar simple.
+/// The Rust parser blanks these lines before the grammar runs, and
+/// [`sql_compat::repair_table_constraints_in_file`] reconstructs the corresponding
+/// AST expressions from the original source text afterward.  Stripping them here
+/// keeps the grammar simple without losing the source-of-truth semantics.
 ///
 /// We replace each constraint line with a blank line to preserve line numbers.
 ///
@@ -2387,13 +2391,38 @@ pub fn parse_ur(
                         file: _filename.to_string(),
                         ..Span::dummy()
                     };
+                    let rendered_detail = format_diagnostic_payload_for_user(
+                        &detail,
+                        errors.diagnostic_locale, // Use the reporter's locale so the detail message matches the outer locale.
+                    ); // Render the sql_compat DiagnosticPayload to a string for embedding in the outer error.
                     let payload = DiagnosticPayload::new(
                         DiagnosticId::ParseUrSyntaxFailed,
                         vec![
                             _filename.to_string(),
-                            format!("legacy SQL compatibility rewrite failed: {detail}"),
-                            String::new(),
+                            rendered_detail, // Catalog-rendered sql_compat error as the parser detail.
                         ],
+                    );
+                    errors.report(CompileError::parse_at_with_hint(
+                        label_span,
+                        payload,
+                        DiagnosticId::HintParseUrSyntax,
+                        vec![],
+                    ));
+                    return None;
+                }
+                let source_lines: Vec<&str> = source.lines().collect();
+                if let Err(detail) =
+                    sql_compat::repair_table_constraints_in_file(&source_lines, &mut file)
+                {
+                    let label_span = Span {
+                        file: _filename.to_string(),
+                        ..Span::dummy()
+                    };
+                    let rendered_detail =
+                        format_diagnostic_payload_for_user(&detail, errors.diagnostic_locale);
+                    let payload = DiagnosticPayload::new(
+                        DiagnosticId::ParseUrSyntaxFailed,
+                        vec![_filename.to_string(), rendered_detail],
                     );
                     errors.report(CompileError::parse_at_with_hint(
                         label_span,
@@ -3681,5 +3710,286 @@ con folder = K ==> fn r :: {K} =>
             inner_body.node
         );
         Ok(()) // return success to the test harness
+    }
+
+    #[test]
+    #[cfg(generated_parser)]
+    fn parse_multi_param_constructor_lambda_desugars_to_tuple_binder() -> anyhow::Result<()> {
+        let source_text = "con colMeta = fn (db :: Type, state :: Type) => {Nam : string}\n";
+        let mut errors = ErrorReporter::new_silent();
+        let parsed = parse_ur(
+            "tuple_binder.ur",
+            source_text,
+            &mut errors,
+            crate::db::ProjectDb::default(),
+        )
+        .with_context(|| "tupled constructor lambda should parse")?;
+        assert!(!errors.has_errors(), "unexpected parse errors");
+
+        let crate::source::Decl::Con(name, _, constructor) = &parsed[0].node else {
+            panic!(
+                "expected top-level constructor declaration, got {:?}",
+                parsed[0].node
+            );
+        };
+        assert_eq!(name, "colMeta");
+
+        let crate::source::Con::Abs(tuple_name, Some(tuple_kind), tuple_body) = &constructor.node
+        else {
+            panic!(
+                "expected tuple-binder constructor abstraction, got {:?}",
+                constructor.node
+            );
+        };
+        assert_eq!(tuple_name, "$x");
+        assert!(
+            matches!(&tuple_kind.node, crate::source::Kind::Tuple(parts)
+                if parts.len() == 2
+                    && matches!(parts[0].node, crate::source::Kind::Type)
+                    && matches!(parts[1].node, crate::source::Kind::Type)),
+            "expected tuple binder kind `(Type, Type)`, got {:?}",
+            tuple_kind
+        );
+
+        let crate::source::Con::App(first_apply, second_projection) = &tuple_body.node else {
+            panic!(
+                "expected tuple binder body to apply both projections, got {:?}",
+                tuple_body.node
+            );
+        };
+        assert!(
+            matches!(&second_projection.node, crate::source::Con::Proj(inner, 2)
+                if matches!(&inner.node, crate::source::Con::Var(module_path, name)
+                    if module_path.is_empty() && name == "$x")),
+            "expected second tuple projection from `$x`, got {:?}",
+            second_projection
+        );
+
+        let crate::source::Con::App(nested_lambda, first_projection) = &first_apply.node else {
+            panic!(
+                "expected first projection application before the second, got {:?}",
+                first_apply.node
+            );
+        };
+        assert!(
+            matches!(&first_projection.node, crate::source::Con::Proj(inner, 1)
+                if matches!(&inner.node, crate::source::Con::Var(module_path, name)
+                    if module_path.is_empty() && name == "$x")),
+            "expected first tuple projection from `$x`, got {:?}",
+            first_projection
+        );
+
+        let crate::source::Con::Abs(db_name, Some(db_kind), state_lambda) = &nested_lambda.node
+        else {
+            panic!(
+                "expected first destructured lambda for `db`, got {:?}",
+                nested_lambda.node
+            );
+        };
+        assert_eq!(db_name, "db");
+        assert!(
+            matches!(db_kind.node, crate::source::Kind::Type),
+            "expected `db` kind to stay `Type`, got {:?}",
+            db_kind
+        );
+
+        let crate::source::Con::Abs(state_name, Some(state_kind), record_body) = &state_lambda.node
+        else {
+            panic!(
+                "expected second destructured lambda for `state`, got {:?}",
+                state_lambda.node
+            );
+        };
+        assert_eq!(state_name, "state");
+        assert!(
+            matches!(state_kind.node, crate::source::Kind::Type),
+            "expected `state` kind to stay `Type`, got {:?}",
+            state_kind
+        );
+        assert!(
+            matches!(record_body.node, crate::source::Con::TRecord(_)),
+            "expected record-type body to survive beneath destructuring lambdas, got {:?}",
+            record_body.node
+        );
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(generated_parser)]
+    fn parse_star_product_type_desugars_to_numbered_record() -> anyhow::Result<()> {
+        let source_text = "con pair = int * string * bool\n";
+        let mut errors = ErrorReporter::new_silent();
+        let parsed = parse_ur(
+            "product_type.ur",
+            source_text,
+            &mut errors,
+            crate::db::ProjectDb::default(),
+        )
+        .with_context(|| "product type constructor should parse")?;
+        assert!(!errors.has_errors(), "unexpected parse errors");
+
+        let crate::source::Decl::Con(name, _, constructor) = &parsed[0].node else {
+            panic!(
+                "expected top-level constructor declaration, got {:?}",
+                parsed[0].node
+            );
+        };
+        assert_eq!(name, "pair");
+
+        let crate::source::Con::TRecord(row) = &constructor.node else {
+            panic!(
+                "expected `A * B * C` to parse as a numbered record type, got {:?}",
+                constructor.node
+            );
+        };
+        let crate::source::Con::Record(fields) = &row.node else {
+            panic!(
+                "expected product type row to be a concrete record, got {:?}",
+                row.node
+            );
+        };
+        assert_eq!(fields.len(), 3);
+        for (index, (field_name, _field_type)) in fields.iter().enumerate() {
+            let expected = (index + 1).to_string();
+            assert!(
+                matches!(&field_name.node, crate::source::Con::Name(actual) if actual == &expected),
+                "expected numbered field `{expected}`, got {:?}",
+                field_name
+            );
+        }
+        assert!(
+            matches!(&fields[0].1.node, crate::source::Con::Var(module_path, name)
+                if module_path.is_empty() && name == "int"),
+            "expected first product field type to be `int`, got {:?}",
+            fields[0].1
+        );
+        assert!(
+            matches!(&fields[1].1.node, crate::source::Con::Var(module_path, name)
+                if module_path.is_empty() && name == "string"),
+            "expected second product field type to be `string`, got {:?}",
+            fields[1].1
+        );
+        assert!(
+            matches!(&fields[2].1.node, crate::source::Con::Var(module_path, name)
+                if module_path.is_empty() && name == "bool"),
+            "expected third product field type to be `bool`, got {:?}",
+            fields[2].1
+        );
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(generated_parser)]
+    fn parse_table_defaults_to_basis_no_constraint_values() -> anyhow::Result<()> {
+        let source_text = "table t : {Id : int, Name : string}\n";
+        let mut errors = ErrorReporter::new_silent();
+        let parsed = parse_ur(
+            "table_defaults.ur",
+            source_text,
+            &mut errors,
+            crate::db::ProjectDb::default(),
+        )
+        .with_context(|| "table declaration should parse")?;
+        assert!(!errors.has_errors(), "unexpected parse errors");
+
+        let crate::source::Decl::Table(_, _, primary_key_expression, constraint_expression) =
+            &parsed[0].node
+        else {
+            panic!("expected table declaration, got {:?}", parsed[0].node);
+        };
+        assert!(
+            matches!(
+                &primary_key_expression.node,
+                crate::source::Exp::Var(module_path, name, crate::source::Inference::Infer)
+                    if module_path == &vec!["Basis".to_string()] && name == "no_primary_key"
+            ),
+            "expected plain tables to default to Basis.no_primary_key, got {:?}",
+            primary_key_expression
+        );
+        assert!(
+            matches!(
+                &constraint_expression.node,
+                crate::source::Exp::Var(module_path, name, crate::source::Inference::Infer)
+                    if module_path == &vec!["Basis".to_string()] && name == "no_constraint"
+            ),
+            "expected plain tables to default to Basis.no_constraint, got {:?}",
+            constraint_expression
+        );
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(generated_parser)]
+    fn parse_table_primary_key_clause_reaches_ast() -> anyhow::Result<()> {
+        let source_text = "table t : {Id : int, Client : client}\n  PRIMARY KEY (Id, Client)\n";
+        let mut errors = ErrorReporter::new_silent();
+        let parsed = parse_ur(
+            "table_primary_key.ur",
+            source_text,
+            &mut errors,
+            crate::db::ProjectDb::default(),
+        )
+        .with_context(|| "table declaration with PRIMARY KEY should parse")?;
+        assert!(!errors.has_errors(), "unexpected parse errors");
+
+        let crate::source::Decl::Table(_, _, primary_key_expression, constraint_expression) =
+            &parsed[0].node
+        else {
+            panic!("expected table declaration, got {:?}", parsed[0].node);
+        };
+        assert!(
+            matches!(&primary_key_expression.node, crate::source::Exp::App(_, _)),
+            "expected PRIMARY KEY clause to elaborate into an application expression, got {:?}",
+            primary_key_expression
+        );
+        assert!(
+            matches!(
+                &constraint_expression.node,
+                crate::source::Exp::Var(module_path, name, crate::source::Inference::Infer)
+                    if module_path == &vec!["Basis".to_string()] && name == "no_constraint"
+            ),
+            "expected absent non-PK constraints to default to Basis.no_constraint, got {:?}",
+            constraint_expression
+        );
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(generated_parser)]
+    fn parse_table_constraint_clauses_reach_ast() -> anyhow::Result<()> {
+        let source_text = r#"table t : { Id : int, Nam : string, Parent : option int }
+  PRIMARY KEY Id,
+  CONSTRAINT Nam UNIQUE Nam,
+  CONSTRAINT Id CHECK Id >= 0,
+  CONSTRAINT Parent FOREIGN KEY Parent REFERENCES t(Id)
+"#;
+        let mut errors = ErrorReporter::new_silent();
+        let parsed = parse_ur(
+            "table_constraints.ur",
+            source_text,
+            &mut errors,
+            crate::db::ProjectDb::default(),
+        )
+        .ok_or_else(|| {
+            anyhow::anyhow!("table declaration with constraints should parse: {errors:?}")
+        })?;
+        assert!(!errors.has_errors(), "unexpected parse errors");
+
+        let crate::source::Decl::Table(_, _, primary_key_expression, constraint_expression) =
+            &parsed[0].node
+        else {
+            panic!("expected table declaration, got {:?}", parsed[0].node);
+        };
+        assert!(
+            matches!(&primary_key_expression.node, crate::source::Exp::App(_, _)),
+            "expected PRIMARY KEY clause to produce a non-default expression, got {:?}",
+            primary_key_expression
+        );
+        assert!(
+            matches!(&constraint_expression.node, crate::source::Exp::App(_, _)),
+            "expected named constraint clauses to produce a non-default expression, got {:?}",
+            constraint_expression
+        );
+        Ok(())
     }
 }

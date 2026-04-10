@@ -1352,6 +1352,47 @@ _CLI: list[tuple[str, tuple[str, str, str]]] = [
             "El bucle de mensajes del Debug Adapter Protocol alcanzó el límite de seguridad ({0} mensajes) sin un fin de archivo limpio ni apagado. Si la sesión era legítima, repórtelo; si no, el editor o cliente puede estar mal.",
         ),
     ),
+    (
+        "CliBootRootNotFound",
+        _t(
+            "-boot requires the Ur/Web library tree (`lib/ur/basis.urs`). "
+            "Set {0} to the checkout root, or run the compiler from that tree.",
+            "-boot kräver Ur/Web-biblioteksträdet (`lib/ur/basis.urs`). "
+            "Sätt {0} till checkouten, eller kör kompilatorn därifrån.",
+            "-boot requiere el árbol de bibliotecas de Ur/Web (`lib/ur/basis.urs`). "
+            "Establece {0} como la raíz del repositorio, o ejecuta el compilador desde ahí.",
+        ),
+    ),
+    (
+        "CliBootRootMissingBasis",
+        _t(
+            "-boot requires `lib/ur/basis.urs` at the provided root: {0}",
+            "-boot kräver `lib/ur/basis.urs` i den angivna roten: {0}",
+            "-boot requiere `lib/ur/basis.urs` en la raíz proporcionada: {0}",
+        ),
+    ),
+    (
+        "CompilerInternalBug",
+        _t(
+            "Internal compiler problem ({0}): {1}\n\n"
+            "This is unexpected — your project may have triggered a compiler bug.\n"
+            "Please report this with a small example if you can reproduce it.",
+            "Internt kompilatproblem ({0}): {1}\n\n"
+            "Detta är oväntat — ditt projekt kan ha utlöst en kompilatorbugg.\n"
+            "Rapportera gärna med ett litet reproducerbart exempel.",
+            "Problema interno del compilador ({0}): {1}\n\n"
+            "Esto es inesperado — tu proyecto puede haber activado un error del compilador.\n"
+            "Repórtalo con un ejemplo pequeño si puedes reproducirlo.",
+        ),
+    ),
+    (
+        "CliDatabaseBackendUrpRejected",
+        _t(
+            "I could not configure the database engine from the project file.\n\n{0}",
+            "Jag kunde inte ställa in databasmotorn från projektfilen.\n\n{0}",
+            "No pude configurar el motor de base de datos desde el archivo del proyecto.\n\n{0}",
+        ),
+    ),
 ]
 
 for _name, _tpl in _CLI:
