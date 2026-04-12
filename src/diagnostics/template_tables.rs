@@ -489,6 +489,15 @@ fn template_en(id: DiagnosticId) -> &'static str {
         DiagnosticId::CliBootRootMissingBasis => "-boot requires `lib/ur/basis.urs` at the provided root: {0}",
         DiagnosticId::CompilerInternalBug => "Internal compiler problem ({0}): {1}\n\nThis is unexpected — your project may have triggered a compiler bug.\nPlease report this with a small example if you can reproduce it.",
         DiagnosticId::CliDatabaseBackendUrpRejected => "I could not configure the database engine from the project file.\n\n{0}",
+        DiagnosticId::CliCompilationJobCorrelationLine => "[{0}]",
+        DiagnosticId::CliCompilerTracingPhaseCompleteDebug => "Phase {0}: completed in {1} ms.",
+        DiagnosticId::CliCompilerTracingJobCompileStart => "Starting Ur/Web compilation.\n\nProject: {0}",
+        DiagnosticId::CliCompilerTracingJobCompileFinished => "Ur/Web compilation finished.\n\nExecutable: {0}",
+        DiagnosticId::CliCompilerTracingPipelineOutputsStart => "Starting Ur/Web pipeline (compile to C and SQL outputs).\n\nProject: {0}",
+        DiagnosticId::CliCompilerTracingPipelineOutputsFinished => "Finished Ur/Web pipeline (compile to outputs; no link step).",
+        DiagnosticId::CliCompilerTracingElaborateProjectStart => "Starting Ur/Web parse and elaboration.\n\nProject: {0}",
+        DiagnosticId::CliCompilerTracingCCompileObjectStep => "C compiler (object file).\n\nCompiler: {0}\nSource: {1}\nObject: {2}",
+        DiagnosticId::CliCompilerTracingCLinkExeStep => "C linker (executable).\n\nLinker: {0}\nOutput: {1}",
     }
 }
 
@@ -970,6 +979,15 @@ fn template_sv(id: DiagnosticId) -> &'static str {
         DiagnosticId::CliBootRootMissingBasis => "-boot kräver `lib/ur/basis.urs` i den angivna roten: {0}",
         DiagnosticId::CompilerInternalBug => "Internt kompilatproblem ({0}): {1}\n\nDetta är oväntat — ditt projekt kan ha utlöst en kompilatorbugg.\nRapportera gärna med ett litet reproducerbart exempel.",
         DiagnosticId::CliDatabaseBackendUrpRejected => "Jag kunde inte ställa in databasmotorn från projektfilen.\n\n{0}",
+        DiagnosticId::CliCompilationJobCorrelationLine => "[{0}]",
+        DiagnosticId::CliCompilerTracingPhaseCompleteDebug => "Fas {0}: klar på {1} ms.",
+        DiagnosticId::CliCompilerTracingJobCompileStart => "Startar Ur/Web-kompilering.\n\nProjekt: {0}",
+        DiagnosticId::CliCompilerTracingJobCompileFinished => "Ur/Web-kompilering klar.\n\nKörbar fil: {0}",
+        DiagnosticId::CliCompilerTracingPipelineOutputsStart => "Startar Ur/Web-pipeline (kompilera till C och SQL-utdata).\n\nProjekt: {0}",
+        DiagnosticId::CliCompilerTracingPipelineOutputsFinished => "Ur/Web-pipeline klar (kompilera till utdata; ingen länkning).",
+        DiagnosticId::CliCompilerTracingElaborateProjectStart => "Startar Ur/Web parsning och elaborering.\n\nProjekt: {0}",
+        DiagnosticId::CliCompilerTracingCCompileObjectStep => "C-kompilator (objektfil).\n\nKompilator: {0}\nKälla: {1}\nObjekt: {2}",
+        DiagnosticId::CliCompilerTracingCLinkExeStep => "C-länkare (körbar fil).\n\nLänkare: {0}\nUtdata: {1}",
     }
 }
 
@@ -1451,5 +1469,14 @@ fn template_es(id: DiagnosticId) -> &'static str {
         DiagnosticId::CliBootRootMissingBasis => "-boot requiere `lib/ur/basis.urs` en la raíz proporcionada: {0}",
         DiagnosticId::CompilerInternalBug => "Problema interno del compilador ({0}): {1}\n\nEsto es inesperado — tu proyecto puede haber activado un error del compilador.\nRepórtalo con un ejemplo pequeño si puedes reproducirlo.",
         DiagnosticId::CliDatabaseBackendUrpRejected => "No pude configurar el motor de base de datos desde el archivo del proyecto.\n\n{0}",
+        DiagnosticId::CliCompilationJobCorrelationLine => "[{0}]",
+        DiagnosticId::CliCompilerTracingPhaseCompleteDebug => "Fase {0}: completada en {1} ms.",
+        DiagnosticId::CliCompilerTracingJobCompileStart => "Iniciando compilación de Ur/Web.\n\nProyecto: {0}",
+        DiagnosticId::CliCompilerTracingJobCompileFinished => "Compilación de Ur/Web terminada.\n\nEjecutable: {0}",
+        DiagnosticId::CliCompilerTracingPipelineOutputsStart => "Iniciando pipeline de Ur/Web (compilar a salidas C y SQL).\n\nProyecto: {0}",
+        DiagnosticId::CliCompilerTracingPipelineOutputsFinished => "Pipeline de Ur/Web terminada (salidas sin paso de enlazado).",
+        DiagnosticId::CliCompilerTracingElaborateProjectStart => "Iniciando análisis y elaboración de Ur/Web.\n\nProyecto: {0}",
+        DiagnosticId::CliCompilerTracingCCompileObjectStep => "Compilador C (archivo objeto).\n\nCompilador: {0}\nOrigen: {1}\nObjeto: {2}",
+        DiagnosticId::CliCompilerTracingCLinkExeStep => "Enlazador C (ejecutable).\n\nEnlazador: {0}\nSalida: {1}",
     }
 }

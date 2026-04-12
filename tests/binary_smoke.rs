@@ -1,16 +1,24 @@
 //! Run dev binaries so `main` cannot be emptied without failing tests.
 
-mod common;
+#[path = "common/proc.rs"]
+mod proc;
+#[path = "common/require_ok.rs"]
+mod require_ok;
+#[path = "common/ur_bins.rs"]
+mod ur_bins;
+
+use proc::command_output;
+use ur_bins::ur_package_binary;
 
 use std::process::Command;
 
-use common::ur_package_binary as cargo_bin;
+use ur_package_binary as cargo_bin;
 
 #[test]
 fn test_pp_prints_context() {
     let mut command = Command::new(cargo_bin("test_pp"));
     command.current_dir(env!("CARGO_MANIFEST_DIR"));
-    let out = common::command_output(&mut command, "spawn test_pp");
+    let out = command_output(&mut command, "spawn test_pp");
     assert!(
         out.status.success(),
         "stderr={}",
@@ -27,7 +35,7 @@ fn test_pp_prints_context() {
 fn test_parse_prints_status() {
     let mut command = Command::new(cargo_bin("test_parse"));
     command.current_dir(env!("CARGO_MANIFEST_DIR"));
-    let out = common::command_output(&mut command, "spawn test_parse");
+    let out = command_output(&mut command, "spawn test_parse");
     assert!(
         out.status.success(),
         "stderr={}",
@@ -53,7 +61,7 @@ fn compile_thread_stack_bytes_matches_compiler_thread() {
 fn ur_prints_subcommand_help() {
     let mut command = Command::new(cargo_bin("ur"));
     command.arg("--help");
-    let out = common::command_output(&mut command, "spawn ur --help");
+    let out = command_output(&mut command, "spawn ur --help");
     assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
@@ -66,7 +74,7 @@ fn ur_prints_subcommand_help() {
 fn ur_fmt_help_on_stdout() {
     let mut command = Command::new(cargo_bin("ur-fmt"));
     command.arg("--help");
-    let out = common::command_output(&mut command, "spawn ur-fmt --help");
+    let out = command_output(&mut command, "spawn ur-fmt --help");
     assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
@@ -79,7 +87,7 @@ fn ur_fmt_help_on_stdout() {
 fn ur_fmt_missing_file_is_error() {
     let mut command = Command::new(cargo_bin("ur-fmt"));
     command.arg("/nonexistent/path/to/file.ur");
-    let out = common::command_output(&mut command, "spawn ur-fmt with missing file");
+    let out = command_output(&mut command, "spawn ur-fmt with missing file");
     assert!(
         !out.status.success(),
         "missing .ur file should be exit != 0, stderr={}",
@@ -90,7 +98,7 @@ fn ur_fmt_missing_file_is_error() {
 #[test]
 fn ur_new_app_usage_without_name() {
     let mut command = Command::new(cargo_bin("ur-new"));
-    let out = common::command_output(&mut command, "spawn ur-new");
+    let out = command_output(&mut command, "spawn ur-new");
     assert!(!out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
@@ -107,7 +115,7 @@ fn ur_new_app_usage_without_name() {
 fn ur_new_lib_usage_without_name() {
     let mut command = Command::new(cargo_bin("ur-new"));
     command.arg("--lib");
-    let out = common::command_output(&mut command, "spawn ur-new --lib");
+    let out = command_output(&mut command, "spawn ur-new --lib");
     assert!(!out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(

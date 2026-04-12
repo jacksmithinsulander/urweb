@@ -11,6 +11,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use uuid::Uuid;
+
 use crate::db::{ProjectDb, ProjectDbCtx};
 use crate::diagnostics::DiagnosticLocale;
 
@@ -262,11 +264,11 @@ pub struct Settings {
     /// User-facing diagnostic language from `ur.toml` `[package].language` (`en` / `sv` / `es`).
     pub diagnostic_locale: DiagnosticLocale,
 
-    /// UUID v4 minted at the start of each [`crate::compiler::compile`] invocation.
+    /// UUID v4 minted by [`Self::begin_compilation_job`] at the start of each batch pipeline or LSP analysis snapshot.
     ///
-    /// Empty string before compilation begins; set by the compiler entry points so that every
-    /// tracing event and structured log within a single job carries the same id. Use
-    /// `RUST_LOG` filtering on `compilation_id` to follow one job through the pipeline.
+    /// Empty string before [`Self::begin_compilation_job`] runs; language server work clones settings,
+    /// mints a fresh id per snapshot, and passes it through [`crate::error_types::ErrorReporter`]
+    /// without putting it in editor-facing diagnostic text.
     pub compilation_id: String,
 
     // Static files
@@ -645,10 +647,18 @@ impl Settings {
             verbosity: 0,
             emit_phase_timing: false,
             diagnostic_locale: DiagnosticLocale::default(),
-            compilation_id: String::new(), // Populated by compiler::compile; empty until then.
+            compilation_id: String::new(), // Filled by [`Self::begin_compilation_job`] when a pipeline starts.
             file_path: ".".into(),
             js_output: None,
         }
+    }
+
+    /// Mint a new RFC 4122 UUID v4 and assign it to [`Self::compilation_id`].
+    ///
+    /// Call once at the start of each batch compile pipeline or analysis snapshot so diagnostics and
+    /// [`tracing`] events can be correlated for that job.
+    pub fn begin_compilation_job(&mut self) {
+        self.compilation_id = Uuid::new_v4().to_string(); // Fresh random id for this compile or analysis pass.
     }
 
     // -----------------------------------------------------------------------
@@ -1459,5 +1469,16 @@ mod tests {
             "uw_Basis_string"
         );
         Ok(()) // return success to the test harness
+    }
+
+    /// [`Settings::begin_compilation_job`] must populate [`Settings::compilation_id`] with a random UUID v4 string.
+    #[test]
+    fn begin_compilation_job_mints_uuid_v4() {
+        let mut settings = Settings::new();
+        assert!(settings.compilation_id.is_empty()); // Default remains empty until a pipeline starts.
+        settings.begin_compilation_job(); // Mint one id for a compile or analysis snapshot.
+        let parsed =
+            Uuid::parse_str(&settings.compilation_id).expect("compilation_id must parse as UUID");
+        assert_eq!(parsed.get_version(), Some(uuid::Version::Random)); // v4 random UUID per RFC 4122.
     }
 }

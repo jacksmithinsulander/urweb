@@ -411,7 +411,6 @@ struct IflowState {
     nvar: usize,
 }
 
-#[allow(dead_code)]
 impl IflowState {
     fn new() -> Self {
         IflowState {
@@ -423,16 +422,6 @@ impl IflowState {
             updatable: Vec::new(),
             nvar: 0,
         }
-    }
-
-    fn reset(&mut self) {
-        self.db.clear();
-        self.hyps.clear();
-        self.sendable.clear();
-        self.insertable.clear();
-        self.deletable.clear();
-        self.updatable.clear();
-        self.nvar = 0;
     }
 
     fn next_var(&mut self) -> usize {
@@ -458,36 +447,7 @@ impl IflowState {
         }
     }
 
-    /// Remove all hypotheses for a given SQL table relation (havoc).
-    fn havoc_reln_sql(&mut self, tab: &str) {
-        self.hyps
-            .retain(|h| !matches!(h, CondAtom::AReln(Reln::Sql(t), _) if t == tab));
-        // Also clear the db for that relation (conservative: clear everything
-        // mentioning that table as a whole).
-        // For simplicity we do not rebuild the db from hyps; the db is cleared
-        // and rebuilt from remaining hyps.
-        self.rebuild_db();
-    }
-
-    /// Havoc a cookie value (remove its equality hyp).
-    fn havoc_cookie(&mut self, cname: &str) {
-        let cookie_func = format!("cookie/{}", cname);
-        self.hyps.retain(|h| {
-            if let CondAtom::AReln(Reln::Eq, args) = h {
-                if args.len() == 2 {
-                    if let Atom::Func(Func::Other(f), inner_args) = &args[1] {
-                        if f == &cookie_func && inner_args.is_empty() {
-                            return false;
-                        }
-                    }
-                }
-            }
-            true
-        });
-        self.rebuild_db();
-    }
-
-    /// Rebuild the cc-db from the current hyps (needed after havoc).
+    /// Rebuild the cc-db from the current hyps (used after [`IflowState::reinstate`]).
     fn rebuild_db(&mut self) {
         self.db.clear();
         let hyps = self.hyps.clone();
@@ -635,46 +595,6 @@ impl IflowState {
             return;
         }
         self.buildable(e, span, errors);
-    }
-
-    /// The SML `doable`: check that an action (insert/delete/update) is allowed.
-    fn doable(
-        &mut self,
-        policies: &[Doable],
-        span: &Span,
-        errors: &mut ErrorReporter,
-        action: &str,
-    ) {
-        let policies = policies.to_vec();
-        for goals in &policies {
-            if self.check_goals(goals).is_some() {
-                return;
-            }
-        }
-        errors.report(CompileError::type_at_with_hint(
-            span.clone(),
-            DiagnosticPayload::new(
-                DiagnosticId::DatabasePolicyMayViolate,
-                vec![action.to_string()],
-            ),
-            DiagnosticId::HintDatabasePolicyMayViolate,
-            vec![],
-        ));
-    }
-
-    fn check_insert(&mut self, span: &Span, errors: &mut ErrorReporter) {
-        let pols: Vec<_> = self.insertable.clone();
-        self.doable(&pols, span, errors, "insert");
-    }
-
-    fn check_delete(&mut self, span: &Span, errors: &mut ErrorReporter) {
-        let pols: Vec<_> = self.deletable.clone();
-        self.doable(&pols, span, errors, "delete");
-    }
-
-    fn check_update(&mut self, span: &Span, errors: &mut ErrorReporter) {
-        let pols: Vec<_> = self.updatable.clone();
-        self.doable(&pols, span, errors, "update");
     }
 }
 

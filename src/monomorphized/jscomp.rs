@@ -1407,19 +1407,21 @@ fn js_e(
         Exp::Field(base_e, x) => {
             // Check if this is a field-chain from an outer variable (captured server value)
             let result = seek_field(
-                mode,
-                outer,
-                inner,
+                &mut SeekFieldContext {
+                    mode,
+                    outer,
+                    inner,
+                    st,
+                    settings,
+                    errors,
+                    nameds,
+                    some_ts,
+                    found_javascript,
+                },
                 base_e,
                 &[x.as_str()],
                 e,
                 s,
-                st,
-                settings,
-                errors,
-                nameds,
-                some_ts,
-                found_javascript,
             );
             result
         }
@@ -1713,42 +1715,46 @@ fn js_e(
     }
 }
 
+/// Shared embedding-walk state passed into [`seek_field`] so Clippy does not flag arity on that helper.
+struct SeekFieldContext<'a> {
+    mode: &'a JsMode,
+    outer: &'a [LocTyp],
+    inner: usize,
+    st: &'a mut State,
+    settings: &'a Settings,
+    errors: &'a mut ErrorReporter,
+    nameds: &'a HashMap<usize, LocExp>,
+    some_ts: &'a HashMap<usize, LocTyp>,
+    found_javascript: &'a mut bool,
+}
+
 /// Walk a chain `EField(... EField(base, x1) ..., xN)` to check if it is
 /// rooted at an outer (captured) `ERel`.  If yes, quote the whole thing.
 /// Otherwise fall back to a generic `{c:".",r:...,f:...}` node.
-#[allow(clippy::too_many_arguments)] // Client JS walk threads many mirrors of SML `seekField`; `ErrorReporter` crosses the default arity limit.
 fn seek_field(
-    mode: &JsMode,
-    outer: &[LocTyp],
-    inner: usize,
+    ctx: &mut SeekFieldContext<'_>,
     base: &LocExp,
     xs: &[&str],
     _original: &LocExp,
     s: &Span,
-    st: &mut State,
-    settings: &Settings,
-    errors: &mut ErrorReporter,
-    nameds: &HashMap<usize, LocExp>,
-    some_ts: &HashMap<usize, LocTyp>,
-    found_javascript: &mut bool,
 ) -> Result<LocExp, CantEmbed> {
     match &base.node {
         Exp::Rel(n) => {
             let n = *n;
-            match n < inner {
+            match n < ctx.inner {
                 true => {
                     // It is a JS-runtime variable — emit generic field access
                     let _base_c = js_e(
-                        mode,
-                        outer,
-                        inner,
+                        ctx.mode,
+                        ctx.outer,
+                        ctx.inner,
                         base,
-                        st,
-                        settings,
-                        errors,
-                        nameds,
-                        some_ts,
-                        found_javascript,
+                        ctx.st,
+                        ctx.settings,
+                        ctx.errors,
+                        ctx.nameds,
+                        ctx.some_ts,
+                        ctx.found_javascript,
                     )?;
                     let last_x = xs.last().ok_or(CantEmbed)?;
                     let inner_c = {
@@ -1758,20 +1764,20 @@ fn seek_field(
                             e = field(s, e, x);
                         }
                         js_e(
-                            mode,
-                            outer,
-                            inner,
+                            ctx.mode,
+                            ctx.outer,
+                            ctx.inner,
                             &e,
-                            st,
-                            settings,
-                            errors,
-                            nameds,
-                            some_ts,
-                            found_javascript,
+                            ctx.st,
+                            ctx.settings,
+                            ctx.errors,
+                            ctx.nameds,
+                            ctx.some_ts,
+                            ctx.found_javascript,
                         )?
                     };
                     Ok(strcat_exp(
-                        errors,
+                        ctx.errors,
                         s,
                         vec![
                             str_lit(s, "{c:\".\",r:"),
@@ -1782,8 +1788,8 @@ fn seek_field(
                 }
                 false => {
                     // Captured from server — resolve type through field chain
-                    let idx = n - inner;
-                    let mut t = outer.get(idx).ok_or(CantEmbed)?.clone();
+                    let idx = n - ctx.inner;
+                    let mut t = ctx.outer.get(idx).ok_or(CantEmbed)?.clone();
                     // Walk field chain to get the leaf type
                     for x in xs {
                         match &t.node.clone() {
@@ -1802,9 +1808,9 @@ fn seek_field(
                     for x in xs {
                         acc = field(s, acc, x);
                     }
-                    let quoted = quote_exp(s, &t, acc, st, settings, errors)?;
+                    let quoted = quote_exp(s, &t, acc, ctx.st, ctx.settings, ctx.errors)?;
                     Ok(strcat_exp(
-                        errors,
+                        ctx.errors,
                         s,
                         vec![str_lit(s, "{c:\"c\",v:"), quoted, str_lit(s, "}")],
                     ))
@@ -1814,21 +1820,7 @@ fn seek_field(
         Exp::Field(inner_base, x) => {
             let mut new_xs = vec![x.as_str()];
             new_xs.extend_from_slice(xs);
-            seek_field(
-                mode,
-                outer,
-                inner,
-                inner_base,
-                &new_xs,
-                _original,
-                s,
-                st,
-                settings,
-                errors,
-                nameds,
-                some_ts,
-                found_javascript,
-            )
+            seek_field(ctx, inner_base, &new_xs, _original, s)
         }
         _ => {
             // Default: generic field access
@@ -1836,16 +1828,16 @@ fn seek_field(
             // Build the base expression (everything except the outermost field)
             let inner_c = match xs.len() == 1 {
                 true => js_e(
-                    mode,
-                    outer,
-                    inner,
+                    ctx.mode,
+                    ctx.outer,
+                    ctx.inner,
                     base,
-                    st,
-                    settings,
-                    errors,
-                    nameds,
-                    some_ts,
-                    found_javascript,
+                    ctx.st,
+                    ctx.settings,
+                    ctx.errors,
+                    ctx.nameds,
+                    ctx.some_ts,
+                    ctx.found_javascript,
                 )?,
                 false => {
                     let mut e = base.clone();
@@ -1853,21 +1845,21 @@ fn seek_field(
                         e = field(s, e, x);
                     }
                     js_e(
-                        mode,
-                        outer,
-                        inner,
+                        ctx.mode,
+                        ctx.outer,
+                        ctx.inner,
                         &e,
-                        st,
-                        settings,
-                        errors,
-                        nameds,
-                        some_ts,
-                        found_javascript,
+                        ctx.st,
+                        ctx.settings,
+                        ctx.errors,
+                        ctx.nameds,
+                        ctx.some_ts,
+                        ctx.found_javascript,
                     )?
                 }
             };
             Ok(strcat_exp(
-                errors,
+                ctx.errors,
                 s,
                 vec![
                     str_lit(s, "{c:\".\",r:"),

@@ -67,16 +67,6 @@ impl Env {
         self
     }
 
-    #[allow(dead_code)]
-    fn lookup_e_rel(&self, n: usize) -> Option<&LocatedConstructor> {
-        let len = self.rel_e.len();
-        if n < len {
-            Some(&self.rel_e[len - 1 - n])
-        } else {
-            None
-        }
-    }
-
     fn push_e_named(
         mut self,
         name: String,
@@ -163,11 +153,6 @@ impl Env {
                 self
             }
         }
-    }
-
-    #[allow(dead_code)]
-    fn bind_file(self, ds: &[LocatedDeclaration]) -> Self {
-        ds.iter().fold(self, |env, d| env.decl_binds(d))
     }
 }
 
@@ -1031,43 +1016,6 @@ fn str_n(s: &str, loc: &Span) -> LocExp {
 fn make_strcat(e1: LocExp, e2: LocExp) -> LocExp {
     let loc = e1.span.clone();
     Located::new(Exp::Strcat(Box::new(e1), Box::new(e2)), loc)
-}
-
-/// Build `if s == "" then "" else " attr=\"" ++ s ++ "\""` as a Case expression.
-#[allow(dead_code)]
-fn build_attr_case(attr: &str, val_e: LocExp, loc: &Span) -> LocExp {
-    let string_t = Located::new(Typ::Ffi("Basis".into(), "string".into()), loc.clone());
-    let empty_str = str_n("", loc);
-    let prefix = str_h(&format!(" {}=\"", attr), loc);
-    let suffix = str_h("\"", loc);
-    let rel0 = Located::new(Exp::Rel(0), loc.clone());
-    let body = make_strcat(prefix, make_strcat(rel0, suffix));
-    Located::new(
-        Exp::Case(
-            Box::new(val_e),
-            vec![
-                (
-                    Located::new(
-                        Pat::Prim(Prim::String(
-                            crate::primitives::StringMode::Normal,
-                            String::new(),
-                        )),
-                        loc.clone(),
-                    ),
-                    empty_str,
-                ),
-                (
-                    Located::new(Pat::Var("_css".into(), string_t.clone()), loc.clone()),
-                    body,
-                ),
-            ],
-            CaseMeta {
-                disc: string_t.clone(),
-                result: string_t,
-            },
-        ),
-        loc.clone(),
-    )
 }
 
 /// Peel all App layers (not CApp), collecting value args (in order of application).

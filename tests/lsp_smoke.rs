@@ -1,6 +1,11 @@
 //! Exercise `ur-lsp` over JSON-RPC so LSP handlers cannot be stubbed out silently.
 
-mod common;
+#[path = "common/require_ok.rs"]
+mod require_ok;
+#[path = "common/ur_bins.rs"]
+mod ur_bins;
+
+use ur_bins::ur_package_binary;
 
 use std::io::{Read, Write};
 use std::process::{Command, Stdio};
@@ -31,7 +36,7 @@ fn lsp_smoke_recv_round_limit(wait_deadline: Duration) -> u64 {
     deadline_millis / poll_millis + 16
 }
 
-use common::ur_package_binary as cargo_bin;
+use ur_package_binary as cargo_bin;
 
 /// Write a JSON-RPC message to `stdin` with the correct Content-Length header.
 /// Returns an error if serialization or I/O fails.

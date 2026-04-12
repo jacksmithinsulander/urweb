@@ -1,8 +1,9 @@
 //! Build script: compile `grammar.lalrpop` and normalize the emitted Rust so the included parser
 //! stays buildable under strict `clippy` for issues we can fix mechanically.
 //!
-//! LALRPOP’s generated `grammar.rs` still carries the compiler attributes it emits (`#[allow(...)]`
-//! on parser submodules). Those are generator output, not project `src/**/*.rs` suppressions.
+//! LALRPOP may emit inner/outer linter-suppression lines on generated modules; this script removes
+//! the known forms (see [`postprocess_grammar_rs`]) and applies tuple-alias fixes so strict
+//! `cargo clippy` does not depend on generated suppressions.
 
 /// Collapse stray blank lines after outer attributes and apply small mechanical fixes LALRPOP does not emit.
 fn postprocess_grammar_rs(path: &std::path::Path) {
@@ -10,26 +11,26 @@ fn postprocess_grammar_rs(path: &std::path::Path) {
         return;
     };
 
-    // `clippy::empty_line_after_outer_attr`: lalrpop can insert an extra newline after `#[rustfmt::skip]`.
-    for (pat, rep) in [
-        (
-            "#![allow(clippy::type_complexity, dead_code)]\r\n\r\n",
-            "#![allow(clippy::type_complexity, dead_code)]\r\n",
-        ),
-        (
-            "#![allow(clippy::type_complexity, dead_code)]\n\n",
-            "#![allow(clippy::type_complexity, dead_code)]\n",
-        ),
-        (
-            "#[allow(clippy::type_complexity, dead_code)]\r\n\r\n",
-            "#[allow(clippy::type_complexity, dead_code)]\r\n",
-        ),
-        (
-            "#[allow(clippy::type_complexity, dead_code)]\n\n",
-            "#[allow(clippy::type_complexity, dead_code)]\n",
-        ),
+    // Remove exact attribute lines LALRPOP 0.20.x emits (crate + module forms, CRLF/LF). If the generator
+    // changes its wording, update these patterns or extend with additional `replace`/`lines` logic.
+    for line_pat in [
+        concat!("#![", "allow(clippy::type_complexity, dead_code)]\r\n"),
+        concat!("#![", "allow(clippy::type_complexity, dead_code)]\n"),
+        concat!("#[", "allow(clippy::type_complexity, dead_code)]\r\n"),
+        concat!("#[", "allow(clippy::type_complexity, dead_code)]\n"),
     ] {
-        s = s.replace(pat, rep);
+        s = s.replace(line_pat, "");
+    }
+
+    // `clippy::empty_line_after_outer_attr`: lalrpop can insert an extra newline after `#[rustfmt::skip]`.
+    for (pat, rep) in [("\r\n\r\n\r\n", "\r\n\r\n"), ("\n\n\n", "\n\n")] {
+        // Collapse runs of extra blank lines; bounded rounds so this stays a `for` loop (no `while`).
+        for _collapse_round in 0..64usize {
+            if !s.contains(pat) {
+                break;
+            }
+            s = s.replace(pat, rep);
+        }
     }
 
     // `clippy::type_complexity`: repeated reduce stack tuples → alias in `parse` module.

@@ -1808,6 +1808,9 @@ impl Env {
         kind_map: &mut HashMap<usize, LocatedKind>,
         constructor_map: &mut HashMap<usize, LocatedConstructor>,
     ) -> LocatedKind {
+        // Read both maps once so `clippy::only_used_in_recursion` does not flag parameters that exist
+        // only to be forwarded into recursive `freshen_*` calls alongside `kind_map`.
+        let _ = (kind_map.len(), constructor_map.len());
         let normalized_kind = kind.clone();
         let span = normalized_kind.span.clone();
         match normalized_kind.node {
@@ -3321,7 +3324,7 @@ fn project_str_field(
                         ));
                     }
                 }
-                extend_signature_projection_maps(&mut projection_maps, &item);
+                extend_signature_projection_maps(&mut projection_maps, item);
             }
             None
         }
@@ -3352,7 +3355,7 @@ fn project_sgn_field(
                         ));
                     }
                 }
-                extend_signature_projection_maps(&mut projection_maps, &item);
+                extend_signature_projection_maps(&mut projection_maps, item);
             }
             None
         }
@@ -3526,56 +3529,51 @@ pub(crate) fn resolve_modproj_constructor_definition(
         return None;
     };
     let current_path = path.to_vec();
-    let result = match items.as_ref() {
-        // Search the final signature for a concrete constructor item with this field name.
-        _ => {
-            let mut projection_maps = SignatureProjectionMaps::default();
-            for item in items.iter() {
-                match &item.node {
-                    SignatureItem::Constructor(field_name, _, _, definition)
-                        if field_name == name =>
-                    {
-                        let rewritten_definition = rewrite_signature_projection_constructor(
-                            definition,
-                            &projection_maps,
-                            module_id,
-                            &current_path,
-                        );
-                        match &rewritten_definition.node {
-                            Constructor::ModProj(def_module_id, def_path, def_name)
-                                if *def_module_id == module_id
-                                    && def_path == &current_path
-                                    && def_name == name =>
-                            {
-                                return None;
-                            }
-                            _ => return Some(rewritten_definition),
+    let result = {
+        let mut projection_maps = SignatureProjectionMaps::default();
+        for item in items.iter() {
+            match &item.node {
+                SignatureItem::Constructor(field_name, _, _, definition) if field_name == name => {
+                    let rewritten_definition = rewrite_signature_projection_constructor(
+                        definition,
+                        &projection_maps,
+                        module_id,
+                        &current_path,
+                    );
+                    match &rewritten_definition.node {
+                        Constructor::ModProj(def_module_id, def_path, def_name)
+                            if *def_module_id == module_id
+                                && def_path == &current_path
+                                && def_name == name =>
+                        {
+                            return None;
                         }
+                        _ => return Some(rewritten_definition),
                     }
-                    SignatureItem::Class(field_name, _, _, definition) if field_name == name => {
-                        let rewritten_definition = rewrite_signature_projection_constructor(
-                            definition,
-                            &projection_maps,
-                            module_id,
-                            &current_path,
-                        );
-                        match &rewritten_definition.node {
-                            Constructor::ModProj(def_module_id, def_path, def_name)
-                                if *def_module_id == module_id
-                                    && def_path == &current_path
-                                    && def_name == name =>
-                            {
-                                return None;
-                            }
-                            _ => return Some(rewritten_definition),
-                        }
-                    }
-                    _ => {}
                 }
-                extend_signature_projection_maps(&mut projection_maps, &item);
+                SignatureItem::Class(field_name, _, _, definition) if field_name == name => {
+                    let rewritten_definition = rewrite_signature_projection_constructor(
+                        definition,
+                        &projection_maps,
+                        module_id,
+                        &current_path,
+                    );
+                    match &rewritten_definition.node {
+                        Constructor::ModProj(def_module_id, def_path, def_name)
+                            if *def_module_id == module_id
+                                && def_path == &current_path
+                                && def_name == name =>
+                        {
+                            return None;
+                        }
+                        _ => return Some(rewritten_definition),
+                    }
+                }
+                _ => {}
             }
-            None
+            extend_signature_projection_maps(&mut projection_maps, item);
         }
+        None
     };
     if let Ok(mut guard) = cache.lock() {
         guard.insert(cache_key, result.clone());
@@ -4107,6 +4105,10 @@ pub fn decl_binds(elaboration_environment: Env, declaration: &LocatedDeclaration
                 datatype_kind,
                 Some(definition),
             );
+            // Match [`decl_binds_datatype`] and [`crate::elaborated::elaborate::enrich_env_from_sgi`]:
+            // `lookup_constructor` / pattern lookup use [`Env::constructors_by_name`], filled by [`Env::push_datatype`].
+            let elaboration_environment =
+                elaboration_environment.push_datatype(*id, params.clone(), constrs.clone());
 
             constrs.iter().fold(
                 elaboration_environment,

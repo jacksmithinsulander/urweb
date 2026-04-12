@@ -1,6 +1,21 @@
 //! Integration tests for [`ur::db`] — every backend codegen path, unknown `dbms`, SQL wires, default Postgres.
 
-mod common;
+#[path = "common/compile_bounded.rs"]
+mod compile_bounded;
+#[path = "common/require_err.rs"]
+mod require_err;
+#[path = "common/require_ok.rs"]
+mod require_ok;
+#[path = "common/tempdir.rs"]
+mod tempdir;
+#[path = "common/write_file.rs"]
+mod write_file;
+
+use compile_bounded::compile_to_outputs_bounded;
+use require_err::require_err;
+use require_ok::require_ok;
+use tempdir::tempdir;
+use write_file::write_file;
 
 use ur::db;
 
@@ -14,23 +29,23 @@ fn compile_to_outputs_each_native_backend_emits_vendor_client() {
         ("tigerbeetle", "tb_client.h"),
     ];
     for (canon, needle) in needle_for {
-        let dir = common::tempdir("dbms_backends native backend tempdir");
+        let dir = tempdir("dbms_backends native backend tempdir");
         let dir_path = dir.path().to_path_buf();
         let urp_body = format!("dbms {canon}\ndatabase :memory:\n\nm\n");
-        common::write_file(
+        write_file(
             &dir_path.join("app.urp"),
             urp_body,
             "write dbms_backends app.urp",
         );
-        common::write_file(
+        write_file(
             &dir_path.join("m.ur"),
             "val x = 1",
             "write dbms_backends m.ur",
         );
         let urp = dir_path.join("app.urp");
 
-        let (c, _) = common::require_ok(
-            common::compile_to_outputs_bounded(urp, |_| {}),
+        let (c, _) = require_ok(
+            compile_to_outputs_bounded(urp, |_| {}),
             &format!("compile native backend project for {canon}"),
         );
         assert!(
@@ -48,21 +63,21 @@ fn compile_to_outputs_each_native_backend_emits_vendor_client() {
 /// TigerBeetle `urweb_tb_transfer` lowers to a blocking `tb_client_submit` + `CREATE_TRANSFERS`.
 #[test]
 fn compile_to_outputs_tigerbeetle_emits_transfer_submit() {
-    let dir = common::tempdir("dbms_backends tigerbeetle tempdir");
+    let dir = tempdir("dbms_backends tigerbeetle tempdir");
     let dir_path = dir.path().to_path_buf();
-    common::write_file(
+    write_file(
         &dir_path.join("app.urp"),
         "dbms tigerbeetle\ndatabase 127.0.0.1:3000\n\nm\n",
         "write tigerbeetle app.urp",
     );
-    common::write_file(
+    write_file(
         &dir_path.join("m.ur"),
         "val x = 1",
         "write tigerbeetle m.ur",
     );
     let urp = dir_path.join("app.urp");
-    let (c, _) = common::require_ok(
-        common::compile_to_outputs_bounded(urp, |_| {}),
+    let (c, _) = require_ok(
+        compile_to_outputs_bounded(urp, |_| {}),
         "compile tigerbeetle transfer project",
     );
     assert!(
@@ -74,22 +89,22 @@ fn compile_to_outputs_tigerbeetle_emits_transfer_submit() {
 
 #[test]
 fn compile_to_outputs_rejects_unknown_dbms_name() {
-    let dir = common::tempdir("dbms_backends unknown dbms tempdir");
+    let dir = tempdir("dbms_backends unknown dbms tempdir");
     let dir_path = dir.path().to_path_buf();
-    common::write_file(
+    write_file(
         &dir_path.join("app.urp"),
         "dbms oracle\ndatabase x\n\nm\n",
         "write unknown dbms app.urp",
     );
-    common::write_file(
+    write_file(
         &dir_path.join("m.ur"),
         "val x = 1",
         "write unknown dbms m.ur",
     );
     let urp = dir_path.join("app.urp");
 
-    let err = common::require_err(
-        common::compile_to_outputs_bounded(urp, |_| {}),
+    let err = require_err(
+        compile_to_outputs_bounded(urp, |_| {}),
         "compile unknown dbms project should fail",
     );
     let msg = format!("{err:#}");
@@ -101,17 +116,17 @@ fn compile_to_outputs_rejects_unknown_dbms_name() {
 
 /// `compile_to_outputs` includes DB client headers for each SQL wire.
 fn compile_dbms_urp_minimal_c(urp_body: &str) -> String {
-    let dir = common::tempdir("dbms_backends sql wire tempdir");
+    let dir = tempdir("dbms_backends sql wire tempdir");
     let dir_path = dir.path().to_path_buf();
-    common::write_file(
+    write_file(
         &dir_path.join("app.urp"),
         urp_body,
         "write sql wire app.urp",
     );
-    common::write_file(&dir_path.join("m.ur"), "val x = 1", "write sql wire m.ur");
+    write_file(&dir_path.join("m.ur"), "val x = 1", "write sql wire m.ur");
     let urp = dir_path.join("app.urp");
-    let (c_code, _) = common::require_ok(
-        common::compile_to_outputs_bounded(urp, |_| {}),
+    let (c_code, _) = require_ok(
+        compile_to_outputs_bounded(urp, |_| {}),
         &format!("compile_to_outputs must succeed for minimal SQL URP ({urp_body:?})"),
     );
     assert!(
@@ -170,7 +185,7 @@ fn public_db_api_lists_alternate_backends() {
 #[test]
 fn parse_tigerbeetle_case_insensitive() {
     assert_eq!(
-        common::require_ok(
+        require_ok(
             db::ProjectDb::parse_user_input("TigerBeetle"),
             "parse TigerBeetle backend name",
         ),

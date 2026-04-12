@@ -1825,8 +1825,8 @@ pub fn rewrite_datatype_constructors(input: &str) -> String {
 /// files still write ordinary `=`; we rewrite the first defining `=` after `::` on
 /// `con` / `class` lines to `sgn_def_con`.
 ///
-/// Line-oriented pass (not yet composed into [`preprocess_urs`]); kept for tooling / future merge.
-#[allow(dead_code)]
+/// Line-oriented pass (not yet composed into [`preprocess_urs`]); compiled only for unit tests until merged.
+#[cfg(test)]
 fn rewrite_sig_type_class_abstract_lines(input: &str) -> String {
     fn ident_head(rest: &str) -> Option<(String, &str)> {
         let mut it = rest.chars();
@@ -1977,6 +1977,16 @@ fn rewrite_sig_type_class_abstract_lines(input: &str) -> String {
         out.push('\n');
     }
     out
+}
+
+#[cfg(test)]
+mod rewrite_sig_type_class_abstract_lines_tests {
+    use super::rewrite_sig_type_class_abstract_lines;
+
+    #[test]
+    fn rewrite_sig_type_class_abstract_lines_smoke() {
+        assert_eq!(rewrite_sig_type_class_abstract_lines(""), "");
+    }
 }
 
 /// Preprocessed excerpt of `lib/ur/basis.urs` around byte `pos` (dev helpers / mutation tests).
@@ -2579,6 +2589,7 @@ pub fn parse_urs(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::compiler_tracing::TRACING_TARGET_COMPILER_INTERNALS;
     use anyhow::Context as _; // .with_context() on Result/Option in tests
 
     #[test]
@@ -2775,7 +2786,12 @@ mod tests {
             if c == '|' {
                 let s = i.saturating_sub(40);
                 let e = (i + 40).min(pp.len());
-                tracing::debug!(index = i, window = ?&pp[s..e], "preprocess_ur '|' bar location");
+                tracing::debug!(
+                    target: TRACING_TARGET_COMPILER_INTERNALS,
+                    index = i,
+                    window = ?&pp[s..e],
+                    "preprocess_ur '|' bar location"
+                );
             }
         }
         tracing::debug!(total_len = pp.len(), "preprocess_ur cookie.ur scan");
@@ -2793,8 +2809,18 @@ mod tests {
         let pos: usize = 504;
         let start = pos.saturating_sub(300);
         let end = (pos + 200).min(pp.len());
-        tracing::debug!(pos, window = %&pp[start..end], "preprocessed basis.urs window");
-        tracing::debug!(pos, char_at = ?pp.chars().nth(pos), "preprocessed char");
+        tracing::debug!(
+            target: TRACING_TARGET_COMPILER_INTERNALS,
+            pos,
+            window = %&pp[start..end],
+            "preprocessed basis.urs window"
+        );
+        tracing::debug!(
+            target: TRACING_TARGET_COMPILER_INTERNALS,
+            pos,
+            char_at = ?pp.chars().nth(pos),
+            "preprocessed char"
+        );
         Ok(()) // return success to the test harness
     }
 
@@ -3281,8 +3307,18 @@ con folder = K ==> fn r :: {K} =>
         let pos = 263usize;
         let start = pos.saturating_sub(40);
         let end = (pos + 40).min(pre.len());
-        tracing::debug!(pos, slice = ?pre.get(pos..pos + 1), "top.ur preprocess byte");
-        tracing::debug!(pos, context = ?&pre[start..end], "top.ur preprocess context");
+        tracing::debug!(
+            target: TRACING_TARGET_COMPILER_INTERNALS,
+            pos,
+            slice = ?pre.get(pos..pos + 1),
+            "top.ur preprocess byte"
+        );
+        tracing::debug!(
+            target: TRACING_TARGET_COMPILER_INTERNALS,
+            pos,
+            context = ?&pre[start..end],
+            "top.ur preprocess context"
+        );
         Ok(()) // return success to the test harness
     }
 

@@ -1,16 +1,39 @@
 //! CLI integration tests: run the ur orchestrator and sub-binaries.
 //! Catches mutants in ur, ur-new, ur-compile, ur-fmt, etc.
 
-mod common;
+#[path = "common/create_dir_all.rs"]
+mod create_dir_all;
+#[path = "common/proc.rs"]
+mod proc;
+#[path = "common/require_ok.rs"]
+mod require_ok;
+#[path = "common/require_some.rs"]
+mod require_some;
+#[path = "common/tempdir.rs"]
+mod tempdir;
+#[path = "common/ur_bins.rs"]
+mod ur_bins;
+#[path = "common/write_file.rs"]
+mod write_file;
+
+use create_dir_all::create_dir_all;
+use proc::command_output;
+use require_ok::require_ok;
+use require_some::require_some;
+use tempdir::tempdir;
+use ur_bins::ur_package_binary;
+use write_file::write_file;
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::OnceLock;
 
-use common::{ur_package_bin_dir, ur_package_binary};
-
 fn target_dir() -> PathBuf {
-    ur_package_bin_dir()
+    require_some(
+        ur_package_binary("ur").parent(),
+        "ur binary path must have a parent directory",
+    )
+    .to_path_buf()
 }
 
 /// Returns Command for `ur` with PATH set so ur-new, ur-compile, etc. are findable.
@@ -37,17 +60,17 @@ fn ur_in(root: &Path) -> Command {
 fn ur_output(args: &[&str], context: &str) -> Output {
     let mut cmd = ur();
     cmd.args(args);
-    common::command_output(&mut cmd, context)
+    command_output(&mut cmd, context)
 }
 
 fn ur_output_in(root: &Path, args: &[&str], context: &str) -> Output {
     let mut cmd = ur_in(root);
     cmd.args(args);
-    common::command_output(&mut cmd, context)
+    command_output(&mut cmd, context)
 }
 
 fn write_project_file(root: &Path, rel: &str, contents: &str) {
-    common::write_file(
+    write_file(
         &root.join(rel),
         contents,
         &format!("write {rel} for cli integration test"),
@@ -55,7 +78,7 @@ fn write_project_file(root: &Path, rel: &str, contents: &str) {
 }
 
 fn create_project_dir(root: &Path, rel: &str) {
-    common::create_dir_all(
+    create_dir_all(
         &root.join(rel),
         &format!("create {rel} for cli integration test"),
     );
@@ -65,10 +88,10 @@ fn create_project_dir(root: &Path, rel: &str) {
 fn mark_executable(path: &Path, context: &str) {
     use std::os::unix::fs::PermissionsExt;
 
-    let metadata = common::require_ok(std::fs::metadata(path), context);
+    let metadata = require_ok(std::fs::metadata(path), context);
     let mut permissions = metadata.permissions();
     permissions.set_mode(0o755);
-    common::require_ok(std::fs::set_permissions(path, permissions), context);
+    require_ok(std::fs::set_permissions(path, permissions), context);
 }
 
 static NO_ARGS_OUTPUT: OnceLock<Output> = OnceLock::new();
@@ -110,7 +133,7 @@ fn cli_no_args_prints_usage() {
 #[test]
 fn cli_fmt_check_in_project_returns_code() {
     // fmt -check in project dir runs; exit code reflects check result (0=ok, 1=would reformat/error)
-    let dir = common::tempdir("cli_fmt_check_in_project_returns_code tempdir");
+    let dir = tempdir("cli_fmt_check_in_project_returns_code tempdir");
     let root = dir.path();
     write_project_file(
         root,
@@ -147,7 +170,7 @@ fn cli_new_requires_name() {
 
 #[test]
 fn cli_new_creates_project() {
-    let dir = common::tempdir("cli_new_creates_project tempdir");
+    let dir = tempdir("cli_new_creates_project tempdir");
     let out = ur_output_in(
         dir.path(),
         &["new", "testproj"],
@@ -159,14 +182,14 @@ fn cli_new_creates_project() {
 
 #[test]
 fn cli_build_requires_ur_toml() {
-    let dir = common::tempdir("cli_build_requires_ur_toml tempdir");
+    let dir = tempdir("cli_build_requires_ur_toml tempdir");
     let out = ur_output_in(dir.path(), &["build"], "run ur build without ur.toml");
     assert!(!out.status.success());
 }
 
 #[test]
 fn cli_build_with_toml_does_not_say_not_found() {
-    let dir = common::tempdir("cli_build_with_toml_does_not_say_not_found tempdir");
+    let dir = tempdir("cli_build_with_toml_does_not_say_not_found tempdir");
     let root = dir.path();
     write_project_file(
         root,
@@ -213,7 +236,7 @@ fn cli_help_prints_usage() {
 
 #[test]
 fn cli_new_lib_flag_creates_library() {
-    let dir = common::tempdir("cli_new_lib_flag_creates_library tempdir");
+    let dir = tempdir("cli_new_lib_flag_creates_library tempdir");
     let out = ur_output_in(
         dir.path(),
         &["new", "--lib", "mylib"],
@@ -225,7 +248,7 @@ fn cli_new_lib_flag_creates_library() {
 
 #[test]
 fn cli_new_minus_lib_creates_library() {
-    let dir = common::tempdir("cli_new_minus_lib_creates_library tempdir");
+    let dir = tempdir("cli_new_minus_lib_creates_library tempdir");
     let out = ur_output_in(
         dir.path(),
         &["new", "-lib", "mylib2"],
@@ -275,7 +298,7 @@ fn cli_fmt_help_returns_zero() {
 
 #[test]
 fn cli_fmt_with_unknown_flag_in_project_treats_as_warning_not_file() {
-    let dir = common::tempdir("cli_fmt_with_unknown_flag_in_project tempdir");
+    let dir = tempdir("cli_fmt_with_unknown_flag_in_project tempdir");
     let root = dir.path();
     write_project_file(
         root,
@@ -328,18 +351,18 @@ fn cli_limit_negative_rejected() {
 
 #[test]
 fn cli_build_with_scss_compiles_when_sass_available() {
-    let dir = common::tempdir("cli_build_with_scss_compiles_when_sass_available tempdir");
+    let dir = tempdir("cli_build_with_scss_compiles_when_sass_available tempdir");
     let root = dir.path();
     let bin_dir = root.join("bin");
-    common::create_dir_all(&bin_dir, "create fake sass bin directory");
+    create_dir_all(&bin_dir, "create fake sass bin directory");
     // Fake sass that exits 0 (catches has_sass_or_sassc -> false mutant)
     let sass_path = bin_dir.join("sass");
     #[cfg(unix)]
-    common::write_file(&sass_path, "#!/bin/sh\nexit 0\n", "write fake sass script");
+    write_file(&sass_path, "#!/bin/sh\nexit 0\n", "write fake sass script");
     #[cfg(unix)]
     mark_executable(&sass_path, "mark fake sass executable");
     #[cfg(not(unix))]
-    common::write_file(&sass_path, "", "write fake sass placeholder");
+    write_file(&sass_path, "", "write fake sass placeholder");
     write_project_file(
         root,
         "ur.toml",
@@ -361,7 +384,7 @@ fn cli_build_with_scss_compiles_when_sass_available() {
     let out = if cfg!(unix) {
         let mut cmd = ur_in(root);
         cmd.env("PATH", path_env).arg("build");
-        common::command_output(&mut cmd, "run ur build with fake sass in PATH")
+        command_output(&mut cmd, "run ur build with fake sass in PATH")
     } else {
         return; // Skip on Windows - no executable script
     };
@@ -377,13 +400,13 @@ fn cli_build_with_scss_compiles_when_sass_available() {
 
 #[test]
 fn cli_build_with_scss_fails_when_sass_exits_nonzero() {
-    let dir = common::tempdir("cli_build_with_scss_fails_when_sass_exits_nonzero tempdir");
+    let dir = tempdir("cli_build_with_scss_fails_when_sass_exits_nonzero tempdir");
     let root = dir.path();
     let bin_dir = root.join("bin");
-    common::create_dir_all(&bin_dir, "create fake failing sass bin directory");
+    create_dir_all(&bin_dir, "create fake failing sass bin directory");
     let sass_path = bin_dir.join("sass");
     #[cfg(unix)]
-    common::write_file(
+    write_file(
         &sass_path,
         "#!/bin/sh\nexit 1\n",
         "write failing fake sass script",
@@ -411,7 +434,7 @@ fn cli_build_with_scss_fails_when_sass_exits_nonzero() {
     let out = if cfg!(unix) {
         let mut cmd = ur_in(root);
         cmd.env("PATH", path_env).arg("build");
-        common::command_output(&mut cmd, "run ur build with failing fake sass in PATH")
+        command_output(&mut cmd, "run ur build with failing fake sass in PATH")
     } else {
         return;
     };
@@ -429,7 +452,7 @@ fn cli_build_with_scss_fails_when_sass_exits_nonzero() {
 
 #[test]
 fn cli_install_from_project_dir_does_not_say_toml_not_found() {
-    let dir = common::tempdir("cli_install_from_project_dir_does_not_say_toml_not_found tempdir");
+    let dir = tempdir("cli_install_from_project_dir_does_not_say_toml_not_found tempdir");
     let root = dir.path();
     write_project_file(
         root,
@@ -463,7 +486,7 @@ fn cli_install_from_project_dir_does_not_say_toml_not_found() {
 #[test]
 fn cli_fmt_accepts_ur_file_explicit() {
     // Catches delete ! at line 641: !f.ends_with(".ur") - mutant would reject .ur files
-    let dir = common::tempdir("cli_fmt_accepts_ur_file_explicit tempdir");
+    let dir = tempdir("cli_fmt_accepts_ur_file_explicit tempdir");
     let root = dir.path();
     write_project_file(
         root,
@@ -483,7 +506,7 @@ fn cli_fmt_accepts_ur_file_explicit() {
 #[test]
 fn cli_fmt_accepts_urs_file_explicit() {
     // Catches delete ! at line 641: !f.ends_with(".urs") - mutant would reject .urs files
-    let dir = common::tempdir("cli_fmt_accepts_urs_file_explicit tempdir");
+    let dir = tempdir("cli_fmt_accepts_urs_file_explicit tempdir");
     let root = dir.path();
     write_project_file(
         root,
@@ -502,7 +525,7 @@ fn cli_fmt_accepts_urs_file_explicit() {
 
 #[test]
 fn cli_fmt_project_mode_succeeds_when_toml_exists() {
-    let dir = common::tempdir("cli_fmt_project_mode_succeeds_when_toml_exists tempdir");
+    let dir = tempdir("cli_fmt_project_mode_succeeds_when_toml_exists tempdir");
     let root = dir.path();
     write_project_file(
         root,
@@ -556,7 +579,7 @@ fn cli_fmt_help_succeeds() {
 
 #[test]
 fn cli_fmt_file_formats_ur() {
-    let dir = common::tempdir("cli_fmt_file_formats_ur tempdir");
+    let dir = tempdir("cli_fmt_file_formats_ur tempdir");
     write_project_file(dir.path(), "x.ur", "val x = 1");
     let out = ur_output_in(dir.path(), &["fmt", "x.ur"], "run ur fmt x.ur");
     assert!(
@@ -585,7 +608,7 @@ fn cli_install_no_arg_fails() {
 #[test]
 fn cli_new_creates_files_with_correct_name() {
     // Catches ur_new line 231 == vs != mutant: project dir must match name
-    let dir = common::tempdir("cli_new_creates_files_with_correct_name tempdir");
+    let dir = tempdir("cli_new_creates_files_with_correct_name tempdir");
     let out = ur_output_in(
         dir.path(),
         &["new", "myproj"],
@@ -602,7 +625,7 @@ fn cli_new_creates_files_with_correct_name() {
 
 #[test]
 fn cli_build_with_scss_skips_sass_when_unavailable() {
-    let dir = common::tempdir("cli_build_with_scss_skips_sass_when_unavailable tempdir");
+    let dir = tempdir("cli_build_with_scss_skips_sass_when_unavailable tempdir");
     let root = dir.path();
     write_project_file(
         root,
@@ -615,7 +638,7 @@ fn cli_build_with_scss_skips_sass_when_unavailable() {
     write_project_file(root, "x.ur", "val x = 1");
     let mut cmd = ur_in(root);
     cmd.env("PATH", "").arg("build");
-    let out = common::command_output(&mut cmd, "run ur build without sass in PATH");
+    let out = command_output(&mut cmd, "run ur build without sass in PATH");
     let stderr = String::from_utf8_lossy(&out.stderr);
     let stdout = String::from_utf8_lossy(&out.stdout);
     // has_sass_or_sassc is false when sass/sassc not in PATH. We skip SCSS block.
@@ -641,7 +664,7 @@ fn cli_daemon_unknown_subcmd_fails() {
 #[test]
 fn cli_fmt_check_exits_nonzero_when_file_would_change() {
     // fmt -check should return non-zero if formatting would change file
-    let dir = common::tempdir("cli_fmt_check_exits_nonzero_when_file_would_change tempdir");
+    let dir = tempdir("cli_fmt_check_exits_nonzero_when_file_would_change tempdir");
     let root = dir.path();
     write_project_file(
         root,
@@ -690,7 +713,7 @@ fn cli_help_contains_subcommands() {
 
 #[test]
 fn cli_fmt_without_toml_file_mode_still_accepts_file() {
-    let dir = common::tempdir("cli_fmt_without_toml_file_mode_still_accepts_file tempdir");
+    let dir = tempdir("cli_fmt_without_toml_file_mode_still_accepts_file tempdir");
     write_project_file(dir.path(), "f.ur", "val x = 1");
     let out = ur_output_in(
         dir.path(),

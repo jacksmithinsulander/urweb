@@ -1,24 +1,41 @@
 //! Integration tests for `ur-fmt` (`src/bin/ur_fmt.rs`).
 
-mod common;
+#[path = "common/proc.rs"]
+mod proc;
+#[path = "common/require_ok.rs"]
+mod require_ok;
+#[path = "common/require_some.rs"]
+mod require_some;
+#[path = "common/tempdir.rs"]
+mod tempdir;
+#[path = "common/ur_bins.rs"]
+mod ur_bins;
+#[path = "common/write_file.rs"]
+mod write_file;
+
+use proc::command_output;
+use require_some::require_some;
+use tempdir::tempdir;
+use ur_bins::ur_package_binary;
+use write_file::write_file;
 
 use std::process::Command;
 
-use common::ur_package_binary as cargo_bin;
+use ur_package_binary as cargo_bin;
 
 #[test]
 fn ur_fmt_parse_failure_prints_error_detail() {
-    let tmp = common::tempdir("fmt_cli parse failure tempdir");
+    let tmp = tempdir("fmt_cli parse failure tempdir");
     let path = tmp.path().join("bad.ur");
-    common::write_file(
+    write_file(
         &path,
         "fun main () = )))\n",
         "write malformed formatter fixture",
     );
-    let path_arg = common::require_some(path.to_str(), "formatter fixture path must be UTF-8");
+    let path_arg = require_some(path.to_str(), "formatter fixture path must be UTF-8");
     let mut command = Command::new(cargo_bin("ur-fmt"));
     command.arg(path_arg);
-    let output = common::command_output(&mut command, "run ur-fmt on malformed file");
+    let output = command_output(&mut command, "run ur-fmt on malformed file");
     assert!(
         !output.status.success(),
         "invalid syntax must fail (print_errors noop mutant drops detail-only output)"
@@ -36,13 +53,13 @@ fn ur_fmt_parse_failure_prints_error_detail() {
 
 #[test]
 fn ur_fmt_check_unchanged_file_exits_zero() {
-    let tmp = common::tempdir("fmt_cli check tempdir");
+    let tmp = tempdir("fmt_cli check tempdir");
     let path = tmp.path().join("ok.ur");
-    common::write_file(&path, "val x = 1\n", "write stable formatter fixture");
-    let path_arg = common::require_some(path.to_str(), "formatter fixture path must be UTF-8");
+    write_file(&path, "val x = 1\n", "write stable formatter fixture");
+    let path_arg = require_some(path.to_str(), "formatter fixture path must be UTF-8");
     let mut command = Command::new(cargo_bin("ur-fmt"));
     command.args(["--check", path_arg]);
-    let output = common::command_output(&mut command, "run ur-fmt --check on stable file");
+    let output = command_output(&mut command, "run ur-fmt --check on stable file");
     assert!(
         output.status.success(),
         "formatted == orig guard: --check should pass for stable text, stderr={}",

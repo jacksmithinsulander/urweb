@@ -955,4 +955,22 @@ pub enum DiagnosticId {
     CompilerInternalBug = 475,
     /// Catalog entry 476.
     CliDatabaseBackendUrpRejected = 476,
+    /// Catalog entry 477.
+    CliCompilationJobCorrelationLine = 477,
+    /// Catalog entry 478.
+    CliCompilerTracingPhaseCompleteDebug = 478,
+    /// Catalog entry 479.
+    CliCompilerTracingJobCompileStart = 479,
+    /// Catalog entry 480.
+    CliCompilerTracingJobCompileFinished = 480,
+    /// Catalog entry 481.
+    CliCompilerTracingPipelineOutputsStart = 481,
+    /// Catalog entry 482.
+    CliCompilerTracingPipelineOutputsFinished = 482,
+    /// Catalog entry 483.
+    CliCompilerTracingElaborateProjectStart = 483,
+    /// Catalog entry 484.
+    CliCompilerTracingCCompileObjectStep = 484,
+    /// Catalog entry 485.
+    CliCompilerTracingCLinkExeStep = 485,
 }

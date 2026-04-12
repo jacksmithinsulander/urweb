@@ -5,6 +5,7 @@
 use std::collections::{HashMap, HashSet};
 use std::time::SystemTime;
 
+use crate::compiler_tracing::TRACING_TARGET_COMPILER_INTERNALS;
 use crate::elaborated::{Constructor, Declaration, LocatedDeclaration};
 
 // ---------------------------------------------------------------------------
@@ -66,7 +67,11 @@ impl ModDb {
     ///
     /// Nothing.
     pub fn print_by_name(&self) {
-        tracing::debug!("ModDb.by_name snapshot: {} entries", self.by_name.len());
+        tracing::debug!(
+            target: TRACING_TARGET_COMPILER_INTERNALS,
+            "ModDb.by_name snapshot: {} entries",
+            self.by_name.len()
+        );
         let mut names: Vec<&String> = self.by_name.keys().collect();
         names.sort();
         for module_name in names {
@@ -79,6 +84,7 @@ impl ModDb {
                 .map(|duration| duration.as_secs().to_string())
                 .unwrap_or_else(|_| "?".to_string());
             tracing::debug!(
+                target: TRACING_TARGET_COMPILER_INTERNALS,
                 module = %module_name,
                 stored_epoch_seconds = %stored_seconds,
                 has_errors = entry.has_errors,

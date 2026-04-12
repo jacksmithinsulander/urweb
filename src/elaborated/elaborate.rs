@@ -31,6 +31,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
+use crate::compiler_tracing::TRACING_TARGET_COMPILER_INTERNALS;
 use crate::diagnostics::{DiagnosticId, DiagnosticPayload};
 use crate::elaborated as elab;
 use crate::elaborated::disjointness_analysis as disjoint;
@@ -1430,12 +1431,15 @@ fn munge_functor_parameter_name(
     parameter_name: &str,
 ) -> String {
     let mut candidate = parameter_name.to_string();
-    while signature_items.iter().any(|signature_item| {
-        matches!(
-            &signature_item.node,
-            elab::SignatureItem::Structure(_, existing_name, _, _) if existing_name == &candidate
-        )
-    }) {
+    for _ in 0..4096usize {
+        if !signature_items.iter().any(|signature_item| {
+            matches!(
+                &signature_item.node,
+                elab::SignatureItem::Structure(_, existing_name, _, _) if existing_name == &candidate
+            )
+        }) {
+            break;
+        }
         candidate = format!("?{candidate}");
     }
     candidate
@@ -11964,44 +11968,6 @@ fn elab_open(
     (open_declarations, new_env, new_denv)
 }
 
-fn elab_open_env_only(
-    elaboration_context: &mut ElabCtx,
-    elaboration_environment: &Env,
-    disjointness_environment: &disjoint::DisjointEnv,
-    ms: &[String],
-    span: &Span,
-) -> (Env, disjoint::DisjointEnv) {
-    let (str_id, items) =
-        match resolve_module_path(elaboration_context, elaboration_environment, ms, span) {
-            Some(v) => v,
-            None => {
-                return (
-                    elaboration_environment.clone(),
-                    disjointness_environment.clone(),
-                )
-            }
-        };
-    let mut new_env = elaboration_environment.clone();
-    for sgi in &items {
-        new_env = enrich_env_from_sgi(
-            new_env,
-            &sgi.node,
-            str_id,
-            &ms[..ms.len() - 1],
-            &ms[ms.len() - 1],
-        );
-    }
-    let new_denv = assert_projected_signature_constraints(
-        elaboration_context,
-        &new_env,
-        disjointness_environment,
-        str_id,
-        &ms[1..],
-        span,
-    );
-    (new_env, new_denv)
-}
-
 fn open_structure_projection(
     root_id: usize,
     path: &[String],
@@ -13869,24 +13835,27 @@ fn resolve_class(
         let row = hnorm_con((**row).clone());
         if let elab::Constructor::Record(_, fields) = row.node {
             let mut witnesses = Vec::with_capacity(fields.len());
+            let mut all_fields_resolved = true;
             for (field_name, field_class) in fields {
                 let field_class = normalize_class_goal(field_class);
                 let Some((field_witness, _matched_head)) =
                     resolve_class(elaboration_environment, &field_class, span)
                 else {
-                    return None;
+                    all_fields_resolved = false;
+                    break;
                 };
                 witnesses.push((field_name, field_witness, field_class));
             }
-            return Some((
-                Located::new(elab::Expression::Record(witnesses), class_n.span.clone()),
-                class_n,
-            ));
+            if all_fields_resolved {
+                return Some((
+                    Located::new(elab::Expression::Record(witnesses), class_n.span.clone()),
+                    class_n,
+                ));
+            }
+            // If nested field goals do not all resolve here, fall through to class rules below.
         }
     }
-    let Some(rules) = elaboration_environment.class_rules_for_constructor(&class_n) else {
-        return None;
-    };
+    let rules = elaboration_environment.class_rules_for_constructor(&class_n)?;
     let class_has_unknown_unifs = constructor_contains_unknown_unifs(&class_n);
     if debug_resolve_class {
         eprintln!(
@@ -13948,9 +13917,7 @@ fn resolve_class(
             }
             unique_match = Some(rule_index);
         }
-        let Some(rule_index) = unique_match else {
-            return None;
-        };
+        let rule_index = unique_match?;
         let (quantifier_kinds, hyps, head, witness) = &rules.closed_rules[rule_index];
         return try_resolve_class_rule(
             elaboration_environment,
@@ -14609,6 +14576,7 @@ pub fn elab_file(
                 match &decl.node {
                     crate::source::Decl::FfiStr(structure_name, _, _) => {
                         tracing::info!(
+                            target: TRACING_TARGET_COMPILER_INTERNALS,
                             span_file = %decl.span.file,
                             span_line = decl.span.first.line,
                             decl_kind = "FfiStr",
@@ -14618,6 +14586,7 @@ pub fn elab_file(
                     }
                     crate::source::Decl::Str(structure_name, _, _, _, _) => {
                         tracing::info!(
+                            target: TRACING_TARGET_COMPILER_INTERNALS,
                             span_file = %decl.span.file,
                             span_line = decl.span.first.line,
                             decl_kind = "Str",
@@ -14627,6 +14596,7 @@ pub fn elab_file(
                     }
                     other_decl => {
                         tracing::info!(
+                            target: TRACING_TARGET_COMPILER_INTERNALS,
                             span_file = %decl.span.file,
                             span_line = decl.span.first.line,
                             decl_kind = ?other_decl,
@@ -14649,6 +14619,7 @@ pub fn elab_file(
                 match &decl.node {
                     crate::source::Decl::FfiStr(structure_name, _, _) => {
                         tracing::info!(
+                            target: TRACING_TARGET_COMPILER_INTERNALS,
                             span_file = %decl.span.file,
                             span_line = decl.span.first.line,
                             decl_kind = "FfiStr",
@@ -14659,6 +14630,7 @@ pub fn elab_file(
                     }
                     crate::source::Decl::Str(structure_name, _, _, _, _) => {
                         tracing::info!(
+                            target: TRACING_TARGET_COMPILER_INTERNALS,
                             span_file = %decl.span.file,
                             span_line = decl.span.first.line,
                             decl_kind = "Str",
@@ -14669,6 +14641,7 @@ pub fn elab_file(
                     }
                     other_decl => {
                         tracing::info!(
+                            target: TRACING_TARGET_COMPILER_INTERNALS,
                             span_file = %decl.span.file,
                             span_line = decl.span.first.line,
                             decl_kind = ?other_decl,
@@ -14687,7 +14660,7 @@ pub fn elab_file(
                 crate::source::Decl::FfiStr(structure_name, _, _) if structure_name == "Basis" => {
                     // `FfiStr("Basis", ...)` ⇒ implicit `open Basis` for prelude names.
                     let auto_open_span = decl.span.clone();
-                    let (opened_env, opened_disjointness) = elab_open_env_only(
+                    let (_open_decls, opened_env, opened_disjointness) = elab_open(
                         elaboration_context,
                         &elaboration_environment,
                         &disjointness_environment,
@@ -14700,7 +14673,7 @@ pub fn elab_file(
                 crate::source::Decl::Str(structure_name, _, _, _, _) if structure_name == "Top" => {
                     // `structure Top` (from lib) ⇒ implicit `open Top` for standard helpers.
                     let auto_open_span = decl.span.clone();
-                    let (opened_env, opened_disjointness) = elab_open_env_only(
+                    let (_open_decls, opened_env, opened_disjointness) = elab_open(
                         elaboration_context,
                         &elaboration_environment,
                         &disjointness_environment,
@@ -14816,7 +14789,7 @@ fn auto_open_basis_and_top(
     match &decl.node {
         crate::source::Decl::FfiStr(structure_name, _, _) if structure_name == "Basis" => {
             let auto_open_span = decl.span.clone();
-            let (opened_env, opened_disjointness) = elab_open_env_only(
+            let (_open_decls, opened_env, opened_disjointness) = elab_open(
                 elaboration_context,
                 elaboration_environment,
                 disjointness_environment,
@@ -14828,7 +14801,7 @@ fn auto_open_basis_and_top(
         }
         crate::source::Decl::Str(structure_name, _, _, _, _) if structure_name == "Top" => {
             let auto_open_span = decl.span.clone();
-            let (opened_env, opened_disjointness) = elab_open_env_only(
+            let (_open_decls, opened_env, opened_disjointness) = elab_open(
                 elaboration_context,
                 elaboration_environment,
                 disjointness_environment,
@@ -15179,12 +15152,17 @@ pub fn elab_structure_prefix_checkpoints_from_boot_snapshot(
     let mut next_checkpoint_index = 0usize;
     let zero_span = Span::dummy();
 
-    while next_checkpoint_index < indexed_checkpoints.len()
-        && indexed_checkpoints[next_checkpoint_index]
+    for _ in 0..indexed_checkpoints.len() {
+        if next_checkpoint_index >= indexed_checkpoints.len() {
+            break;
+        }
+        if indexed_checkpoints[next_checkpoint_index]
             .1
             .declaration_count
-            == 0
-    {
+            != 0
+        {
+            break;
+        }
         let (result_index, checkpoint) = &indexed_checkpoints[next_checkpoint_index];
         results[*result_index] = validate_structure_prefix_checkpoint(
             &outer_environment,
@@ -15209,12 +15187,17 @@ pub fn elab_structure_prefix_checkpoints_from_boot_snapshot(
         current_disjointness_environment = new_disjointness_environment;
         elaborated_declarations.extend(new_declarations);
 
-        while next_checkpoint_index < indexed_checkpoints.len()
-            && indexed_checkpoints[next_checkpoint_index]
+        for _ in 0..indexed_checkpoints.len() {
+            if next_checkpoint_index >= indexed_checkpoints.len() {
+                break;
+            }
+            if indexed_checkpoints[next_checkpoint_index]
                 .1
                 .declaration_count
-                == declaration_index + 1
-        {
+                != declaration_index + 1
+            {
+                break;
+            }
             let (result_index, checkpoint) = &indexed_checkpoints[next_checkpoint_index];
             results[*result_index] = validate_structure_prefix_checkpoint(
                 &outer_environment,
@@ -15229,7 +15212,10 @@ pub fn elab_structure_prefix_checkpoints_from_boot_snapshot(
         }
     }
 
-    while next_checkpoint_index < indexed_checkpoints.len() {
+    for _ in 0..indexed_checkpoints.len() {
+        if next_checkpoint_index >= indexed_checkpoints.len() {
+            break;
+        }
         let (result_index, checkpoint) = &indexed_checkpoints[next_checkpoint_index];
         if checkpoint.declaration_count > declarations.len() {
             results[*result_index] = Err(format!(
@@ -17894,7 +17880,12 @@ mod tests {
                 .take(5)
                 .enumerate()
             {
-                tracing::debug!(index = idx, ?error, "elab kind_mismatch sample");
+                tracing::debug!(
+                    target: TRACING_TARGET_COMPILER_INTERNALS,
+                    index = idx,
+                    ?error,
+                    "elab kind_mismatch sample"
+                );
             }
         }
         assert_eq!(

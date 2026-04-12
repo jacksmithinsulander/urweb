@@ -1393,6 +1393,78 @@ _CLI: list[tuple[str, tuple[str, str, str]]] = [
             "No pude configurar el motor de base de datos desde el archivo del proyecto.\n\n{0}",
         ),
     ),
+    (
+        "CliCompilationJobCorrelationLine",
+        _t(
+            "[{0}]",
+            "[{0}]",
+            "[{0}]",
+        ),
+    ),
+    (
+        "CliCompilerTracingPhaseCompleteDebug",
+        _t(
+            "Phase {0}: completed in {1} ms.",
+            "Fas {0}: klar på {1} ms.",
+            "Fase {0}: completada en {1} ms.",
+        ),
+    ),
+    (
+        "CliCompilerTracingJobCompileStart",
+        _t(
+            "Starting Ur/Web compilation.\n\nProject: {0}",
+            "Startar Ur/Web-kompilering.\n\nProjekt: {0}",
+            "Iniciando compilación de Ur/Web.\n\nProyecto: {0}",
+        ),
+    ),
+    (
+        "CliCompilerTracingJobCompileFinished",
+        _t(
+            "Ur/Web compilation finished.\n\nExecutable: {0}",
+            "Ur/Web-kompilering klar.\n\nKörbar fil: {0}",
+            "Compilación de Ur/Web terminada.\n\nEjecutable: {0}",
+        ),
+    ),
+    (
+        "CliCompilerTracingPipelineOutputsStart",
+        _t(
+            "Starting Ur/Web pipeline (compile to C and SQL outputs).\n\nProject: {0}",
+            "Startar Ur/Web-pipeline (kompilera till C och SQL-utdata).\n\nProjekt: {0}",
+            "Iniciando pipeline de Ur/Web (compilar a salidas C y SQL).\n\nProyecto: {0}",
+        ),
+    ),
+    (
+        "CliCompilerTracingPipelineOutputsFinished",
+        _t(
+            "Finished Ur/Web pipeline (compile to outputs; no link step).",
+            "Ur/Web-pipeline klar (kompilera till utdata; ingen länkning).",
+            "Pipeline de Ur/Web terminada (salidas sin paso de enlazado).",
+        ),
+    ),
+    (
+        "CliCompilerTracingElaborateProjectStart",
+        _t(
+            "Starting Ur/Web parse and elaboration.\n\nProject: {0}",
+            "Startar Ur/Web parsning och elaborering.\n\nProjekt: {0}",
+            "Iniciando análisis y elaboración de Ur/Web.\n\nProyecto: {0}",
+        ),
+    ),
+    (
+        "CliCompilerTracingCCompileObjectStep",
+        _t(
+            "C compiler (object file).\n\nCompiler: {0}\nSource: {1}\nObject: {2}",
+            "C-kompilator (objektfil).\n\nKompilator: {0}\nKälla: {1}\nObjekt: {2}",
+            "Compilador C (archivo objeto).\n\nCompilador: {0}\nOrigen: {1}\nObjeto: {2}",
+        ),
+    ),
+    (
+        "CliCompilerTracingCLinkExeStep",
+        _t(
+            "C linker (executable).\n\nLinker: {0}\nOutput: {1}",
+            "C-länkare (körbar fil).\n\nLänkare: {0}\nUtdata: {1}",
+            "Enlazador C (ejecutable).\n\nEnlazador: {0}\nSalida: {1}",
+        ),
+    ),
 ]
 
 for _name, _tpl in _CLI:

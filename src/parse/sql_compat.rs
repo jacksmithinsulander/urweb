@@ -519,7 +519,10 @@ fn parse_foreign_key_modes(
 
     let tokens: Vec<&str> = trimmed.split_whitespace().collect();
     let mut index = 0usize;
-    while index < tokens.len() {
+    for _token_pass in 0..tokens.len() {
+        if index >= tokens.len() {
+            break;
+        }
         if tokens.get(index) != Some(&"ON") {
             return Err(DiagnosticPayload::new(
                 DiagnosticId::SqlCompatUnsupportedPlaceholder,

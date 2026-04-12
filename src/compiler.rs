@@ -16,6 +16,9 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::cli_common::cli_diagnostic_text;
+use crate::compiler_tracing::{
+    trace_compiler_job_debug, trace_compiler_job_info, TRACING_TARGET_COMPILER_JOB,
+};
 use crate::diagnostics::{DiagnosticId, DiagnosticLocale, DiagnosticPayload};
 use crate::error_types::ErrorReporter;
 use crate::settings::Settings;
@@ -1926,12 +1929,15 @@ pub fn cc_and_link(c_source: &str, output: &Path, job: &Job, settings: &Settings
     }
 
     if settings.verbosity >= 2 {
-        tracing::debug!(
-            cc = %cc,
-            c_file = %c_file.display(),
-            o_file = %o_file.display(),
-            "C compile (object) step"
-        );
+        trace_compiler_job_debug(
+            settings,
+            DiagnosticId::CliCompilerTracingCCompileObjectStep,
+            vec![
+                cc.to_string(),
+                c_file.display().to_string(),
+                o_file.display().to_string(),
+            ],
+        ); // Catalog-backed CC trace (project locale).
     }
     let compile_status = command_status_deadline(
         &mut compile_cmd,
@@ -2035,11 +2041,11 @@ pub fn cc_and_link(c_source: &str, output: &Path, job: &Job, settings: &Settings
     }
 
     if settings.verbosity >= 2 {
-        tracing::debug!(
-            linker = %linker_cmd_base,
-            output = %output.display(),
-            "C link step"
-        );
+        trace_compiler_job_debug(
+            settings,
+            DiagnosticId::CliCompilerTracingCLinkExeStep,
+            vec![linker_cmd_base.to_string(), output.display().to_string()],
+        ); // Catalog-backed link trace (project locale).
     }
     let link_banner = cli_diagnostic_text(
         DiagnosticId::CliToolBannerLink,
@@ -2193,6 +2199,7 @@ fn run_compile(urp_path: &Path, settings: &mut Settings) -> Result<PathBuf> {
     let urp_path_buf = resolve_urp_project_path(urp_path);
     crate::db::apply_urp_manifest_diagnostic_locale(&urp_path_buf, settings)
         .map_err(|error_message| anyhow::anyhow!(error_message))?;
+    settings.begin_compilation_job(); // One correlation id for this pipeline run (errors and tracing).
     let mut errors = ErrorReporter::from_settings(settings);
     let mut job = crate::urp_parser::parse_urp_with_reporter(&urp_path_buf, &mut errors)?;
 
@@ -2213,7 +2220,17 @@ fn run_compile(urp_path: &Path, settings: &mut Settings) -> Result<PathBuf> {
     settings.debug = job.debug;
 
     crate::compiler_tracing::init_compiler_tracing(settings);
-    tracing::info!(urp = %urp_path_buf.display(), verbosity = settings.verbosity, "starting Ur/Web compilation");
+    let _compile_job_span = tracing::info_span!(
+        target: TRACING_TARGET_COMPILER_JOB,
+        "compile_job",
+        compilation_id = %settings.compilation_id
+    )
+    .entered(); // Nest pipeline events under one job span.
+    trace_compiler_job_info(
+        settings,
+        DiagnosticId::CliCompilerTracingJobCompileStart,
+        vec![urp_path_buf.display().to_string()],
+    ); // Localized catalog message for job start.
 
     let mut phase_t = Instant::now();
     // Phase 2: parse sources
@@ -2369,7 +2386,11 @@ fn run_compile(urp_path: &Path, settings: &mut Settings) -> Result<PathBuf> {
     cc_and_link(&c_code, &exe_path, &job, settings)?;
     crate::compiler_tracing::log_phase_complete(settings, "link", phase_t);
 
-    tracing::info!(exe = %exe_path.display(), "Ur/Web compilation finished");
+    trace_compiler_job_info(
+        settings,
+        DiagnosticId::CliCompilerTracingJobCompileFinished,
+        vec![exe_path.display().to_string()],
+    ); // Localized catalog message for successful link.
     Ok(exe_path)
 }
 
@@ -2390,6 +2411,7 @@ pub fn compile_to_outputs(urp_path: &Path, settings: &mut Settings) -> Result<(S
     let urp_path_buf = resolve_urp_project_path(urp_path);
     crate::db::apply_urp_manifest_diagnostic_locale(&urp_path_buf, settings)
         .map_err(|error_message| anyhow::anyhow!(error_message))?;
+    settings.begin_compilation_job(); // One correlation id for this pipeline run (errors and tracing).
     let mut errors = ErrorReporter::from_settings(settings);
     let mut job = crate::urp_parser::parse_urp_with_reporter(&urp_path_buf, &mut errors)?;
     apply_boot_settings(&mut job, settings)
@@ -2408,7 +2430,17 @@ pub fn compile_to_outputs(urp_path: &Path, settings: &mut Settings) -> Result<(S
     settings.debug = job.debug;
 
     crate::compiler_tracing::init_compiler_tracing(settings);
-    tracing::info!(urp = %urp_path_buf.display(), mode = "compile_to_outputs", "starting Ur/Web pipeline");
+    let _compile_job_span = tracing::info_span!(
+        target: TRACING_TARGET_COMPILER_JOB,
+        "compile_job",
+        compilation_id = %settings.compilation_id
+    )
+    .entered(); // Nest pipeline events under one job span.
+    trace_compiler_job_info(
+        settings,
+        DiagnosticId::CliCompilerTracingPipelineOutputsStart,
+        vec![urp_path_buf.display().to_string()],
+    ); // Localized catalog pipeline start.
 
     let mut phase_t = Instant::now();
     let source_file = parse_sources(&job, settings, &mut errors)
@@ -2514,7 +2546,11 @@ pub fn compile_to_outputs(urp_path: &Path, settings: &mut Settings) -> Result<(S
     let c_code = cjr_print(&cjr_file, settings);
     let sql_ddl = sql_generate(&cjr_file, settings);
     crate::compiler_tracing::log_phase_complete(settings, "codegen", phase_t);
-    tracing::info!("compile_to_outputs finished (no link step)");
+    trace_compiler_job_info(
+        settings,
+        DiagnosticId::CliCompilerTracingPipelineOutputsFinished,
+        vec![],
+    ); // Localized catalog pipeline end (no link step).
     Ok((c_code, sql_ddl))
 }
 
@@ -2536,6 +2572,7 @@ pub fn elaborate_project(urp_path: &Path, settings: &mut Settings) -> Result<()>
     let urp_path_buf = resolve_urp_project_path(urp_path);
     crate::db::apply_urp_manifest_diagnostic_locale(&urp_path_buf, settings)
         .map_err(|error_message| anyhow::anyhow!(error_message))?;
+    settings.begin_compilation_job(); // One correlation id for this pipeline run (errors and tracing).
     let mut errors = ErrorReporter::from_settings(settings);
     let mut job = crate::urp_parser::parse_urp_with_reporter(&urp_path_buf, &mut errors)?;
     apply_boot_settings(&mut job, settings)
@@ -2552,6 +2589,19 @@ pub fn elaborate_project(urp_path: &Path, settings: &mut Settings) -> Result<()>
     settings.headers = job.headers.clone();
     settings.scripts = job.scripts.clone();
     settings.debug = job.debug;
+
+    crate::compiler_tracing::init_compiler_tracing(settings);
+    let _compile_job_span = tracing::info_span!(
+        target: TRACING_TARGET_COMPILER_JOB,
+        "compile_job",
+        compilation_id = %settings.compilation_id
+    )
+    .entered(); // Nest pipeline events under one job span.
+    trace_compiler_job_info(
+        settings,
+        DiagnosticId::CliCompilerTracingElaborateProjectStart,
+        vec![urp_path_buf.display().to_string()],
+    ); // Localized catalog parse/elaboration-only start.
 
     let source_file = parse_sources(&job, settings, &mut errors)
         .ok_or_else(|| anyhow_phase_incomplete(settings, "parsing"))?;

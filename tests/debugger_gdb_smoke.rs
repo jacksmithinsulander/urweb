@@ -2,7 +2,12 @@
 //!
 //! Requires `gdb` on PATH and a trivial debug binary (`target/debug/deeptest`).
 
-mod common;
+#[path = "common/require_ok.rs"]
+mod require_ok;
+#[path = "common/ur_bins.rs"]
+mod ur_bins;
+
+use ur_bins::ur_package_binary;
 
 use anyhow::Context as _; // .with_context() on Result in tests
 use std::io::{BufRead, BufReader, Write};
@@ -110,7 +115,7 @@ fn dap_initialize_and_launch_smoke() -> anyhow::Result<()> {
     }
 
     let exe = deeptest_executable();
-    let ur_dbg = common::ur_package_binary("ur-debugger");
+    let ur_dbg = ur_package_binary("ur-debugger");
     let mut child = Command::new(ur_dbg)
         .arg("--dap")
         .stdin(Stdio::piped())

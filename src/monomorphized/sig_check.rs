@@ -27,15 +27,6 @@ fn unit_exp(span: &crate::error_types::Span) -> LocExp {
 // is_siggy — does a declaration reference siggers or Basis.sigString?
 // ---------------------------------------------------------------------------
 
-#[allow(dead_code)]
-fn is_siggy_exp(e: &LocExp, siggers: &HashSet<usize>) -> bool {
-    utilities::exp::exists(e, &|_| false, &|node| match node {
-        Exp::Rel(n) => siggers.contains(n),
-        Exp::FfiApp(m, x, _) => m == "Basis" && x == "sigString",
-        _ => false,
-    })
-}
-
 fn is_siggy_decl(d: &LocDecl, siggers: &HashSet<usize>) -> bool {
     utilities::decl::exists(
         d,
@@ -62,12 +53,6 @@ fn sigify_node(node: Exp, sigdecs: &HashSet<usize>, span: &crate::error_types::S
         }
         other => other,
     }
-}
-
-#[allow(dead_code)]
-fn sigify_exp(e: LocExp, sigdecs: &HashSet<usize>) -> LocExp {
-    let span = e.span.clone();
-    utilities::exp::map(e, &|t| t, &|node| sigify_node(node, sigdecs, &span))
 }
 
 fn sigify_decl(d: LocDecl, sigdecs: &HashSet<usize>) -> LocDecl {

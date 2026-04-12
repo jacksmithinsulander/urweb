@@ -1206,22 +1206,28 @@ fn find_split(
         xs,
         known,
         &old_xs,
-        true,
-        vec![],
-        BTreeSet::new(),
+        FindSplitAcc {
+            initial_part: true,
+            fxs: vec![],
+            fvs: BTreeSet::new(),
+        },
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+/// Accumulates specialized-prefix expressions and their free variables while [`find_split_rec`] walks a type spine.
+struct FindSplitAcc {
+    initial_part: bool,
+    fxs: Vec<LocatedExpression>,
+    fvs: BTreeSet<usize>,
+}
+
 fn find_split_rec(
     typ: &LocatedConstructor,
     const_args: usize,
     xs: &[LocatedExpression],
     known: &HashSet<usize>,
     old_xs: &[LocatedExpression],
-    initial_part: bool,
-    fxs: Vec<LocatedExpression>,
-    fvs: BTreeSet<usize>,
+    acc: FindSplitAcc,
 ) -> (
     Vec<LocatedExpression>,
     Vec<LocatedExpression>,
@@ -1229,31 +1235,33 @@ fn find_split_rec(
 ) {
     // Default: stop here.
     let default = || {
-        if initial_part {
+        if acc.initial_part {
             (vec![], old_xs.to_vec(), BTreeSet::new())
         } else {
-            (fxs.clone(), xs.to_vec(), fvs.clone())
+            (acc.fxs.clone(), xs.to_vec(), acc.fvs.clone())
         }
     };
 
     match (&typ.node, xs) {
         (Constructor::TFun(dom, ran), [e, rest @ ..]) if const_args > 0 => {
             let fi = function_inside(known, dom);
-            if initial_part || fi {
-                let mut new_fvs = fvs.clone();
+            if acc.initial_part || fi {
+                let mut new_fvs = acc.fvs.clone();
                 new_fvs.extend(free_vars(e));
-                let mut new_fxs = fxs;
+                let mut new_fxs = acc.fxs;
                 new_fxs.push(e.clone());
-                let new_initial_part = !fi && initial_part;
+                let new_initial_part = !fi && acc.initial_part;
                 find_split_rec(
                     ran,
                     const_args - 1,
                     rest,
                     known,
                     old_xs,
-                    new_initial_part,
-                    new_fxs,
-                    new_fvs,
+                    FindSplitAcc {
+                        initial_part: new_initial_part,
+                        fxs: new_fxs,
+                        fvs: new_fvs,
+                    },
                 )
             } else {
                 default()

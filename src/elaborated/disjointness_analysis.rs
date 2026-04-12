@@ -6,6 +6,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::compiler_tracing::TRACING_TARGET_COMPILER_INTERNALS;
 use crate::elaborated::type_operations::hnorm_con;
 use crate::elaborated::{Constructor, LocatedConstructor};
 use crate::error_types::{Located, Span};
@@ -100,10 +101,15 @@ pub fn empty_env() -> DisjointEnv {
 ///
 /// Nothing.
 pub fn print_env(disjointness_map: &DisjointEnv) {
-    tracing::debug!("DENV: {} roots", disjointness_map.len());
+    tracing::debug!(
+        target: TRACING_TARGET_COMPILER_INTERNALS,
+        "DENV: {} roots",
+        disjointness_map.len()
+    );
     for (left_piece, disjoint_right_set) in disjointness_map {
         for right_piece in disjoint_right_set {
             tracing::debug!(
+                target: TRACING_TARGET_COMPILER_INTERNALS,
                 left = %rp_to_string(left_piece),
                 right = %rp_to_string(right_piece),
                 "DENV pair"
