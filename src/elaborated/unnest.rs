@@ -161,8 +161,11 @@ fn lift_e(by: i64, bound: usize, e: LocatedExpression) -> LocatedExpression {
 // ---------------------------------------------------------------------------
 
 /// Replace `Expression::Rel(xn)` with `rep` in `e`.
-/// All `Expression::Rel(n > xn)` are shifted down by 1 (since `xn` binding
-/// is being removed).
+///
+/// This deliberately matches the local `subExpInExp` in `unnest.sml`, not the
+/// general environment substitution helpers: we replace the chosen variable
+/// but do not shift larger `ERel`s down here. The later `do_subst` pass
+/// performs the explicit un-shift after all substitutions are in place.
 fn sub_e(xn: usize, rep: &LocatedExpression, e: LocatedExpression) -> LocatedExpression {
     sub_e_bound(xn, 0, rep, e)
 }
@@ -179,8 +182,6 @@ fn sub_e_bound(
             let abs_xn = xn + depth;
             if n == abs_xn {
                 return lift_e(depth as i64, 0, rep.clone());
-            } else if n > abs_xn {
-                Expression::Rel(n - 1)
             } else {
                 Expression::Rel(n)
             }
@@ -283,6 +284,23 @@ fn pat_bind_depth(p: &LocatedPattern) -> usize {
         Pattern::Prim(_) => 0,
         Pattern::Constructor(_, _, _, inner) => inner.as_ref().map_or(0, |p| pat_bind_depth(p)),
         Pattern::Record(fields) => fields.iter().map(|(_, p, _)| pat_bind_depth(p)).sum(),
+    }
+}
+
+fn pattern_bindings_acc(p: &LocatedPattern, out: &mut Vec<(String, LocatedConstructor)>) {
+    match &p.node {
+        Pattern::Var(name, typ) => out.push((name.clone(), typ.clone())),
+        Pattern::Prim(_) => {}
+        Pattern::Constructor(_, _, _, inner) => {
+            if let Some(inner) = inner {
+                pattern_bindings_acc(inner, out);
+            }
+        }
+        Pattern::Record(fields) => {
+            for (_, p, _) in fields {
+                pattern_bindings_acc(p, out);
+            }
+        }
     }
 }
 
@@ -503,6 +521,12 @@ fn position_of(
     errors: &mut ErrorReporter,
 ) -> usize {
     list.iter().position(|&v| v == x).unwrap_or_else(|| {
+        if std::env::var("URWEB_DEBUG_UNNEST").ok().as_deref() == Some("1") {
+            eprintln!(
+                "unnest remap miss span={}:{} x={} list={:?}",
+                span.file, span.first.line, x, list
+            );
+        }
         errors.report_type_at(
             span.clone(),
             DiagnosticPayload::new(
@@ -614,10 +638,11 @@ fn squish_e(
     e: LocatedExpression,
     errors: &mut ErrorReporter,
 ) -> LocatedExpression {
-    squish_e_bound(0, 0, nr, kfv, cfv, efv, e, errors)
+    squish_e_bound(nr, 0, 0, nr, kfv, cfv, efv, e, errors)
 }
 
 fn squish_e_bound(
+    nr: usize,
     kb: usize,
     cb: usize,
     eb: usize,
@@ -630,79 +655,109 @@ fn squish_e_bound(
     let span = e.span.clone();
     let node = match e.node {
         Expression::Rel(n) if n >= eb => {
-            // Remap to position in efv, then adjust by (eb - nr)
-            // Formula from SML: ERel(positionOf (n-eb) efv + eb - nr)
-            // Here eb already includes nr (we pass eb=nr initially).
-            // Actually let's follow SML: initial call is with eb=nr (the recursive definitions
-            // themselves occupy 0..nr-1 and are NOT free). Inside the hoisted function,
-            // after applying subs', the remaining free vars need to be renumbered.
-            // The squish remaps n-eb → position_of(n-eb, efv), then adds eb-nr back
-            // (to account for remaining in-scope bindings above the recursion).
-            Expression::Rel(position_of(n - eb, efv, &span, errors)) // = position_of(n-eb, efv)
+            // Match SML `squishExp`: keep the surrounding binder depth (`eb - nr`)
+            // when remapping a free variable into the captured environment.
+            Expression::Rel(position_of(n - eb, efv, &span, errors) + eb - nr)
         }
         Expression::App(f, x) => Expression::App(
-            Box::new(squish_e_bound(kb, cb, eb, kfv, cfv, efv, *f, errors)),
-            Box::new(squish_e_bound(kb, cb, eb, kfv, cfv, efv, *x, errors)),
+            Box::new(squish_e_bound(nr, kb, cb, eb, kfv, cfv, efv, *f, errors)),
+            Box::new(squish_e_bound(nr, kb, cb, eb, kfv, cfv, efv, *x, errors)),
         ),
         Expression::Abs(name, dom, ran, body) => Expression::Abs(
             name,
             squish_c_bound(kb, cb, kfv, cfv, dom, errors),
             squish_c_bound(kb, cb, kfv, cfv, ran, errors),
-            Box::new(squish_e_bound(kb, cb, eb + 1, kfv, cfv, efv, *body, errors)),
+            Box::new(squish_e_bound(
+                nr,
+                kb,
+                cb,
+                eb + 1,
+                kfv,
+                cfv,
+                efv,
+                *body,
+                errors,
+            )),
         ),
         Expression::CApp(f, c) => Expression::CApp(
-            Box::new(squish_e_bound(kb, cb, eb, kfv, cfv, efv, *f, errors)),
+            Box::new(squish_e_bound(nr, kb, cb, eb, kfv, cfv, efv, *f, errors)),
             squish_c_bound(kb, cb, kfv, cfv, c, errors),
         ),
         Expression::CAbs(expl, name, k, body) => Expression::CAbs(
             expl,
             name,
             k,
-            Box::new(squish_e_bound(kb, cb + 1, eb, kfv, cfv, efv, *body, errors)),
+            Box::new(squish_e_bound(
+                nr,
+                kb,
+                cb + 1,
+                eb,
+                kfv,
+                cfv,
+                efv,
+                *body,
+                errors,
+            )),
         ),
         Expression::KAbs(name, body) => Expression::KAbs(
             name,
-            Box::new(squish_e_bound(kb + 1, cb, eb, kfv, cfv, efv, *body, errors)),
+            Box::new(squish_e_bound(
+                nr,
+                kb + 1,
+                cb,
+                eb,
+                kfv,
+                cfv,
+                efv,
+                *body,
+                errors,
+            )),
         ),
         Expression::KApp(f, k) => Expression::KApp(
-            Box::new(squish_e_bound(kb, cb, eb, kfv, cfv, efv, *f, errors)),
+            Box::new(squish_e_bound(nr, kb, cb, eb, kfv, cfv, efv, *f, errors)),
             k,
         ),
         Expression::Record(fields) => Expression::Record(
             fields
                 .into_iter()
-                .map(|(n, v, t)| (n, squish_e_bound(kb, cb, eb, kfv, cfv, efv, v, errors), t))
+                .map(|(n, v, t)| {
+                    (
+                        n,
+                        squish_e_bound(nr, kb, cb, eb, kfv, cfv, efv, v, errors),
+                        t,
+                    )
+                })
                 .collect(),
         ),
         Expression::Field(e2, c, meta) => Expression::Field(
-            Box::new(squish_e_bound(kb, cb, eb, kfv, cfv, efv, *e2, errors)),
+            Box::new(squish_e_bound(nr, kb, cb, eb, kfv, cfv, efv, *e2, errors)),
             c,
             meta,
         ),
         Expression::Concat(a, c1, b, c2) => Expression::Concat(
-            Box::new(squish_e_bound(kb, cb, eb, kfv, cfv, efv, *a, errors)),
+            Box::new(squish_e_bound(nr, kb, cb, eb, kfv, cfv, efv, *a, errors)),
             c1,
-            Box::new(squish_e_bound(kb, cb, eb, kfv, cfv, efv, *b, errors)),
+            Box::new(squish_e_bound(nr, kb, cb, eb, kfv, cfv, efv, *b, errors)),
             c2,
         ),
         Expression::Cut(e2, c, meta) => Expression::Cut(
-            Box::new(squish_e_bound(kb, cb, eb, kfv, cfv, efv, *e2, errors)),
+            Box::new(squish_e_bound(nr, kb, cb, eb, kfv, cfv, efv, *e2, errors)),
             c,
             meta,
         ),
         Expression::CutMulti(e2, c, meta) => Expression::CutMulti(
-            Box::new(squish_e_bound(kb, cb, eb, kfv, cfv, efv, *e2, errors)),
+            Box::new(squish_e_bound(nr, kb, cb, eb, kfv, cfv, efv, *e2, errors)),
             c,
             meta,
         ),
         Expression::Case(disc, arms, meta) => Expression::Case(
-            Box::new(squish_e_bound(kb, cb, eb, kfv, cfv, efv, *disc, errors)),
+            Box::new(squish_e_bound(nr, kb, cb, eb, kfv, cfv, efv, *disc, errors)),
             arms.into_iter()
                 .map(|(p, arm)| {
                     let d = pat_bind_depth(&p);
                     (
                         p,
-                        squish_e_bound(kb, cb, eb + d, kfv, cfv, efv, arm, errors),
+                        squish_e_bound(nr, kb, cb, eb + d, kfv, cfv, efv, arm, errors),
                     )
                 })
                 .collect(),
@@ -717,7 +772,7 @@ fn squish_e_bound(
                     let (node2, added) = match de.node {
                         ElaboratedDeclaration::Val(p, ty, e2) => {
                             let d = pat_bind_depth(&p);
-                            let e2s = squish_e_bound(kb, cb, cur_eb, kfv, cfv, efv, e2, errors);
+                            let e2s = squish_e_bound(nr, kb, cb, cur_eb, kfv, cfv, efv, e2, errors);
                             (ElaboratedDeclaration::Val(p, ty, e2s), d)
                         }
                         ElaboratedDeclaration::ValRec(vis) => {
@@ -729,6 +784,7 @@ fn squish_e_bound(
                                         x,
                                         ty,
                                         squish_e_bound(
+                                            nr,
                                             kb,
                                             cb,
                                             cur_eb + nr2,
@@ -750,7 +806,9 @@ fn squish_e_bound(
                 .collect();
             Expression::Let(
                 des2,
-                Box::new(squish_e_bound(kb, cb, cur_eb, kfv, cfv, efv, *body, errors)),
+                Box::new(squish_e_bound(
+                    nr, kb, cb, cur_eb, kfv, cfv, efv, *body, errors,
+                )),
                 t,
             )
         }
@@ -796,8 +854,8 @@ fn build_call(
     loc: &crate::error_types::Span,
 ) -> LocatedExpression {
     let mut e = base;
-    // Apply kind args (outermost first → fold left)
-    for &kx in kfv {
+    // Match the SML `foldr`: apply outermost binders first.
+    for &kx in kfv.iter().rev() {
         e = Located::new(
             Expression::KApp(
                 Box::new(e),
@@ -807,14 +865,14 @@ fn build_call(
         );
     }
     // Apply con args
-    for &cx in cfv {
+    for &cx in cfv.iter().rev() {
         e = Located::new(
             Expression::CApp(Box::new(e), Located::new(Constructor::Rel(cx), loc.clone())),
             loc.clone(),
         );
     }
     // Apply exp args: ERel(nr + x) — shifted past the recursive bindings
-    for &ex in efv {
+    for &ex in efv.iter().rev() {
         e = Located::new(
             Expression::App(
                 Box::new(e),
@@ -912,6 +970,13 @@ impl<'a> UnnestCtx<'a> {
                 .insert(0, ("_".into(), Located::dummy(Constructor::Error)));
         }
     }
+    fn push_pattern_bindings(&mut self, p: &LocatedPattern) {
+        let mut bindings = Vec::new();
+        pattern_bindings_acc(p, &mut bindings);
+        for (name, typ) in bindings {
+            self.push_e(name, typ);
+        }
+    }
     fn pop_e_n(&mut self, n: usize) {
         for _ in 0..n {
             if !self.exps.is_empty() {
@@ -925,9 +990,41 @@ impl<'a> UnnestCtx<'a> {
         match e.node {
             Exp::Let(eds, body, t) => {
                 let basis_id = self.basis_id;
+                let let_base = self.exps.len();
+
+                // Match the SML foldMapB traversal order: recursively transform nested
+                // bodies first, with the original let-bound context in scope, before
+                // this let decides which immediate bindings to hoist.
+                let mut eds_pre: Vec<LocatedElaboratedDeclaration> = Vec::new();
+                for de in eds {
+                    let de_span = de.span.clone();
+                    match de.node {
+                        ElaboratedDeclaration::Val(p, ty, e2) => {
+                            let e2u = self.exp(e2);
+                            eds_pre.push(Located::new(
+                                ElaboratedDeclaration::Val(p.clone(), ty, e2u),
+                                de_span,
+                            ));
+                            self.push_pattern_bindings(&p);
+                        }
+                        ElaboratedDeclaration::ValRec(vis) => {
+                            for (x, ty, _) in &vis {
+                                self.push_e(x.clone(), ty.clone());
+                            }
+                            let vis2 = vis
+                                .into_iter()
+                                .map(|(x, ty, e2)| (x, ty, self.exp(e2)))
+                                .collect();
+                            eds_pre
+                                .push(Located::new(ElaboratedDeclaration::ValRec(vis2), de_span));
+                        }
+                    }
+                }
+                let body_pre = self.exp(*body);
+                self.exps.truncate(let_base);
 
                 // Convert EDVal(PVar, fn-type, e) → EDValRec.
-                let eds: Vec<_> = eds
+                let eds: Vec<_> = eds_pre
                     .into_iter()
                     .map(|de| {
                         let span2 = de.span.clone();
@@ -953,7 +1050,7 @@ impl<'a> UnnestCtx<'a> {
                     })
                     .collect();
 
-                // Process each decl.
+                // Process each decl after nested bodies have already been transformed.
                 let mut remaining: Vec<LocatedElaboratedDeclaration> = Vec::new();
                 let mut subs: Vec<(usize, LocatedExpression)> = Vec::new();
                 let mut by: usize = 0; // total bindings hoisted (removed from Let)
@@ -962,17 +1059,15 @@ impl<'a> UnnestCtx<'a> {
                     let de_span = de.span.clone();
                     match de.node {
                         ElaboratedDeclaration::Val(p, ty, e2) => {
-                            // Apply pending subs, then recursively unnest, then un-shift.
+                            // Apply pending subs, then keep the transformed binding.
                             let e2a = self.do_subst(e2, &subs, by);
-                            let e2u = self.exp(e2a);
                             let d = pat_bind_depth(&p);
+                            self.push_pattern_bindings(&p);
                             remaining.push(Located::new(
-                                ElaboratedDeclaration::Val(p, ty.clone(), e2u),
+                                ElaboratedDeclaration::Val(p, ty.clone(), e2a),
                                 de_span,
                             ));
-                            // Push vars for this pattern into context.
-                            self.push_e_n(d); // simplified: no proper type tracking
-                                              // Update subs: each existing sub shifts by d.
+                            // Update subs: each existing sub shifts by d.
                             subs = subs
                                 .into_iter()
                                 .map(|(xn, rep)| (xn + d, lift_e(d as i64, 0, rep)))
@@ -995,6 +1090,10 @@ impl<'a> UnnestCtx<'a> {
                                     (x, ty, e2a)
                                 })
                                 .collect();
+                            let vis_binders: Vec<_> = vis
+                                .iter()
+                                .map(|(x, ty, _)| (x.clone(), ty.clone()))
+                                .collect();
 
                             // Compute free vars and hoist.
                             let (new_subs, _nr2) = self.hoist_valrec_inner(vis, &de_span);
@@ -1007,16 +1106,17 @@ impl<'a> UnnestCtx<'a> {
                                 .collect();
                             subs = new_subs.into_iter().chain(shifted_subs).collect();
                             by += nr;
+                            for (x, ty) in vis_binders {
+                                self.push_e(x, ty);
+                            }
                             // No push to remaining (hoisted).
                         }
                     }
                 }
 
                 // Apply remaining subs to body.
-                let body2 = self.do_subst(*body, &subs, by);
-                let body3 = self.exp(body2);
-                // Pop pushed vars.
-                // (In simplified version, we don't track exactly how many were pushed.)
+                let body3 = self.do_subst(body_pre, &subs, by);
+                self.exps.truncate(let_base);
 
                 Located::new(Exp::Let(remaining, Box::new(body3), t), span)
             }
@@ -1137,6 +1237,31 @@ impl<'a> UnnestCtx<'a> {
         let cfv: Vec<usize> = cfv_set.into_iter().collect();
         let efv: Vec<usize> = efv_set.into_iter().collect();
 
+        if std::env::var("URWEB_DEBUG_UNNEST").ok().as_deref() == Some("1") {
+            let exp_names: Vec<String> = self
+                .exps
+                .iter()
+                .enumerate()
+                .map(|(i, (name, _))| format!("{i}:{name}"))
+                .collect();
+            eprintln!(
+                "unnest hoist span={}:{} nr={} efv={:?} exps=[{}]",
+                loc.file,
+                loc.first.line,
+                nr,
+                efv,
+                exp_names.join(", ")
+            );
+            for (name, _, body) in &vis {
+                eprintln!(
+                    "unnest hoist body {} = {}",
+                    name,
+                    crate::elaborated::type_display::format_expression(body)
+                );
+                eprintln!("unnest hoist body-debug {} = {:?}", name, body);
+            }
+        }
+
         // Assign fresh IDs.
         let ids: Vec<usize> = vis.iter().map(|_| self.fresh()).collect();
 
@@ -1164,7 +1289,7 @@ impl<'a> UnnestCtx<'a> {
 
             // Wrap with exp lambdas (innermost efv first, i.e. reverse).
             let (mut we, mut wt) = (body_s, ty_s);
-            for &ex in efv.iter().rev() {
+            for &ex in &efv {
                 let (aname, atype) = self
                     .exps
                     .get(ex)
@@ -1181,7 +1306,7 @@ impl<'a> UnnestCtx<'a> {
                 wt = fun_t;
             }
             // Wrap with con lambdas.
-            for &cx in cfv.iter().rev() {
+            for &cx in &cfv {
                 let (cname, ckind) = self
                     .cons
                     .get(cx)
@@ -1207,7 +1332,7 @@ impl<'a> UnnestCtx<'a> {
                 );
             }
             // Wrap with kind lambdas.
-            for &kx in kfv.iter().rev() {
+            for &kx in &kfv {
                 let kname = self.knames.get(kx).cloned().unwrap_or_else(|| "_".into());
                 we = Located::new(Exp::KAbs(kname.clone(), Box::new(we)), loc.clone());
                 wt = Located::new(Constructor::TKFun(kname, Box::new(wt)), loc.clone());

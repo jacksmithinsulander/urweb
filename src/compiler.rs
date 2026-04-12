@@ -3165,6 +3165,62 @@ mod tests {
         Ok(())
     }
 
+    /// `demo/hello.ur` uses `return <xml>...</xml>` without an explicit monad annotation, so the
+    /// elaborator must follow the ML compiler's class-resolution order instead of rejecting the
+    /// intermediate `monad ?m` goal too early.
+    #[test]
+    fn elaborate_demo_hello_elaborates_after_boot_parity() -> anyhow::Result<()> {
+        const STACK: usize = crate::COMPILE_THREAD_STACK_BYTES;
+        let join_handle = std::thread::Builder::new()
+            .name("elaborate_demo_hello_large_stack".into())
+            .stack_size(STACK)
+            .spawn(elaborate_demo_hello_elaborates_after_boot_parity_body)
+            .with_context(|| "spawn demo/hello elaboration thread")?;
+        match join_handle.join() {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => return Err(error),
+            Err(panic_payload) => {
+                return Err(anyhow!(
+                    "demo/hello elaboration thread panicked: {:?}",
+                    panic_payload
+                ))
+            }
+        }
+        Ok(())
+    }
+
+    fn elaborate_demo_hello_elaborates_after_boot_parity_body() -> anyhow::Result<()> {
+        let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let lib_dir = manifest_dir.join("lib/ur");
+        let hello_ur = manifest_dir.join("demo/hello.ur");
+        if !lib_dir.join("basis.urs").is_file() || !hello_ur.is_file() {
+            return Ok(());
+        }
+        let dir = tempfile::tempdir()?;
+        std::fs::copy(&hello_ur, dir.path().join("hello.ur"))
+            .with_context(|| "copy demo/hello.ur into temp dir")?;
+        let job = Job {
+            sources: vec!["hello".into()],
+            basis_lib_dir: Some(lib_dir),
+            ..Default::default()
+        };
+        let mut parse_errors = ErrorReporter::new_silent();
+        let settings = Settings::new();
+        let tree = with_parse_test_cwd(dir.path(), || {
+            parse_sources(&job, &settings, &mut parse_errors)
+        });
+        let tree =
+            tree.unwrap_or_else(|| panic!("parse_sources failed: {:?}", parse_errors.errors));
+        let mut elab_errors = ErrorReporter::new_silent();
+        let out = elaborate(tree, &settings, &mut elab_errors);
+        assert!(
+            out.is_some(),
+            "demo/hello.ur must elaborate with full boot: {:?}",
+            elab_errors.errors
+        );
+        Ok(())
+    }
+
     /// Synthetic UrwebNative FFI items must stay non-empty with stable names (empty `vec!` mutants break native-surface projects).
     #[test]
     fn urweb_native_ffi_sgn_items_contains_expected_vals() -> anyhow::Result<()> {

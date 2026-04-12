@@ -8,7 +8,7 @@
 //! **Bounded work:** [`hnorm_con`] uses a thread-local depth counter; solved-[`Constructor::Unif`] peeling
 //! uses [`PEEL_SOLVED_CONSTRUCTOR_UNIF_CHAIN_MAX_STEPS`] so alias chains cannot cycle without bound.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use crate::elaborated::{CUnif, CUnifRef, Constructor, Kind, LocatedConstructor, LocatedKind};
 use crate::error_types::Located;
@@ -838,6 +838,130 @@ fn inc_distribute() {
     DISTRIBUTE.fetch_add(1, Ordering::Relaxed);
 }
 
+fn inc_identity() {
+    IDENTITY.fetch_add(1, Ordering::Relaxed);
+}
+
+fn inc_fuse() {
+    FUSE.fetch_add(1, Ordering::Relaxed);
+}
+
+fn strip_disjoint_constraints(constructor: LocatedConstructor) -> LocatedConstructor {
+    let mut current = hnorm_con(constructor);
+    loop {
+        match current.node {
+            Constructor::TDisjoint(_, _, body) => current = hnorm_con(*body),
+            _ => return current,
+        }
+    }
+}
+
+fn try_map_identity(
+    map_domain_kind: &LocatedKind,
+    map_function: &LocatedConstructor,
+    map_argument: &LocatedConstructor,
+    span: &crate::error_types::Span,
+) -> Option<LocatedConstructor> {
+    let probe_cell: CUnifRef = Arc::new(Mutex::new(CUnif::Unknown));
+    let probe = Located {
+        node: Constructor::Unif(
+            0,
+            span.clone(),
+            Box::new(map_domain_kind.clone()),
+            "_map_identity".into(),
+            probe_cell.clone(),
+        ),
+        span: span.clone(),
+    };
+    let probe_application = Located {
+        node: Constructor::App(Box::new(map_function.clone()), Box::new(probe)),
+        span: span.clone(),
+    };
+    let stripped = strip_disjoint_constraints(probe_application);
+    match stripped.node {
+        Constructor::Unif(_, _, _, _, resolved_cell)
+            if Arc::ptr_eq(&resolved_cell, &probe_cell) =>
+        {
+            inc_identity();
+            Some(hnorm_con(map_argument.clone()))
+        }
+        _ => None,
+    }
+}
+
+fn try_map_fusion(
+    outer_range_kind: &LocatedKind,
+    outer_function: &LocatedConstructor,
+    map_argument: &LocatedConstructor,
+    span: &crate::error_types::Span,
+) -> Option<LocatedConstructor> {
+    let Located {
+        node: Constructor::App(inner_map_head, row_argument),
+        ..
+    } = hnorm_con(map_argument.clone())
+    else {
+        return None;
+    };
+    let Located {
+        node: Constructor::App(inner_map_constructor, inner_function),
+        ..
+    } = hnorm_con(*inner_map_head)
+    else {
+        return None;
+    };
+    let Located {
+        node: Constructor::Map(inner_domain_kind, _),
+        ..
+    } = hnorm_con(*inner_map_constructor)
+    else {
+        return None;
+    };
+
+    let lifted_inner_function = lift_con_in_con(*inner_function);
+    let lifted_outer_function = lift_con_in_con(outer_function.clone());
+    let fused_body = Located {
+        node: Constructor::App(
+            Box::new(lifted_outer_function),
+            Box::new(Located {
+                node: Constructor::App(
+                    Box::new(lifted_inner_function),
+                    Box::new(Located {
+                        node: Constructor::Rel(0),
+                        span: span.clone(),
+                    }),
+                ),
+                span: span.clone(),
+            }),
+        ),
+        span: span.clone(),
+    };
+    let fused_function = Located {
+        node: Constructor::Abs("v".into(), inner_domain_kind.clone(), Box::new(fused_body)),
+        span: span.clone(),
+    };
+    let fused_map = Located {
+        node: Constructor::App(
+            Box::new(Located {
+                node: Constructor::App(
+                    Box::new(Located {
+                        node: Constructor::Map(
+                            inner_domain_kind,
+                            Box::new(outer_range_kind.clone()),
+                        ),
+                        span: span.clone(),
+                    }),
+                    Box::new(fused_function),
+                ),
+                span: span.clone(),
+            }),
+            row_argument,
+        ),
+        span: span.clone(),
+    };
+    inc_fuse();
+    Some(hnorm_con(fused_map))
+}
+
 // ---------------------------------------------------------------------------
 // Head-normalisation
 // ---------------------------------------------------------------------------
@@ -1026,7 +1150,7 @@ fn hnorm_con_inner(constructor: LocatedConstructor) -> LocatedConstructor {
                     let c2_norm = hnorm_con(*c2);
                     let c1p_norm = hnorm_con(*c1p);
                     match &c1p_norm.node {
-                        Constructor::Map(_k1, k2) => {
+                        Constructor::Map(left_domain_kind, k2) => {
                             let k2 = k2.clone();
                             match &c2_norm.node {
                                 Constructor::Record(_, fields) if fields.is_empty() => Located {
@@ -1159,49 +1283,64 @@ fn hnorm_con_inner(constructor: LocatedConstructor) -> LocatedConstructor {
                                     }
                                 }
                                 _ => {
-                                    // tryDistributivity on outer c2_norm
-                                    match &c2_norm.node {
-                                        Constructor::Concat(cc1, cc2) => {
-                                            inc_distribute();
-                                            let map_f = Located {
+                                    if let Some(identity_result) = try_map_identity(
+                                        left_domain_kind.as_ref(),
+                                        f.as_ref(),
+                                        &c2_norm,
+                                        &span,
+                                    ) {
+                                        identity_result
+                                    } else if let Some(fused_result) =
+                                        try_map_fusion(k2.as_ref(), f.as_ref(), &c2_norm, &span)
+                                    {
+                                        fused_result
+                                    } else {
+                                        match &c2_norm.node {
+                                            Constructor::Concat(cc1, cc2) => {
+                                                inc_distribute();
+                                                let map_f = Located {
+                                                    node: Constructor::App(
+                                                        Box::new(c1p_norm.clone()),
+                                                        f.clone(),
+                                                    ),
+                                                    span: span.clone(),
+                                                };
+                                                let app1 = Located {
+                                                    node: Constructor::App(
+                                                        Box::new(map_f.clone()),
+                                                        cc1.clone(),
+                                                    ),
+                                                    span: span.clone(),
+                                                };
+                                                let app2 = Located {
+                                                    node: Constructor::App(
+                                                        Box::new(map_f),
+                                                        cc2.clone(),
+                                                    ),
+                                                    span: span.clone(),
+                                                };
+                                                hnorm_con(Located {
+                                                    node: Constructor::Concat(
+                                                        Box::new(app1),
+                                                        Box::new(app2),
+                                                    ),
+                                                    span,
+                                                })
+                                            }
+                                            _ => Located {
                                                 node: Constructor::App(
-                                                    Box::new(c1p_norm.clone()),
-                                                    f.clone(),
-                                                ),
-                                                span: span.clone(),
-                                            };
-                                            let app1 = Located {
-                                                node: Constructor::App(
-                                                    Box::new(map_f.clone()),
-                                                    cc1.clone(),
-                                                ),
-                                                span: span.clone(),
-                                            };
-                                            let app2 = Located {
-                                                node: Constructor::App(
-                                                    Box::new(map_f),
-                                                    cc2.clone(),
-                                                ),
-                                                span: span.clone(),
-                                            };
-                                            hnorm_con(Located {
-                                                node: Constructor::Concat(
-                                                    Box::new(app1),
-                                                    Box::new(app2),
+                                                    Box::new(Located {
+                                                        node: Constructor::App(
+                                                            Box::new(c1p_norm),
+                                                            f,
+                                                        ),
+                                                        span: span.clone(),
+                                                    }),
+                                                    Box::new(c2_norm),
                                                 ),
                                                 span,
-                                            })
+                                            },
                                         }
-                                        _ => Located {
-                                            node: Constructor::App(
-                                                Box::new(Located {
-                                                    node: Constructor::App(Box::new(c1p_norm), f),
-                                                    span: span.clone(),
-                                                }),
-                                                Box::new(c2_norm),
-                                            ),
-                                            span,
-                                        },
                                     }
                                 }
                             }
@@ -2011,6 +2150,170 @@ mod tests {
         let out = hnorm_con(c);
         assert!(matches!(out.node, Constructor::Unit));
         Ok(()) // return success to the test harness
+    }
+
+    #[test]
+    fn hnorm_con_map_identity_reduces_to_argument() -> anyhow::Result<()> {
+        let span = crate::error_types::Span::dummy();
+        let type_kind = dummy(Kind::Type);
+        let identity_function = Located {
+            node: Constructor::Abs(
+                "x".into(),
+                Box::new(type_kind.clone()),
+                Box::new(dummy(Constructor::Rel(0))),
+            ),
+            span: span.clone(),
+        };
+        let row_argument = dummy(Constructor::Named(900));
+        let map_application = Located {
+            node: Constructor::App(
+                Box::new(Located {
+                    node: Constructor::App(
+                        Box::new(Located {
+                            node: Constructor::Map(
+                                Box::new(type_kind.clone()),
+                                Box::new(type_kind.clone()),
+                            ),
+                            span: span.clone(),
+                        }),
+                        Box::new(identity_function),
+                    ),
+                    span: span.clone(),
+                }),
+                Box::new(row_argument.clone()),
+            ),
+            span,
+        };
+
+        let normalized = hnorm_con(map_application);
+        assert!(
+            cons_eq_simple(&normalized, &row_argument),
+            "map identity should normalize away, got {:?}",
+            normalized
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn hnorm_con_fuses_nested_map_applications() -> anyhow::Result<()> {
+        let span = crate::error_types::Span::dummy();
+        let type_kind = dummy(Kind::Type);
+        let tuple_kind = dummy(Kind::Tuple(vec![type_kind.clone(), type_kind.clone()]));
+        let outer_function = Located {
+            node: Constructor::Abs(
+                "x".into(),
+                Box::new(type_kind.clone()),
+                Box::new(Located {
+                    node: Constructor::App(
+                        Box::new(dummy(Constructor::Named(500))),
+                        Box::new(dummy(Constructor::Rel(0))),
+                    ),
+                    span: span.clone(),
+                }),
+            ),
+            span: span.clone(),
+        };
+        let inner_function = Located {
+            node: Constructor::Abs(
+                "p".into(),
+                Box::new(tuple_kind.clone()),
+                Box::new(Located {
+                    node: Constructor::Proj(Box::new(dummy(Constructor::Rel(0))), 1),
+                    span: span.clone(),
+                }),
+            ),
+            span: span.clone(),
+        };
+        let row_argument = dummy(Constructor::Named(901));
+        let inner_map = Located {
+            node: Constructor::App(
+                Box::new(Located {
+                    node: Constructor::App(
+                        Box::new(Located {
+                            node: Constructor::Map(
+                                Box::new(tuple_kind.clone()),
+                                Box::new(type_kind.clone()),
+                            ),
+                            span: span.clone(),
+                        }),
+                        Box::new(inner_function.clone()),
+                    ),
+                    span: span.clone(),
+                }),
+                Box::new(row_argument.clone()),
+            ),
+            span: span.clone(),
+        };
+        let nested_map = Located {
+            node: Constructor::App(
+                Box::new(Located {
+                    node: Constructor::App(
+                        Box::new(Located {
+                            node: Constructor::Map(
+                                Box::new(type_kind.clone()),
+                                Box::new(type_kind.clone()),
+                            ),
+                            span: span.clone(),
+                        }),
+                        Box::new(outer_function.clone()),
+                    ),
+                    span: span.clone(),
+                }),
+                Box::new(inner_map),
+            ),
+            span: span.clone(),
+        };
+
+        let normalized_outer_function = hnorm_con(outer_function);
+        let normalized_inner_function = hnorm_con(inner_function);
+        let expected = Located {
+            node: Constructor::App(
+                Box::new(Located {
+                    node: Constructor::App(
+                        Box::new(Located {
+                            node: Constructor::Map(
+                                Box::new(tuple_kind.clone()),
+                                Box::new(type_kind.clone()),
+                            ),
+                            span: span.clone(),
+                        }),
+                        Box::new(Located {
+                            node: Constructor::Abs(
+                                "v".into(),
+                                Box::new(tuple_kind),
+                                Box::new(Located {
+                                    node: Constructor::App(
+                                        Box::new(lift_con_in_con(normalized_outer_function)),
+                                        Box::new(Located {
+                                            node: Constructor::App(
+                                                Box::new(lift_con_in_con(
+                                                    normalized_inner_function,
+                                                )),
+                                                Box::new(dummy(Constructor::Rel(0))),
+                                            ),
+                                            span: span.clone(),
+                                        }),
+                                    ),
+                                    span: span.clone(),
+                                }),
+                            ),
+                            span: span.clone(),
+                        }),
+                    ),
+                    span: span.clone(),
+                }),
+                Box::new(row_argument),
+            ),
+            span,
+        };
+
+        let normalized = hnorm_con(nested_map);
+        assert!(
+            cons_eq_simple(&normalized, &expected),
+            "nested maps should fuse, got {:?}",
+            normalized
+        );
+        Ok(())
     }
 
     #[test]

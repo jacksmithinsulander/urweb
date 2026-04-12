@@ -27,7 +27,7 @@
 //!   peel chains additionally capped in `type_operations` (`PEEL_SOLVED_CONSTRUCTOR_UNIF_CHAIN_MAX_STEPS`).
 
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -35,8 +35,9 @@ use crate::diagnostics::{DiagnosticId, DiagnosticPayload};
 use crate::elaborated as elab;
 use crate::elaborated::disjointness_analysis as disjoint;
 use crate::elaborated::environment::{
-    hnorm_con_expression_head, hnorm_sgn, new_named_id, resolve_modproj_constructor_definition,
-    resolve_modproj_constructor_id, ConstructorInfo, Env, VarLookup,
+    decl_binds, hnorm_con_expression_head, hnorm_sgn, new_named_id,
+    resolve_modproj_constructor_definition, resolve_modproj_constructor_id, ConstructorInfo, Env,
+    VarLookup,
 };
 use crate::elaborated::type_operations::{
     cons_eq_simple, hnorm_con, lift_kind_in_con, mlift_con_in_con, occurs_cunif, reduce_con,
@@ -532,8 +533,7 @@ fn constructor_is_folder_head(
     elaboration_environment: &Env,
     constructor: &elab::LocatedConstructor,
 ) -> bool {
-    let normalized_constructor =
-        hnorm_con_expression_head(elaboration_environment, constructor.clone());
+    let normalized_constructor = hnorm_con(constructor.clone());
     let normalized_head = constructor_head_after_apps(&normalized_constructor);
     match &normalized_head.node {
         elab::Constructor::Named(id) => elaboration_environment
@@ -550,8 +550,7 @@ fn expand_folder_constructor_application(
     elaboration_environment: &Env,
     constructor: &elab::LocatedConstructor,
 ) -> Option<elab::LocatedConstructor> {
-    let normalized_constructor =
-        hnorm_con_expression_head(elaboration_environment, constructor.clone());
+    let normalized_constructor = hnorm_con(constructor.clone());
     let elab::Constructor::App(folder_head, row_constructor) = &normalized_constructor.node else {
         return None;
     };
@@ -705,14 +704,123 @@ fn is_folder_constructor_application(
     elaboration_environment: &Env,
     constructor: &elab::LocatedConstructor,
 ) -> bool {
-    let normalized_constructor =
-        hnorm_con_expression_head(elaboration_environment, constructor.clone());
+    let normalized_constructor = hnorm_con(constructor.clone());
     match &normalized_constructor.node {
         elab::Constructor::App(folder_head, _) => {
             constructor_is_folder_head(elaboration_environment, folder_head)
         }
         _ => false,
     }
+}
+
+fn lookup_folder_constructor_head(
+    elaboration_environment: &Env,
+    span: &Span,
+) -> Option<(elab::LocatedConstructor, elab::LocatedKind)> {
+    let projected_folder = |module_id: usize,
+                            path: Vec<String>|
+     -> Option<(elab::LocatedConstructor, elab::LocatedKind)> {
+        let folder_id =
+            resolve_modproj_constructor_id(elaboration_environment, module_id, &path, "folder")?;
+        let (_, folder_kind, _) = elaboration_environment.lookup_c_named(folder_id).ok()?;
+        Some((
+            Located::new(
+                elab::Constructor::ModProj(module_id, path, "folder".to_string()),
+                span.clone(),
+            ),
+            folder_kind.clone(),
+        ))
+    };
+    match elaboration_environment.lookup_c("folder") {
+        VarLookup::Rel(index, kind) => Some((
+            Located::new(elab::Constructor::Rel(index), span.clone()),
+            kind,
+        )),
+        VarLookup::Named(id, kind) => Some((
+            Located::new(elab::Constructor::Named(id), span.clone()),
+            kind,
+        )),
+        VarLookup::NotBound => elaboration_environment
+            .lookup_str("Basis")
+            .and_then(|(basis_id, _)| projected_folder(*basis_id, Vec::new()))
+            .or_else(|| {
+                elaboration_environment
+                    .lookup_str("Top")
+                    .and_then(|(top_id, _)| projected_folder(*top_id, Vec::new()))
+            })
+            .or_else(|| {
+                elaboration_environment
+                    .lookup_named_constructor_by_name("folder")
+                    .map(|(folder_id, folder_kind)| {
+                        (
+                            Located::new(elab::Constructor::Named(folder_id), span.clone()),
+                            folder_kind,
+                        )
+                    })
+            }),
+    }
+}
+
+fn instantiate_fresh_folder_application_from_kind(
+    elaboration_environment: &Env,
+    span: &Span,
+    folder_head: elab::LocatedConstructor,
+    folder_kind: elab::LocatedKind,
+) -> Option<(elab::LocatedConstructor, elab::LocatedConstructor)> {
+    match hnorm_kind(folder_kind).node {
+        elab::Kind::Arrow(domain_kind, range_kind) => {
+            if !matches!(
+                hnorm_kind(range_kind.as_ref().clone()).node,
+                elab::Kind::Type
+            ) {
+                return None;
+            }
+            let domain_kind = hnorm_kind(domain_kind.as_ref().clone());
+            if !matches!(domain_kind.node, elab::Kind::Record(_)) {
+                return None;
+            }
+            let row_constructor = fresh_cunif(
+                elaboration_environment,
+                span.clone(),
+                domain_kind.clone(),
+                "_folder_row",
+            );
+            let folder_application = Located::new(
+                elab::Constructor::App(Box::new(folder_head), Box::new(row_constructor.clone())),
+                span.clone(),
+            );
+            Some((folder_application, row_constructor))
+        }
+        elab::Kind::Fun(_, body_kind) => {
+            let fresh_kind = fresh_kunif(span.clone(), "_folder_kind");
+            let instantiated_body_kind =
+                hnorm_kind(sub_kind_in_kind(0, &fresh_kind, *body_kind.clone()));
+            let folder_head = Located::new(
+                elab::Constructor::KApp(Box::new(folder_head), Box::new(fresh_kind)),
+                span.clone(),
+            );
+            instantiate_fresh_folder_application_from_kind(
+                elaboration_environment,
+                span,
+                folder_head,
+                instantiated_body_kind,
+            )
+        }
+        _ => None,
+    }
+}
+
+fn instantiate_fresh_folder_application(
+    elaboration_environment: &Env,
+    span: &Span,
+) -> Option<(elab::LocatedConstructor, elab::LocatedConstructor)> {
+    let (folder_head, folder_kind) = lookup_folder_constructor_head(elaboration_environment, span)?;
+    instantiate_fresh_folder_application_from_kind(
+        elaboration_environment,
+        span,
+        folder_head,
+        folder_kind,
+    )
 }
 
 fn constructor_has_unit_kind(
@@ -811,6 +919,8 @@ pub struct ElabCtx {
     pub in_signature: bool,
     /// Whether record unification may be delayed.
     pub may_delay: bool,
+    /// Inferred disjointness facts for unsolved row-tail unifiers synthesized by row unification.
+    pub row_tail_disjoint_pieces: BTreeMap<usize, BTreeSet<disjoint::Piece>>,
 }
 
 impl Default for ElabCtx {
@@ -834,6 +944,7 @@ impl ElabCtx {
             unit_record_con: None,
             in_signature: false,
             may_delay: false,
+            row_tail_disjoint_pieces: BTreeMap::new(),
         }
     }
 
@@ -844,6 +955,18 @@ impl ElabCtx {
     pub fn has_errors(&self) -> bool {
         !self.errors.is_empty()
     }
+}
+
+fn with_may_delay<T>(
+    elaboration_context: &mut ElabCtx,
+    may_delay: bool,
+    f: impl FnOnce(&mut ElabCtx) -> T,
+) -> T {
+    let previous_may_delay = elaboration_context.may_delay;
+    elaboration_context.may_delay = may_delay;
+    let output = f(elaboration_context);
+    elaboration_context.may_delay = previous_may_delay;
+    output
 }
 
 // ---------------------------------------------------------------------------
@@ -1176,13 +1299,53 @@ fn selfify_signature(
     let span = normalized_signature.span.clone();
     let selfified_signature = match &normalized_signature.node {
         elab::Signature::Const(signature_items) => {
-            let mut selfified_items = Vec::new();
+            let mut selfification_map = HashMap::new();
             for signature_item in signature_items {
                 match &signature_item.node {
+                    elab::SignatureItem::ConAbs(name, id, _)
+                    | elab::SignatureItem::Constructor(name, id, _, _)
+                    | elab::SignatureItem::ClassAbs(name, id, _)
+                    | elab::SignatureItem::Class(name, id, _, _)
+                    | elab::SignatureItem::DatatypeImp { name, id, .. } => {
+                        selfification_map.insert(
+                            *id,
+                            Located::new(
+                                elab::Constructor::ModProj(
+                                    root_id,
+                                    sub_path.to_vec(),
+                                    name.clone(),
+                                ),
+                                signature_item.span.clone(),
+                            ),
+                        );
+                    }
+                    elab::SignatureItem::Datatype(datatypes) => {
+                        for datatype in datatypes {
+                            selfification_map.insert(
+                                datatype.id,
+                                Located::new(
+                                    elab::Constructor::ModProj(
+                                        root_id,
+                                        sub_path.to_vec(),
+                                        datatype.name.clone(),
+                                    ),
+                                    signature_item.span.clone(),
+                                ),
+                            );
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            let mut selfified_items = Vec::new();
+            for signature_item in signature_items {
+                let realized_item =
+                    realize_signature_item_named_ids(signature_item, &selfification_map);
+                match &realized_item.node {
                     elab::SignatureItem::ConAbs(name, id, kind) => {
                         let definition = Located::new(
                             elab::Constructor::ModProj(root_id, sub_path.to_vec(), name.clone()),
-                            signature_item.span.clone(),
+                            realized_item.span.clone(),
                         );
                         selfified_items.push(Located::new(
                             elab::SignatureItem::Constructor(
@@ -1191,7 +1354,7 @@ fn selfify_signature(
                                 kind.clone(),
                                 definition,
                             ),
-                            signature_item.span.clone(),
+                            realized_item.span.clone(),
                         ));
                     }
                     elab::SignatureItem::Datatype(datatypes) => {
@@ -1207,18 +1370,18 @@ fn selfify_signature(
                                     orig_constrs_path: sub_path.to_vec(),
                                     constrs: datatype.constrs.clone(),
                                 },
-                                signature_item.span.clone(),
+                                realized_item.span.clone(),
                             ));
                         }
                     }
                     elab::SignatureItem::ClassAbs(name, id, kind) => {
                         let definition = Located::new(
                             elab::Constructor::ModProj(root_id, sub_path.to_vec(), name.clone()),
-                            signature_item.span.clone(),
+                            realized_item.span.clone(),
                         );
                         selfified_items.push(Located::new(
                             elab::SignatureItem::Class(name.clone(), *id, kind.clone(), definition),
-                            signature_item.span.clone(),
+                            realized_item.span.clone(),
                         ));
                     }
                     elab::SignatureItem::Structure(import_mode, name, id, nested_signature) => {
@@ -1236,10 +1399,10 @@ fn selfify_signature(
                                     nested_signature,
                                 ),
                             ),
-                            signature_item.span.clone(),
+                            realized_item.span.clone(),
                         ));
                     }
-                    _ => selfified_items.push(signature_item.clone()),
+                    _ => selfified_items.push(realized_item),
                 }
             }
             elab::Signature::Const(selfified_items)
@@ -1300,6 +1463,25 @@ fn assert_projected_signature_constraints(
         );
         return disjointness_environment.clone();
     };
+    if std::env::var("URWEB_DEBUG_PROJECTED_CONSTRAINTS")
+        .ok()
+        .as_deref()
+        == Some("1")
+    {
+        eprintln!(
+            "projected constraints debug root={} path={:?} count={}",
+            root_module_id,
+            path,
+            constraints.len()
+        );
+        for (left, right) in &constraints {
+            eprintln!(
+                "projected constraint left={} right={}",
+                crate::elaborated::type_display::format_constructor(left),
+                crate::elaborated::type_display::format_constructor(right),
+            );
+        }
+    }
 
     let mut updated_disjointness_environment = disjointness_environment.clone();
     for (left, right) in constraints {
@@ -1333,19 +1515,324 @@ fn assert_disjoint_rows(
     )
 }
 
+fn row_tail_unif_identity(constructor: &elab::LocatedConstructor) -> Option<usize> {
+    let normalized_constructor = hnorm_con(constructor.clone());
+    match normalized_constructor.node {
+        elab::Constructor::Unif(_, _, _, _, row_tail_cell) => {
+            let current_value = {
+                let guard = crate::compiler_diagnostics::lock_for_compile(
+                    row_tail_cell.as_ref(),
+                    "row tail identity read",
+                );
+                guard.clone()
+            };
+            match current_value {
+                elab::CUnif::Unknown => Some(Arc::as_ptr(&row_tail_cell) as usize),
+                elab::CUnif::Known(known_constructor) => row_tail_unif_identity(&known_constructor),
+            }
+        }
+        _ => None,
+    }
+}
+
+fn record_row_tail_sibling_disjointness(
+    elaboration_context: &mut ElabCtx,
+    row: &elab::LocatedConstructor,
+    row_tail_id: usize,
+) {
+    let fragments = disjoint::decompose_row(row.clone());
+    let known_pieces: BTreeSet<disjoint::Piece> = fragments
+        .iter()
+        .filter_map(|fragment| match fragment {
+            disjoint::Piece_::Piece(piece) => Some(piece.clone()),
+            disjoint::Piece_::Unknown(_) => None,
+        })
+        .collect();
+    if known_pieces.is_empty() {
+        return;
+    }
+    if !fragments.iter().any(|fragment| match fragment {
+        disjoint::Piece_::Piece(_) => false,
+        disjoint::Piece_::Unknown(unknown_row_tail) => {
+            row_tail_unif_identity(unknown_row_tail) == Some(row_tail_id)
+        }
+    }) {
+        return;
+    }
+    elaboration_context
+        .row_tail_disjoint_pieces
+        .entry(row_tail_id)
+        .or_default()
+        .extend(known_pieces);
+}
+
+fn record_row_solution_disjointness(
+    elaboration_context: &mut ElabCtx,
+    source_row_tail_id: Option<usize>,
+    solution: &elab::LocatedConstructor,
+) {
+    let fragments = disjoint::decompose_row(solution.clone());
+    let mut known_pieces: BTreeSet<disjoint::Piece> = fragments
+        .iter()
+        .filter_map(|fragment| match fragment {
+            disjoint::Piece_::Piece(piece) => Some(piece.clone()),
+            disjoint::Piece_::Unknown(_) => None,
+        })
+        .collect();
+    if let Some(source_row_tail_id) = source_row_tail_id {
+        if let Some(inherited_pieces) = elaboration_context
+            .row_tail_disjoint_pieces
+            .get(&source_row_tail_id)
+            .cloned()
+        {
+            known_pieces.extend(inherited_pieces);
+        }
+    }
+    if known_pieces.is_empty() {
+        return;
+    }
+
+    for fragment in fragments {
+        let disjoint::Piece_::Unknown(unknown_row_tail) = fragment else {
+            continue;
+        };
+        let Some(row_tail_id) = row_tail_unif_identity(&unknown_row_tail) else {
+            continue;
+        };
+        if source_row_tail_id == Some(row_tail_id) {
+            continue;
+        }
+        elaboration_context
+            .row_tail_disjoint_pieces
+            .entry(row_tail_id)
+            .or_default()
+            .extend(known_pieces.iter().cloned());
+    }
+}
+
+fn remember_row_tail_solution(
+    elaboration_context: &mut ElabCtx,
+    row_with_tail: &elab::LocatedConstructor,
+    row_tail_cell: &Arc<Mutex<elab::CUnif>>,
+    solution: &elab::LocatedConstructor,
+) {
+    let source_row_tail_id = Arc::as_ptr(row_tail_cell) as usize;
+    record_row_tail_sibling_disjointness(elaboration_context, row_with_tail, source_row_tail_id);
+    record_row_solution_disjointness(elaboration_context, Some(source_row_tail_id), solution);
+}
+
 fn prove_disjoint_rows(
+    elaboration_context: &mut ElabCtx,
     elaboration_environment: &Env,
     span: Span,
     disjointness_environment: &disjoint::DisjointEnv,
     left_constructor: elab::LocatedConstructor,
     right_constructor: elab::LocatedConstructor,
 ) -> Vec<disjoint::Goal> {
-    disjoint::prove(
-        span,
-        disjointness_environment,
-        normalize_disjoint_row(elaboration_environment, left_constructor),
-        normalize_disjoint_row(elaboration_environment, right_constructor),
-    )
+    let left_constructor = normalize_disjoint_row(elaboration_environment, left_constructor);
+    let right_constructor = normalize_disjoint_row(elaboration_environment, right_constructor);
+    let left_fragments = disjoint::decompose_row(left_constructor.clone());
+    let right_fragments = disjoint::decompose_row(right_constructor.clone());
+
+    let left_has_unknown = left_fragments
+        .iter()
+        .any(|fragment| matches!(fragment, disjoint::Piece_::Unknown(_)));
+    let right_has_unknown = right_fragments
+        .iter()
+        .any(|fragment| matches!(fragment, disjoint::Piece_::Unknown(_)));
+    let left_pieces: Vec<disjoint::Piece> = left_fragments
+        .iter()
+        .filter_map(|fragment| match fragment {
+            disjoint::Piece_::Piece(piece) => Some(piece.clone()),
+            disjoint::Piece_::Unknown(_) => None,
+        })
+        .collect();
+    let right_pieces: Vec<disjoint::Piece> = right_fragments
+        .iter()
+        .filter_map(|fragment| match fragment {
+            disjoint::Piece_::Piece(piece) => Some(piece.clone()),
+            disjoint::Piece_::Unknown(_) => None,
+        })
+        .collect();
+    let pieces_are_proved_disjoint =
+        |left_piece: &disjoint::Piece, right_piece: &disjoint::Piece| {
+            disjoint::prove1(disjointness_environment, left_piece, right_piece)
+                || disjointness_environment
+                    .get(left_piece)
+                    .map(|known_right_pieces| {
+                        known_right_pieces.iter().any(|known_right_piece| {
+                            pieces_share_projection_identity(
+                                elaboration_environment,
+                                known_right_piece,
+                                right_piece,
+                                &span,
+                            )
+                        })
+                    })
+                    .unwrap_or(false)
+                || disjointness_environment
+                    .get(right_piece)
+                    .map(|known_left_pieces| {
+                        known_left_pieces.iter().any(|known_left_piece| {
+                            pieces_share_projection_identity(
+                                elaboration_environment,
+                                known_left_piece,
+                                left_piece,
+                                &span,
+                            )
+                        })
+                    })
+                    .unwrap_or(false)
+        };
+    let mut record_required_unknown_tail_disjointness =
+        |fragments: &[disjoint::Piece_],
+         same_side_pieces: &[disjoint::Piece],
+         opposite_pieces: &[disjoint::Piece]| {
+            if same_side_pieces.is_empty() || opposite_pieces.is_empty() {
+                return;
+            }
+            if !same_side_pieces.iter().all(|same_side_piece| {
+                opposite_pieces.iter().all(|opposite_piece| {
+                    pieces_are_proved_disjoint(same_side_piece, opposite_piece)
+                })
+            }) {
+                return;
+            }
+            for fragment in fragments {
+                let disjoint::Piece_::Unknown(unknown_row_tail) = fragment else {
+                    continue;
+                };
+                let Some(row_tail_id) = row_tail_unif_identity(unknown_row_tail) else {
+                    continue;
+                };
+                elaboration_context
+                    .row_tail_disjoint_pieces
+                    .entry(row_tail_id)
+                    .or_default()
+                    .extend(opposite_pieces.iter().cloned());
+            }
+        };
+    record_required_unknown_tail_disjointness(&left_fragments, &left_pieces, &right_pieces);
+    record_required_unknown_tail_disjointness(&right_fragments, &right_pieces, &left_pieces);
+
+    let unknowns_are_disjoint_from =
+        |fragments: &[disjoint::Piece_], opposite_pieces: &[disjoint::Piece]| {
+            !opposite_pieces.is_empty()
+                && fragments.iter().all(|fragment| match fragment {
+                    disjoint::Piece_::Piece(_) => true,
+                    disjoint::Piece_::Unknown(unknown_row_tail) => {
+                        let Some(row_tail_id) = row_tail_unif_identity(unknown_row_tail) else {
+                            return false;
+                        };
+                        let Some(known_disjoint_pieces) = elaboration_context
+                            .row_tail_disjoint_pieces
+                            .get(&row_tail_id)
+                        else {
+                            return false;
+                        };
+                        opposite_pieces
+                            .iter()
+                            .all(|piece| known_disjoint_pieces.contains(piece))
+                    }
+                })
+        };
+
+    let left_unknowns_are_safe =
+        left_has_unknown && unknowns_are_disjoint_from(&left_fragments, &right_pieces);
+    let right_unknowns_are_safe =
+        right_has_unknown && unknowns_are_disjoint_from(&right_fragments, &left_pieces);
+    if (left_has_unknown && !right_fragments.is_empty() && !left_unknowns_are_safe)
+        || (right_has_unknown && !left_fragments.is_empty() && !right_unknowns_are_safe)
+    {
+        if std::env::var("URWEB_DEBUG_UNRESOLVED_DISJOINTNESS")
+            .ok()
+            .as_deref()
+            == Some("1")
+        {
+            let debug_unknowns = |label: &str, fragments: &[disjoint::Piece_]| {
+                for fragment in fragments {
+                    let disjoint::Piece_::Unknown(unknown_row_tail) = fragment else {
+                        continue;
+                    };
+                    let Some(row_tail_id) = row_tail_unif_identity(unknown_row_tail) else {
+                        continue;
+                    };
+                    let known = elaboration_context
+                        .row_tail_disjoint_pieces
+                        .get(&row_tail_id)
+                        .map(|pieces| {
+                            pieces
+                                .iter()
+                                .map(disjoint::rp_to_string)
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        })
+                        .unwrap_or_else(|| "<none>".to_string());
+                    eprintln!(
+                        "unresolved disjointness unknown {} tail={:x} known=[{}]",
+                        label, row_tail_id, known
+                    );
+                }
+            };
+            debug_unknowns("left", &left_fragments);
+            debug_unknowns("right", &right_fragments);
+        }
+        return vec![disjoint::Goal {
+            span,
+            left_constructor,
+            right_constructor,
+            disjointness_environment: disjointness_environment.clone(),
+        }];
+    }
+
+    let mut unresolved_goals = Vec::new();
+    for left_piece in &left_pieces {
+        for right_piece in &right_pieces {
+            let proved = pieces_are_proved_disjoint(left_piece, right_piece);
+            if !proved {
+                if std::env::var("URWEB_DEBUG_UNRESOLVED_DISJOINTNESS")
+                    .ok()
+                    .as_deref()
+                    == Some("1")
+                {
+                    let left_known = disjointness_environment
+                        .get(left_piece)
+                        .map(|known_pieces| {
+                            known_pieces
+                                .iter()
+                                .map(disjoint::rp_to_string)
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        })
+                        .unwrap_or_else(|| "<none>".to_string());
+                    let right_known = disjointness_environment
+                        .get(right_piece)
+                        .map(|known_pieces| {
+                            known_pieces
+                                .iter()
+                                .map(disjoint::rp_to_string)
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        })
+                        .unwrap_or_else(|| "<none>".to_string());
+                    eprintln!(
+                        "disjoint piece debug left_piece={} right_piece={} left_known=[{}] right_known=[{}]",
+                        disjoint::rp_to_string(left_piece),
+                        disjoint::rp_to_string(right_piece),
+                        left_known,
+                        right_known,
+                    );
+                }
+                unresolved_goals.push(disjoint::Goal {
+                    span: span.clone(),
+                    left_constructor: disjoint::piece_to_row(left_piece, &span),
+                    right_constructor: disjoint::piece_to_row(right_piece, &span),
+                    disjointness_environment: disjointness_environment.clone(),
+                });
+            }
+        }
+    }
+    unresolved_goals
 }
 
 // ---------------------------------------------------------------------------
@@ -3765,6 +4252,63 @@ fn constructors_share_projection_identity(
     }
 }
 
+fn piece_base_constructor(piece: &disjoint::Piece, span: &Span) -> elab::LocatedConstructor {
+    match &piece.0 {
+        disjoint::PieceFst::NameC(name) => {
+            Located::new(elab::Constructor::Name(name.clone()), span.clone())
+        }
+        disjoint::PieceFst::NameR(index) | disjoint::PieceFst::RowR(index) => {
+            Located::new(elab::Constructor::Rel(*index), span.clone())
+        }
+        disjoint::PieceFst::NameN(id) | disjoint::PieceFst::RowN(id) => {
+            Located::new(elab::Constructor::Named(*id), span.clone())
+        }
+        disjoint::PieceFst::NameM(module_id, path, name)
+        | disjoint::PieceFst::RowM(module_id, path, name) => Located::new(
+            elab::Constructor::ModProj(*module_id, path.clone(), name.clone()),
+            span.clone(),
+        ),
+    }
+}
+
+fn pieces_share_projection_identity(
+    elaboration_environment: &Env,
+    left_piece: &disjoint::Piece,
+    right_piece: &disjoint::Piece,
+    span: &Span,
+) -> bool {
+    if left_piece.1 != right_piece.1 {
+        return false;
+    }
+    let left_is_name_piece = matches!(
+        left_piece.0,
+        disjoint::PieceFst::NameC(_)
+            | disjoint::PieceFst::NameR(_)
+            | disjoint::PieceFst::NameN(_)
+            | disjoint::PieceFst::NameM(_, _, _)
+    );
+    let right_is_name_piece = matches!(
+        right_piece.0,
+        disjoint::PieceFst::NameC(_)
+            | disjoint::PieceFst::NameR(_)
+            | disjoint::PieceFst::NameN(_)
+            | disjoint::PieceFst::NameM(_, _, _)
+    );
+    if left_is_name_piece != right_is_name_piece {
+        return false;
+    }
+    match (&left_piece.0, &right_piece.0) {
+        (disjoint::PieceFst::NameC(left_name), disjoint::PieceFst::NameC(right_name)) => {
+            left_name == right_name
+        }
+        _ => constructors_share_projection_identity(
+            elaboration_environment,
+            &piece_base_constructor(left_piece, span),
+            &piece_base_constructor(right_piece, span),
+        ),
+    }
+}
+
 fn collect_named_constructor_ids(
     constructor: &elab::LocatedConstructor,
     ids: &mut std::collections::BTreeSet<usize>,
@@ -3838,6 +4382,62 @@ fn debug_named_ids_in_constructor(
         .join(", ")
 }
 
+fn debug_constructor_unif_keys(constructor: &elab::LocatedConstructor) -> String {
+    fn collect_keys(
+        constructor: &elab::LocatedConstructor,
+        keys: &mut std::collections::BTreeSet<usize>,
+    ) {
+        match &constructor.node {
+            elab::Constructor::TFun(domain, range)
+            | elab::Constructor::App(domain, range)
+            | elab::Constructor::Concat(domain, range) => {
+                collect_keys(domain, keys);
+                collect_keys(range, keys);
+            }
+            elab::Constructor::TCFun(_, _, _, body)
+            | elab::Constructor::TRecord(body)
+            | elab::Constructor::Abs(_, _, body)
+            | elab::Constructor::KAbs(_, body)
+            | elab::Constructor::TKFun(_, body)
+            | elab::Constructor::Proj(body, _) => collect_keys(body, keys),
+            elab::Constructor::TDisjoint(left, right, body) => {
+                collect_keys(left, keys);
+                collect_keys(right, keys);
+                collect_keys(body, keys);
+            }
+            elab::Constructor::KApp(body, _) => collect_keys(body, keys),
+            elab::Constructor::Record(_, fields) => {
+                for (field_name, field_type) in fields {
+                    collect_keys(field_name, keys);
+                    collect_keys(field_type, keys);
+                }
+            }
+            elab::Constructor::Tuple(items) => {
+                for item in items {
+                    collect_keys(item, keys);
+                }
+            }
+            elab::Constructor::Unif(_, _, _, _, cell) => {
+                keys.insert(Arc::as_ptr(cell) as usize);
+            }
+            elab::Constructor::Rel(_)
+            | elab::Constructor::Named(_)
+            | elab::Constructor::ModProj(_, _, _)
+            | elab::Constructor::Name(_)
+            | elab::Constructor::Map(_, _)
+            | elab::Constructor::Unit
+            | elab::Constructor::Error => {}
+        }
+    }
+
+    let mut keys = std::collections::BTreeSet::new();
+    collect_keys(constructor, &mut keys);
+    keys.into_iter()
+        .map(|key| format!("{key:x}"))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
 /// Record summary for row unification.
 #[derive(Debug, Clone)]
 struct RecordSummary {
@@ -3860,6 +4460,176 @@ const RECORD_SUMMARY_MAX_DEPTH: usize = 8192;
 /// Named type aliases are unfolded via `elaboration_environment` so their fields are visible to the row unifier.
 fn record_summary(elaboration_environment: &Env, c: elab::LocatedConstructor) -> RecordSummary {
     record_summary_inner(elaboration_environment, c, 0)
+}
+
+fn instantiate_unknown_tuple_projection_base(
+    elaboration_environment: &Env,
+    base_constructor: &elab::LocatedConstructor,
+    one_based_index: usize,
+) -> Option<elab::LocatedConstructor> {
+    let normalized_base =
+        hnorm_con_expression_head(elaboration_environment, base_constructor.clone());
+    let (elab::Constructor::Unif(0, _, recorded_kind, debug_name, unif_cell), base_span) =
+        (&normalized_base.node, normalized_base.span.clone())
+    else {
+        return None;
+    };
+    let current_cell = crate::compiler_diagnostics::lock_for_compile(
+        unif_cell.as_ref(),
+        "projection tuple-unif instantiation",
+    )
+    .clone();
+    if !matches!(current_cell, elab::CUnif::Unknown) {
+        return None;
+    }
+    let elab::Kind::Tuple(component_kinds) = hnorm_kind((**recorded_kind).clone()).node else {
+        return None;
+    };
+    if one_based_index == 0 || one_based_index > component_kinds.len() {
+        return None;
+    }
+
+    let fresh_components: Vec<_> = component_kinds
+        .iter()
+        .enumerate()
+        .map(|(component_index, component_kind)| {
+            fresh_cunif(
+                elaboration_environment,
+                base_span.clone(),
+                component_kind.clone(),
+                &format!("{debug_name}_proj{}", component_index + 1),
+            )
+        })
+        .collect();
+
+    *crate::compiler_diagnostics::lock_for_compile(
+        unif_cell.as_ref(),
+        "projection tuple-unif assignment",
+    ) = elab::CUnif::Known(Box::new(Located::new(
+        elab::Constructor::Tuple(fresh_components.clone()),
+        base_span.clone(),
+    )));
+
+    Some(fresh_components[one_based_index - 1].clone())
+}
+
+fn unify_projection_special_left(
+    elaboration_context: &mut ElabCtx,
+    elaboration_environment: &Env,
+    diagnostic_span: &Span,
+    left_constructor: &elab::LocatedConstructor,
+    right_constructor: &elab::LocatedConstructor,
+    left_base: &elab::LocatedConstructor,
+    left_index: usize,
+    recursion_depth: usize,
+) -> Result<(), Box<FailedToUnifyConstructors>> {
+    if let Some(left_component) =
+        instantiate_unknown_tuple_projection_base(elaboration_environment, left_base, left_index)
+    {
+        return unify_cons_inner(
+            elaboration_context,
+            elaboration_environment,
+            diagnostic_span,
+            &left_component,
+            right_constructor,
+            recursion_depth + 1,
+        );
+    }
+
+    if let elab::Constructor::Proj(right_base, right_index) = &right_constructor.node {
+        if let Some(right_component) = instantiate_unknown_tuple_projection_base(
+            elaboration_environment,
+            right_base,
+            *right_index,
+        ) {
+            return unify_cons_inner(
+                elaboration_context,
+                elaboration_environment,
+                diagnostic_span,
+                left_constructor,
+                &right_component,
+                recursion_depth + 1,
+            );
+        }
+        if left_index == *right_index {
+            return unify_cons_inner(
+                elaboration_context,
+                elaboration_environment,
+                diagnostic_span,
+                left_base,
+                right_base,
+                recursion_depth + 1,
+            );
+        }
+    }
+
+    Err(Box::new(
+        FailedToUnifyConstructors::IncompatibleConstructors(
+            left_constructor.clone(),
+            right_constructor.clone(),
+        ),
+    ))
+}
+
+fn unify_projection_special_right(
+    elaboration_context: &mut ElabCtx,
+    elaboration_environment: &Env,
+    diagnostic_span: &Span,
+    left_constructor: &elab::LocatedConstructor,
+    right_constructor: &elab::LocatedConstructor,
+    right_base: &elab::LocatedConstructor,
+    right_index: usize,
+    recursion_depth: usize,
+) -> Result<(), Box<FailedToUnifyConstructors>> {
+    if let Some(right_component) =
+        instantiate_unknown_tuple_projection_base(elaboration_environment, right_base, right_index)
+    {
+        return unify_cons_inner(
+            elaboration_context,
+            elaboration_environment,
+            diagnostic_span,
+            left_constructor,
+            &right_component,
+            recursion_depth + 1,
+        );
+    }
+
+    Err(Box::new(
+        FailedToUnifyConstructors::IncompatibleConstructors(
+            left_constructor.clone(),
+            right_constructor.clone(),
+        ),
+    ))
+}
+
+fn tuple_is_eta_expansion_of_rel(
+    elaboration_environment: &Env,
+    tuple_items: &[elab::LocatedConstructor],
+    rel_index: usize,
+) -> bool {
+    let rel_constructor = Located::new(elab::Constructor::Rel(rel_index), Span::dummy());
+    let rel_kind = hnorm_kind(kindof(
+        &mut ElabCtx::new(),
+        elaboration_environment,
+        &rel_constructor,
+    ));
+    let elab::Kind::Tuple(component_kinds) = rel_kind.node else {
+        return false;
+    };
+    if tuple_items.len() != component_kinds.len() {
+        return false;
+    }
+
+    tuple_items
+        .iter()
+        .enumerate()
+        .all(|(component_index, tuple_item)| match hnorm_con(tuple_item.clone()).node {
+            elab::Constructor::Proj(base, projection_index) => {
+                projection_index == component_index + 1
+                    && matches!(hnorm_con(*base).node, elab::Constructor::Rel(base_rel) if base_rel == rel_index)
+            }
+            _ => false,
+        })
 }
 
 /// Extract tuple components from a closed numeric-field record row (`{1: t1, 2: t2, ...}`).
@@ -4715,22 +5485,35 @@ fn unify_cons_inner(
                 recursion_depth,
             )
         }
-        (elab::Constructor::TDisjoint(_, _, b1), _) => unify_cons_inner(
-            elaboration_context,
-            elaboration_environment,
-            diagnostic_span,
-            b1,
-            right_constructor,
-            recursion_depth + 1,
-        ),
-        (_, elab::Constructor::TDisjoint(_, _, b2)) => unify_cons_inner(
-            elaboration_context,
-            elaboration_environment,
-            diagnostic_span,
-            left_constructor,
-            b2,
-            recursion_depth + 1,
-        ),
+        (
+            elab::Constructor::TDisjoint(left_a, left_b, left_body),
+            elab::Constructor::TDisjoint(right_a, right_b, right_body),
+        ) => {
+            unify_cons_inner(
+                elaboration_context,
+                elaboration_environment,
+                diagnostic_span,
+                left_a,
+                right_a,
+                recursion_depth + 1,
+            )?;
+            unify_cons_inner(
+                elaboration_context,
+                elaboration_environment,
+                diagnostic_span,
+                left_b,
+                right_b,
+                recursion_depth + 1,
+            )?;
+            unify_cons_inner(
+                elaboration_context,
+                elaboration_environment,
+                diagnostic_span,
+                left_body,
+                right_body,
+                recursion_depth + 1,
+            )
+        }
         (elab::Constructor::App(f1, a1), elab::Constructor::App(f2, a2)) => {
             unify_cons_inner(
                 elaboration_context,
@@ -4873,24 +5656,46 @@ fn unify_cons_inner(
             }
             Ok(())
         }
-        (elab::Constructor::Proj(left_base, n1), elab::Constructor::Proj(right_base, n2)) => {
-            if n1 != n2 {
-                return Err(Box::new(
+        (elab::Constructor::Proj(left_base, left_index), _) => unify_projection_special_left(
+            elaboration_context,
+            elaboration_environment,
+            diagnostic_span,
+            &left_normalized,
+            &right_normalized,
+            left_base,
+            *left_index,
+            recursion_depth,
+        ),
+        (_, elab::Constructor::Proj(right_base, right_index)) => unify_projection_special_right(
+            elaboration_context,
+            elaboration_environment,
+            diagnostic_span,
+            &left_normalized,
+            &right_normalized,
+            right_base,
+            *right_index,
+            recursion_depth,
+        ),
+        (elab::Constructor::Tuple(left_tuple), elab::Constructor::Rel(right_rel)) => {
+            if tuple_is_eta_expansion_of_rel(elaboration_environment, left_tuple, *right_rel) {
+                Ok(())
+            } else {
+                Err(Box::new(
                     FailedToUnifyConstructors::IncompatibleConstructors(
                         left_normalized,
                         right_normalized,
                     ),
-                ));
+                ))
             }
-            unify_cons_inner(
-                elaboration_context,
-                elaboration_environment,
-                diagnostic_span,
-                left_base,
-                right_base,
-                recursion_depth + 1,
-            )
         }
+        (elab::Constructor::Rel(_), elab::Constructor::Tuple(_)) => unify_cons_inner(
+            elaboration_context,
+            elaboration_environment,
+            diagnostic_span,
+            &right_normalized,
+            &left_normalized,
+            recursion_depth + 1,
+        ),
         // Row constructors: try record summary unification, then map-unfolding fallback.
         _ => {
             // Try beta/eta reduction before giving up on structural matching.
@@ -4905,6 +5710,20 @@ fn unify_cons_inner(
                     &rc2,
                     recursion_depth + 1,
                 );
+            }
+            let is_row_constructor = |constructor: &elab::LocatedConstructor| {
+                matches!(
+                    constructor.node,
+                    elab::Constructor::Record(_, _) | elab::Constructor::Concat(_, _)
+                )
+            };
+            if !is_row_constructor(&left_normalized) && !is_row_constructor(&right_normalized) {
+                return Err(Box::new(
+                    FailedToUnifyConstructors::IncompatibleConstructors(
+                        left_normalized,
+                        right_normalized,
+                    ),
+                ));
             }
             // If either side is `map f r`, use guess_map eagerly before trying row summaries.
             // Row summary unification does not understand map applications (it puts them in
@@ -5098,15 +5917,17 @@ fn unify_rows(
             }
             let (constructor_snapshots, kind_snapshots) =
                 snapshot_constructor_match_attempt(&[left_other, right_other]);
-            let matched = unify_cons_inner(
-                elaboration_context,
-                elaboration_environment,
-                diagnostic_span,
-                left_other,
-                right_other,
-                recursion_depth + 1,
-            )
-            .is_ok();
+            let matched = with_may_delay(elaboration_context, false, |elaboration_context| {
+                unify_cons_inner(
+                    elaboration_context,
+                    elaboration_environment,
+                    diagnostic_span,
+                    left_other,
+                    right_other,
+                    recursion_depth + 1,
+                )
+                .is_ok()
+            });
             if !matched {
                 restore_class_match_snapshots(constructor_snapshots, kind_snapshots);
             }
@@ -5195,6 +6016,12 @@ fn unify_rows(
                 elab::Constructor::Unif(_, _, _, _, row_tail_cell) => row_tail_cell.clone(),
                 _ => unreachable!("RecordSummary.unifs must contain Constructor::Unif nodes"),
             };
+            remember_row_tail_solution(
+                elaboration_context,
+                left_constructor,
+                &row_tail_cell,
+                &solution,
+            );
             *crate::compiler_diagnostics::lock_for_compile(
                 row_tail_cell.as_ref(),
                 "elaboration unification cell empty-row left",
@@ -5214,6 +6041,12 @@ fn unify_rows(
                 elab::Constructor::Unif(_, _, _, _, row_tail_cell) => row_tail_cell.clone(),
                 _ => unreachable!("RecordSummary.unifs must contain Constructor::Unif nodes"),
             };
+            remember_row_tail_solution(
+                elaboration_context,
+                right_constructor,
+                &row_tail_cell,
+                &solution,
+            );
             *crate::compiler_diagnostics::lock_for_compile(
                 row_tail_cell.as_ref(),
                 "elaboration unification cell empty-row right",
@@ -5238,6 +6071,12 @@ fn unify_rows(
             _ => unreachable!("RecordSummary.unifs must contain Constructor::Unif nodes"),
         };
         if !occurs_cunif(&first_right_tail_cell, &left_row_piece) {
+            remember_row_tail_solution(
+                elaboration_context,
+                right_constructor,
+                &first_right_tail_cell,
+                &left_row_piece,
+            );
             *crate::compiler_diagnostics::lock_for_compile(
                 first_right_tail_cell.as_ref(),
                 "elaboration unification cell rigid-row right-first",
@@ -5248,6 +6087,12 @@ fn unify_rows(
                     elab::Constructor::Unif(_, _, _, _, unif_cell) => unif_cell.clone(),
                     _ => unreachable!("RecordSummary.unifs must contain Constructor::Unif nodes"),
                 };
+                remember_row_tail_solution(
+                    elaboration_context,
+                    right_constructor,
+                    &row_tail_cell,
+                    &empty_solution,
+                );
                 *crate::compiler_diagnostics::lock_for_compile(
                     row_tail_cell.as_ref(),
                     "elaboration unification cell rigid-row right-rest",
@@ -5269,6 +6114,12 @@ fn unify_rows(
             _ => unreachable!("RecordSummary.unifs must contain Constructor::Unif nodes"),
         };
         if !occurs_cunif(&first_left_tail_cell, &right_row_piece) {
+            remember_row_tail_solution(
+                elaboration_context,
+                left_constructor,
+                &first_left_tail_cell,
+                &right_row_piece,
+            );
             *crate::compiler_diagnostics::lock_for_compile(
                 first_left_tail_cell.as_ref(),
                 "elaboration unification cell rigid-row left-first",
@@ -5279,6 +6130,12 @@ fn unify_rows(
                     elab::Constructor::Unif(_, _, _, _, unif_cell) => unif_cell.clone(),
                     _ => unreachable!("RecordSummary.unifs must contain Constructor::Unif nodes"),
                 };
+                remember_row_tail_solution(
+                    elaboration_context,
+                    left_constructor,
+                    &row_tail_cell,
+                    &empty_solution,
+                );
                 *crate::compiler_diagnostics::lock_for_compile(
                     row_tail_cell.as_ref(),
                     "elaboration unification cell rigid-row left-rest",
@@ -5396,6 +6253,12 @@ fn unify_rows(
                         crate::elaborated::type_display::format_constructor(&solution),
                     );
                 }
+                remember_row_tail_solution(
+                    elaboration_context,
+                    left_constructor,
+                    &row_tail_cell,
+                    &solution,
+                );
                 *crate::compiler_diagnostics::lock_for_compile(
                     row_tail_cell.as_ref(),
                     "elaboration unification cell",
@@ -5463,6 +6326,12 @@ fn unify_rows(
                         crate::elaborated::type_display::format_constructor(&solution),
                     );
                 }
+                remember_row_tail_solution(
+                    elaboration_context,
+                    right_constructor,
+                    &row_tail_cell,
+                    &solution,
+                );
                 *crate::compiler_diagnostics::lock_for_compile(
                     row_tail_cell.as_ref(),
                     "elaboration unification cell",
@@ -5546,6 +6415,18 @@ fn unify_rows(
                 );
             }
             // The shared-tail reduction succeeded for both sides.
+            remember_row_tail_solution(
+                elaboration_context,
+                left_constructor,
+                &left_row_tail_cell,
+                &left_solution,
+            );
+            remember_row_tail_solution(
+                elaboration_context,
+                right_constructor,
+                &right_row_tail_cell,
+                &right_solution,
+            );
             *crate::compiler_diagnostics::lock_for_compile(
                 left_row_tail_cell.as_ref(),
                 "elaboration unification cell shared-tail left",
@@ -5714,6 +6595,12 @@ fn unify_rows(
                 // Squish by nl to adjust for the creation-depth of this CUnif.
                 // If squish fails (solution references locals inside nl binders), fall through to defer.
                 if let Ok(adjusted) = squish_con(nl, solution) {
+                    remember_row_tail_solution(
+                        elaboration_context,
+                        right_constructor,
+                        r_cell,
+                        &adjusted,
+                    );
                     *crate::compiler_diagnostics::lock_for_compile(
                         r_cell.as_ref(),
                         "elaboration unification cell final-dispatch right",
@@ -5748,6 +6635,12 @@ fn unify_rows(
                     diagnostic_span,
                 );
                 if let Ok(adjusted) = squish_con(nl, solution) {
+                    remember_row_tail_solution(
+                        elaboration_context,
+                        left_constructor,
+                        l_cell,
+                        &adjusted,
+                    );
                     *crate::compiler_diagnostics::lock_for_compile(
                         l_cell.as_ref(),
                         "elaboration unification cell final-dispatch left",
@@ -6290,6 +7183,24 @@ fn check_con(
                 crate::elaborated::type_display::format_constructor(expected),
                 debug_constructor_head_name(elaboration_environment, got),
                 debug_constructor_head_name(elaboration_environment, expected),
+            );
+        }
+        if std::env::var("URWEB_DEBUG_BATCHFUN_TYPE_MISMATCH")
+            .ok()
+            .as_deref()
+            == Some("1")
+            && span.file.ends_with("/demo/batchFun.ur")
+        {
+            eprintln!(
+                "batchFun mismatch debug line={} got={} expected={} got_head={} expected_head={} got_named=[{}] expected_named=[{}] msg={}",
+                span.first.line,
+                crate::elaborated::type_display::format_constructor(got),
+                crate::elaborated::type_display::format_constructor(expected),
+                debug_constructor_head_name(elaboration_environment, got),
+                debug_constructor_head_name(elaboration_environment, expected),
+                debug_named_ids_in_constructor(elaboration_environment, got),
+                debug_named_ids_in_constructor(elaboration_environment, expected),
+                format_failed_to_unify_constructors_message(e.as_ref()),
             );
         }
         elaboration_context.error(
@@ -6841,6 +7752,7 @@ fn elab_exp_against_type(
                 disjointness_environment.clone(),
             );
             let goals = prove_disjoint_rows(
+                elaboration_context,
                 elaboration_environment,
                 expression.span.clone(),
                 &asserted_disjointness_environment,
@@ -7320,6 +8232,7 @@ fn elab_exp_inner(
             );
             // Check c1 ~ c2 holds
             let goals = prove_disjoint_rows(
+                elaboration_context,
                 elaboration_environment,
                 span.clone(),
                 &new_denv,
@@ -7397,6 +8310,7 @@ fn elab_exp_inner(
                 &expected_disjoint,
             );
             let disjoint_goals = prove_disjoint_rows(
+                elaboration_context,
                 elaboration_environment,
                 span.clone(),
                 disjointness_environment,
@@ -7516,6 +8430,29 @@ fn elab_exp_inner(
                 &e1t,
                 &expected_e1t,
             );
+            let disjoint_goals = prove_disjoint_rows(
+                elaboration_context,
+                elaboration_environment,
+                span.clone(),
+                disjointness_environment,
+                Located::new(
+                    elab::Constructor::Record(
+                        Box::new(Located::new(elab::Kind::Type, span.clone())),
+                        vec![(fce.clone(), field_type.clone())],
+                    ),
+                    span.clone(),
+                ),
+                rest_type.clone(),
+            );
+            if !disjoint_goals.is_empty() {
+                for goal in disjoint_goals {
+                    elaboration_context.constraints.push(Constraint::Disjoint {
+                        span: span.clone(),
+                        elaboration_environment: elaboration_environment.clone(),
+                        goal,
+                    });
+                }
+            }
             let result = Located::new(
                 elab::Expression::Field(
                     Box::new(e1e),
@@ -7574,6 +8511,23 @@ fn elab_exp_inner(
                 elab::Constructor::Concat(Box::new(r1.clone()), Box::new(r2.clone())),
                 span.clone(),
             );
+            let disjoint_goals = prove_disjoint_rows(
+                elaboration_context,
+                elaboration_environment,
+                span.clone(),
+                disjointness_environment,
+                r1.clone(),
+                r2.clone(),
+            );
+            if !disjoint_goals.is_empty() {
+                for goal in disjoint_goals {
+                    elaboration_context.constraints.push(Constraint::Disjoint {
+                        span: span.clone(),
+                        elaboration_environment: elaboration_environment.clone(),
+                        goal,
+                    });
+                }
+            }
             let result_type = Located::new(
                 elab::Constructor::TRecord(Box::new(concat_row)),
                 span.clone(),
@@ -7639,6 +8593,29 @@ fn elab_exp_inner(
                 &e1t,
                 &expected_e1t,
             );
+            let disjoint_goals = prove_disjoint_rows(
+                elaboration_context,
+                elaboration_environment,
+                span.clone(),
+                disjointness_environment,
+                Located::new(
+                    elab::Constructor::Record(
+                        Box::new(Located::new(elab::Kind::Type, span.clone())),
+                        vec![(fce.clone(), field_type.clone())],
+                    ),
+                    span.clone(),
+                ),
+                rest.clone(),
+            );
+            if !disjoint_goals.is_empty() {
+                for goal in disjoint_goals {
+                    elaboration_context.constraints.push(Constraint::Disjoint {
+                        span: span.clone(),
+                        elaboration_environment: elaboration_environment.clone(),
+                        goal,
+                    });
+                }
+            }
             let result_type = Located::new(
                 elab::Constructor::TRecord(Box::new(rest.clone())),
                 span.clone(),
@@ -7686,6 +8663,31 @@ fn elab_exp_inner(
                 &e1t,
                 &expected,
             );
+            check_kind(
+                elaboration_context,
+                elaboration_environment,
+                &fields_con.span,
+                &fce,
+                &_fck,
+                &Located::new(elab::Kind::Record(Box::new(ktype.clone())), span.clone()),
+            );
+            let disjoint_goals = prove_disjoint_rows(
+                elaboration_context,
+                elaboration_environment,
+                span.clone(),
+                disjointness_environment,
+                fce.clone(),
+                rest.clone(),
+            );
+            if !disjoint_goals.is_empty() {
+                for goal in disjoint_goals {
+                    elaboration_context.constraints.push(Constraint::Disjoint {
+                        span: span.clone(),
+                        elaboration_environment: elaboration_environment.clone(),
+                        goal,
+                    });
+                }
+            }
             let result_type = Located::new(
                 elab::Constructor::TRecord(Box::new(rest.clone())),
                 span.clone(),
@@ -7779,7 +8781,6 @@ fn elab_exp_inner(
                     elab_decls.push(d);
                 }
                 cur_env = new_env;
-                solve_constraints(elaboration_context, &cur_env);
             }
             let (bodye, bodytype) = elab_exp(
                 elaboration_context,
@@ -8622,6 +9623,7 @@ fn elab_head_inner(
         (elab::Constructor::TDisjoint(_, _, _), source::Inference::TypesOnly) => (e, t),
         (elab::Constructor::TDisjoint(c1, c2, body), source::Inference::Infer) => {
             let goals = prove_disjoint_rows(
+                elaboration_context,
                 elaboration_environment,
                 span.clone(),
                 disjointness_environment,
@@ -8787,9 +9789,11 @@ fn elab_edecl(
         }
         source::EDecl::ValRec(bindings) => {
             // Mutual recursion: add all names to elaboration_environment first
+            let use_seeded_expected_types = bindings.len() > 1;
             let mut pre_env = elaboration_environment.clone();
+            let mut normalization_env = pre_env.clone();
             let mut annot_types: Vec<elab::LocatedConstructor> = Vec::new();
-            for (x, opt_ann, _) in bindings {
+            for (x, opt_ann, _body) in bindings {
                 let t = match opt_ann {
                     Some(ann) => {
                         let (ce, _) = elab_con(elaboration_context, &pre_env, ann);
@@ -8816,8 +9820,60 @@ fn elab_edecl(
                 check_con(elaboration_context, &pre_env, &span, &et, &annot_types[i]);
                 elab_bindings.push((x.clone(), annot_types[i].clone(), ee));
             }
-
-            solve_constraints(elaboration_context, &pre_env);
+            if use_seeded_expected_types {
+                solve_constraints(elaboration_context, &pre_env, false);
+                let refined_annot_types: Vec<elab::LocatedConstructor> = annot_types
+                    .iter()
+                    .map(|binding_type| deep_normalize_constructor(&pre_env, binding_type.clone()))
+                    .collect();
+                if std::env::var("URWEB_DEBUG_VALREC_TYPES").ok().as_deref() == Some("1") {
+                    for ((binding_name, _, _), binding_type) in
+                        bindings.iter().zip(refined_annot_types.iter())
+                    {
+                        eprintln!(
+                            "edecl valrec debug span={}:{} name={} refined_type={}",
+                            span.file,
+                            span.first.line,
+                            binding_name,
+                            crate::elaborated::type_display::format_constructor(binding_type),
+                        );
+                    }
+                }
+                let mut refined_pre_env = elaboration_environment.clone();
+                for (binding_name, binding_type) in bindings
+                    .iter()
+                    .map(|(name, _, _)| name)
+                    .zip(refined_annot_types.iter().cloned())
+                {
+                    refined_pre_env =
+                        refined_pre_env.push_e_rel(binding_name.clone(), binding_type);
+                }
+                let mut refined_bindings: Vec<(
+                    String,
+                    elab::LocatedConstructor,
+                    elab::LocatedExpression,
+                )> = Vec::new();
+                for (i, (x, _, e)) in bindings.iter().enumerate() {
+                    let (ee, et) = elab_exp_against_type(
+                        elaboration_context,
+                        &refined_pre_env,
+                        disjointness_environment,
+                        e,
+                        &refined_annot_types[i],
+                    );
+                    check_con(
+                        elaboration_context,
+                        &refined_pre_env,
+                        &span,
+                        &et,
+                        &refined_annot_types[i],
+                    );
+                    refined_bindings.push((x.clone(), refined_annot_types[i].clone(), ee));
+                }
+                solve_constraints(elaboration_context, &refined_pre_env, false);
+                normalization_env = refined_pre_env;
+                elab_bindings = refined_bindings;
+            }
             let mut normalized_env = elaboration_environment.clone();
             let mut normalized_bindings: Vec<(
                 String,
@@ -8825,7 +9881,16 @@ fn elab_edecl(
                 elab::LocatedExpression,
             )> = Vec::with_capacity(elab_bindings.len());
             for (name, binding_type, expression) in elab_bindings {
-                let normalized_type = hnorm_con_expression_head(&pre_env, binding_type);
+                let normalized_type = deep_normalize_constructor(&normalization_env, binding_type);
+                if std::env::var("URWEB_DEBUG_VALREC_TYPES").ok().as_deref() == Some("1") {
+                    eprintln!(
+                        "edecl valrec final span={}:{} name={} normalized_type={}",
+                        span.file,
+                        span.first.line,
+                        name,
+                        crate::elaborated::type_display::format_constructor(&normalized_type),
+                    );
+                }
                 normalized_env = normalized_env.push_e_rel(name.clone(), normalized_type.clone());
                 normalized_bindings.push((name, normalized_type, expression));
             }
@@ -8861,11 +9926,7 @@ pub fn elab_sgn_item(
     elaboration_environment: &Env,
     disjointness_environment: &disjoint::DisjointEnv,
     sgi: &source::LocSgnItem,
-) -> (
-    Option<elab::LocatedSignatureItem>,
-    Env,
-    disjoint::DisjointEnv,
-) {
+) -> (Vec<elab::LocatedSignatureItem>, Env, disjoint::DisjointEnv) {
     let span = sgi.span.clone();
     match &sgi.node {
         source::SgnItem::ConAbs(x, k) => {
@@ -8879,7 +9940,7 @@ pub fn elab_sgn_item(
                     .clone()
                     .push_c_named(x.clone(), ke.clone(), None);
             let result = Located::new(elab::SignatureItem::ConAbs(x.clone(), id, ke), span);
-            (Some(result), new_env, disjointness_environment.clone())
+            (vec![result], new_env, disjointness_environment.clone())
         }
         source::SgnItem::Con(x, opt_k, c) => {
             let (ce, ck) = elab_con(elaboration_context, elaboration_environment, c);
@@ -8909,7 +9970,7 @@ pub fn elab_sgn_item(
                 elab::SignatureItem::Constructor(x.clone(), id, stored_kind, stored_constructor),
                 span,
             );
-            (Some(result), new_env, disjointness_environment.clone())
+            (vec![result], new_env, disjointness_environment.clone())
         }
         source::SgnItem::Val(x, t) => {
             let (te, _) = elab_con(elaboration_context, elaboration_environment, t);
@@ -8918,7 +9979,7 @@ pub fn elab_sgn_item(
                 .clone()
                 .push_e_named(x.clone(), stored_type.clone());
             let result = Located::new(elab::SignatureItem::Val(x.clone(), id, stored_type), span);
-            (Some(result), new_env, disjointness_environment.clone())
+            (vec![result], new_env, disjointness_environment.clone())
         }
         source::SgnItem::Str(x, sgn) => {
             let prev_in_sig = elaboration_context.in_signature;
@@ -8945,7 +10006,7 @@ pub fn elab_sgn_item(
                 elab::SignatureItem::Structure(elab::ImportMode::Import, x.clone(), id, sgne),
                 span,
             );
-            (Some(result), new_env, new_denv)
+            (vec![result], new_env, new_denv)
         }
         source::SgnItem::Sgn(x, sgn) => {
             let sgne = elab_sgn(
@@ -8958,7 +10019,7 @@ pub fn elab_sgn_item(
                 .clone()
                 .push_sgn_named(x.clone(), sgne.clone());
             let result = Located::new(elab::SignatureItem::Signature(x.clone(), id, sgne), span);
-            (Some(result), new_env, disjointness_environment.clone())
+            (vec![result], new_env, disjointness_environment.clone())
         }
         source::SgnItem::Include(sgn) => {
             // Include expands the signature items
@@ -8971,7 +10032,7 @@ pub fn elab_sgn_item(
             // We return None and handle include by returning the sgn's items
             // For simplicity, wrap in a Structure with a fresh name
             (
-                None,
+                Vec::new(),
                 elaboration_environment.clone(),
                 disjointness_environment.clone(),
             )
@@ -8986,12 +10047,16 @@ pub fn elab_sgn_item(
                 disjointness_environment.clone(),
             );
             let result = Located::new(elab::SignatureItem::Constraint(c1e, c2e), span);
-            (Some(result), elaboration_environment.clone(), new_denv)
+            (vec![result], elaboration_environment.clone(), new_denv)
         }
         source::SgnItem::Datatype(dts) => {
             let (result, new_env) =
                 elab_datatype_sig(elaboration_context, elaboration_environment, dts, &span);
-            (result, new_env, disjointness_environment.clone())
+            (
+                result.into_iter().collect(),
+                new_env,
+                disjointness_environment.clone(),
+            )
         }
         source::SgnItem::DatatypeImp(x, ms, y) => {
             let (result, new_env) = elab_datatype_imp_sig(
@@ -9002,7 +10067,11 @@ pub fn elab_sgn_item(
                 y,
                 &span,
             );
-            (result, new_env, disjointness_environment.clone())
+            (
+                result.into_iter().collect(),
+                new_env,
+                disjointness_environment.clone(),
+            )
         }
         source::SgnItem::ClassAbs(x, k) => {
             let ke = normalize_signature_kind(&elab_kind(
@@ -9016,7 +10085,7 @@ pub fn elab_sgn_item(
                     .push_c_named(x.clone(), ke.clone(), None); // store parameter kind; see elab_con_var Named + is_class
             new_env = new_env.push_class(id);
             let result = Located::new(elab::SignatureItem::ClassAbs(x.clone(), id, ke), span);
-            (Some(result), new_env, disjointness_environment.clone())
+            (vec![result], new_env, disjointness_environment.clone())
         }
         source::SgnItem::Class(x, k, c) => {
             let ke = normalize_signature_kind(&elab_kind(
@@ -9036,9 +10105,9 @@ pub fn elab_sgn_item(
                 elab::SignatureItem::Class(x.clone(), id, ke, stored_constructor),
                 span,
             );
-            (Some(result), new_env, disjointness_environment.clone())
+            (vec![result], new_env, disjointness_environment.clone())
         }
-        source::SgnItem::Table(x, c, _pk_e, _unique_e) => {
+        source::SgnItem::Table(x, c, pk_e, unique_e) => {
             let (declared_con, declared_kind) =
                 elab_con(elaboration_context, elaboration_environment, c);
             let (ce, ck) = match &declared_con.node {
@@ -9073,11 +10142,29 @@ pub fn elab_sgn_item(
                 constraint_kind.clone(),
                 "primary_key",
             );
-            let uniques = fresh_cunif(
+            let visible_constraints = fresh_cunif(
                 elaboration_environment,
                 span.clone(),
-                constraint_kind,
-                "uniques",
+                constraint_kind.clone(),
+                "visible_constraints",
+            );
+            let hidden_constraints_name = format!("{x}_hidden_constraints");
+            let (env_with_hidden_constraints, hidden_constraints_id) =
+                elaboration_environment.clone().push_c_named(
+                    hidden_constraints_name.clone(),
+                    constraint_kind.clone(),
+                    None,
+                );
+            let hidden_constraints = Located::new(
+                elab::Constructor::Named(hidden_constraints_id),
+                span.clone(),
+            );
+            let uniques = Located::new(
+                elab::Constructor::Concat(
+                    Box::new(visible_constraints.clone()),
+                    Box::new(hidden_constraints.clone()),
+                ),
+                span.clone(),
             );
             let stored_type = normalize_signature_constructor(&Located::new(
                 elab::Constructor::App(
@@ -9098,11 +10185,137 @@ pub fn elab_sgn_item(
                 ),
                 span.clone(),
             ));
-            let (new_env, id) = elaboration_environment
+            let empty_constraint_row = Located::new(
+                elab::Constructor::Record(
+                    Box::new(Located::new(
+                        elab::Kind::Record(Box::new(Located::new(elab::Kind::Unit, span.clone()))),
+                        span.clone(),
+                    )),
+                    Vec::new(),
+                ),
+                span.clone(),
+            );
+            let primary_key_signature_type = Located::new(
+                elab::Constructor::App(
+                    Box::new(Located::new(
+                        elab::Constructor::App(
+                            Box::new(basis_named_con(
+                                elaboration_environment,
+                                &span,
+                                "primary_key",
+                            )),
+                            Box::new(ce.clone()),
+                        ),
+                        span.clone(),
+                    )),
+                    Box::new(primary_key.clone()),
+                ),
+                span.clone(),
+            );
+            let visible_constraints_signature_type = Located::new(
+                elab::Constructor::App(
+                    Box::new(Located::new(
+                        elab::Constructor::App(
+                            Box::new(basis_named_con(
+                                elaboration_environment,
+                                &span,
+                                "sql_constraints",
+                            )),
+                            Box::new(ce.clone()),
+                        ),
+                        span.clone(),
+                    )),
+                    Box::new(visible_constraints.clone()),
+                ),
+                span.clone(),
+            );
+            let pk_is_placeholder = matches!(
+                &pk_e.node,
+                source::Exp::Record(fields, _) if fields.is_empty()
+            );
+            if pk_is_placeholder {
+                if let elab::Constructor::Unif(_, _, _, _, primary_key_cell) = &primary_key.node {
+                    *crate::compiler_diagnostics::lock_for_compile(
+                        primary_key_cell.as_ref(),
+                        "signature table default primary key",
+                    ) = elab::CUnif::Known(Box::new(empty_constraint_row.clone()));
+                }
+            } else {
+                let (_pk_expression, pk_type) = elab_exp(
+                    elaboration_context,
+                    &env_with_hidden_constraints,
+                    disjointness_environment,
+                    pk_e,
+                );
+                check_con(
+                    elaboration_context,
+                    &env_with_hidden_constraints,
+                    &pk_e.span,
+                    &pk_type,
+                    &primary_key_signature_type,
+                );
+            }
+            let unique_is_placeholder = matches!(
+                &unique_e.node,
+                source::Exp::Record(fields, _) if fields.is_empty()
+            );
+            if unique_is_placeholder {
+                if let elab::Constructor::Unif(_, _, _, _, visible_constraints_cell) =
+                    &visible_constraints.node
+                {
+                    *crate::compiler_diagnostics::lock_for_compile(
+                        visible_constraints_cell.as_ref(),
+                        "signature table default visible constraints",
+                    ) = elab::CUnif::Known(Box::new(empty_constraint_row.clone()));
+                }
+            } else {
+                let (_unique_expression, unique_type) = elab_exp(
+                    elaboration_context,
+                    &env_with_hidden_constraints,
+                    disjointness_environment,
+                    unique_e,
+                );
+                check_con(
+                    elaboration_context,
+                    &env_with_hidden_constraints,
+                    &unique_e.span,
+                    &unique_type,
+                    &visible_constraints_signature_type,
+                );
+            }
+            let (new_env, id) = env_with_hidden_constraints
                 .clone()
                 .push_e_named(x.clone(), stored_type.clone());
-            let result = Located::new(elab::SignatureItem::Val(x.clone(), id, stored_type), span);
-            (Some(result), new_env, disjointness_environment.clone())
+            let visible_and_primary_constraints = Located::new(
+                elab::Constructor::Concat(Box::new(primary_key), Box::new(visible_constraints)),
+                span.clone(),
+            );
+            let hidden_constraint_item = Located::new(
+                elab::SignatureItem::ConAbs(
+                    hidden_constraints_name,
+                    hidden_constraints_id,
+                    constraint_kind,
+                ),
+                span.clone(),
+            );
+            let disjoint_constraint_item = Located::new(
+                elab::SignatureItem::Constraint(
+                    visible_and_primary_constraints,
+                    hidden_constraints,
+                ),
+                span.clone(),
+            );
+            let table_value_item =
+                Located::new(elab::SignatureItem::Val(x.clone(), id, stored_type), span);
+            (
+                vec![
+                    hidden_constraint_item,
+                    disjoint_constraint_item,
+                    table_value_item,
+                ],
+                new_env,
+                disjointness_environment.clone(),
+            )
         }
 
         source::SgnItem::Functor(functor_name, arg_name, s1, s2) => {
@@ -9140,7 +10353,7 @@ pub fn elab_sgn_item(
                 ),
                 span,
             );
-            (Some(result), new_env, disjointness_environment.clone())
+            (vec![result], new_env, disjointness_environment.clone())
         }
     }
 }
@@ -9202,6 +10415,22 @@ fn elab_single_datatype(
     }
 
     let env_with_constrs = env_with_dt.push_datatype(dt_id, dt.params.clone(), constrs.clone());
+    let env_with_expression_constructors = constrs.iter().fold(
+        env_with_constrs,
+        |accumulated_env, (constructor_name, constructor_id, arg_type)| {
+            let expression_type = crate::elaborated::environment::build_constructor_type(
+                dt_id,
+                &dt.params,
+                arg_type.as_ref(),
+                span.clone(),
+            );
+            accumulated_env.push_e_named_as(
+                constructor_name.clone(),
+                *constructor_id,
+                expression_type,
+            )
+        },
+    );
 
     let elab_dt = elab::DatatypeDecl {
         name: dt.name.clone(),
@@ -9209,7 +10438,7 @@ fn elab_single_datatype(
         params: dt.params.clone(),
         constrs,
     };
-    (elab_dt, env_with_constrs)
+    (elab_dt, env_with_expression_constructors)
 }
 
 fn elab_datatype_imp_sig(
@@ -9230,11 +10459,39 @@ fn elab_datatype_imp_sig(
     if let Some(dt) = sgi_find_datatype(&items, y) {
         let id = new_named_id();
         let constrs = dt.constrs.clone();
-        let new_env = elaboration_environment.clone().push_c_named_as(
-            x.to_string(),
-            id,
-            Located::new(elab::Kind::Type, span.clone()),
-            None,
+        let kind_type = Located::new(elab::Kind::Type, span.clone());
+        let datatype_kind = dt
+            .params
+            .iter()
+            .fold(kind_type.clone(), |accumulated_kind, _| {
+                Located::new(
+                    elab::Kind::Arrow(Box::new(kind_type.clone()), Box::new(accumulated_kind)),
+                    span.clone(),
+                )
+            });
+        let definition = Located::new(
+            elab::Constructor::ModProj(str_id, ms.to_vec(), y.to_string()),
+            span.clone(),
+        );
+        let new_env = elaboration_environment
+            .clone()
+            .push_c_named_as(x.to_string(), id, datatype_kind, Some(definition))
+            .push_datatype(id, dt.params.clone(), constrs.clone());
+        let new_env = constrs.iter().fold(
+            new_env,
+            |accumulated_env, (constructor_name, constructor_id, arg_type)| {
+                let expression_type = crate::elaborated::environment::build_constructor_type(
+                    id,
+                    &dt.params,
+                    arg_type.as_ref(),
+                    span.clone(),
+                );
+                accumulated_env.push_e_named_as(
+                    constructor_name.clone(),
+                    *constructor_id,
+                    expression_type,
+                )
+            },
         );
         let result = Located::new(
             elab::SignatureItem::DatatypeImp {
@@ -9288,13 +10545,11 @@ pub fn elab_sgn(
             let mut cur_denv = disjointness_environment.clone();
             let mut elab_sgis: Vec<elab::LocatedSignatureItem> = Vec::new();
             for sgi in sgis {
-                let (sgi_opt, new_env, new_denv) =
+                let (sgi_items, new_env, new_denv) =
                     elab_sgn_item(elaboration_context, &cur_env, &cur_denv, sgi);
                 cur_env = new_env;
                 cur_denv = new_denv;
-                if let Some(s) = sgi_opt {
-                    elab_sgis.push(s);
-                }
+                elab_sgis.extend(sgi_items);
             }
             Located::new(elab::Signature::Const(elab_sgis), span)
         }
@@ -9397,14 +10652,28 @@ pub fn sub_sgn(
                 .fold(elaboration_environment.clone(), |current_env, sgi| {
                     enrich_env_from_sgi(current_env, &sgi.node, 0usize, &[], "")
                 });
+            let mut current_disjointness_environment = sgis1.iter().fold(
+                disjointness_environment.clone(),
+                |current_denv, sgi| match &sgi.node {
+                    elab::SignatureItem::Constraint(left_constructor, right_constructor) => {
+                        assert_disjoint_rows(
+                            &actual_items_environment,
+                            left_constructor.clone(),
+                            right_constructor.clone(),
+                            current_denv,
+                        )
+                    }
+                    _ => current_denv,
+                },
+            );
             let realization_map = build_signature_realization_map(sgis1, sgis2, span);
             // For each item in sgis2 (the expected/spec), find it in sgis1
             for sgi2 in sgis2 {
                 debug_trace_top_sgn_item(&sgi2.node, span);
-                sub_sgi(
+                current_disjointness_environment = sub_sgi(
                     elaboration_context,
                     &actual_items_environment,
-                    disjointness_environment,
+                    &current_disjointness_environment,
                     sgis1,
                     &realization_map,
                     &sgi2.node,
@@ -9474,16 +10743,8 @@ fn debug_trace_top_subsgi_item_name(name: &str, span: &Span) {
     }
 }
 
-fn debug_trace_top_sgn_item(expected: &elab::SignatureItem, span: &Span) {
-    let debug_mode = std::env::var("URWEB_DEBUG_TOP_SGN_ITEMS").ok();
-    let Some(debug_mode) = debug_mode.as_deref() else {
-        return;
-    };
-    let log_index = DEBUG_TOP_SUBSGI_LOG_COUNT.fetch_add(1, Ordering::Relaxed);
-    if log_index >= 200usize {
-        return;
-    }
-    let label = match expected {
+fn format_signature_item_debug_name(expected: &elab::SignatureItem) -> String {
+    match expected {
         elab::SignatureItem::Val(name, _, _) => format!("Val {name}"),
         elab::SignatureItem::ConAbs(name, _, _) => format!("ConAbs {name}"),
         elab::SignatureItem::Constructor(name, _, _, _) => format!("Constructor {name}"),
@@ -9494,7 +10755,19 @@ fn debug_trace_top_sgn_item(expected: &elab::SignatureItem, span: &Span) {
         elab::SignatureItem::DatatypeImp { name, .. } => format!("DatatypeImp {name}"),
         elab::SignatureItem::Signature(name, _, _) => format!("Signature {name}"),
         elab::SignatureItem::Constraint(_, _) => "Constraint".to_string(),
+    }
+}
+
+fn debug_trace_top_sgn_item(expected: &elab::SignatureItem, span: &Span) {
+    let debug_mode = std::env::var("URWEB_DEBUG_TOP_SGN_ITEMS").ok();
+    let Some(debug_mode) = debug_mode.as_deref() else {
+        return;
     };
+    let log_index = DEBUG_TOP_SUBSGI_LOG_COUNT.fetch_add(1, Ordering::Relaxed);
+    if log_index >= 200usize {
+        return;
+    }
+    let label = format_signature_item_debug_name(expected);
     eprintln!(
         "top sgn item {} span={}:{}",
         label, span.file, span.first.line,
@@ -9512,13 +10785,31 @@ fn sub_sgi(
     realization_map: &HashMap<usize, elab::LocatedConstructor>,
     expected: &elab::SignatureItem,
     span: &Span,
-) {
+) -> disjoint::DisjointEnv {
     match expected {
         elab::SignatureItem::Val(x, _, t2) => {
             if let Some(sgi1) = sgi_find_val(actual_sgis, x) {
                 if let elab::SignatureItem::Val(_, _, t1) = sgi1 {
                     let realized_expected_type =
                         realize_signature_constructor_named_ids(t2, realization_map);
+                    if std::env::var("URWEB_DEBUG_SIG_VALS").ok().as_deref() == Some("1")
+                        && span.file.ends_with("/demo/batchG.ur")
+                    {
+                        eprintln!(
+                            "sig val debug file={} name={} actual={} actual_head={} actual_unifs=[{}] expected={} expected_head={} expected_unifs=[{}]",
+                            span.file,
+                            x,
+                            crate::elaborated::type_display::format_constructor(t1),
+                            debug_constructor_head_name(elaboration_environment, t1),
+                            debug_constructor_unif_keys(t1),
+                            crate::elaborated::type_display::format_constructor(&realized_expected_type),
+                            debug_constructor_head_name(
+                                elaboration_environment,
+                                &realized_expected_type,
+                            ),
+                            debug_constructor_unif_keys(&realized_expected_type),
+                        );
+                    }
                     check_con(
                         elaboration_context,
                         elaboration_environment,
@@ -9528,6 +10819,22 @@ fn sub_sgi(
                     );
                 }
             } else {
+                if std::env::var("URWEB_DEBUG_MISSING_MAIN").ok().as_deref() == Some("1")
+                    && x == "main"
+                {
+                    eprintln!(
+                        "missing-main debug span={}:{} actual_items=[{}] expected_type={} backtrace=\n{}",
+                        span.file,
+                        span.first.line,
+                        actual_sgis
+                            .iter()
+                            .map(|item| format_signature_item_debug_name(&item.node))
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                        crate::elaborated::type_display::format_constructor(t2),
+                        std::backtrace::Backtrace::force_capture(),
+                    );
+                }
                 elaboration_context.error(
                     span.clone(),
                     DiagnosticPayload::new(
@@ -9536,6 +10843,7 @@ fn sub_sgi(
                     ),
                 );
             }
+            disjointness_environment.clone()
         }
         elab::SignatureItem::ConAbs(x, _, k2) => {
             debug_trace_top_subsgi_item_name(x, span);
@@ -9570,6 +10878,7 @@ fn sub_sgi(
                     DiagnosticPayload::new(DiagnosticId::ElabSignatureMissingType, vec![x.clone()]),
                 );
             }
+            disjointness_environment.clone()
         }
         elab::SignatureItem::Constructor(x, _, k2, c2) => {
             debug_trace_top_subsgi_item_name(x, span);
@@ -9642,6 +10951,7 @@ fn sub_sgi(
                     DiagnosticPayload::new(DiagnosticId::ElabSignatureMissingType, vec![x.clone()]),
                 );
             }
+            disjointness_environment.clone()
         }
         elab::SignatureItem::Structure(_, x, _, sgn2) => {
             if let Some(sgi1) = sgi_find_str(actual_sgis, x) {
@@ -9666,15 +10976,19 @@ fn sub_sgi(
                     ),
                 );
             }
+            disjointness_environment.clone()
         }
         elab::SignatureItem::Constraint(c1, c2) => {
+            let realized_left = realize_signature_constructor_named_ids(c1, realization_map);
+            let realized_right = realize_signature_constructor_named_ids(c2, realization_map);
             // Check that the constraint holds in actual
             let goals = prove_disjoint_rows(
+                elaboration_context,
                 elaboration_environment,
                 span.clone(),
                 disjointness_environment,
-                c1.clone(),
-                c2.clone(),
+                realized_left.clone(),
+                realized_right.clone(),
             );
             if !goals.is_empty() {
                 for g in goals {
@@ -9685,9 +10999,16 @@ fn sub_sgi(
                     });
                 }
             }
+            assert_disjoint_rows(
+                elaboration_environment,
+                realized_left,
+                realized_right,
+                disjointness_environment.clone(),
+            )
         }
         _ => {
             // Datatype, Signature, Class items — simplified
+            disjointness_environment.clone()
         }
     }
 }
@@ -9846,8 +11167,6 @@ pub fn elab_decl(
             let mut decls = Vec::new();
             let mut value_env = new_env;
             collect_val_decls(&pate, &ee, &et, &span, &mut decls, &mut value_env);
-            // Solve constraints
-            solve_constraints(elaboration_context, &value_env);
             let mut normalized_env = elaboration_environment.clone();
             let mut normalized_decls: Vec<elab::LocatedDeclaration> =
                 Vec::with_capacity(decls.len());
@@ -9855,6 +11174,23 @@ pub fn elab_decl(
                 match declaration.node {
                     elab::Declaration::Val(name, id, typ, expression) => {
                         let normalized_type = deep_normalize_constructor(&value_env, typ);
+                        if std::env::var("URWEB_DEBUG_BATCHFUN_VALUE_TYPES")
+                            .ok()
+                            .as_deref()
+                            == Some("1")
+                            && declaration.span.file.ends_with("/demo/batchFun.ur")
+                            && matches!(name.as_str(), "default" | "int" | "float" | "string")
+                        {
+                            eprintln!(
+                                "batchFun value debug name={} type={} named=[{}] unifs=[{}]",
+                                name,
+                                crate::elaborated::type_display::format_constructor(
+                                    &normalized_type
+                                ),
+                                debug_named_ids_in_constructor(&value_env, &normalized_type),
+                                debug_constructor_unif_keys(&normalized_type),
+                            );
+                        }
                         normalized_env = normalized_env.push_e_named_as(
                             name.clone(),
                             id,
@@ -9878,11 +11214,13 @@ pub fn elab_decl(
         }
 
         source::Decl::ValRec(bindings) => {
+            let use_seeded_expected_types = bindings.len() > 1;
             let mut pre_env = elaboration_environment.clone();
+            let mut normalization_env = pre_env.clone();
             let mut annot_types: Vec<elab::LocatedConstructor> = Vec::new();
             let mut ids: Vec<usize> = Vec::new();
 
-            for (x, opt_ann, _) in bindings {
+            for (x, opt_ann, _body) in bindings {
                 let t = match opt_ann {
                     Some(ann) => {
                         let (ce, _) = elab_con(elaboration_context, &pre_env, ann);
@@ -9912,8 +11250,67 @@ pub fn elab_decl(
                 check_con(elaboration_context, &pre_env, &span, &et, &annot_types[i]);
                 elab_recs.push((x.clone(), ids[i], annot_types[i].clone(), ee));
             }
+            if use_seeded_expected_types {
+                solve_constraints(elaboration_context, &pre_env, false);
+                let refined_annot_types: Vec<elab::LocatedConstructor> = annot_types
+                    .iter()
+                    .map(|binding_type| deep_normalize_constructor(&pre_env, binding_type.clone()))
+                    .collect();
+                if std::env::var("URWEB_DEBUG_VALREC_TYPES").ok().as_deref() == Some("1") {
+                    for (((binding_name, _, _), binding_id), binding_type) in bindings
+                        .iter()
+                        .zip(ids.iter())
+                        .zip(refined_annot_types.iter())
+                    {
+                        eprintln!(
+                            "decl valrec debug span={}:{} name={} id={} refined_type={}",
+                            span.file,
+                            span.first.line,
+                            binding_name,
+                            binding_id,
+                            crate::elaborated::type_display::format_constructor(binding_type),
+                        );
+                    }
+                }
+                let mut refined_pre_env = elaboration_environment.clone();
+                for ((binding_name, _opt_ann, _body), (binding_id, binding_type)) in bindings
+                    .iter()
+                    .zip(ids.iter().zip(refined_annot_types.iter().cloned()))
+                {
+                    refined_pre_env = refined_pre_env.push_e_named_as(
+                        binding_name.clone(),
+                        *binding_id,
+                        binding_type,
+                    );
+                }
+                let mut refined_recs: Vec<(
+                    String,
+                    usize,
+                    elab::LocatedConstructor,
+                    elab::LocatedExpression,
+                )> = Vec::new();
+                for (i, (x, _, e)) in bindings.iter().enumerate() {
+                    let (ee, et) = elab_exp_against_type(
+                        elaboration_context,
+                        &refined_pre_env,
+                        disjointness_environment,
+                        e,
+                        &refined_annot_types[i],
+                    );
+                    check_con(
+                        elaboration_context,
+                        &refined_pre_env,
+                        &span,
+                        &et,
+                        &refined_annot_types[i],
+                    );
+                    refined_recs.push((x.clone(), ids[i], refined_annot_types[i].clone(), ee));
+                }
+                solve_constraints(elaboration_context, &refined_pre_env, false);
+                normalization_env = refined_pre_env;
+                elab_recs = refined_recs;
+            }
 
-            solve_constraints(elaboration_context, &pre_env);
             let mut normalized_env = pre_env.clone();
             let mut normalized_recs: Vec<(
                 String,
@@ -9922,7 +11319,32 @@ pub fn elab_decl(
                 elab::LocatedExpression,
             )> = Vec::with_capacity(elab_recs.len());
             for (name, id, declared_type, expression) in elab_recs {
-                let normalized_type = deep_normalize_constructor(&pre_env, declared_type);
+                let normalized_type = deep_normalize_constructor(&normalization_env, declared_type);
+                if std::env::var("URWEB_DEBUG_VALREC_TYPES").ok().as_deref() == Some("1") {
+                    eprintln!(
+                        "decl valrec final span={}:{} name={} id={} normalized_type={}",
+                        span.file,
+                        span.first.line,
+                        name,
+                        id,
+                        crate::elaborated::type_display::format_constructor(&normalized_type),
+                    );
+                }
+                if std::env::var("URWEB_DEBUG_BATCHFUN_VALUE_TYPES")
+                    .ok()
+                    .as_deref()
+                    == Some("1")
+                    && span.file.ends_with("/demo/batchFun.ur")
+                    && name == "default"
+                {
+                    eprintln!(
+                        "batchFun value debug name={} type={} named=[{}] unifs=[{}]",
+                        name,
+                        crate::elaborated::type_display::format_constructor(&normalized_type),
+                        debug_named_ids_in_constructor(&pre_env, &normalized_type),
+                        debug_constructor_unif_keys(&normalized_type),
+                    );
+                }
                 normalized_env =
                     normalized_env.push_e_named_as(name.clone(), id, normalized_type.clone());
                 normalized_recs.push((name, id, normalized_type, expression));
@@ -10053,12 +11475,18 @@ pub fn elab_decl(
         ),
 
         source::Decl::Sequence(x) => {
-            let nt = new_named_id();
+            let basis_mod_id = elaboration_environment
+                .lookup_str("Basis")
+                .map(|(id, _)| *id)
+                .unwrap_or(0);
             let (new_env, id) = elaboration_environment.clone().push_e_named(
                 x.clone(),
                 basis_named_con(elaboration_environment, &span, "sql_sequence"),
             );
-            let decl_out = Located::new(elab::Declaration::Sequence(nt, x.clone(), id), span);
+            let decl_out = Located::new(
+                elab::Declaration::Sequence(basis_mod_id, x.clone(), id),
+                span,
+            );
             (vec![decl_out], new_env, disjointness_environment.clone())
         }
 
@@ -10069,11 +11497,118 @@ pub fn elab_decl(
                 disjointness_environment,
                 e,
             );
-            let nt = new_named_id();
+            let type_kind = Located::new(elab::Kind::Type, span.clone());
+            let row_kind = Located::new(
+                elab::Kind::Record(Box::new(type_kind.clone())),
+                span.clone(),
+            );
+            let nested_row_kind =
+                Located::new(elab::Kind::Record(Box::new(row_kind.clone())), span.clone());
+            let fields = fresh_cunif(
+                elaboration_environment,
+                span.clone(),
+                row_kind.clone(),
+                "view_fields",
+            );
+            let hidden_tables = fresh_cunif(
+                elaboration_environment,
+                span.clone(),
+                nested_row_kind,
+                "view_hidden_tables",
+            );
+            let map_to_empty_row = Located::new(
+                elab::Constructor::App(
+                    Box::new(Located::new(
+                        elab::Constructor::Map(
+                            Box::new(row_kind.clone()),
+                            Box::new(row_kind.clone()),
+                        ),
+                        span.clone(),
+                    )),
+                    Box::new(Located::new(
+                        elab::Constructor::Abs(
+                            "_".into(),
+                            Box::new(row_kind.clone()),
+                            Box::new(Located::new(
+                                elab::Constructor::Record(Box::new(type_kind.clone()), Vec::new()),
+                                span.clone(),
+                            )),
+                        ),
+                        span.clone(),
+                    )),
+                ),
+                span.clone(),
+            );
+            let hidden_tables = Located::new(
+                elab::Constructor::App(Box::new(map_to_empty_row), Box::new(hidden_tables)),
+                span.clone(),
+            );
+            let basis_mod_id = elaboration_environment
+                .lookup_str("Basis")
+                .map(|(id, _)| *id)
+                .unwrap_or(0);
+            let query_type = Located::new(
+                elab::Constructor::App(
+                    Box::new(Located::new(
+                        elab::Constructor::App(
+                            Box::new(Located::new(
+                                elab::Constructor::App(
+                                    Box::new(Located::new(
+                                        elab::Constructor::App(
+                                            Box::new(basis_named_con(
+                                                elaboration_environment,
+                                                &span,
+                                                "sql_query",
+                                            )),
+                                            Box::new(Located::new(
+                                                elab::Constructor::Record(
+                                                    Box::new(row_kind.clone()),
+                                                    Vec::new(),
+                                                ),
+                                                span.clone(),
+                                            )),
+                                        ),
+                                        span.clone(),
+                                    )),
+                                    Box::new(Located::new(
+                                        elab::Constructor::Record(
+                                            Box::new(row_kind.clone()),
+                                            Vec::new(),
+                                        ),
+                                        span.clone(),
+                                    )),
+                                ),
+                                span.clone(),
+                            )),
+                            Box::new(hidden_tables),
+                        ),
+                        span.clone(),
+                    )),
+                    Box::new(fields.clone()),
+                ),
+                span.clone(),
+            );
+            check_con(
+                elaboration_context,
+                elaboration_environment,
+                &span,
+                &et,
+                &query_type,
+            );
+            let view_type = Located::new(
+                elab::Constructor::App(
+                    Box::new(basis_named_con(elaboration_environment, &span, "sql_view")),
+                    Box::new(fields.clone()),
+                ),
+                span.clone(),
+            );
             let (new_env, id) = elaboration_environment
                 .clone()
-                .push_e_named(x.clone(), et.clone());
-            let decl_out = Located::new(elab::Declaration::View(nt, x.clone(), id, ee, et), span);
+                .push_e_named(x.clone(), view_type);
+            let decl_out = Located::new(
+                elab::Declaration::View(basis_mod_id, x.clone(), id, ee, fields),
+                span,
+            );
             (vec![decl_out], new_env, disjointness_environment.clone())
         }
 
@@ -10109,21 +11644,42 @@ pub fn elab_decl(
 
         source::Decl::Cookie(x, c) => {
             let (ce, _) = elab_con(elaboration_context, elaboration_environment, c);
-            let nt = new_named_id();
+            let basis_mod_id = elaboration_environment
+                .lookup_str("Basis")
+                .map(|(id, _)| *id)
+                .unwrap_or(0);
+            let cookie_type = Located::new(
+                elab::Constructor::App(
+                    Box::new(basis_named_con(
+                        elaboration_environment,
+                        &span,
+                        "http_cookie",
+                    )),
+                    Box::new(ce.clone()),
+                ),
+                span.clone(),
+            );
             let (new_env, id) = elaboration_environment
                 .clone()
-                .push_e_named(x.clone(), ce.clone());
-            let decl_out = Located::new(elab::Declaration::Cookie(nt, x.clone(), id, ce), span);
+                .push_e_named(x.clone(), cookie_type);
+            let decl_out = Located::new(
+                elab::Declaration::Cookie(basis_mod_id, x.clone(), id, ce),
+                span,
+            );
             (vec![decl_out], new_env, disjointness_environment.clone())
         }
 
         source::Decl::Style(x) => {
-            let nt = new_named_id();
+            let basis_mod_id = elaboration_environment
+                .lookup_str("Basis")
+                .map(|(id, _)| *id)
+                .unwrap_or(0);
             let (new_env, id) = elaboration_environment.clone().push_e_named(
                 x.clone(),
-                Located::new(elab::Constructor::Unit, span.clone()),
+                basis_named_con(elaboration_environment, &span, "css_class"),
             );
-            let decl_out = Located::new(elab::Declaration::Style(nt, x.clone(), id), span);
+            let decl_out =
+                Located::new(elab::Declaration::Style(basis_mod_id, x.clone(), id), span);
             (vec![decl_out], new_env, disjointness_environment.clone())
         }
 
@@ -10195,15 +11751,16 @@ pub fn elab_decl(
         }
 
         source::Decl::OpenStr(s) => {
-            let (_str_e, str_sgn) = elab_str(
+            let (str_e, str_sgn) = elab_str(
                 elaboration_context,
                 elaboration_environment,
                 disjointness_environment,
                 s,
                 None,
             );
-            let h = hnorm_sgn(elaboration_environment, &str_sgn);
-            let items = get_sgn_const_items(elaboration_environment, &str_sgn);
+            let actual_signature = selfify_signature_at(elaboration_environment, &str_e, &str_sgn);
+            let h = hnorm_sgn(elaboration_environment, &actual_signature);
+            let items = get_sgn_const_items(elaboration_environment, &actual_signature);
             if items.is_empty() && !matches!(h.node, elab::Signature::Const(_)) {
                 elaboration_context.error(
                     span.clone(),
@@ -10215,11 +11772,29 @@ pub fn elab_decl(
                     disjointness_environment.clone(),
                 )
             } else {
-                let mut new_env = elaboration_environment.clone();
-                for sgi in &items {
-                    new_env = enrich_env_from_sgi(new_env, &sgi.node, 0, &[], "");
+                let hidden_structure_name = format!("?open{}", new_named_id());
+                let hidden_structure_id = new_named_id();
+                let hidden_structure_decl = Located::new(
+                    elab::Declaration::Structure(
+                        hidden_structure_name,
+                        hidden_structure_id,
+                        actual_signature.clone(),
+                        str_e,
+                    ),
+                    span.clone(),
+                );
+                let open_declarations =
+                    open_declarations_for_signature_items(hidden_structure_id, &[], &items, &span);
+                let mut all_declarations = Vec::with_capacity(open_declarations.len() + 1);
+                all_declarations.push(hidden_structure_decl.clone());
+                all_declarations.extend(open_declarations);
+
+                let mut new_env =
+                    decl_binds(elaboration_environment.clone(), &hidden_structure_decl);
+                for declaration in all_declarations.iter().skip(1) {
+                    new_env = decl_binds(new_env, declaration);
                 }
-                (vec![], new_env, disjointness_environment.clone())
+                (all_declarations, new_env, disjointness_environment.clone())
             }
         }
     }
@@ -10373,7 +11948,39 @@ fn elab_open(
                 )
             }
         };
-    // Add all items from the signature to the current environment
+    let open_declarations = open_declarations_for_signature_items(str_id, &ms[1..], &items, span);
+    let mut new_env = elaboration_environment.clone();
+    for declaration in &open_declarations {
+        new_env = decl_binds(new_env, declaration);
+    }
+    let new_denv = assert_projected_signature_constraints(
+        elaboration_context,
+        &new_env,
+        disjointness_environment,
+        str_id,
+        &ms[1..],
+        span,
+    );
+    (open_declarations, new_env, new_denv)
+}
+
+fn elab_open_env_only(
+    elaboration_context: &mut ElabCtx,
+    elaboration_environment: &Env,
+    disjointness_environment: &disjoint::DisjointEnv,
+    ms: &[String],
+    span: &Span,
+) -> (Env, disjoint::DisjointEnv) {
+    let (str_id, items) =
+        match resolve_module_path(elaboration_context, elaboration_environment, ms, span) {
+            Some(v) => v,
+            None => {
+                return (
+                    elaboration_environment.clone(),
+                    disjointness_environment.clone(),
+                )
+            }
+        };
     let mut new_env = elaboration_environment.clone();
     for sgi in &items {
         new_env = enrich_env_from_sgi(
@@ -10392,7 +11999,166 @@ fn elab_open(
         &ms[1..],
         span,
     );
-    (vec![], new_env, new_denv)
+    (new_env, new_denv)
+}
+
+fn open_structure_projection(
+    root_id: usize,
+    path: &[String],
+    span: &Span,
+) -> elab::LocatedStructure {
+    let mut structure = Located::new(elab::Structure::Var(root_id), span.clone());
+    for field in path {
+        structure = Located::new(
+            elab::Structure::Proj(Box::new(structure), field.clone()),
+            span.clone(),
+        );
+    }
+    structure
+}
+
+fn open_declarations_for_signature_items(
+    root_id: usize,
+    path: &[String],
+    items: &[elab::LocatedSignatureItem],
+    span: &Span,
+) -> Vec<elab::LocatedDeclaration> {
+    let is_visible = |name: &str| !name.is_empty() && !name.starts_with('?');
+    let base_structure = open_structure_projection(root_id, path, span);
+    let mut declarations = Vec::new();
+
+    for item in items {
+        match &item.node {
+            elab::SignatureItem::ConAbs(name, id, kind)
+            | elab::SignatureItem::Constructor(name, id, kind, _)
+            | elab::SignatureItem::ClassAbs(name, id, kind)
+            | elab::SignatureItem::Class(name, id, kind, _) => {
+                if !is_visible(name) {
+                    continue;
+                }
+                declarations.push(Located::new(
+                    elab::Declaration::Constructor(
+                        name.clone(),
+                        *id,
+                        kind.clone(),
+                        Located::new(
+                            elab::Constructor::ModProj(root_id, path.to_vec(), name.clone()),
+                            item.span.clone(),
+                        ),
+                    ),
+                    item.span.clone(),
+                ));
+            }
+            elab::SignatureItem::Datatype(datatypes) => {
+                for datatype in datatypes {
+                    if !is_visible(&datatype.name) {
+                        continue;
+                    }
+                    declarations.push(Located::new(
+                        elab::Declaration::DatatypeImp {
+                            name: datatype.name.clone(),
+                            id: datatype.id,
+                            params: datatype.params.clone(),
+                            orig_mod: root_id,
+                            orig_path: path.to_vec(),
+                            orig_name: datatype.name.clone(),
+                            orig_constrs_path: path.to_vec(),
+                            constrs: datatype.constrs.clone(),
+                        },
+                        item.span.clone(),
+                    ));
+                }
+            }
+            elab::SignatureItem::DatatypeImp {
+                name,
+                id,
+                params,
+                orig_mod,
+                orig_path,
+                orig_name,
+                orig_constrs_path,
+                constrs,
+            } => {
+                if !is_visible(name) {
+                    continue;
+                }
+                declarations.push(Located::new(
+                    elab::Declaration::DatatypeImp {
+                        name: name.clone(),
+                        id: *id,
+                        params: params.clone(),
+                        orig_mod: *orig_mod,
+                        orig_path: orig_path.clone(),
+                        orig_name: orig_name.clone(),
+                        orig_constrs_path: orig_constrs_path.clone(),
+                        constrs: constrs.clone(),
+                    },
+                    item.span.clone(),
+                ));
+            }
+            elab::SignatureItem::Val(name, id, constructor) => {
+                if !is_visible(name) {
+                    continue;
+                }
+                declarations.push(Located::new(
+                    elab::Declaration::Val(
+                        name.clone(),
+                        *id,
+                        constructor.clone(),
+                        Located::new(
+                            elab::Expression::ModProj(root_id, path.to_vec(), name.clone()),
+                            item.span.clone(),
+                        ),
+                    ),
+                    item.span.clone(),
+                ));
+            }
+            elab::SignatureItem::Structure(_, name, id, signature) => {
+                if !is_visible(name) {
+                    continue;
+                }
+                declarations.push(Located::new(
+                    elab::Declaration::Structure(
+                        name.clone(),
+                        *id,
+                        signature.clone(),
+                        Located::new(
+                            elab::Structure::Proj(Box::new(base_structure.clone()), name.clone()),
+                            item.span.clone(),
+                        ),
+                    ),
+                    item.span.clone(),
+                ));
+            }
+            elab::SignatureItem::Signature(name, id, _signature) => {
+                if !is_visible(name) {
+                    continue;
+                }
+                declarations.push(Located::new(
+                    elab::Declaration::Signature(
+                        name.clone(),
+                        *id,
+                        Located::new(
+                            elab::Signature::Proj(root_id, path.to_vec(), name.clone()),
+                            item.span.clone(),
+                        ),
+                    ),
+                    item.span.clone(),
+                ));
+            }
+            elab::SignatureItem::Constraint(left_constructor, right_constructor) => {
+                declarations.push(Located::new(
+                    elab::Declaration::Constraint(
+                        left_constructor.clone(),
+                        right_constructor.clone(),
+                    ),
+                    item.span.clone(),
+                ));
+            }
+        }
+    }
+
+    declarations
 }
 
 /// Bind one elaborated signature item into `named_c` / `named_e` when `open`ing a structure.
@@ -11031,10 +12797,6 @@ pub fn elab_str(
                     elab_decl(elaboration_context, &cur_env, &cur_denv, d);
                 cur_env = new_env;
                 cur_denv = new_denv;
-                // Keep deferred elaboration constraints declaration-local inside structures,
-                // matching the SML pipeline more closely and preventing earlier helpers from
-                // leaking unresolved state into later declarations like `rev` / `queryL`.
-                solve_constraints(elaboration_context, &cur_env);
                 elab_decls.extend(ds);
             }
             // Build signature from the declarations
@@ -11090,7 +12852,9 @@ pub fn elab_str(
                 str_inner,
                 None,
             );
-            let items = get_sgn_const_items(elaboration_environment, &str_isgn);
+            let selfified_signature =
+                selfify_signature_at(elaboration_environment, &str_ie, &str_isgn);
+            let items = get_sgn_const_items(elaboration_environment, &selfified_signature);
             if let Some(elab::SignatureItem::Structure(_, _, _id, sgn)) =
                 sgi_find_str(&items, field)
             {
@@ -11221,6 +12985,21 @@ pub fn elab_str(
                         elab::Signature::Error => elaborated_signature_error_at_span(span.clone()),
                         _ => normalized_range,
                     };
+                    if std::env::var("URWEB_DEBUG_STR_APP_SIG").ok().as_deref() == Some("1")
+                        && span.file.ends_with("/demo/batchG.ur")
+                    {
+                        let result_items =
+                            get_sgn_const_items(elaboration_environment, &result_signature);
+                        eprintln!(
+                            "str app debug file={} items=[{}]",
+                            span.file,
+                            result_items
+                                .iter()
+                                .map(|item| format_signature_item_debug_name(&item.node))
+                                .collect::<Vec<_>>()
+                                .join(", "),
+                        );
+                    }
                     (str_out, result_signature)
                 }
                 _ => {
@@ -11633,7 +13412,11 @@ fn decls_to_sgn(decls: &[elab::LocatedDeclaration], span: &Span) -> elab::Locate
 
 const CONSTRAINT_SOLVE_MAX_PASSES: usize = 64;
 
-fn solve_constraints(elaboration_context: &mut ElabCtx, elaboration_environment: &Env) {
+fn solve_constraints(
+    elaboration_context: &mut ElabCtx,
+    elaboration_environment: &Env,
+    finalize_unresolved: bool,
+) {
     let mut pending_constraints = std::mem::take(&mut elaboration_context.constraints);
     let mut remaining = Vec::new();
 
@@ -11651,6 +13434,7 @@ fn solve_constraints(elaboration_context: &mut ElabCtx, elaboration_environment:
                     goal,
                 } => {
                     let goals = prove_disjoint_rows(
+                        elaboration_context,
                         &c_env,
                         goal.span.clone(),
                         &goal.disjointness_environment,
@@ -11699,25 +13483,31 @@ fn solve_constraints(elaboration_context: &mut ElabCtx, elaboration_environment:
                     left_constructor,
                     right_constructor,
                 } => {
-                    let retry_result = unify_rows(
-                        elaboration_context,
-                        &c_env,
-                        &span,
-                        &left_constructor,
-                        &right_constructor,
-                        0,
-                    );
+                    let retry_result =
+                        with_may_delay(elaboration_context, false, |elaboration_context| {
+                            unify_rows(
+                                elaboration_context,
+                                &c_env,
+                                &span,
+                                &left_constructor,
+                                &right_constructor,
+                                0,
+                            )
+                        });
                     if retry_result.is_ok() {
                         made_progress = true;
                     } else {
-                        let map_result = guess_map(
-                            elaboration_context,
-                            &c_env,
-                            &span,
-                            &left_constructor,
-                            &right_constructor,
-                            0,
-                        );
+                        let map_result =
+                            with_may_delay(elaboration_context, false, |elaboration_context| {
+                                guess_map(
+                                    elaboration_context,
+                                    &c_env,
+                                    &span,
+                                    &left_constructor,
+                                    &right_constructor,
+                                    0,
+                                )
+                            });
                         match map_result {
                             Ok(()) => {
                                 made_progress = true;
@@ -11748,6 +13538,11 @@ fn solve_constraints(elaboration_context: &mut ElabCtx, elaboration_environment:
     }
     if remaining.is_empty() {
         remaining = pending_constraints;
+    }
+
+    if !finalize_unresolved {
+        elaboration_context.constraints = remaining;
+        return;
     }
 
     // Report truly unresolvable constraints
@@ -11840,12 +13635,17 @@ fn instantiate_rule(
     hyps: &[elab::LocatedConstructor],
     head: &elab::LocatedConstructor,
     span: &Span,
-) -> (elab::LocatedConstructor, Vec<elab::LocatedConstructor>) {
+) -> (
+    Vec<elab::LocatedConstructor>,
+    elab::LocatedConstructor,
+    Vec<elab::LocatedConstructor>,
+) {
     if quantifier_kinds.is_empty() {
-        return (head.clone(), hyps.to_vec());
+        return (Vec::new(), head.clone(), hyps.to_vec());
     }
     let mut inst_head = head.clone();
     let mut inst_hyps: Vec<elab::LocatedConstructor> = hyps.to_vec();
+    let mut inst_args_rev = Vec::with_capacity(quantifier_kinds.len());
     // Substitute from innermost quantifier (Rel(0)) outward.
     // Each substitution reduces all remaining de Bruijn indices by 1.
     // Previously inserted fresh unifiers are traversed by later substitutions, so
@@ -11862,6 +13662,7 @@ fn instantiate_rule(
             "_inst",
             remaining_outer_substitutions,
         );
+        inst_args_rev.push(fresh.clone());
         if let Ok(new_head) = sub_con_in_con(0, &fresh, inst_head.clone()) {
             inst_head = new_head;
         }
@@ -11870,7 +13671,8 @@ fn instantiate_rule(
             .map(|h| sub_con_in_con(0, &fresh, h.clone()).unwrap_or(h))
             .collect();
     }
-    (inst_head, inst_hyps)
+    inst_args_rev.reverse();
+    (inst_args_rev, inst_head, inst_hyps)
 }
 
 fn snapshot_class_resolution_attempt(
@@ -11927,7 +13729,7 @@ fn try_resolve_class_rule(
     witness: &elab::LocatedExpression,
     commit: bool,
 ) -> Option<(elab::LocatedExpression, elab::LocatedConstructor)> {
-    let (inst_head, inst_hyps) = instantiate_rule(
+    let (inst_args, inst_head, inst_hyps) = instantiate_rule(
         elaboration_environment,
         quantifier_kinds,
         hypotheses,
@@ -11944,33 +13746,44 @@ fn try_resolve_class_rule(
         quantifier_kinds.len(),
     ) {
         true => {
-            let all_hypotheses_satisfied = inst_hyps.iter().all(|hypothesis| {
-                resolve_class(elaboration_environment, hypothesis, span).is_some()
-            });
-            match all_hypotheses_satisfied {
-                true => {
-                    if !commit {
-                        restore_class_match_snapshots(constructor_snapshots, kind_snapshots);
-                    }
-                    Some((witness.clone(), inst_head))
-                }
-                false => {
+            let mut resolved_hypothesis_witnesses = Vec::with_capacity(inst_hyps.len());
+            for hypothesis in &inst_hyps {
+                let Some((resolved_witness, _matched_head)) =
+                    resolve_class(elaboration_environment, hypothesis, span)
+                else {
                     restore_class_match_snapshots(constructor_snapshots, kind_snapshots);
-                    None
-                }
+                    return None;
+                };
+                resolved_hypothesis_witnesses.push(resolved_witness);
             }
+
+            let mut instantiated_witness = witness.clone();
+            for constructor_argument in inst_args {
+                instantiated_witness = Located::new(
+                    elab::Expression::CApp(Box::new(instantiated_witness), constructor_argument),
+                    witness.span.clone(),
+                );
+            }
+            for resolved_hypothesis_witness in resolved_hypothesis_witnesses {
+                instantiated_witness = Located::new(
+                    elab::Expression::App(
+                        Box::new(instantiated_witness),
+                        Box::new(resolved_hypothesis_witness),
+                    ),
+                    witness.span.clone(),
+                );
+            }
+
+            if !commit {
+                restore_class_match_snapshots(constructor_snapshots, kind_snapshots);
+            }
+            Some((instantiated_witness, inst_head))
         }
         false => {
             restore_class_match_snapshots(constructor_snapshots, kind_snapshots);
             None
         }
     }
-}
-
-fn class_goal_contains_unsolved_unifiers(class: &elab::LocatedConstructor) -> bool {
-    crate::elaborated::utilities::con::exists(class, &|_| false, &|candidate| {
-        matches!(candidate.node, elab::Constructor::Unif(_, _, _, _, _))
-    })
 }
 
 fn normalize_class_goal(class: elab::LocatedConstructor) -> elab::LocatedConstructor {
@@ -11992,11 +13805,62 @@ fn normalize_class_goal(class: elab::LocatedConstructor) -> elab::LocatedConstru
     }
 }
 
+fn constructor_contains_unknown_unifs(constructor: &elab::LocatedConstructor) -> bool {
+    match &constructor.node {
+        elab::Constructor::TFun(domain, range)
+        | elab::Constructor::Concat(domain, range)
+        | elab::Constructor::App(domain, range)
+        | elab::Constructor::TDisjoint(domain, range, _) => {
+            constructor_contains_unknown_unifs(domain)
+                || constructor_contains_unknown_unifs(range)
+                || matches!(
+                    &constructor.node,
+                    elab::Constructor::TDisjoint(_, _, body)
+                        if constructor_contains_unknown_unifs(body)
+                )
+        }
+        elab::Constructor::TCFun(_, _, _, body)
+        | elab::Constructor::TRecord(body)
+        | elab::Constructor::Abs(_, _, body)
+        | elab::Constructor::KAbs(_, body)
+        | elab::Constructor::TKFun(_, body)
+        | elab::Constructor::Proj(body, _) => constructor_contains_unknown_unifs(body),
+        elab::Constructor::KApp(function_constructor, _kind) => {
+            constructor_contains_unknown_unifs(function_constructor)
+        }
+        elab::Constructor::Record(_, fields) => fields.iter().any(|(field_name, field_type)| {
+            constructor_contains_unknown_unifs(field_name)
+                || constructor_contains_unknown_unifs(field_type)
+        }),
+        elab::Constructor::Tuple(items) => items.iter().any(constructor_contains_unknown_unifs),
+        elab::Constructor::Unif(_, _, _, _, cell) => {
+            match &*crate::compiler_diagnostics::lock_for_compile(
+                cell.as_ref(),
+                "resolve_class unknown-unif probe",
+            ) {
+                elab::CUnif::Unknown => true,
+                elab::CUnif::Known(known_constructor) => {
+                    constructor_contains_unknown_unifs(known_constructor)
+                }
+            }
+        }
+        elab::Constructor::Rel(_)
+        | elab::Constructor::Named(_)
+        | elab::Constructor::ModProj(_, _, _)
+        | elab::Constructor::Name(_)
+        | elab::Constructor::Map(_, _)
+        | elab::Constructor::Unit
+        | elab::Constructor::Error => false,
+    }
+}
+
 fn resolve_class(
     elaboration_environment: &Env,
     class: &elab::LocatedConstructor,
     span: &Span,
 ) -> Option<(elab::LocatedExpression, elab::LocatedConstructor)> {
+    let debug_resolve_class =
+        std::env::var("URWEB_DEBUG_RESOLVE_CLASS").ok().as_deref() == Some("1");
     if let Some(folder_witness) = resolve_folder_witness(elaboration_environment, class, span) {
         return Some(folder_witness);
     }
@@ -12023,94 +13887,26 @@ fn resolve_class(
     let Some(rules) = elaboration_environment.class_rules_for_constructor(&class_n) else {
         return None;
     };
-    if class_goal_contains_unsolved_unifiers(&class_n) {
-        #[derive(Clone, Copy)]
-        enum CandidateRule {
-            Closed(usize),
-            Open(usize),
-        }
-
-        let mut selected_rule: Option<CandidateRule> = None;
-        let mut matching_rule_count = 0usize;
-        for (index, (quantifier_kinds, hyps, head, witness)) in
-            rules.closed_rules.iter().enumerate()
-        {
-            if try_resolve_class_rule(
-                elaboration_environment,
-                &class_n,
-                span,
-                quantifier_kinds,
-                hyps,
-                head,
-                witness,
-                false,
-            )
-            .is_some()
-            {
-                matching_rule_count += 1;
-                if selected_rule.is_none() {
-                    selected_rule = Some(CandidateRule::Closed(index));
-                }
-                if matching_rule_count > 1 {
-                    return None;
-                }
-            }
-        }
-        for (index, (quantifier_kinds, hyps, head, witness)) in rules.open_rules.iter().enumerate()
-        {
-            if try_resolve_class_rule(
-                elaboration_environment,
-                &class_n,
-                span,
-                quantifier_kinds,
-                hyps,
-                head,
-                witness,
-                false,
-            )
-            .is_some()
-            {
-                matching_rule_count += 1;
-                if selected_rule.is_none() {
-                    selected_rule = Some(CandidateRule::Open(index));
-                }
-                if matching_rule_count > 1 {
-                    return None;
-                }
-            }
-        }
-
-        return match selected_rule {
-            Some(CandidateRule::Closed(index)) => {
-                let (quantifier_kinds, hyps, head, witness) = &rules.closed_rules[index];
-                try_resolve_class_rule(
-                    elaboration_environment,
-                    &class_n,
-                    span,
-                    quantifier_kinds,
-                    hyps,
-                    head,
-                    witness,
-                    true,
-                )
-            }
-            Some(CandidateRule::Open(index)) => {
-                let (quantifier_kinds, hyps, head, witness) = &rules.open_rules[index];
-                try_resolve_class_rule(
-                    elaboration_environment,
-                    &class_n,
-                    span,
-                    quantifier_kinds,
-                    hyps,
-                    head,
-                    witness,
-                    true,
-                )
-            }
-            None => None,
-        };
+    let class_has_unknown_unifs = constructor_contains_unknown_unifs(&class_n);
+    if debug_resolve_class {
+        eprintln!(
+            "resolve_class debug span={}:{} class={} normalized={} has_unknown_unifs={} open_rules={} closed_rules={}",
+            span.file,
+            span.first.line,
+            crate::elaborated::type_display::format_constructor(class),
+            crate::elaborated::type_display::format_constructor(&class_n),
+            class_has_unknown_unifs,
+            rules.open_rules.len(),
+            rules.closed_rules.len(),
+        );
     }
-    for (quantifier_kinds, hyps, head, witness) in &rules.closed_rules {
+    for (quantifier_kinds, hyps, head, witness) in &rules.open_rules {
+        if debug_resolve_class {
+            eprintln!(
+                "resolve_class debug trying open head={}",
+                crate::elaborated::type_display::format_constructor(head),
+            );
+        }
         if let Some(resolved) = try_resolve_class_rule(
             elaboration_environment,
             &class_n,
@@ -12121,10 +13917,53 @@ fn resolve_class(
             witness,
             true,
         ) {
+            if debug_resolve_class {
+                eprintln!(
+                    "resolve_class debug open matched head={}",
+                    crate::elaborated::type_display::format_constructor(&resolved.1),
+                );
+            }
             return Some(resolved);
         }
     }
-    for (quantifier_kinds, hyps, head, witness) in &rules.open_rules {
+    if class_has_unknown_unifs {
+        let mut unique_match: Option<usize> = None;
+        for (rule_index, (quantifier_kinds, hyps, head, witness)) in
+            rules.closed_rules.iter().enumerate()
+        {
+            let Some(_) = try_resolve_class_rule(
+                elaboration_environment,
+                &class_n,
+                span,
+                quantifier_kinds,
+                hyps,
+                head,
+                witness,
+                false,
+            ) else {
+                continue;
+            };
+            if unique_match.is_some() {
+                return None;
+            }
+            unique_match = Some(rule_index);
+        }
+        let Some(rule_index) = unique_match else {
+            return None;
+        };
+        let (quantifier_kinds, hyps, head, witness) = &rules.closed_rules[rule_index];
+        return try_resolve_class_rule(
+            elaboration_environment,
+            &class_n,
+            span,
+            quantifier_kinds,
+            hyps,
+            head,
+            witness,
+            true,
+        );
+    }
+    for (quantifier_kinds, hyps, head, witness) in &rules.closed_rules {
         if let Some(resolved) = try_resolve_class_rule(
             elaboration_environment,
             &class_n,
@@ -12518,8 +14357,7 @@ fn row_field_pair_matches(
     let debug_row_field_matches = std::env::var("URWEB_DEBUG_ROW_FIELD_MATCHES")
         .ok()
         .as_deref()
-        == Some("1")
-        && diagnostic_span.file.ends_with("/demo/form.ur");
+        == Some("1");
     let (constructor_snapshots, kind_snapshots) =
         snapshot_constructor_match_attempt(&[left_name, left_type, right_name, right_type]);
     let mut probe_context = ElabCtx::new();
@@ -12536,15 +14374,17 @@ fn row_field_pair_matches(
         restore_class_match_snapshots(constructor_snapshots, kind_snapshots);
         return false;
     }
-    let type_match = unify_cons_inner(
-        elaboration_context,
-        elaboration_environment,
-        diagnostic_span,
-        left_type,
-        right_type,
-        recursion_depth + 1,
-    )
-    .is_ok();
+    let type_match = with_may_delay(elaboration_context, false, |elaboration_context| {
+        unify_cons_inner(
+            elaboration_context,
+            elaboration_environment,
+            diagnostic_span,
+            left_type,
+            right_type,
+            recursion_depth + 1,
+        )
+        .is_ok()
+    });
     if !type_match {
         restore_class_match_snapshots(constructor_snapshots, kind_snapshots);
         return false;
@@ -12582,23 +14422,52 @@ fn resolve_folder_witness(
     class: &elab::LocatedConstructor,
     span: &Span,
 ) -> Option<(elab::LocatedExpression, elab::LocatedConstructor)> {
-    let normalized_class = hnorm_con_expression_head(elaboration_environment, class.clone());
-    match &normalized_class.node {
-        elab::Constructor::App(folder_head, row_constructor)
-            if constructor_is_folder_head(elaboration_environment, folder_head) =>
-        {
+    let normalized_class = hnorm_con(class.clone());
+    if let elab::Constructor::App(folder_head, row_constructor) = &normalized_class.node {
+        if constructor_is_folder_head(elaboration_environment, folder_head) {
             let normalized_row = hnorm_con(row_constructor.as_ref().clone());
-            match &normalized_row.node {
-                elab::Constructor::Record(kind, fields) => {
-                    let witness =
-                        build_folder_witness(elaboration_environment, kind.as_ref(), fields, span)?;
-                    Some((witness, normalized_class))
-                }
-                _ => None,
+            if let elab::Constructor::Record(kind, fields) = &normalized_row.node {
+                let witness =
+                    build_folder_witness(elaboration_environment, kind.as_ref(), fields, span)?;
+                return Some((witness, normalized_class));
             }
         }
-        _ => None,
     }
+
+    let mut elaboration_context = ElabCtx::new();
+    let (folder_application, folder_row) =
+        instantiate_fresh_folder_application(elaboration_environment, span)?;
+    let expanded_folder = expand_folder_constructor_application(
+        &mut elaboration_context,
+        elaboration_environment,
+        &folder_application,
+    )?;
+    let (constructor_snapshots, kind_snapshots) = snapshot_constructor_match_attempt(&[
+        class,
+        &folder_application,
+        &expanded_folder,
+        &folder_row,
+    ]);
+    if unify_cons_inner(
+        &mut elaboration_context,
+        elaboration_environment,
+        span,
+        class,
+        &expanded_folder,
+        0,
+    )
+    .is_err()
+    {
+        restore_class_match_snapshots(constructor_snapshots, kind_snapshots);
+        return None;
+    }
+    let normalized_row = hnorm_con(folder_row.clone());
+    let elab::Constructor::Record(kind, fields) = &normalized_row.node else {
+        restore_class_match_snapshots(constructor_snapshots, kind_snapshots);
+        return None;
+    };
+    let witness = build_folder_witness(elaboration_environment, kind.as_ref(), fields, span)?;
+    Some((witness, folder_application))
 }
 
 fn build_folder_witness(
@@ -12730,53 +14599,127 @@ pub fn elab_file(
     let mut disjointness_environment = disjoint::empty_env();
     let mut all_decls: Vec<elab::LocatedDeclaration> = Vec::new();
 
-    for decl in &file {
-        let (ds, new_env, new_denv) = elab_decl(
-            &mut elaboration_context,
-            &elaboration_environment,
-            &disjointness_environment,
-            decl,
-        );
-        elaboration_environment = new_env; // Step: env after `elab_decl` on this AST node.
-        disjointness_environment = new_denv; // Step: parallel disjointness state.
-        solve_constraints(&mut elaboration_context, &elaboration_environment);
-        all_decls.extend(ds); // Accumulate elaborated declarations.
+    with_may_delay(&mut elaboration_context, true, |elaboration_context| {
+        for decl in &file {
+            if std::env::var("URWEB_DEBUG_ELAB_FILE_PROGRESS")
+                .ok()
+                .as_deref()
+                == Some("1")
+            {
+                match &decl.node {
+                    crate::source::Decl::FfiStr(structure_name, _, _) => {
+                        tracing::info!(
+                            span_file = %decl.span.file,
+                            span_line = decl.span.first.line,
+                            decl_kind = "FfiStr",
+                            structure = %structure_name,
+                            "elab_file start"
+                        );
+                    }
+                    crate::source::Decl::Str(structure_name, _, _, _, _) => {
+                        tracing::info!(
+                            span_file = %decl.span.file,
+                            span_line = decl.span.first.line,
+                            decl_kind = "Str",
+                            structure = %structure_name,
+                            "elab_file start"
+                        );
+                    }
+                    other_decl => {
+                        tracing::info!(
+                            span_file = %decl.span.file,
+                            span_line = decl.span.first.line,
+                            decl_kind = ?other_decl,
+                            "elab_file start"
+                        );
+                    }
+                }
+            }
+            let (ds, new_env, new_denv) = elab_decl(
+                elaboration_context,
+                &elaboration_environment,
+                &disjointness_environment,
+                decl,
+            );
+            if std::env::var("URWEB_DEBUG_ELAB_FILE_PROGRESS")
+                .ok()
+                .as_deref()
+                == Some("1")
+            {
+                match &decl.node {
+                    crate::source::Decl::FfiStr(structure_name, _, _) => {
+                        tracing::info!(
+                            span_file = %decl.span.file,
+                            span_line = decl.span.first.line,
+                            decl_kind = "FfiStr",
+                            structure = %structure_name,
+                            produced_decls = ds.len(),
+                            "elab_file done"
+                        );
+                    }
+                    crate::source::Decl::Str(structure_name, _, _, _, _) => {
+                        tracing::info!(
+                            span_file = %decl.span.file,
+                            span_line = decl.span.first.line,
+                            decl_kind = "Str",
+                            structure = %structure_name,
+                            produced_decls = ds.len(),
+                            "elab_file done"
+                        );
+                    }
+                    other_decl => {
+                        tracing::info!(
+                            span_file = %decl.span.file,
+                            span_line = decl.span.first.line,
+                            decl_kind = ?other_decl,
+                            produced_decls = ds.len(),
+                            "elab_file done"
+                        );
+                    }
+                }
+            }
+            elaboration_environment = new_env; // Step: env after `elab_decl` on this AST node.
+            disjointness_environment = new_denv; // Step: parallel disjointness state.
+            all_decls.extend(ds); // Accumulate elaborated declarations.
 
-        // Mirror SML `elabFile` `dopen` on `Basis` / `Top` once those structures exist.
-        match &decl.node {
-            crate::source::Decl::FfiStr(structure_name, _, _) if structure_name == "Basis" => {
-                // `FfiStr("Basis", ...)` ⇒ implicit `open Basis` for prelude names.
-                let auto_open_span = decl.span.clone();
-                let (open_declarations, opened_env, opened_disjointness) = elab_open(
-                    &mut elaboration_context,
-                    &elaboration_environment,
-                    &disjointness_environment,
-                    &["Basis".to_string()],
-                    &auto_open_span,
-                );
-                elaboration_environment = opened_env; // Bind `unit`, `transaction`, …
-                disjointness_environment = opened_disjointness;
-                all_decls.extend(open_declarations); // Surface generated open decls if any.
-            }
-            crate::source::Decl::Str(structure_name, _, _, _, _) if structure_name == "Top" => {
-                // `structure Top` (from lib) ⇒ implicit `open Top` for standard helpers.
-                let auto_open_span = decl.span.clone();
-                let (open_declarations, opened_env, opened_disjointness) = elab_open(
-                    &mut elaboration_context,
-                    &elaboration_environment,
-                    &disjointness_environment,
-                    &["Top".to_string()],
-                    &auto_open_span,
-                );
-                elaboration_environment = opened_env;
-                disjointness_environment = opened_disjointness;
-                all_decls.extend(open_declarations);
-            }
-            _ => {
-                // Other declaration forms do not trigger auto-open here.
+            // Mirror SML `elabFile` `dopen` on `Basis` / `Top` once those structures exist.
+            match &decl.node {
+                crate::source::Decl::FfiStr(structure_name, _, _) if structure_name == "Basis" => {
+                    // `FfiStr("Basis", ...)` ⇒ implicit `open Basis` for prelude names.
+                    let auto_open_span = decl.span.clone();
+                    let (opened_env, opened_disjointness) = elab_open_env_only(
+                        elaboration_context,
+                        &elaboration_environment,
+                        &disjointness_environment,
+                        &["Basis".to_string()],
+                        &auto_open_span,
+                    );
+                    elaboration_environment = opened_env; // Bind `unit`, `transaction`, …
+                    disjointness_environment = opened_disjointness;
+                }
+                crate::source::Decl::Str(structure_name, _, _, _, _) if structure_name == "Top" => {
+                    // `structure Top` (from lib) ⇒ implicit `open Top` for standard helpers.
+                    let auto_open_span = decl.span.clone();
+                    let (opened_env, opened_disjointness) = elab_open_env_only(
+                        elaboration_context,
+                        &elaboration_environment,
+                        &disjointness_environment,
+                        &["Top".to_string()],
+                        &auto_open_span,
+                    );
+                    elaboration_environment = opened_env;
+                    disjointness_environment = opened_disjointness;
+                }
+                _ => {
+                    // Other declaration forms do not trigger auto-open here.
+                }
             }
         }
-    }
+
+        with_may_delay(elaboration_context, false, |elaboration_context| {
+            solve_constraints(elaboration_context, &elaboration_environment, true);
+        });
+    });
 
     // Report all errors
     for (span, payload) in elaboration_context.errors {
@@ -12867,13 +14810,13 @@ fn auto_open_basis_and_top(
     elaboration_context: &mut ElabCtx,
     elaboration_environment: &mut Env,
     disjointness_environment: &mut disjoint::DisjointEnv,
-    all_decls: &mut Vec<elab::LocatedDeclaration>,
+    _all_decls: &mut Vec<elab::LocatedDeclaration>,
     decl: &source::LocDecl,
 ) {
     match &decl.node {
         crate::source::Decl::FfiStr(structure_name, _, _) if structure_name == "Basis" => {
             let auto_open_span = decl.span.clone();
-            let (open_declarations, opened_env, opened_disjointness) = elab_open(
+            let (opened_env, opened_disjointness) = elab_open_env_only(
                 elaboration_context,
                 elaboration_environment,
                 disjointness_environment,
@@ -12882,11 +14825,10 @@ fn auto_open_basis_and_top(
             );
             *elaboration_environment = opened_env;
             *disjointness_environment = opened_disjointness;
-            all_decls.extend(open_declarations);
         }
         crate::source::Decl::Str(structure_name, _, _, _, _) if structure_name == "Top" => {
             let auto_open_span = decl.span.clone();
-            let (open_declarations, opened_env, opened_disjointness) = elab_open(
+            let (opened_env, opened_disjointness) = elab_open_env_only(
                 elaboration_context,
                 elaboration_environment,
                 disjointness_environment,
@@ -12895,7 +14837,6 @@ fn auto_open_basis_and_top(
             );
             *elaboration_environment = opened_env;
             *disjointness_environment = opened_disjointness;
-            all_decls.extend(open_declarations);
         }
         _ => {}
     }
@@ -12921,43 +14862,48 @@ pub fn elab_boot_file_to_snapshot(
     let mut all_decls: Vec<elab::LocatedDeclaration> = Vec::new();
     let mut seed_steps = Vec::new();
 
-    for decl in file {
-        let (ds, new_env, new_denv) = elab_decl(
-            &mut elaboration_context,
-            &elaboration_environment,
-            &disjointness_environment,
-            decl,
-        );
-        elaboration_environment = new_env;
-        disjointness_environment = new_denv;
-        solve_constraints(&mut elaboration_context, &elaboration_environment);
-        all_decls.extend(ds);
-        record_boot_seed_step(&mut seed_steps, decl, &elaboration_environment);
-        auto_open_basis_and_top(
-            &mut elaboration_context,
-            &mut elaboration_environment,
-            &mut disjointness_environment,
-            &mut all_decls,
-            decl,
-        );
-        match &decl.node {
-            crate::source::Decl::FfiStr(structure_name, _, _) if structure_name == "Basis" => {
-                if let Some(open_step) =
-                    snapshot_open_step(&elaboration_environment, &["Basis".to_string()])
-                {
-                    seed_steps.push(open_step);
+    with_may_delay(&mut elaboration_context, true, |elaboration_context| {
+        for decl in file {
+            let (ds, new_env, new_denv) = elab_decl(
+                elaboration_context,
+                &elaboration_environment,
+                &disjointness_environment,
+                decl,
+            );
+            elaboration_environment = new_env;
+            disjointness_environment = new_denv;
+            all_decls.extend(ds);
+            record_boot_seed_step(&mut seed_steps, decl, &elaboration_environment);
+            auto_open_basis_and_top(
+                elaboration_context,
+                &mut elaboration_environment,
+                &mut disjointness_environment,
+                &mut all_decls,
+                decl,
+            );
+            match &decl.node {
+                crate::source::Decl::FfiStr(structure_name, _, _) if structure_name == "Basis" => {
+                    if let Some(open_step) =
+                        snapshot_open_step(&elaboration_environment, &["Basis".to_string()])
+                    {
+                        seed_steps.push(open_step);
+                    }
                 }
-            }
-            crate::source::Decl::Str(structure_name, _, _, _, _) if structure_name == "Top" => {
-                if let Some(open_step) =
-                    snapshot_open_step(&elaboration_environment, &["Top".to_string()])
-                {
-                    seed_steps.push(open_step);
+                crate::source::Decl::Str(structure_name, _, _, _, _) if structure_name == "Top" => {
+                    if let Some(open_step) =
+                        snapshot_open_step(&elaboration_environment, &["Top".to_string()])
+                    {
+                        seed_steps.push(open_step);
+                    }
                 }
+                _ => {}
             }
-            _ => {}
         }
-    }
+
+        with_may_delay(elaboration_context, false, |elaboration_context| {
+            solve_constraints(elaboration_context, &elaboration_environment, true);
+        });
+    });
 
     for (span, payload) in elaboration_context.errors {
         errors.report_type_at(span, payload);
@@ -13112,25 +15058,30 @@ pub fn elab_file_from_boot_snapshot(
     let mut disjointness_environment = snapshot.disjointness_environment.clone();
     let mut all_decls: Vec<elab::LocatedDeclaration> = Vec::new();
 
-    for decl in &file {
-        let (ds, new_env, new_denv) = elab_decl(
-            &mut elaboration_context,
-            &elaboration_environment,
-            &disjointness_environment,
-            decl,
-        );
-        elaboration_environment = new_env;
-        disjointness_environment = new_denv;
-        solve_constraints(&mut elaboration_context, &elaboration_environment);
-        all_decls.extend(ds);
-        auto_open_basis_and_top(
-            &mut elaboration_context,
-            &mut elaboration_environment,
-            &mut disjointness_environment,
-            &mut all_decls,
-            decl,
-        );
-    }
+    with_may_delay(&mut elaboration_context, true, |elaboration_context| {
+        for decl in &file {
+            let (ds, new_env, new_denv) = elab_decl(
+                elaboration_context,
+                &elaboration_environment,
+                &disjointness_environment,
+                decl,
+            );
+            elaboration_environment = new_env;
+            disjointness_environment = new_denv;
+            all_decls.extend(ds);
+            auto_open_basis_and_top(
+                elaboration_context,
+                &mut elaboration_environment,
+                &mut disjointness_environment,
+                &mut all_decls,
+                decl,
+            );
+        }
+
+        with_may_delay(elaboration_context, false, |elaboration_context| {
+            solve_constraints(elaboration_context, &elaboration_environment, true);
+        });
+    });
 
     for (span, payload) in elaboration_context.errors {
         errors.report_type_at(span, payload);
@@ -13256,7 +15207,6 @@ pub fn elab_structure_prefix_checkpoints_from_boot_snapshot(
         );
         current_environment = new_environment;
         current_disjointness_environment = new_disjointness_environment;
-        solve_constraints(&mut elaboration_context, &current_environment);
         elaborated_declarations.extend(new_declarations);
 
         while next_checkpoint_index < indexed_checkpoints.len()
@@ -13438,7 +15388,9 @@ mod tests {
             span.clone(),
         );
 
+        let mut elaboration_context = ElabCtx::new();
         let goals = prove_disjoint_rows(
+            &mut elaboration_context,
             &fixture.elaboration_environment,
             span,
             &disjoint::empty_env(),
@@ -13449,6 +15401,227 @@ mod tests {
             goals.is_empty(),
             "Basis body' should normalize to a row disjoint from [Dyn], got {:?}",
             goals
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn prove_disjoint_rows_uses_inferred_row_tail_disjointness() -> anyhow::Result<()> {
+        let span = crate::error_types::Span::dummy();
+        let unit_kind = Located::new(elab::Kind::Unit, span.clone());
+        let row_kind = Located::new(
+            elab::Kind::Record(Box::new(unit_kind.clone())),
+            span.clone(),
+        );
+        let elaboration_environment = Env::empty();
+        let mut elaboration_context = ElabCtx::new();
+        let shared_tail = fresh_cunif(
+            &elaboration_environment,
+            span.clone(),
+            row_kind,
+            "shared_tail",
+        );
+        let body_row = Located::new(
+            elab::Constructor::Record(
+                Box::new(unit_kind.clone()),
+                vec![(
+                    Located::new(elab::Constructor::Name("Body".into()), span.clone()),
+                    Located::new(elab::Constructor::Unit, span.clone()),
+                )],
+            ),
+            span.clone(),
+        );
+        let dyn_row = Located::new(
+            elab::Constructor::Record(
+                Box::new(unit_kind),
+                vec![(
+                    Located::new(elab::Constructor::Name("Dyn".into()), span.clone()),
+                    Located::new(elab::Constructor::Unit, span.clone()),
+                )],
+            ),
+            span.clone(),
+        );
+        let body_with_shared_tail = Located::new(
+            elab::Constructor::Concat(Box::new(body_row.clone()), Box::new(shared_tail.clone())),
+            span.clone(),
+        );
+        let dyn_with_shared_tail = Located::new(
+            elab::Constructor::Concat(Box::new(dyn_row.clone()), Box::new(shared_tail)),
+            span.clone(),
+        );
+
+        record_row_solution_disjointness(&mut elaboration_context, None, &body_with_shared_tail);
+        let goals = prove_disjoint_rows(
+            &mut elaboration_context,
+            &elaboration_environment,
+            span,
+            &disjoint::empty_env(),
+            body_row,
+            dyn_with_shared_tail,
+        );
+        assert!(
+            goals.is_empty(),
+            "inferred row-tail disjointness should discharge Body ~ (Dyn ++ tail), got {:?}",
+            goals
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn prove_disjoint_rows_learns_missing_piece_from_concrete_sibling() -> anyhow::Result<()> {
+        let span = crate::error_types::Span::dummy();
+        let unit_kind = Located::new(elab::Kind::Unit, span.clone());
+        let row_kind = Located::new(
+            elab::Kind::Record(Box::new(unit_kind.clone())),
+            span.clone(),
+        );
+        let elaboration_environment = Env::empty();
+        let mut elaboration_context = ElabCtx::new();
+        let row_tail = fresh_cunif(&elaboration_environment, span.clone(), row_kind, "tail");
+        let left_row = Located::new(
+            elab::Constructor::Concat(
+                Box::new(Located::new(
+                    elab::Constructor::Record(
+                        Box::new(unit_kind.clone()),
+                        vec![(
+                            Located::new(elab::Constructor::Name("MakeForm".into()), span.clone()),
+                            Located::new(elab::Constructor::Unit, span.clone()),
+                        )],
+                    ),
+                    span.clone(),
+                )),
+                Box::new(row_tail.clone()),
+            ),
+            span.clone(),
+        );
+        let right_row = Located::new(
+            elab::Constructor::Record(
+                Box::new(unit_kind),
+                vec![
+                    (
+                        Located::new(elab::Constructor::Name("Table".into()), span.clone()),
+                        Located::new(elab::Constructor::Unit, span.clone()),
+                    ),
+                    (
+                        Located::new(elab::Constructor::Name("Tr".into()), span.clone()),
+                        Located::new(elab::Constructor::Unit, span.clone()),
+                    ),
+                ],
+            ),
+            span.clone(),
+        );
+
+        let goals = prove_disjoint_rows(
+            &mut elaboration_context,
+            &elaboration_environment,
+            span,
+            &disjoint::empty_env(),
+            left_row,
+            right_row,
+        );
+        assert!(
+            goals.is_empty(),
+            "MakeForm ++ tail should learn tail ~ [Table, Tr] from the concrete sibling, got {:?}",
+            goals
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn prove_disjoint_rows_does_not_collapse_shared_row_tail_to_empty() -> anyhow::Result<()> {
+        let span = crate::error_types::Span::dummy();
+        let type_kind = Located::new(elab::Kind::Type, span.clone());
+        let row_kind = Located::new(
+            elab::Kind::Record(Box::new(type_kind.clone())),
+            span.clone(),
+        );
+        let elaboration_environment = Env::empty();
+        let mut elaboration_context = ElabCtx::new();
+
+        let shared_row_tail = fresh_cunif(
+            &elaboration_environment,
+            span.clone(),
+            row_kind.clone(),
+            "_shared_row_tail",
+        );
+        let projection_rest = fresh_cunif(
+            &elaboration_environment,
+            span.clone(),
+            row_kind.clone(),
+            "_rest",
+        );
+        let room_type = fresh_cunif(
+            &elaboration_environment,
+            span.clone(),
+            type_kind.clone(),
+            "room_t",
+        );
+        let id_type = fresh_cunif(
+            &elaboration_environment,
+            span.clone(),
+            type_kind.clone(),
+            "id_t",
+        );
+        let room_row = Located::new(
+            elab::Constructor::Record(
+                Box::new(type_kind.clone()),
+                vec![(
+                    Located::new(elab::Constructor::Name("Room".into()), span.clone()),
+                    room_type,
+                )],
+            ),
+            span.clone(),
+        );
+        let id_row = Located::new(
+            elab::Constructor::Record(
+                Box::new(type_kind.clone()),
+                vec![(
+                    Located::new(elab::Constructor::Name("Id".into()), span.clone()),
+                    id_type,
+                )],
+            ),
+            span.clone(),
+        );
+        let left_row = Located::new(
+            elab::Constructor::Concat(Box::new(room_row.clone()), Box::new(shared_row_tail)),
+            span.clone(),
+        );
+        let right_row = Located::new(
+            elab::Constructor::Concat(Box::new(id_row.clone()), Box::new(projection_rest.clone())),
+            span.clone(),
+        );
+
+        unify_rows(
+            &mut elaboration_context,
+            &elaboration_environment,
+            &span,
+            &left_row,
+            &right_row,
+            0,
+        )?;
+
+        let goals = prove_disjoint_rows(
+            &mut elaboration_context,
+            &elaboration_environment,
+            span.clone(),
+            &disjoint::empty_env(),
+            id_row,
+            projection_rest.clone(),
+        );
+        assert!(
+            goals.is_empty(),
+            "row-projection disjointness should discharge after shared-tail solving, got {:?}",
+            goals
+        );
+
+        let solved_projection_rest = hnorm_con(projection_rest);
+        let projection_fragments = disjoint::decompose_row(solved_projection_rest.clone());
+        assert!(
+            projection_fragments
+                .iter()
+                .any(|fragment| matches!(fragment, disjoint::Piece_::Unknown(_))),
+            "shared-tail projection rest should stay open instead of collapsing to the empty row, got {}",
+            crate::elaborated::type_display::format_constructor(&solved_projection_rest)
         );
         Ok(())
     }
@@ -13583,6 +15756,100 @@ mod tests {
     }
 
     #[test]
+    fn unify_cons_instantiates_unknown_tuple_projection_base() -> anyhow::Result<()> {
+        let span = crate::error_types::Span::dummy();
+        let type_kind = Located::new(elab::Kind::Type, span.clone());
+        let tuple_kind = Located::new(
+            elab::Kind::Tuple(vec![type_kind.clone(), type_kind.clone()]),
+            span.clone(),
+        );
+        let elaboration_environment = Env::empty().push_c_rel("a".into(), type_kind);
+        let unknown_tuple = fresh_cunif(&elaboration_environment, span.clone(), tuple_kind, "pair");
+        let projected_first = Located::new(
+            elab::Constructor::Proj(Box::new(unknown_tuple.clone()), 1),
+            span.clone(),
+        );
+        let target_type = Located::new(elab::Constructor::Rel(0), span.clone());
+        let mut elaboration_context = ElabCtx::new();
+
+        let result = unify_cons(
+            &mut elaboration_context,
+            &elaboration_environment,
+            &span,
+            &projected_first,
+            &target_type,
+        );
+        assert!(
+            result.is_ok(),
+            "projection should instantiate unknown tuple base like the ML compiler, got {:?}",
+            result
+        );
+
+        let solved_tuple = hnorm_con(unknown_tuple);
+        let elab::Constructor::Tuple(components) = solved_tuple.node else {
+            anyhow::bail!(
+                "unknown tuple base should solve to a tuple, got {}",
+                crate::elaborated::type_display::format_constructor(&solved_tuple)
+            );
+        };
+        assert_eq!(components.len(), 2, "tuple solve should preserve arity");
+        assert!(
+            matches!(
+                hnorm_con(components[0].clone()).node,
+                elab::Constructor::Rel(0)
+            ),
+            "first projected component should solve to the target type"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn unify_cons_accepts_tuple_eta_expansion_of_rel() -> anyhow::Result<()> {
+        let span = crate::error_types::Span::dummy();
+        let type_kind = Located::new(elab::Kind::Type, span.clone());
+        let tuple_kind = Located::new(
+            elab::Kind::Tuple(vec![type_kind.clone(), type_kind]),
+            span.clone(),
+        );
+        let elaboration_environment = Env::empty().push_c_rel("pair".into(), tuple_kind);
+        let tuple_expansion = Located::new(
+            elab::Constructor::Tuple(vec![
+                Located::new(
+                    elab::Constructor::Proj(
+                        Box::new(Located::new(elab::Constructor::Rel(0), span.clone())),
+                        1,
+                    ),
+                    span.clone(),
+                ),
+                Located::new(
+                    elab::Constructor::Proj(
+                        Box::new(Located::new(elab::Constructor::Rel(0), span.clone())),
+                        2,
+                    ),
+                    span.clone(),
+                ),
+            ]),
+            span.clone(),
+        );
+        let rel_pair = Located::new(elab::Constructor::Rel(0), span.clone());
+        let mut elaboration_context = ElabCtx::new();
+
+        let result = unify_cons(
+            &mut elaboration_context,
+            &elaboration_environment,
+            &span,
+            &tuple_expansion,
+            &rel_pair,
+        );
+        assert!(
+            result.is_ok(),
+            "tuple eta-expansion should unify with the original rel constructor, got {:?}",
+            result
+        );
+        Ok(())
+    }
+
+    #[test]
     fn unify_cons_treats_abstract_folder_application_extensionally() -> anyhow::Result<()> {
         // test returns Result to allow ? propagation
         let span = crate::error_types::Span::dummy();
@@ -13705,6 +15972,97 @@ mod tests {
             result
         );
         Ok(()) // return success to the test harness
+    }
+
+    #[test]
+    fn resolve_class_builds_witness_for_expanded_folder_goal() -> anyhow::Result<()> {
+        let span = crate::error_types::Span::dummy();
+        let unit_kind = Located::new(elab::Kind::Unit, span.clone());
+        let folder_kind = Located::new(
+            elab::Kind::Fun(
+                "K".into(),
+                Box::new(Located::new(
+                    elab::Kind::Arrow(
+                        Box::new(Located::new(
+                            elab::Kind::Record(Box::new(Located::new(
+                                elab::Kind::Rel(0),
+                                span.clone(),
+                            ))),
+                            span.clone(),
+                        )),
+                        Box::new(Located::new(elab::Kind::Type, span.clone())),
+                    ),
+                    span.clone(),
+                )),
+            ),
+            span.clone(),
+        );
+        let (elaboration_environment, folder_id) =
+            Env::empty().push_c_named("folder".into(), folder_kind, None);
+        let (elaboration_environment, _folder_module_id) = elaboration_environment.push_str_named(
+            "Folder".into(),
+            Located::new(elab::Signature::Const(vec![]), span.clone()),
+        );
+        let empty_row = Located::new(
+            elab::Constructor::Record(Box::new(unit_kind.clone()), Vec::new()),
+            span.clone(),
+        );
+        let folder_goal = Located::new(
+            elab::Constructor::App(
+                Box::new(Located::new(
+                    elab::Constructor::KApp(
+                        Box::new(Located::new(
+                            elab::Constructor::Named(folder_id),
+                            span.clone(),
+                        )),
+                        Box::new(unit_kind),
+                    ),
+                    span.clone(),
+                )),
+                Box::new(empty_row),
+            ),
+            span.clone(),
+        );
+        let expanded_goal = expand_folder_constructor_application(
+            &mut ElabCtx::new(),
+            &elaboration_environment,
+            &folder_goal,
+        )
+        .expect("folder goal should expand extensionally");
+        let Some((witness, matched_head)) =
+            resolve_class(&elaboration_environment, &expanded_goal, &span)
+        else {
+            panic!("expanded folder goal should resolve to a folder witness");
+        };
+
+        match witness.node {
+            elab::Expression::KApp(function_expression, _) => {
+                assert!(
+                    matches!(
+                        function_expression.node,
+                        elab::Expression::ModProj(_, _, ref name) if name == "nil"
+                    ),
+                    "empty folder witness should use Folder.nil, got {:?}",
+                    function_expression.node
+                );
+            }
+            other_expression => panic!(
+                "expanded empty folder goal should elaborate to Folder.nil, got {:?}",
+                other_expression
+            ),
+        }
+        assert!(
+            unify_cons(
+                &mut ElabCtx::new(),
+                &elaboration_environment,
+                &span,
+                &expanded_goal,
+                &matched_head,
+            )
+            .is_ok(),
+            "resolved folder witness should preserve the extensional goal shape",
+        );
+        Ok(())
     }
 
     #[test]
@@ -14495,6 +16853,67 @@ mod tests {
     }
 
     #[test]
+    fn cookie_decl_binds_cookie_handle_type_during_elaboration() -> anyhow::Result<()> {
+        let Some(fixture) = cached_test_basis_open_fixture() else {
+            return Ok(());
+        };
+        let mut parse_errors = ErrorReporter::new_silent();
+        let Some(file) = crate::parse::parse_ur(
+            "cookie_decl_binds_cookie_handle_type_during_elaboration.ur",
+            "cookie c : int\n",
+            &mut parse_errors,
+            crate::db::ProjectDb::default(),
+        ) else {
+            panic!("parse_ur failed: {:?}", parse_errors.errors);
+        };
+        let declaration = file
+            .first()
+            .unwrap_or_else(|| panic!("expected one cookie declaration, got {:?}", file));
+
+        let mut elaboration_context = ElabCtx::new();
+        let (_decls, elaboration_environment, _disjointness_environment) = elab_decl(
+            &mut elaboration_context,
+            &fixture.elaboration_environment,
+            &fixture.disjointness_environment,
+            declaration,
+        );
+        assert!(
+            elaboration_context.errors.is_empty(),
+            "cookie declaration should elaborate cleanly: {:?}",
+            elaboration_context.errors
+        );
+
+        let actual_cookie_type = match elaboration_environment.lookup_e("c") {
+            VarLookup::Named(_, cookie_type) | VarLookup::Rel(_, cookie_type) => cookie_type,
+            VarLookup::NotBound => panic!("expected cookie binding in elaboration environment"),
+        };
+        let expected_cookie_type = Located::new(
+            elab::Constructor::App(
+                Box::new(basis_named_con(
+                    &fixture.elaboration_environment,
+                    &declaration.span,
+                    "http_cookie",
+                )),
+                Box::new(basis_named_con(
+                    &fixture.elaboration_environment,
+                    &declaration.span,
+                    "int",
+                )),
+            ),
+            declaration.span.clone(),
+        );
+        assert!(
+            signature_constructors_eq(
+                &normalize_signature_constructor(&actual_cookie_type),
+                &normalize_signature_constructor(&expected_cookie_type),
+            ),
+            "cookie declaration should bind `c` as `http_cookie int`, got {}",
+            crate::elaborated::type_display::format_constructor(&actual_cookie_type)
+        );
+        Ok(())
+    }
+
+    #[test]
     fn basis_open_fields_of_resolution_keeps_matched_unifier_bindings() -> anyhow::Result<()> {
         // test returns Result to allow ? propagation
         let Some(fixture) = cached_test_basis_open_fixture() else {
@@ -14705,6 +17124,106 @@ mod tests {
     }
 
     #[test]
+    fn basis_open_resolves_local_class_hypothesis_before_global_instance() -> anyhow::Result<()> {
+        let Some(fixture) = cached_test_basis_open_fixture() else {
+            return Ok(());
+        };
+        let span = fixture.basis_decl_span.clone();
+        let show_id = match fixture.elaboration_environment.lookup_c("show") {
+            VarLookup::Named(id, _) => id,
+            other_lookup => panic!("expected opened show constructor, got {:?}", other_lookup),
+        };
+        let type_kind = Located::new(elab::Kind::Type, span.clone());
+        let class_goal = Located::new(
+            elab::Constructor::App(
+                Box::new(Located::new(
+                    elab::Constructor::Named(show_id),
+                    span.clone(),
+                )),
+                Box::new(Located::new(elab::Constructor::Rel(0), span.clone())),
+            ),
+            span.clone(),
+        );
+        let elaboration_environment = fixture
+            .elaboration_environment
+            .clone()
+            .push_c_rel("t".into(), type_kind)
+            .push_e_rel("sh".into(), class_goal.clone());
+
+        let Some((witness, matched_head)) =
+            resolve_class(&elaboration_environment, &class_goal, &span)
+        else {
+            panic!("local class hypothesis should resolve show t");
+        };
+
+        assert!(
+            matches!(witness.node, elab::Expression::Rel(0)),
+            "local class evidence should resolve to the bound parameter, got {:?}",
+            witness.node
+        );
+        assert!(
+            unify_cons(
+                &mut ElabCtx::new(),
+                &elaboration_environment,
+                &span,
+                &class_goal,
+                &matched_head,
+            )
+            .is_ok(),
+            "resolved local class witness should preserve the original class goal",
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn basis_open_defers_ambiguous_global_show_for_unknown_type() -> anyhow::Result<()> {
+        let Some(fixture) = cached_test_basis_open_fixture() else {
+            return Ok(());
+        };
+        let span = fixture.basis_decl_span.clone();
+        let show_id = match fixture.elaboration_environment.lookup_c("show") {
+            VarLookup::Named(id, _) => id,
+            other_lookup => panic!("expected opened show constructor, got {:?}", other_lookup),
+        };
+        let unknown_type = fresh_cunif(
+            &fixture.elaboration_environment,
+            span.clone(),
+            Located::new(elab::Kind::Type, span.clone()),
+            "txt_arg",
+        );
+        let unknown_type_cell = match &unknown_type.node {
+            elab::Constructor::Unif(_, _, _, _, cell) => cell.clone(),
+            _ => panic!("fresh_cunif should return a constructor unifier"),
+        };
+        let class_goal = Located::new(
+            elab::Constructor::App(
+                Box::new(Located::new(
+                    elab::Constructor::Named(show_id),
+                    span.clone(),
+                )),
+                Box::new(unknown_type),
+            ),
+            span.clone(),
+        );
+
+        assert!(
+            resolve_class(&fixture.elaboration_environment, &class_goal, &span).is_none(),
+            "show ?t should stay deferred until t is known"
+        );
+        assert!(
+            matches!(
+                &*crate::compiler_diagnostics::lock_for_compile(
+                    unknown_type_cell.as_ref(),
+                    "show ambiguity regression",
+                ),
+                elab::CUnif::Unknown
+            ),
+            "ambiguous show resolution should not commit the unknown type"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn basis_open_resolves_projected_fields_of_class_head() -> anyhow::Result<()> {
         let Some(fixture) = cached_test_basis_open_fixture() else {
             return Ok(());
@@ -14848,7 +17367,7 @@ mod tests {
             .closed_rules
             .iter()
             .map(|(quantifier_kinds, hypotheses, head, _)| {
-                let (inst_head, _inst_hyps) = instantiate_rule(
+                let (_inst_args, inst_head, _inst_hyps) = instantiate_rule(
                     &fixture.elaboration_environment,
                     quantifier_kinds,
                     hypotheses,
@@ -14862,7 +17381,7 @@ mod tests {
             .closed_rules
             .iter()
             .filter_map(|(quantifier_kinds, hypotheses, head, _)| {
-                let (inst_head, _inst_hyps) = instantiate_rule(
+                let (_inst_args, inst_head, _inst_hyps) = instantiate_rule(
                     &fixture.elaboration_environment,
                     quantifier_kinds,
                     hypotheses,
@@ -14997,7 +17516,7 @@ mod tests {
             .closed_rules
             .iter()
             .map(|(quantifier_kinds, hypotheses, head, _)| {
-                let (inst_head, _inst_hyps) =
+                let (_inst_args, inst_head, _inst_hyps) =
                     instantiate_rule(&env_with_table, quantifier_kinds, hypotheses, head, &span);
                 crate::elaborated::type_display::format_constructor(&inst_head)
             })
@@ -15006,7 +17525,7 @@ mod tests {
             .closed_rules
             .iter()
             .filter_map(|(quantifier_kinds, hypotheses, head, _)| {
-                let (inst_head, _inst_hyps) =
+                let (_inst_args, inst_head, _inst_hyps) =
                     instantiate_rule(&env_with_table, quantifier_kinds, hypotheses, head, &span);
                 if try_match_class(
                     &env_with_table,
@@ -15027,7 +17546,7 @@ mod tests {
                 .closed_rules
                 .first()
                 .map(|(quantifier_kinds, hypotheses, head, _)| {
-                    let (inst_head, _inst_hyps) = instantiate_rule(
+                    let (_inst_args, inst_head, _inst_hyps) = instantiate_rule(
                         &env_with_table,
                         quantifier_kinds,
                         hypotheses,
@@ -15051,6 +17570,157 @@ mod tests {
             crate::elaborated::type_display::format_constructor(&class_goal),
         );
         Ok(()) // return success to the test harness
+    }
+
+    #[test]
+    fn basis_open_show_sql_query_witness_applies_quantified_constructor_args() -> anyhow::Result<()>
+    {
+        let Some(fixture) = cached_test_basis_open_fixture() else {
+            return Ok(());
+        };
+        let span = fixture.basis_decl_span.clone();
+        let show_id = match fixture.elaboration_environment.lookup_c("show") {
+            VarLookup::Named(id, _) => id,
+            other_lookup => panic!(
+                "expected show class in env after open Basis, got {:?}",
+                other_lookup
+            ),
+        };
+        let show_sql_query_id = match fixture.elaboration_environment.lookup_e("show_sql_query") {
+            crate::elaborated::environment::VarLookup::Named(id, _) => id,
+            other_lookup => {
+                panic!(
+                    "expected show_sql_query witness in env after open Basis, got {:?}",
+                    other_lookup
+                )
+            }
+        };
+        let nested_record_type_kind = Located::new(
+            elab::Kind::Record(Box::new(Located::new(
+                elab::Kind::Record(Box::new(Located::new(elab::Kind::Type, span.clone()))),
+                span.clone(),
+            ))),
+            span.clone(),
+        );
+        let record_type_kind = Located::new(
+            elab::Kind::Record(Box::new(Located::new(elab::Kind::Type, span.clone()))),
+            span.clone(),
+        );
+        let free_tables = fresh_cunif(
+            &fixture.elaboration_environment,
+            span.clone(),
+            nested_record_type_kind.clone(),
+            "free_tables",
+        );
+        let free_aggs = fresh_cunif(
+            &fixture.elaboration_environment,
+            span.clone(),
+            nested_record_type_kind.clone(),
+            "free_aggs",
+        );
+        let tables = fresh_cunif(
+            &fixture.elaboration_environment,
+            span.clone(),
+            nested_record_type_kind,
+            "tables",
+        );
+        let exps = fresh_cunif(
+            &fixture.elaboration_environment,
+            span.clone(),
+            record_type_kind,
+            "exps",
+        );
+        let sql_query_id = match fixture.elaboration_environment.lookup_c("sql_query") {
+            VarLookup::Named(id, _) => id,
+            other_lookup => panic!(
+                "expected sql_query constructor in env after open Basis, got {:?}",
+                other_lookup
+            ),
+        };
+        let query_type = Located::new(
+            elab::Constructor::App(
+                Box::new(Located::new(
+                    elab::Constructor::App(
+                        Box::new(Located::new(
+                            elab::Constructor::App(
+                                Box::new(Located::new(
+                                    elab::Constructor::App(
+                                        Box::new(Located::new(
+                                            elab::Constructor::Named(sql_query_id),
+                                            span.clone(),
+                                        )),
+                                        Box::new(free_tables),
+                                    ),
+                                    span.clone(),
+                                )),
+                                Box::new(free_aggs),
+                            ),
+                            span.clone(),
+                        )),
+                        Box::new(tables),
+                    ),
+                    span.clone(),
+                )),
+                Box::new(exps),
+            ),
+            span.clone(),
+        );
+        let class_goal = Located::new(
+            elab::Constructor::App(
+                Box::new(Located::new(
+                    elab::Constructor::Named(show_id),
+                    span.clone(),
+                )),
+                Box::new(query_type),
+            ),
+            span.clone(),
+        );
+
+        let Some((witness, matched_head)) =
+            resolve_class(&fixture.elaboration_environment, &class_goal, &span)
+        else {
+            panic!("show_sql_query should resolve for a concrete sql_query goal");
+        };
+
+        let mut capp_count = 0usize;
+        let mut current = &witness;
+        loop {
+            match &current.node {
+                elab::Expression::CApp(function_expression, _) => {
+                    capp_count += 1;
+                    current = function_expression;
+                }
+                elab::Expression::Named(id) => {
+                    assert_eq!(
+                        *id, show_sql_query_id,
+                        "show_sql_query witness should stay rooted at the basis witness value",
+                    );
+                    break;
+                }
+                other_expression => {
+                    panic!(
+                        "show_sql_query witness should be a constructor-application spine rooted at the basis value, got {:?}",
+                        other_expression
+                    );
+                }
+            }
+        }
+        assert_eq!(
+            capp_count, 4,
+            "show_sql_query witness should receive one constructor application per quantified argument",
+        );
+        assert!(
+            unify_cons(
+                &mut ElabCtx::new(),
+                &fixture.elaboration_environment,
+                &span,
+                &class_goal,
+                &matched_head,
+            )
+            .is_ok(),
+            "resolved show_sql_query witness should preserve the requested class goal",
+        );
+        Ok(())
     }
 
     #[test]
@@ -15105,7 +17775,7 @@ mod tests {
             );
             elaboration_environment = new_env;
             disjointness_environment = new_denv;
-            solve_constraints(&mut elaboration_context, &elaboration_environment);
+            solve_constraints(&mut elaboration_context, &elaboration_environment, false);
 
             match &decl.node {
                 crate::source::Decl::FfiStr(structure_name, _, _) if structure_name == "Basis" => {
@@ -15861,7 +18531,7 @@ mod tests {
         );
 
         let mut elaboration_context = ElabCtx::new();
-        let (result, new_env, _) = elab_sgn_item(
+        let (results, new_env, _) = elab_sgn_item(
             &mut elaboration_context,
             &fixture.elaboration_environment,
             &fixture.disjointness_environment,
@@ -15873,9 +18543,10 @@ mod tests {
             elaboration_context.errors
         );
 
-        let Some(result) = result else {
-            panic!("expected a signature item from table elaboration");
-        };
+        let result = results
+            .iter()
+            .find(|result| matches!(result.node, elab::SignatureItem::Val(_, _, _)))
+            .unwrap_or_else(|| panic!("expected a value signature item from table elaboration"));
         let elab::SignatureItem::Val(name, _id, value_type) = &result.node else {
             panic!(
                 "expected table signature item to elaborate as a value signature, got {:?}",
@@ -15883,6 +18554,18 @@ mod tests {
             );
         };
         assert_eq!(name, "tab");
+        assert!(
+            results
+                .iter()
+                .any(|result| matches!(result.node, elab::SignatureItem::ConAbs(_, _, _))),
+            "table signature elaboration should emit a hidden constraint constructor"
+        );
+        assert!(
+            results
+                .iter()
+                .any(|result| matches!(result.node, elab::SignatureItem::Constraint(_, _))),
+            "table signature elaboration should emit a hidden disjointness constraint"
+        );
 
         let normalized_type = deep_normalize_constructor(&new_env, value_type.clone());
         let elab::Constructor::App(sql_table_with_fields, key_constraints) = &normalized_type.node
@@ -15915,6 +18598,210 @@ mod tests {
             matches!(key_constraints.node, elab::Constructor::Concat(_, _)),
             "expected key constraints to remain a concatenation, got {}",
             crate::elaborated::type_display::format_constructor(key_constraints)
+        );
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "debug helper for the remaining demo/batchFun explify metavariable"]
+    fn debug_batchfun_unknown_unifs_after_unnest() -> anyhow::Result<()> {
+        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let urp_path = manifest_dir.join("demo/batchFun.urp");
+        let settings = Settings::new();
+        let mut errors = ErrorReporter::new_silent();
+        let mut job = crate::compiler::parse_urp(&urp_path)
+            .with_context(|| format!("parse {}", urp_path.display()))?;
+        job.basis_lib_dir = Some(manifest_dir.join("lib/ur"));
+        let Some(source_file) = crate::compiler::parse_sources(&job, &settings, &mut errors) else {
+            panic!("parse_sources failed: {errors:?}");
+        };
+        let Some(elaborated_file) = crate::compiler::elaborate(source_file, &settings, &mut errors)
+        else {
+            panic!("elaboration failed: {errors:?}");
+        };
+        let unnested_file = crate::compiler::unnest(elaborated_file, &mut errors);
+
+        let mut unknowns = Vec::new();
+        let expression_spans = std::cell::RefCell::new(Vec::new());
+        let has_unknown_unif = |constructor: &elab::LocatedConstructor| -> bool {
+            matches!(
+                &constructor.node,
+                elab::Constructor::Unif(_, _, _, _, cell)
+                    if matches!(
+                        &*crate::compiler_diagnostics::lock_for_compile(
+                            cell.as_ref(),
+                            "debug batchFun declaration unknown check",
+                        ),
+                        elab::CUnif::Unknown
+                    )
+            )
+        };
+        for declaration in &unnested_file {
+            unknowns = crate::elaborated::utilities::decl::fold(
+                declaration,
+                unknowns,
+                &|_, acc| acc,
+                &|constructor, mut acc: Vec<String>| {
+                    if let elab::Constructor::Unif(nl, _, kind, name, cell) = &constructor.node {
+                        let guard = crate::compiler_diagnostics::lock_for_compile(
+                            cell.as_ref(),
+                            "debug batchFun unknown constructor metavariable",
+                        );
+                        if matches!(&*guard, elab::CUnif::Unknown) {
+                            acc.push(format!(
+                                "{}:{}:{} name={} nl={} kind={} ctor={}",
+                                constructor.span.file,
+                                constructor.span.first.line,
+                                constructor.span.first.col,
+                                name,
+                                nl,
+                                crate::elaborated::type_display::format_kind(kind),
+                                crate::elaborated::type_display::format_constructor(constructor),
+                            ));
+                        }
+                    }
+                    acc
+                },
+                &|expression, acc| {
+                    if crate::elaborated::utilities::exp::exists(
+                        expression,
+                        &|_| false,
+                        &has_unknown_unif,
+                        &|_| false,
+                    ) {
+                        expression_spans.borrow_mut().push(format!(
+                            "{}:{}:{} expr={}",
+                            expression.span.file,
+                            expression.span.first.line,
+                            expression.span.first.col,
+                            crate::elaborated::type_display::format_expression(expression),
+                        ));
+                    }
+                    acc
+                },
+                &|_, acc| acc,
+                &|_, acc| acc,
+                &|_, acc| acc,
+            );
+        }
+
+        let mut expression_spans = expression_spans.into_inner();
+        expression_spans.sort();
+        expression_spans.dedup();
+        if !expression_spans.is_empty() {
+            eprintln!(
+                "batchFun expression spans carrying unresolved constructor metavariables:\n{}",
+                expression_spans.join("\n"),
+            );
+        }
+        unknowns.sort();
+        unknowns.dedup();
+        assert!(
+            unknowns.is_empty(),
+            "demo/batchFun still has unresolved constructor metavariables after unnest:\n{}",
+            unknowns.join("\n"),
+        );
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "debug helper for the remaining demo/chat explify metavariables"]
+    fn debug_chat_unknown_unifs_after_unnest() -> anyhow::Result<()> {
+        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let urp_path = manifest_dir.join("demo/chat.urp");
+        let settings = Settings::new();
+        let mut errors = ErrorReporter::new_silent();
+        let mut job = crate::compiler::parse_urp(&urp_path)
+            .with_context(|| format!("parse {}", urp_path.display()))?;
+        job.basis_lib_dir = Some(manifest_dir.join("lib/ur"));
+        let Some(source_file) = crate::compiler::parse_sources(&job, &settings, &mut errors) else {
+            panic!("parse_sources failed: {errors:?}");
+        };
+        let Some(elaborated_file) = crate::compiler::elaborate(source_file, &settings, &mut errors)
+        else {
+            panic!("elaboration failed: {errors:?}");
+        };
+        let unnested_file = crate::compiler::unnest(elaborated_file, &mut errors);
+
+        let mut unknowns = Vec::new();
+        let expression_spans = std::cell::RefCell::new(Vec::new());
+        let has_unknown_unif = |constructor: &elab::LocatedConstructor| -> bool {
+            matches!(
+                &constructor.node,
+                elab::Constructor::Unif(_, _, _, _, cell)
+                    if matches!(
+                        &*crate::compiler_diagnostics::lock_for_compile(
+                            cell.as_ref(),
+                            "debug chat declaration unknown check",
+                        ),
+                        elab::CUnif::Unknown
+                    )
+            )
+        };
+        for declaration in &unnested_file {
+            unknowns = crate::elaborated::utilities::decl::fold(
+                declaration,
+                unknowns,
+                &|_, acc| acc,
+                &|constructor, mut acc: Vec<String>| {
+                    if let elab::Constructor::Unif(nl, _, kind, name, cell) = &constructor.node {
+                        let guard = crate::compiler_diagnostics::lock_for_compile(
+                            cell.as_ref(),
+                            "debug chat unknown constructor metavariable",
+                        );
+                        if matches!(&*guard, elab::CUnif::Unknown) {
+                            acc.push(format!(
+                                "{}:{}:{} name={} nl={} kind={} ctor={}",
+                                constructor.span.file,
+                                constructor.span.first.line,
+                                constructor.span.first.col,
+                                name,
+                                nl,
+                                crate::elaborated::type_display::format_kind(kind),
+                                crate::elaborated::type_display::format_constructor(constructor),
+                            ));
+                        }
+                    }
+                    acc
+                },
+                &|expression, acc| {
+                    if crate::elaborated::utilities::exp::exists(
+                        expression,
+                        &|_| false,
+                        &has_unknown_unif,
+                        &|_| false,
+                    ) {
+                        expression_spans.borrow_mut().push(format!(
+                            "{}:{}:{} expr={}",
+                            expression.span.file,
+                            expression.span.first.line,
+                            expression.span.first.col,
+                            crate::elaborated::type_display::format_expression(expression),
+                        ));
+                    }
+                    acc
+                },
+                &|_, acc| acc,
+                &|_, acc| acc,
+                &|_, acc| acc,
+            );
+        }
+
+        let mut expression_spans = expression_spans.into_inner();
+        expression_spans.sort();
+        expression_spans.dedup();
+        if !expression_spans.is_empty() {
+            eprintln!(
+                "chat expression spans carrying unresolved constructor metavariables:\n{}",
+                expression_spans.join("\n"),
+            );
+        }
+        unknowns.sort();
+        unknowns.dedup();
+        assert!(
+            unknowns.is_empty(),
+            "demo/chat still has unresolved constructor metavariables after unnest:\n{}",
+            unknowns.join("\n"),
         );
         Ok(())
     }

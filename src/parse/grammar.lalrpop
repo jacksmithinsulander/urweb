@@ -27,7 +27,7 @@ use crate::parse::grammar_helpers::{
 };
 use crate::parse::xml_helpers::{
     XmlAttr, XmlAttrsAcc, FunParam, capitalize_attr, xml_attrs_empty, xml_attrs_push, xml_desugar_tag_open,
-    xml_empty_cdata, wrap_fun_params, str_to_decl_open,
+    xml_empty_cdata, xml_empty_cdata_for_self_closing_tag, wrap_fun_params, str_to_decl_open,
 };
 
 grammar;
@@ -1417,14 +1417,16 @@ XmlOne: LocExp = {
     // (avoids shift/reduce vs another `XmlAttr` on the same lookahead).
     <l:@L> <head:TagHead> "/" ">" <r:@R> => {
         let pos = Span::from_offsets("", l, r, &[]);
+        let tag_name = head.0.clone();
         let tag = xml_desugar_tag_open(l, r, head, xml_attrs_empty());
-        let cdata = xml_empty_cdata(pos.clone());
+        let cdata = xml_empty_cdata_for_self_closing_tag(&tag_name, pos.clone());
         Located::new(Exp::App(Box::new(tag), Box::new(cdata)), pos)
     },
     <l:@L> <head:TagHead> <attrs:XmlAttrPlus> "/" ">" <r:@R> => {
         let pos = Span::from_offsets("", l, r, &[]);
+        let tag_name = head.0.clone();
         let tag = xml_desugar_tag_open(l, r, head, attrs);
-        let cdata = xml_empty_cdata(pos.clone());
+        let cdata = xml_empty_cdata_for_self_closing_tag(&tag_name, pos.clone());
         Located::new(Exp::App(Box::new(tag), Box::new(cdata)), pos)
     },
     <l:@L> <head:TagHead> ">" "END_TAG" <r:@R> => {

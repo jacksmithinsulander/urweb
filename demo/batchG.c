@@ -23,6 +23,12 @@ sqlite3 *conn;
 } uw_conn;
 
 static void uw_db_validate(uw_context ctx) {
+uw_conn *conn = uw_get_db(ctx);
+sqlite3_stmt *stmt;
+int res;
+res = sqlite3_prepare_v2(conn->conn, "SELECT COUNT(*) FROM uw_BatchG_t", -1, &stmt, NULL);
+if (res != SQLITE_OK) uw_error(ctx, FATAL, "Table uw_BatchG_t does not exist in the database.");
+sqlite3_finalize(stmt);
 }
 
 static void uw_db_prepare(uw_context ctx) { }
@@ -114,6 +120,21 @@ static inline uw_Basis_string uw_Basis_attrOptional(
     return uw_Basis_mstrcat(ctx, " ", name, "=\"", val, "\"", NULL);
 }
 
+/* Function prototypes */
+static uw_unit __uwn_expunger_1080(uw_context, uw_Basis_client);
+static uw_unit __uwn_initializer_1081(uw_context, uw_unit);
+
+static uw_unit __uwn_expunger_1080(uw_context ctx, uw_Basis_client __uwr_cli_0) {
+return(0);
+}
+
+static uw_unit __uwn_initializer_1081(uw_context ctx, uw_unit __uwr___0) {
+return(0);
+}
+
+#line 1 "/Users/jacksmith/prog/urweb/demo/batchG.ur"
+/* SQL table uw_BatchG_t uw_Id constraints  */
+
 static void uw_setup_limits(void) {
 }
 
@@ -124,9 +145,11 @@ uw_setup_limits();
 static void uw_initializer(uw_context ctx) {
 uw_begin_initializing(ctx);
 uw_end_initializing(ctx);
+__uwn_initializer_1081(ctx, 0);
 }
 
 static void uw_expunger(uw_context ctx, uw_Basis_client cli) {
+__uwn_expunger_1080(ctx, cli);
 }
 
 static uw_periodic my_periodics[] = {

@@ -208,8 +208,7 @@ pub fn xml_desugar_tag_open(
         let e = Located::new(Exp::App(Box::new(e), Box::new(key_exp)), pos.clone());
         Located::new(Exp::App(Box::new(e), Box::new(cls_exp)), pos)
     } else if name == "subform" || name == "subforms" {
-        let empty_rec = Located::new(Exp::Record(vec![], false), pos.clone());
-        Located::new(Exp::App(Box::new(head_exp), Box::new(empty_rec)), pos)
+        head_exp
     } else if name == "entry" {
         Located::new(
             Exp::Var(vec!["Basis".into()], "entry".into(), Inference::Infer),
@@ -277,4 +276,125 @@ pub fn xml_empty_cdata(pos: Span) -> LocExp {
         ),
         pos,
     )
+}
+
+/// ML parser parity for self-closing XML tags whose empty child must have `use = []`.
+///
+/// `Basis.cdata` is polymorphic in the XML use row, so a plain `cdata ""` leaves a
+/// phantom `?useInner` behind. The original grammar special-cases `submit` and `dyn`
+/// by fixing the second implicit argument to the empty row for self-closing tags.
+pub fn xml_empty_cdata_for_self_closing_tag(name: &str, pos: Span) -> LocExp {
+    if name != "submit" && name != "dyn" {
+        return xml_empty_cdata(pos);
+    }
+
+    let cdata_head = Located::new(
+        Exp::Var(vec!["Basis".into()], "cdata".into(), Inference::DontInfer),
+        pos.clone(),
+    );
+    let wildcard_kind = Located::new(crate::source::Kind::Wild, pos.clone());
+    let wildcard_ctx = Located::new(
+        crate::source::Con::Wild(Box::new(wildcard_kind)),
+        pos.clone(),
+    );
+    let empty_use_row = Located::new(crate::source::Con::Record(vec![]), pos.clone());
+    let fixed_ctx = Located::new(Exp::CApp(Box::new(cdata_head), wildcard_ctx), pos.clone());
+    let fixed_use = Located::new(Exp::CApp(Box::new(fixed_ctx), empty_use_row), pos.clone());
+    Located::new(
+        Exp::App(
+            Box::new(fixed_use),
+            Box::new(Located::new(
+                Exp::Prim(crate::primitives::Prim::String(
+                    crate::primitives::StringMode::Html,
+                    "".into(),
+                )),
+                pos.clone(),
+            )),
+        ),
+        pos,
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn subforms_tag_open_keeps_constructor_applied_head() {
+        let head_exp = Located::dummy(Exp::CApp(
+            Box::new(Located::dummy(Exp::Var(
+                vec!["Basis".into()],
+                "subforms".into(),
+                Inference::Infer,
+            ))),
+            Located::dummy(Con::Name("Lines".into())),
+        ));
+        let desugared =
+            xml_desugar_tag_open(0, 0, ("subforms".into(), head_exp), xml_attrs_empty());
+        match desugared.node {
+            Exp::CApp(inner, constructor_argument) => {
+                assert!(
+                    matches!(
+                        &inner.node,
+                        Exp::Var(module_path, name, Inference::Infer)
+                            if *module_path == vec!["Basis".to_string()] && name == "subforms"
+                    ),
+                    "subforms head should stay as the original function, got {:?}",
+                    inner
+                );
+                assert!(
+                    matches!(&constructor_argument.node, Con::Name(name) if name == "Lines"),
+                    "subforms constructor argument should be preserved, got {:?}",
+                    constructor_argument
+                );
+            }
+            other => {
+                panic!("subforms tag open should not inject an empty-record app, got {other:?}")
+            }
+        }
+    }
+
+    #[test]
+    fn self_closing_dyn_empty_child_fixes_use_row_to_empty() {
+        let desugared = xml_empty_cdata_for_self_closing_tag("dyn", Span::dummy());
+        let Exp::App(cdata_call, payload) = &desugared.node else {
+            panic!(
+                "expected application of Basis.cdata, got {:?}",
+                desugared.node
+            );
+        };
+        assert!(
+            matches!(&payload.node, Exp::Prim(crate::primitives::Prim::String(_, text)) if text.is_empty()),
+            "expected empty string payload, got {:?}",
+            payload.node
+        );
+        let Exp::CApp(cdata_with_ctx, use_row) = &cdata_call.node else {
+            panic!(
+                "expected self-closing dyn helper to explicitly fix the use row, got {:?}",
+                cdata_call.node
+            );
+        };
+        assert!(
+            matches!(&use_row.node, crate::source::Con::Record(fields) if fields.is_empty()),
+            "expected empty row constructor for the use argument, got {:?}",
+            use_row.node
+        );
+        let Exp::CApp(cdata_head, wildcard_ctx) = &cdata_with_ctx.node else {
+            panic!(
+                "expected self-closing dyn helper to explicitly fix the ctx wildcard, got {:?}",
+                cdata_with_ctx.node
+            );
+        };
+        assert!(
+            matches!(&cdata_head.node, Exp::Var(module_path, name, Inference::DontInfer)
+                if *module_path == vec!["Basis".to_string()] && name == "cdata"),
+            "expected Basis.cdata with DontInfer, got {:?}",
+            cdata_head.node
+        );
+        assert!(
+            matches!(&wildcard_ctx.node, crate::source::Con::Wild(_)),
+            "expected wildcard ctx constructor, got {:?}",
+            wildcard_ctx.node
+        );
+    }
 }

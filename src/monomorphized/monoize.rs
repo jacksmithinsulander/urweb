@@ -15,6 +15,7 @@ use crate::core::{
     PatternConstructor as CPC,
 };
 use crate::datatype_kind::DatatypeKind;
+use crate::db::DatabaseBackend;
 use crate::error_types::{Located, Span};
 use crate::monomorphized::utilities::classify_datatype as classify_datatype_mono;
 use crate::monomorphized::{
@@ -1103,6 +1104,7 @@ fn extract_tag_name(e: &LocatedExpression) -> Option<String> {
 fn desugar_tag(
     env: &Env,
     fm: &mut Fm,
+    settings: &Settings,
     loc: &Span,
     class_raw: &LocatedExpression,
     style_raw: &LocatedExpression,
@@ -1110,9 +1112,9 @@ fn desugar_tag(
     xml_raw: &LocatedExpression,
 ) -> LocExp {
     let tag_name = extract_tag_name(tag_fn).unwrap_or_else(|| "div".to_string());
-    let class_e = mono_exp(env, fm, class_raw);
-    let style_e = mono_exp(env, fm, style_raw);
-    let xml_e = mono_exp(env, fm, xml_raw);
+    let class_e = mono_exp(env, fm, class_raw, settings);
+    let style_e = mono_exp(env, fm, style_raw, settings);
+    let xml_e = mono_exp(env, fm, xml_raw, settings);
 
     // Build "<tagname" ++ class_suffix ++ style_suffix ++ ">" ++ xml ++ "</tagname>"
     // class_suffix: if class == "" then "" else " class=\"CLASS\""
@@ -1179,14 +1181,157 @@ fn peel_capp(e: &LocatedExpression) -> (&LocatedExpression, Vec<&LocatedConstruc
 /// Returns `Some(mono_exp)` for known patterns, `None` to fall through.
 fn mono_basis_capp(
     env: &Env,
+    settings: &Settings,
     x: &str,
     targs: &[&LocatedConstructor],
     loc: &Span,
 ) -> Option<LocExp> {
     let last_t = targs.last();
     let bool_t = || Located::new(Typ::Ffi("Basis".into(), "bool".into()), loc.clone());
+    let string_t = || Located::new(Typ::Ffi("Basis".into(), "string".into()), loc.clone());
+
+    fn core_is_blobby(t: &LocatedConstructor) -> bool {
+        matches!(
+            &t.node,
+            CC::Ffi(module, name)
+                if module == "Basis" && (name == "string" || name == "blob")
+        )
+    }
+
+    let text_keys_need_lengths = crate::db::ProjectDbCtx::new(&settings.db_backend)
+        .resolved()
+        .is_mysql();
 
     match x {
+        "no_primary_key" => Some(str_n("", loc)),
+
+        "primary_key" => {
+            let unique = match &targs.last()?.node {
+                CC::Record(_, fields) => fields,
+                _ => return None,
+            };
+            let nm = *targs.get(targs.len().checked_sub(2)?)?;
+            let t = *targs.get(targs.len().checked_sub(3)?)?;
+
+            let mut fields: Vec<(&LocatedConstructor, &LocatedConstructor)> =
+                Vec::with_capacity(unique.len() + 1);
+            fields.push((nm, t));
+            fields.extend(unique.iter().map(|(name, typ)| (name, typ)));
+
+            let witness_t = Located::new(
+                Typ::Record(
+                    fields
+                        .iter()
+                        .map(|(name, _)| (mono_name(name), unit_typ(loc)))
+                        .collect(),
+                ),
+                loc.clone(),
+            );
+
+            let cols = fields
+                .iter()
+                .map(|(name, typ)| {
+                    let mut col = settings.mangle_sql(&mono_name(name));
+                    if text_keys_need_lengths && core_is_blobby(typ) {
+                        col.push_str("(255)");
+                    }
+                    col
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+
+            Some(Located::new(
+                Exp::Abs(
+                    "_".into(),
+                    witness_t,
+                    string_t(),
+                    Box::new(str_n(&cols, loc)),
+                ),
+                loc.clone(),
+            ))
+        }
+
+        "no_constraint" => Some(unit_exp(loc)),
+
+        "one_constraint" => {
+            let name = match &targs.last()?.node {
+                CC::Name(name) => name.clone(),
+                _ => return None,
+            };
+            let param_t = string_t();
+            let body = Located::new(
+                Exp::Record(vec![(
+                    name,
+                    Located::new(Exp::Rel(0), loc.clone()),
+                    param_t.clone(),
+                )]),
+                loc.clone(),
+            );
+            Some(Located::new(
+                Exp::Abs("c".into(), param_t.clone(), string_t(), Box::new(body)),
+                loc.clone(),
+            ))
+        }
+
+        "join_constraints" => {
+            let constraints_t = string_t();
+            let body = Located::new(
+                Exp::Strcat(
+                    Box::new(Located::new(Exp::Rel(1), loc.clone())),
+                    Box::new(Located::new(Exp::Rel(0), loc.clone())),
+                ),
+                loc.clone(),
+            );
+            let inner = Located::new(
+                Exp::Abs(
+                    "cs2".into(),
+                    constraints_t.clone(),
+                    constraints_t.clone(),
+                    Box::new(body),
+                ),
+                loc.clone(),
+            );
+            let outer_t = Located::new(
+                Typ::Fun(
+                    Box::new(constraints_t.clone()),
+                    Box::new(constraints_t.clone()),
+                ),
+                loc.clone(),
+            );
+            Some(Located::new(
+                Exp::Abs("cs1".into(), constraints_t, outer_t, Box::new(inner)),
+                loc.clone(),
+            ))
+        }
+
+        "unique" => {
+            let unique = match &targs.last()?.node {
+                CC::Record(_, fields) => fields,
+                _ => return None,
+            };
+            let nm = *targs.get(targs.len().checked_sub(2)?)?;
+            let t = *targs.get(targs.len().checked_sub(3)?)?;
+
+            let mut fields: Vec<(&LocatedConstructor, &LocatedConstructor)> =
+                Vec::with_capacity(unique.len() + 1);
+            fields.push((nm, t));
+            fields.extend(unique.iter().map(|(name, typ)| (name, typ)));
+
+            let cols = fields
+                .iter()
+                .map(|(name, typ)| {
+                    let mut col = settings.mangle_sql(&mono_name(name));
+                    if text_keys_need_lengths && core_is_blobby(typ) {
+                        col.push_str("(255)");
+                    }
+                    col
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+
+            Some(str_n(&format!("UNIQUE ({cols})"), loc))
+        }
+
         // ECApp(EFfi("Basis", "eq"), t) → \f: t->t->bool. f
         "eq" | "mkEq" => {
             let t = last_t.map(|c| {
@@ -1686,7 +1831,7 @@ fn unit_typ(loc: &Span) -> LocTyp {
 /// declarations generated for URL/attribute encoding of polymorphic types.
 ///
 /// Mirrors `monoExp` in `monoize.sml`.
-fn mono_exp(env: &Env, fm: &mut Fm, exp: &LocatedExpression) -> LocExp {
+fn mono_exp(env: &Env, fm: &mut Fm, exp: &LocatedExpression, settings: &Settings) -> LocExp {
     let loc = exp.span.clone();
     match &exp.node {
         // --------------- Primitives ---------------
@@ -1697,7 +1842,9 @@ fn mono_exp(env: &Env, fm: &mut Fm, exp: &LocatedExpression) -> LocExp {
         // --------------- Constructors ---------------
         CE::Constructor(dk, pc, targs, opt_e) => {
             if targs.is_empty() {
-                let me = opt_e.as_ref().map(|e| Box::new(mono_exp(env, fm, e)));
+                let me = opt_e
+                    .as_ref()
+                    .map(|e| Box::new(mono_exp(env, fm, e, settings)));
                 Located::new(Exp::Con(*dk, mono_pat_con(pc), me), loc)
             } else if targs.len() == 1 {
                 match (pc, opt_e) {
@@ -1713,7 +1860,7 @@ fn mono_exp(env: &Env, fm: &mut Fm, exp: &LocatedExpression) -> LocExp {
                         match opt_e {
                             None => Located::new(Exp::None(lt), loc),
                             Some(e) => {
-                                let e = mono_exp(env, fm, e);
+                                let e = mono_exp(env, fm, e, settings);
                                 Located::new(Exp::Some(lt, Box::new(e)), loc)
                             }
                         }
@@ -1726,7 +1873,7 @@ fn mono_exp(env: &Env, fm: &mut Fm, exp: &LocatedExpression) -> LocExp {
                     (_, Some(e)) => {
                         let mut dtmap = HashMap::new();
                         let t = mono_type(env, &mut dtmap, &targs[0]);
-                        let me = mono_exp(env, fm, e);
+                        let me = mono_exp(env, fm, e, settings);
                         Located::new(Exp::Some(t, Box::new(me)), loc)
                     }
                 }
@@ -1751,7 +1898,10 @@ fn mono_exp(env: &Env, fm: &mut Fm, exp: &LocatedExpression) -> LocExp {
                 .iter()
                 .map(|(e, t)| {
                     let mut dtmap = HashMap::new();
-                    (mono_exp(env, fm, e), mono_type(env, &mut dtmap, t))
+                    (
+                        mono_exp(env, fm, e, settings),
+                        mono_type(env, &mut dtmap, t),
+                    )
                 })
                 .collect();
             Located::new(Exp::FfiApp(m.clone(), x.clone(), margs), loc)
@@ -1769,13 +1919,13 @@ fn mono_exp(env: &Env, fm: &mut Fm, exp: &LocatedExpression) -> LocExp {
                         "join" if vargs.len() >= 4 => {
                             // join has 2 constraint proof args + 2 xml args = 4 minimum
                             let n = vargs.len();
-                            let xml1 = mono_exp(env, fm, vargs[n - 2]);
-                            let xml2 = mono_exp(env, fm, vargs[n - 1]);
+                            let xml1 = mono_exp(env, fm, vargs[n - 2], settings);
+                            let xml2 = mono_exp(env, fm, vargs[n - 1], settings);
                             return Located::new(Exp::Strcat(Box::new(xml1), Box::new(xml2)), loc);
                         }
                         "cdata" if !vargs.is_empty() => {
                             // cdata has 0 proof args + 1 string arg
-                            let str_e = mono_exp(env, fm, vargs[vargs.len() - 1]);
+                            let str_e = mono_exp(env, fm, vargs[vargs.len() - 1], settings);
                             let str_t = Located::new(
                                 Typ::Ffi("Basis".into(), "string".into()),
                                 loc.clone(),
@@ -1797,6 +1947,7 @@ fn mono_exp(env: &Env, fm: &mut Fm, exp: &LocatedExpression) -> LocExp {
                             return desugar_tag(
                                 env,
                                 fm,
+                                settings,
                                 &loc,
                                 vargs[n - 7], // class  (css_class)
                                 vargs[n - 5], // style  (css_style)
@@ -1812,8 +1963,8 @@ fn mono_exp(env: &Env, fm: &mut Fm, exp: &LocatedExpression) -> LocExp {
             // Re-extract e1/e2 since we already have them in the outer match.
             match &exp.node {
                 CE::App(e1, e2) => {
-                    let me1 = mono_exp(env, fm, e1);
-                    let me2 = mono_exp(env, fm, e2);
+                    let me1 = mono_exp(env, fm, e1, settings);
+                    let me2 = mono_exp(env, fm, e2, settings);
                     Located::new(Exp::App(Box::new(me1), Box::new(me2)), loc)
                 }
                 _ => Located::new(Exp::Prim(Prim::Int(0)), loc),
@@ -1824,7 +1975,7 @@ fn mono_exp(env: &Env, fm: &mut Fm, exp: &LocatedExpression) -> LocExp {
             let mdom = mono_type(env, &mut dtmap, dom);
             let mran = mono_type(env, &mut dtmap, ran);
             let env2 = env.clone().push_e_rel(dom.clone());
-            let mbody = mono_exp(&env2, fm, body);
+            let mbody = mono_exp(&env2, fm, body, settings);
             Located::new(Exp::Abs(x.clone(), mdom, mran, Box::new(mbody)), loc)
         }
 
@@ -1834,13 +1985,13 @@ fn mono_exp(env: &Env, fm: &mut Fm, exp: &LocatedExpression) -> LocExp {
             // Check for EFfi("Basis", x) head — desugar type class instances.
             if let CE::Ffi(m, x) = &head.node {
                 if m == "Basis" {
-                    if let Some(result) = mono_basis_capp(env, x, &targs, &loc) {
+                    if let Some(result) = mono_basis_capp(env, settings, x, &targs, &loc) {
                         return result;
                     }
                 }
             }
             // Fall through: translate head and strip all type args.
-            mono_exp(env, fm, head)
+            mono_exp(env, fm, head, settings)
         }
 
         // Type abstraction: strip completely (unsupported after specialize)
@@ -1856,7 +2007,7 @@ fn mono_exp(env: &Env, fm: &mut Fm, exp: &LocatedExpression) -> LocExp {
                     let mut dtmap = HashMap::new();
                     (
                         mono_name(name_con),
-                        mono_exp(env, fm, e),
+                        mono_exp(env, fm, e, settings),
                         mono_type(env, &mut dtmap, t),
                     )
                 })
@@ -1865,7 +2016,7 @@ fn mono_exp(env: &Env, fm: &mut Fm, exp: &LocatedExpression) -> LocExp {
             Located::new(Exp::Record(mxets), loc)
         }
         CE::Field(e, x, _) => {
-            let me = mono_exp(env, fm, e);
+            let me = mono_exp(env, fm, e, settings);
             Located::new(Exp::Field(Box::new(me), mono_name(x)), loc)
         }
         // Record concatenation/cut: not supported at Mono level (should be gone)
@@ -1876,10 +2027,15 @@ fn mono_exp(env: &Env, fm: &mut Fm, exp: &LocatedExpression) -> LocExp {
         // --------------- Case ---------------
         CE::Case(e, arms, meta) => {
             let mut dtmap = HashMap::new();
-            let me = mono_exp(env, fm, e);
+            let me = mono_exp(env, fm, e, settings);
             let marms: Vec<(LocPat, LocExp)> = arms
                 .iter()
-                .map(|(p, arm_e)| (mono_pat(env, &mut dtmap, p), mono_exp(env, fm, arm_e)))
+                .map(|(p, arm_e)| {
+                    (
+                        mono_pat(env, &mut dtmap, p),
+                        mono_exp(env, fm, arm_e, settings),
+                    )
+                })
                 .collect();
             let disc = mono_type(env, &mut dtmap, &meta.disc);
             let result = mono_type(env, &mut dtmap, &meta.result);
@@ -1892,7 +2048,7 @@ fn mono_exp(env: &Env, fm: &mut Fm, exp: &LocatedExpression) -> LocExp {
         // --------------- Write ---------------
         CE::Write(e) => {
             // EWrite e → EAbs("_", unit, unit, EWrite(lift e))
-            let me = mono_exp(env, fm, e);
+            let me = mono_exp(env, fm, e, settings);
             let un = unit_typ(&loc);
             let lifted = lift_exp_in_exp(0, me);
             Located::new(
@@ -1908,7 +2064,10 @@ fn mono_exp(env: &Env, fm: &mut Fm, exp: &LocatedExpression) -> LocExp {
 
         // --------------- Closure ---------------
         CE::Closure(n, envs) => {
-            let menvs: Vec<LocExp> = envs.iter().map(|e| mono_exp(env, fm, e)).collect();
+            let menvs: Vec<LocExp> = envs
+                .iter()
+                .map(|e| mono_exp(env, fm, e, settings))
+                .collect();
             Located::new(Exp::Closure(*n, menvs), loc)
         }
 
@@ -1916,9 +2075,9 @@ fn mono_exp(env: &Env, fm: &mut Fm, exp: &LocatedExpression) -> LocExp {
         CE::Let(x, t, e1, e2) => {
             let mut dtmap = HashMap::new();
             let mt = mono_type(env, &mut dtmap, t);
-            let me1 = mono_exp(env, fm, e1);
+            let me1 = mono_exp(env, fm, e1, settings);
             let env2 = env.clone().push_e_rel(t.clone());
-            let me2 = mono_exp(&env2, fm, e2);
+            let me2 = mono_exp(&env2, fm, e2, settings);
             Located::new(Exp::Let(x.clone(), mt, Box::new(me1), Box::new(me2)), loc)
         }
 
@@ -1926,7 +2085,10 @@ fn mono_exp(env: &Env, fm: &mut Fm, exp: &LocatedExpression) -> LocExp {
         CE::ServerCall(n, args, result_t, fmode) => {
             let mut dtmap = HashMap::new();
             let mt = mono_type(env, &mut dtmap, result_t);
-            let margs: Vec<LocExp> = args.iter().map(|e| mono_exp(env, fm, e)).collect();
+            let margs: Vec<LocExp> = args
+                .iter()
+                .map(|e| mono_exp(env, fm, e, settings))
+                .collect();
 
             // Get the function name/path from the env
             let name = env
@@ -2028,7 +2190,7 @@ fn mono_decl(
         // Value binding
         CD::Val(x, n, t, e, s) => {
             let mut dtmap = HashMap::new();
-            let me = mono_exp(&env, fm, e);
+            let me = mono_exp(&env, fm, e, settings);
             let mt = mono_type(&env, &mut dtmap, t);
             let env2 = env.push_e_named(x.clone(), *n, t.clone(), s.clone());
             let mut out = fm.drain_decls(&loc);
@@ -2050,7 +2212,7 @@ fn mono_decl(
                 .iter()
                 .map(|(x, n, t, e, s)| {
                     let mt = mono_type(&env2, &mut dtmap, t);
-                    let me = mono_exp(&env2, fm, e);
+                    let me = mono_exp(&env2, fm, e, settings);
                     (x.clone(), *n, mt, me, s.clone())
                 })
                 .collect();
@@ -2085,14 +2247,14 @@ fn mono_decl(
             sql_name,
             id,
             con,
-            sql_con: _,
+            sql_con,
             exp: pe,
             pk_con: _,
-            pk_exp: _,
+            pk_exp: ce,
             unique_con: _,
         } => {
             let mut dtmap = HashMap::new();
-            let s = settings.mangle_sql_table(sql_name);
+            let s = settings.mangle_sql_table(sql_con);
             let e_name = str_exp(&s, &loc);
             let t = Located::new(Typ::Ffi("Basis".into(), "string".into()), loc.clone());
 
@@ -2106,8 +2268,8 @@ fn mono_decl(
                 _ => Vec::new(),
             };
 
-            let mpe = mono_exp(&env, fm, pe);
-            let ce = Located::new(Exp::Record(Vec::new()), loc.clone()); // simplified pk/unique
+            let mpe = mono_exp(&env, fm, pe, settings);
+            let ce = mono_exp(&env, fm, ce, settings);
 
             let env2 = env.push_e_named(
                 sql_name.clone(),
@@ -2160,7 +2322,7 @@ fn mono_decl(
                 _ => Vec::new(),
             };
 
-            let me = mono_exp(&env, fm, e);
+            let me = mono_exp(&env, fm, e, settings);
             let view_e = Located::new(
                 Exp::FfiApp("Basis".into(), "viewify".into(), vec![(me, t.clone())]),
                 loc.clone(),
@@ -2247,8 +2409,8 @@ fn mono_decl(
 
         // Task
         CD::Task(e1, e2) => {
-            let me1 = mono_exp(&env, fm, e1);
-            let me2 = mono_exp(&env, fm, e2);
+            let me1 = mono_exp(&env, fm, e1, settings);
+            let me2 = mono_exp(&env, fm, e2, settings);
 
             let un = unit_typ(&loc);
             let e2_wrapped = Located::new(
@@ -2291,7 +2453,7 @@ fn mono_decl(
 
         // Policy
         CD::Policy(e) => {
-            let policies = extract_policies(&env, fm, e, &loc);
+            let policies = extract_policies(&env, fm, e, &loc, settings);
             let mut out = fm.drain_decls(&loc);
             out.extend(policies);
             Some((env, out))
@@ -2362,12 +2524,18 @@ fn extract_index_mode(e: &LocatedExpression) -> Option<mono::IndexMode> {
     }
 }
 
-fn extract_policies(env: &Env, fm: &mut Fm, e: &LocatedExpression, loc: &Span) -> Vec<LocDecl> {
+fn extract_policies(
+    env: &Env,
+    fm: &mut Fm,
+    e: &LocatedExpression,
+    loc: &Span,
+    settings: &Settings,
+) -> Vec<LocDecl> {
     match &e.node {
         CE::FfiApp(m, x, args) if m == "Basis" && x == "also" => {
             if let [(e1, _), (e2, _)] = args.as_slice() {
-                let mut p1 = extract_policies(env, fm, e1, loc);
-                let p2 = extract_policies(env, fm, e2, loc);
+                let mut p1 = extract_policies(env, fm, e1, loc, settings);
+                let p2 = extract_policies(env, fm, e2, loc, settings);
                 p1.extend(p2);
                 return p1;
             }
@@ -2393,7 +2561,7 @@ fn extract_policies(env: &Env, fm: &mut Fm, e: &LocatedExpression, loc: &Span) -
                 },
                 CE::FfiApp(m, x, args) if m == "Basis" && x == "sendOwnIds" => {
                     if let [(arg, _)] = args.as_slice() {
-                        let me = mono_exp(env, fm, arg);
+                        let me = mono_exp(env, fm, arg, settings);
                         return vec![Located::new(
                             Decl::Policy(Policy::Sequence(me)),
                             loc.clone(),
@@ -2403,7 +2571,7 @@ fn extract_policies(env: &Env, fm: &mut Fm, e: &LocatedExpression, loc: &Span) -
                 }
                 _ => return Vec::new(),
             };
-            let me = mono_exp(env, fm, inner_e);
+            let me = mono_exp(env, fm, inner_e, settings);
             vec![Located::new(Decl::Policy(make(me)), loc.clone())]
         }
     }

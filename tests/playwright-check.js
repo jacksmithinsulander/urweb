@@ -5,6 +5,7 @@
  * Exits 0 if XPath matches at least one element (and optional text matches).
  */
 const { chromium } = require('playwright');
+const { gotoResolved } = require('./playwright-common');
 
 (async () => {
   const [url, xpath, expectedText] = process.argv.slice(2);
@@ -16,7 +17,7 @@ const { chromium } = require('playwright');
   const browser = await chromium.launch({ headless: true });
   try {
     const page = await browser.newPage();
-    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 10000 });
+    await gotoResolved(page, url, { waitUntil: 'domcontentloaded', timeout: 10000 });
     const loc = page.locator(`xpath=${xpath}`);
     const count = await loc.count();
     if (count === 0) {

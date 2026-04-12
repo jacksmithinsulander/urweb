@@ -255,6 +255,9 @@ pub fn rewrite_legacy_sql_placeholders(source_text: &str) -> String {
 }
 
 fn parse_expression_fragment(source_text: &str) -> Result<LocExp, DiagnosticPayload> {
+    if std::env::var("URWEB_DEBUG_SQL_COMPAT_EXPR").ok().as_deref() == Some("1") {
+        eprintln!("sql-compat parse_expression_fragment: {source_text}");
+    }
     let mut errors = ErrorReporter::new_silent(); // Silent reporter: errors collected in Vec, not printed.
     let wrapped = format!("val {SYNTHETIC_SQL_EXPR_BINDER} = {source_text}\n"); // Wrap fragment as a val declaration for the full parser.
     let Some(file) = crate::parse::parse_ur(

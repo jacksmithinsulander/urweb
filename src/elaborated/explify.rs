@@ -253,8 +253,8 @@ fn explify_con(
             );
             recovery_con(span)
         }
-        elab::Constructor::Unif(nl, _, _, _, unif_ref) => {
-            let guard = crate::compiler_diagnostics::lock_for_compile(
+        elab::Constructor::Unif(nl, _, kind, name, unif_ref) => {
+            let mut guard = crate::compiler_diagnostics::lock_for_compile(
                 unif_ref.as_ref(),
                 "explify unification cell",
             );
@@ -266,6 +266,53 @@ fn explify_con(
                     explify_con(lifted, errors)
                 }
                 elab::CUnif::Unknown => {
+                    let empty_row_defaulted = if matches!(
+                        name.as_str(),
+                        "_shared_row_tail"
+                            | "use"
+                            | "useInner"
+                            | "useOuter"
+                            | "bindInner"
+                            | "bindOuter"
+                    ) {
+                        if let elab::Kind::Record(row_element_kind) = kind.as_ref().clone().node {
+                            *guard = elab::CUnif::Known(Box::new(Located::new(
+                                elab::Constructor::Record(Box::new(*row_element_kind), Vec::new()),
+                                span.clone(),
+                            )));
+                            true
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    };
+                    if empty_row_defaulted {
+                        drop(guard);
+                        return explify_con(
+                            Located::new(
+                                elab::Constructor::Unif(
+                                    nl,
+                                    span.clone(),
+                                    kind,
+                                    name,
+                                    unif_ref.clone(),
+                                ),
+                                span,
+                            ),
+                            errors,
+                        );
+                    }
+                    if std::env::var("URWEB_DEBUG_EXPLIFY_UNIF").ok().as_deref() == Some("1") {
+                        eprintln!(
+                            "explify unknown constructor metavariable span={}:{} name={} nl={} kind={}",
+                            span.file,
+                            span.first.line,
+                            name,
+                            nl,
+                            crate::elaborated::type_display::format_kind(&kind),
+                        );
+                    }
                     errors.report_type_at_with_hint(
                         span.clone(),
                         DiagnosticPayload::new(

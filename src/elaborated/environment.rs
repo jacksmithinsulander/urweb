@@ -1706,6 +1706,19 @@ impl Env {
         }
     }
 
+    /// Find a globally named constructor entry by its user-facing name.
+    ///
+    /// This is a fallback for boot/open environments where a constructor may be
+    /// present in `named_c` without also being reachable through `rename_c`.
+    pub fn lookup_named_constructor_by_name(
+        &self,
+        wanted_name: &str,
+    ) -> Option<(usize, LocatedKind)> {
+        self.named_c
+            .iter()
+            .find_map(|(id, (name, kind, _))| (name == wanted_name).then(|| (*id, kind.clone())))
+    }
+
     // -----------------------------------------------------------------------
     // Datatype operations
     // -----------------------------------------------------------------------
@@ -1788,6 +1801,409 @@ impl Env {
             classes: new_classes,
             ..self
         }
+    }
+
+    fn freshen_kind_unifs_for_named_lookup(
+        kind: &LocatedKind,
+        kind_map: &mut HashMap<usize, LocatedKind>,
+        constructor_map: &mut HashMap<usize, LocatedConstructor>,
+    ) -> LocatedKind {
+        let normalized_kind = kind.clone();
+        let span = normalized_kind.span.clone();
+        match normalized_kind.node {
+            Kind::Arrow(domain, range) => Located::new(
+                Kind::Arrow(
+                    Box::new(Self::freshen_kind_unifs_for_named_lookup(
+                        &domain,
+                        kind_map,
+                        constructor_map,
+                    )),
+                    Box::new(Self::freshen_kind_unifs_for_named_lookup(
+                        &range,
+                        kind_map,
+                        constructor_map,
+                    )),
+                ),
+                span,
+            ),
+            Kind::Record(row_kind) => Located::new(
+                Kind::Record(Box::new(Self::freshen_kind_unifs_for_named_lookup(
+                    &row_kind,
+                    kind_map,
+                    constructor_map,
+                ))),
+                span,
+            ),
+            Kind::Tuple(items) => Located::new(
+                Kind::Tuple(
+                    items
+                        .iter()
+                        .map(|item| {
+                            Self::freshen_kind_unifs_for_named_lookup(
+                                item,
+                                kind_map,
+                                constructor_map,
+                            )
+                        })
+                        .collect(),
+                ),
+                span,
+            ),
+            Kind::Fun(name, body) => Located::new(
+                Kind::Fun(
+                    name,
+                    Box::new(Self::freshen_kind_unifs_for_named_lookup(
+                        &body,
+                        kind_map,
+                        constructor_map,
+                    )),
+                ),
+                span,
+            ),
+            Kind::Unif(unif_span, name, cell) => {
+                let current = crate::compiler_diagnostics::lock_for_compile(
+                    cell.as_ref(),
+                    "freshen named lookup kind unif",
+                )
+                .clone();
+                match current {
+                    super::KUnif::Known(inner) => {
+                        Self::freshen_kind_unifs_for_named_lookup(&inner, kind_map, constructor_map)
+                    }
+                    super::KUnif::Unknown => {
+                        let key = Arc::as_ptr(&cell) as usize;
+                        if let Some(existing) = kind_map.get(&key) {
+                            existing.clone()
+                        } else {
+                            let fresh = Located::new(
+                                Kind::Unif(
+                                    unif_span.clone(),
+                                    name,
+                                    Arc::new(Mutex::new(super::KUnif::Unknown)),
+                                ),
+                                span,
+                            );
+                            kind_map.insert(key, fresh.clone());
+                            fresh
+                        }
+                    }
+                }
+            }
+            Kind::TupleUnif(unif_span, partial_components, cell) => {
+                let current = crate::compiler_diagnostics::lock_for_compile(
+                    cell.as_ref(),
+                    "freshen named lookup tuple kind unif",
+                )
+                .clone();
+                match current {
+                    super::KUnif::Known(inner) => {
+                        Self::freshen_kind_unifs_for_named_lookup(&inner, kind_map, constructor_map)
+                    }
+                    super::KUnif::Unknown => {
+                        let key = Arc::as_ptr(&cell) as usize;
+                        if let Some(existing) = kind_map.get(&key) {
+                            existing.clone()
+                        } else {
+                            let fresh = Located::new(
+                                Kind::TupleUnif(
+                                    unif_span.clone(),
+                                    partial_components
+                                        .iter()
+                                        .map(|(index, component_kind)| {
+                                            (
+                                                *index,
+                                                Self::freshen_kind_unifs_for_named_lookup(
+                                                    component_kind,
+                                                    kind_map,
+                                                    constructor_map,
+                                                ),
+                                            )
+                                        })
+                                        .collect(),
+                                    Arc::new(Mutex::new(super::KUnif::Unknown)),
+                                ),
+                                span,
+                            );
+                            kind_map.insert(key, fresh.clone());
+                            fresh
+                        }
+                    }
+                }
+            }
+            other_kind => Located::new(other_kind, span),
+        }
+    }
+
+    fn freshen_constructor_unifs_for_named_lookup(
+        constructor: &LocatedConstructor,
+        kind_map: &mut HashMap<usize, LocatedKind>,
+        constructor_map: &mut HashMap<usize, LocatedConstructor>,
+    ) -> LocatedConstructor {
+        let normalized_constructor = super::type_operations::hnorm_con(constructor.clone());
+        let span = normalized_constructor.span.clone();
+        match normalized_constructor.node {
+            Constructor::TFun(domain, range) => Located::new(
+                Constructor::TFun(
+                    Box::new(Self::freshen_constructor_unifs_for_named_lookup(
+                        &domain,
+                        kind_map,
+                        constructor_map,
+                    )),
+                    Box::new(Self::freshen_constructor_unifs_for_named_lookup(
+                        &range,
+                        kind_map,
+                        constructor_map,
+                    )),
+                ),
+                span,
+            ),
+            Constructor::TCFun(explicitness, name, kind, body) => Located::new(
+                Constructor::TCFun(
+                    explicitness,
+                    name,
+                    Box::new(Self::freshen_kind_unifs_for_named_lookup(
+                        &kind,
+                        kind_map,
+                        constructor_map,
+                    )),
+                    Box::new(Self::freshen_constructor_unifs_for_named_lookup(
+                        &body,
+                        kind_map,
+                        constructor_map,
+                    )),
+                ),
+                span,
+            ),
+            Constructor::TRecord(row) => Located::new(
+                Constructor::TRecord(Box::new(Self::freshen_constructor_unifs_for_named_lookup(
+                    &row,
+                    kind_map,
+                    constructor_map,
+                ))),
+                span,
+            ),
+            Constructor::TDisjoint(left, right, body) => Located::new(
+                Constructor::TDisjoint(
+                    Box::new(Self::freshen_constructor_unifs_for_named_lookup(
+                        &left,
+                        kind_map,
+                        constructor_map,
+                    )),
+                    Box::new(Self::freshen_constructor_unifs_for_named_lookup(
+                        &right,
+                        kind_map,
+                        constructor_map,
+                    )),
+                    Box::new(Self::freshen_constructor_unifs_for_named_lookup(
+                        &body,
+                        kind_map,
+                        constructor_map,
+                    )),
+                ),
+                span,
+            ),
+            Constructor::App(function_constructor, argument_constructor) => Located::new(
+                Constructor::App(
+                    Box::new(Self::freshen_constructor_unifs_for_named_lookup(
+                        &function_constructor,
+                        kind_map,
+                        constructor_map,
+                    )),
+                    Box::new(Self::freshen_constructor_unifs_for_named_lookup(
+                        &argument_constructor,
+                        kind_map,
+                        constructor_map,
+                    )),
+                ),
+                span,
+            ),
+            Constructor::Abs(name, kind, body) => Located::new(
+                Constructor::Abs(
+                    name,
+                    Box::new(Self::freshen_kind_unifs_for_named_lookup(
+                        &kind,
+                        kind_map,
+                        constructor_map,
+                    )),
+                    Box::new(Self::freshen_constructor_unifs_for_named_lookup(
+                        &body,
+                        kind_map,
+                        constructor_map,
+                    )),
+                ),
+                span,
+            ),
+            Constructor::KAbs(name, body) => Located::new(
+                Constructor::KAbs(
+                    name,
+                    Box::new(Self::freshen_constructor_unifs_for_named_lookup(
+                        &body,
+                        kind_map,
+                        constructor_map,
+                    )),
+                ),
+                span,
+            ),
+            Constructor::KApp(function_constructor, kind_argument) => Located::new(
+                Constructor::KApp(
+                    Box::new(Self::freshen_constructor_unifs_for_named_lookup(
+                        &function_constructor,
+                        kind_map,
+                        constructor_map,
+                    )),
+                    Box::new(Self::freshen_kind_unifs_for_named_lookup(
+                        &kind_argument,
+                        kind_map,
+                        constructor_map,
+                    )),
+                ),
+                span,
+            ),
+            Constructor::TKFun(name, body) => Located::new(
+                Constructor::TKFun(
+                    name,
+                    Box::new(Self::freshen_constructor_unifs_for_named_lookup(
+                        &body,
+                        kind_map,
+                        constructor_map,
+                    )),
+                ),
+                span,
+            ),
+            Constructor::Record(kind, fields) => Located::new(
+                Constructor::Record(
+                    Box::new(Self::freshen_kind_unifs_for_named_lookup(
+                        &kind,
+                        kind_map,
+                        constructor_map,
+                    )),
+                    fields
+                        .iter()
+                        .map(|(field_name, field_type)| {
+                            (
+                                Self::freshen_constructor_unifs_for_named_lookup(
+                                    field_name,
+                                    kind_map,
+                                    constructor_map,
+                                ),
+                                Self::freshen_constructor_unifs_for_named_lookup(
+                                    field_type,
+                                    kind_map,
+                                    constructor_map,
+                                ),
+                            )
+                        })
+                        .collect(),
+                ),
+                span,
+            ),
+            Constructor::Concat(left, right) => Located::new(
+                Constructor::Concat(
+                    Box::new(Self::freshen_constructor_unifs_for_named_lookup(
+                        &left,
+                        kind_map,
+                        constructor_map,
+                    )),
+                    Box::new(Self::freshen_constructor_unifs_for_named_lookup(
+                        &right,
+                        kind_map,
+                        constructor_map,
+                    )),
+                ),
+                span,
+            ),
+            Constructor::Map(left_kind, right_kind) => Located::new(
+                Constructor::Map(
+                    Box::new(Self::freshen_kind_unifs_for_named_lookup(
+                        &left_kind,
+                        kind_map,
+                        constructor_map,
+                    )),
+                    Box::new(Self::freshen_kind_unifs_for_named_lookup(
+                        &right_kind,
+                        kind_map,
+                        constructor_map,
+                    )),
+                ),
+                span,
+            ),
+            Constructor::Tuple(items) => Located::new(
+                Constructor::Tuple(
+                    items
+                        .iter()
+                        .map(|item| {
+                            Self::freshen_constructor_unifs_for_named_lookup(
+                                item,
+                                kind_map,
+                                constructor_map,
+                            )
+                        })
+                        .collect(),
+                ),
+                span,
+            ),
+            Constructor::Proj(base, index) => Located::new(
+                Constructor::Proj(
+                    Box::new(Self::freshen_constructor_unifs_for_named_lookup(
+                        &base,
+                        kind_map,
+                        constructor_map,
+                    )),
+                    index,
+                ),
+                span,
+            ),
+            Constructor::Unif(nesting_level, unif_span, kind, name, cell) => {
+                let current = crate::compiler_diagnostics::lock_for_compile(
+                    cell.as_ref(),
+                    "freshen named lookup constructor unif",
+                )
+                .clone();
+                match current {
+                    super::CUnif::Known(inner) => Self::freshen_constructor_unifs_for_named_lookup(
+                        &inner,
+                        kind_map,
+                        constructor_map,
+                    ),
+                    super::CUnif::Unknown => {
+                        let key = Arc::as_ptr(&cell) as usize;
+                        if let Some(existing) = constructor_map.get(&key) {
+                            existing.clone()
+                        } else {
+                            let fresh = Located::new(
+                                Constructor::Unif(
+                                    nesting_level,
+                                    unif_span.clone(),
+                                    Box::new(Self::freshen_kind_unifs_for_named_lookup(
+                                        &kind,
+                                        kind_map,
+                                        constructor_map,
+                                    )),
+                                    name,
+                                    Arc::new(Mutex::new(super::CUnif::Unknown)),
+                                ),
+                                span,
+                            );
+                            constructor_map.insert(key, fresh.clone());
+                            fresh
+                        }
+                    }
+                }
+            }
+            other_constructor => Located::new(other_constructor, span),
+        }
+    }
+
+    fn instantiate_named_expression_type_for_lookup(
+        expression_type: &LocatedConstructor,
+    ) -> LocatedConstructor {
+        let mut kind_map: HashMap<usize, LocatedKind> = HashMap::new();
+        let mut constructor_map: HashMap<usize, LocatedConstructor> = HashMap::new();
+        Self::freshen_constructor_unifs_for_named_lookup(
+            expression_type,
+            &mut kind_map,
+            &mut constructor_map,
+        )
     }
 
     /// Test whether a constructor head resolves to a known class.
@@ -1954,7 +2370,10 @@ impl Env {
         match self.rename_e.get(name) {
             None => VarLookup::NotBound,
             Some(EVarEntry::Rel(index, type_con)) => VarLookup::Rel(*index, type_con.clone()),
-            Some(EVarEntry::Named(id, type_con)) => VarLookup::Named(*id, type_con.clone()),
+            Some(EVarEntry::Named(id, type_con)) => VarLookup::Named(
+                *id,
+                Self::instantiate_named_expression_type_for_lookup(type_con),
+            ),
         }
     }
 
