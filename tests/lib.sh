@@ -3,6 +3,48 @@
 
 PORT=${PORT:-8080}
 
+# _maybe_strip_app_prefix PATH -- /Foo/bar -> /bar, otherwise empty
+_maybe_strip_app_prefix() {
+    case $1 in
+        /*/*)
+            _rest=${1#/}
+            _rest=${_rest#*/}
+            [ -n "$_rest" ] && printf '/%s' "$_rest"
+            ;;
+    esac
+}
+
+# _http_code URL -- best-effort HTTP status (000 on transport failure)
+_http_code() {
+    curl -s -o /dev/null -w '%{http_code}' "$1" 2>/dev/null || printf '000'
+}
+
+# _resolve_local_url PATH -- prefer given path, but fall back from /Foo/bar to /bar on 404
+_resolve_local_url() {
+    case $1 in
+        /*) _path=$1 ;;
+        *)  _path="/$1" ;;
+    esac
+
+    _base="http://localhost:$PORT"
+    _full="$_base$_path"
+    _code=$(_http_code "$_full")
+
+    if [ "$_code" = "404" ]; then
+        _alt_path=$(_maybe_strip_app_prefix "$_path")
+        if [ -n "$_alt_path" ]; then
+            _alt="$_base$_alt_path"
+            _alt_code=$(_http_code "$_alt")
+            if [ "$_alt_code" != "404" ] && [ "$_alt_code" != "000" ]; then
+                printf '%s' "$_alt"
+                return
+            fi
+        fi
+    fi
+
+    printf '%s' "$_full"
+}
+
 # free_port PORT -- kill process listening on PORT (uses lsof when available, else no-op)
 free_port() {
     _p=$1
@@ -41,8 +83,7 @@ fail() {
 _url_full() {
     case $1 in
         http://*|https://*) printf '%s' "$1" ;;
-        /*)                  printf 'http://localhost:%s%s' "$PORT" "$1" ;;
-        *)                   printf 'http://localhost:%s/%s' "$PORT" "$1" ;;
+        *)                   _resolve_local_url "$1" ;;
     esac
 }
 

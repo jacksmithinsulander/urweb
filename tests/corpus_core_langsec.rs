@@ -202,7 +202,7 @@ fn parse_module_declarations(module_name: &str, ur_src: &str) -> Result<SourceFi
         &implementation_file,
         ur_src,
         &mut errors,
-        ur::db::ProjectDb::default(),
+        ur::parse::UrParseContext::default(),
     ) {
         Some(declarations) => declarations,
         None => return Err(format!("parse_ur failed: {errors:?}")),
@@ -625,7 +625,7 @@ fn try_parse_single_module(ur_src: &str) -> Result<SourceFile, String> {
         "CoreMod.ur",
         ur_src,
         &mut errors,
-        ur::db::ProjectDb::default(),
+        ur::parse::UrParseContext::default(),
     ) {
         Some(file) => {
             if errors.has_hard_errors() {

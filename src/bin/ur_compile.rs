@@ -13,7 +13,7 @@ use ur::cli_common::{
 };
 use ur::diagnostics::DiagnosticId;
 use ur::error_types::{format_compile_error_for_terminal, CompileError};
-use ur::settings::Settings;
+use ur::settings::{LanguageCompilationProfile, Settings};
 
 const VERSION_STRING: &str = env!("CARGO_PKG_VERSION");
 
@@ -42,7 +42,6 @@ fn print_usage(settings: &Settings) {
 pub fn run_compiler_args(args: &[String]) -> i32 {
     let mut settings = Settings::new();
     let mut project_file: Option<String> = None;
-    let mut _tc_only = false;
     let mut _dump_source = false;
     let mut _do_iflow = false;
     let mut _partial_build: Option<String> = None;
@@ -131,7 +130,26 @@ pub fn run_compiler_args(args: &[String]) -> i32 {
                 settings.emit_phase_timing = true;
             }
             "tc" => {
-                _tc_only = true;
+                settings.typecheck_only = true;
+            }
+            "languageProfile" => {
+                if let Some(raw_profile) = opt_val.or_else(|| args_iter.next().cloned()) {
+                    match raw_profile.parse::<LanguageCompilationProfile>() {
+                        Ok(profile) => {
+                            settings.language_compilation_profile = profile;
+                        }
+                        Err(()) => {
+                            let locale = settings.diagnostic_locale;
+                            let msg = cli_diagnostic_text(
+                                DiagnosticId::CliLanguageProfileInvalidValue,
+                                vec![raw_profile.clone()],
+                                locale,
+                            );
+                            cli_common::writeln_stderr_display(msg);
+                            return 1;
+                        }
+                    }
+                }
             }
             "dumpSource" => {
                 _dump_source = true;

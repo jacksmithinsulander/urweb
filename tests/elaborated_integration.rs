@@ -6,7 +6,7 @@
 use ur::datatype_kind::DatatypeKind;
 use ur::elaborated::type_operations::cons_eq_simple;
 use ur::elaborated::utilities::{classify_datatype, con, file, kind};
-use ur::elaborated::{Constructor, Declaration, Kind};
+use ur::elaborated::{Constructor, Declaration, Kind, Types};
 use ur::elaborated::{LocatedConstructor, LocatedKind};
 use ur::error_types::{Located, Span}; // error construction and chaining in tests
 
@@ -117,9 +117,9 @@ fn elaborated_cons_eq_simple_named_named_different() -> anyhow::Result<()> {
 #[test]
 fn elaborated_kind_exists_arrow() -> anyhow::Result<()> {
     // test returns Result to allow ? propagation
-    let k_type = Located::dummy(Kind::Type);
+    let k_type = Located::dummy(Kind::Typed(Types::Any));
     let k = Located::dummy(Kind::Arrow(Box::new(k_type.clone()), Box::new(k_type)));
-    let pred = |k: &LocatedKind| matches!(&k.node, Kind::Type);
+    let pred = |k: &LocatedKind| matches!(&k.node, Kind::Typed(Types::Any));
     assert!(kind::exists(&k, &pred));
     Ok(()) // return success to the test harness
 }
@@ -127,8 +127,8 @@ fn elaborated_kind_exists_arrow() -> anyhow::Result<()> {
 #[test]
 fn elaborated_kind_exists_type_direct() -> anyhow::Result<()> {
     // test returns Result to allow ? propagation
-    let k = Located::dummy(Kind::Type);
-    let pred = |k: &LocatedKind| matches!(&k.node, Kind::Type);
+    let k = Located::dummy(Kind::Typed(Types::Any));
+    let pred = |k: &LocatedKind| matches!(&k.node, Kind::Typed(Types::Any));
     assert!(kind::exists(&k, &pred));
     Ok(()) // return success to the test harness
 }
@@ -137,7 +137,7 @@ fn elaborated_kind_exists_type_direct() -> anyhow::Result<()> {
 fn elaborated_kind_exists_type_false() -> anyhow::Result<()> {
     // test returns Result to allow ? propagation
     let k = Located::dummy(Kind::Unit);
-    let pred = |k: &LocatedKind| matches!(&k.node, Kind::Type);
+    let pred = |k: &LocatedKind| matches!(&k.node, Kind::Typed(Types::Any));
     assert!(!kind::exists(&k, &pred));
     Ok(()) // return success to the test harness
 }
@@ -173,7 +173,7 @@ fn elaborated_file_max_name_empty() -> anyhow::Result<()> {
 #[test]
 fn elaborated_file_max_name_constructor() -> anyhow::Result<()> {
     // test returns Result to allow ? propagation
-    let k = Located::dummy(Kind::Type);
+    let k = Located::dummy(Kind::Typed(Types::Any));
     let c = Located::dummy(Constructor::Unit);
     let d = Located::dummy(Declaration::Constructor("X".into(), 100, k, c));
     assert_eq!(file::max_name(&[d]), 100);
@@ -211,7 +211,7 @@ fn elaborated_cons_eq_simple_tfun() -> anyhow::Result<()> {
 #[test]
 fn elaborated_cons_eq_simple_record() -> anyhow::Result<()> {
     // test returns Result to allow ? propagation
-    let _k = Located::dummy(Kind::Type);
+    let _k = Located::dummy(Kind::Typed(Types::Any));
     let u = Located::dummy(Constructor::Unit);
     let rec = Located::dummy(Constructor::Record(Box::new(_k), vec![(u.clone(), u)]));
     assert!(cons_eq_simple(&rec, &rec));
@@ -366,7 +366,7 @@ fn elaborated_cons_eq_simple_modproj() -> anyhow::Result<()> {
 #[test]
 fn elaborated_cons_eq_simple_map() -> anyhow::Result<()> {
     // test returns Result to allow ? propagation
-    let k = Located::dummy(Kind::Type);
+    let k = Located::dummy(Kind::Typed(Types::Any));
     let map = Located::dummy(Constructor::Map(Box::new(k.clone()), Box::new(k)));
     assert!(cons_eq_simple(&map, &map));
     Ok(()) // return success to the test harness
@@ -384,7 +384,7 @@ fn elaborated_cons_eq_simple_trecord() -> anyhow::Result<()> {
 #[test]
 fn elaborated_hnorm_con_tcfun() -> anyhow::Result<()> {
     // test returns Result to allow ? propagation
-    let k = Located::dummy(Kind::Type);
+    let k = Located::dummy(Kind::Typed(Types::Any));
     let u = Located::dummy(Constructor::Unit);
     let tcfun = Located::dummy(Constructor::TCFun(
         Explicitness::Explicit,
@@ -421,7 +421,7 @@ fn elaborated_hnorm_con_app() -> anyhow::Result<()> {
 #[test]
 fn elaborated_hnorm_con_record() -> anyhow::Result<()> {
     // test returns Result to allow ? propagation
-    let k = Located::dummy(Kind::Type);
+    let k = Located::dummy(Kind::Typed(Types::Any));
     let u = Located::dummy(Constructor::Unit);
     let rec = Located::dummy(Constructor::Record(Box::new(k), vec![(u.clone(), u)]));
     let out = type_operations::hnorm_con(rec);
@@ -432,7 +432,7 @@ fn elaborated_hnorm_con_record() -> anyhow::Result<()> {
 #[test]
 fn elaborated_kind_fold() -> anyhow::Result<()> {
     // test returns Result to allow ? propagation
-    let k_type = Located::dummy(Kind::Type);
+    let k_type = Located::dummy(Kind::Typed(Types::Any));
     let k = Located::dummy(Kind::Arrow(Box::new(k_type.clone()), Box::new(k_type)));
     let count = kind::fold(&k, 0usize, &|_, acc| acc + 1);
     assert!(count >= 2);
@@ -442,7 +442,7 @@ fn elaborated_kind_fold() -> anyhow::Result<()> {
 #[test]
 fn elaborated_con_exists_record() -> anyhow::Result<()> {
     // test returns Result to allow ? propagation
-    let k = Located::dummy(Kind::Type);
+    let k = Located::dummy(Kind::Typed(Types::Any));
     let u = Located::dummy(Constructor::Unit);
     let rec = Located::dummy(Constructor::Record(Box::new(k), vec![(u.clone(), u)]));
     let kp = |_: &LocatedKind| false;
@@ -465,9 +465,9 @@ fn elaborated_con_exists_concat() -> anyhow::Result<()> {
 #[test]
 fn elaborated_con_exists_map() -> anyhow::Result<()> {
     // test returns Result to allow ? propagation
-    let k = Located::dummy(Kind::Type);
+    let k = Located::dummy(Kind::Typed(Types::Any));
     let map = Located::dummy(Constructor::Map(Box::new(k.clone()), Box::new(k)));
-    let kp = |k: &LocatedKind| matches!(&k.node, Kind::Type);
+    let kp = |k: &LocatedKind| matches!(&k.node, Kind::Typed(Types::Any));
     let cp = |_: &LocatedConstructor| false;
     assert!(con::exists(&map, &kp, &cp));
     Ok(()) // return success to the test harness
@@ -749,7 +749,7 @@ fn elaborated_hnorm_con_kabs() -> anyhow::Result<()> {
 #[test]
 fn elaborated_hnorm_con_kapp() -> anyhow::Result<()> {
     // test returns Result to allow ? propagation
-    let k = Located::dummy(Kind::Type);
+    let k = Located::dummy(Kind::Typed(Types::Any));
     let u = Located::dummy(Constructor::Unit);
     let kabs = Located::dummy(Constructor::KAbs("a".into(), Box::new(u)));
     let kapp = Located::dummy(Constructor::KApp(Box::new(kabs), Box::new(k)));
@@ -781,10 +781,10 @@ fn elaborated_con_exists_kabs() -> anyhow::Result<()> {
 #[test]
 fn elaborated_con_exists_kapp() -> anyhow::Result<()> {
     // test returns Result to allow ? propagation
-    let k = Located::dummy(Kind::Type);
+    let k = Located::dummy(Kind::Typed(Types::Any));
     let u = Located::dummy(Constructor::Unit);
     let kapp = Located::dummy(Constructor::KApp(Box::new(u), Box::new(k)));
-    let kp = |k: &LocatedKind| matches!(&k.node, Kind::Type);
+    let kp = |k: &LocatedKind| matches!(&k.node, Kind::Typed(Types::Any));
     let cp = |_: &LocatedConstructor| false;
     assert!(con::exists(&kapp, &kp, &cp));
     Ok(()) // return success to the test harness
@@ -831,7 +831,7 @@ fn elaborated_con_exists_tdisjoint() -> anyhow::Result<()> {
 #[test]
 fn elaborated_kind_exists_record() -> anyhow::Result<()> {
     // test returns Result to allow ? propagation
-    let k_inner = Located::dummy(Kind::Type);
+    let k_inner = Located::dummy(Kind::Typed(Types::Any));
     let k = Located::dummy(Kind::Record(Box::new(k_inner)));
     let pred = |k: &LocatedKind| matches!(&k.node, Kind::Record(_));
     assert!(kind::exists(&k, &pred));
@@ -841,7 +841,7 @@ fn elaborated_kind_exists_record() -> anyhow::Result<()> {
 #[test]
 fn elaborated_kind_exists_tuple() -> anyhow::Result<()> {
     // test returns Result to allow ? propagation
-    let k1 = Located::dummy(Kind::Type);
+    let k1 = Located::dummy(Kind::Typed(Types::Any));
     let k = Located::dummy(Kind::Tuple(vec![k1.clone(), k1]));
     let pred = |k: &LocatedKind| matches!(&k.node, Kind::Tuple(_));
     assert!(kind::exists(&k, &pred));
@@ -851,7 +851,7 @@ fn elaborated_kind_exists_tuple() -> anyhow::Result<()> {
 #[test]
 fn elaborated_kind_exists_fun() -> anyhow::Result<()> {
     // test returns Result to allow ? propagation
-    let k_body = Located::dummy(Kind::Type);
+    let k_body = Located::dummy(Kind::Typed(Types::Any));
     let k = Located::dummy(Kind::Fun("a".into(), Box::new(k_body)));
     let pred = |k: &LocatedKind| matches!(&k.node, Kind::Fun(_, _));
     assert!(kind::exists(&k, &pred));
@@ -861,7 +861,7 @@ fn elaborated_kind_exists_fun() -> anyhow::Result<()> {
 #[test]
 fn elaborated_kind_fold_record() -> anyhow::Result<()> {
     // test returns Result to allow ? propagation
-    let k_inner = Located::dummy(Kind::Type);
+    let k_inner = Located::dummy(Kind::Typed(Types::Any));
     let k = Located::dummy(Kind::Record(Box::new(k_inner)));
     let count = kind::fold(&k, 0usize, &|_, acc| acc + 1);
     assert!(count >= 1);
@@ -871,7 +871,7 @@ fn elaborated_kind_fold_record() -> anyhow::Result<()> {
 #[test]
 fn elaborated_kind_fold_tuple() -> anyhow::Result<()> {
     // test returns Result to allow ? propagation
-    let k1 = Located::dummy(Kind::Type);
+    let k1 = Located::dummy(Kind::Typed(Types::Any));
     let k = Located::dummy(Kind::Tuple(vec![k1.clone(), k1]));
     let count = kind::fold(&k, 0usize, &|_, acc| acc + 1);
     assert!(count >= 2);
@@ -881,7 +881,7 @@ fn elaborated_kind_fold_tuple() -> anyhow::Result<()> {
 #[test]
 fn elaborated_kind_fold_fun() -> anyhow::Result<()> {
     // test returns Result to allow ? propagation
-    let k_body = Located::dummy(Kind::Type);
+    let k_body = Located::dummy(Kind::Typed(Types::Any));
     let k = Located::dummy(Kind::Fun("a".into(), Box::new(k_body)));
     let count = kind::fold(&k, 0usize, &|_, acc| acc + 1);
     assert!(count >= 1);
@@ -891,7 +891,7 @@ fn elaborated_kind_fold_fun() -> anyhow::Result<()> {
 #[test]
 fn elaborated_disjointness_decompose_row_concat() -> anyhow::Result<()> {
     // test returns Result to allow ? propagation
-    let k = Located::dummy(Kind::Type);
+    let k = Located::dummy(Kind::Typed(Types::Any));
     let u = Located::dummy(Constructor::Unit);
     let name_a = Located::dummy(Constructor::Name("a".into()));
     let rec1 = Located::dummy(Constructor::Record(
@@ -910,7 +910,7 @@ fn elaborated_disjointness_decompose_row_concat() -> anyhow::Result<()> {
 fn elaborated_disjointness_decompose_row_record() -> anyhow::Result<()> {
     // test returns Result to allow ? propagation
     let u = Located::dummy(Constructor::Unit);
-    let k = Located::dummy(Kind::Type);
+    let k = Located::dummy(Kind::Typed(Types::Any));
     let rec_c = Located::dummy(Constructor::Record(Box::new(k), vec![(u.clone(), u)]));
     let pieces = disjointness_analysis::decompose_row(rec_c);
     assert!(!pieces.is_empty());

@@ -10,16 +10,14 @@ use ur::cli_common::{self, cli_diagnostic_text, diagnostic_locale_for_cli, write
 use ur::diagnostics::DiagnosticId;
 use ur::error_types::{format_compile_error_for_terminal, CompileError};
 
-/// Pop the next argv token when a flag needs an adjacent value (`-t 8`, …).
-fn take_fmt_cli_argument(arguments: &[String], index: &mut usize) -> Option<String> {
-    match *index < arguments.len() {
-        true => {
-            let token = arguments[*index].clone();
-            *index += 1;
-            Some(token)
-        }
-        false => None,
+/// Pop the next argv token from a remaining slice when a flag needs an adjacent value (`-t 8`, …).
+fn take_next_cli_token(rest: &mut &[String]) -> Option<String> {
+    if rest.is_empty() {
+        return None;
     }
+    let token = rest[0].clone();
+    *rest = &rest[1..];
+    Some(token)
 }
 
 /// Print each [`CompileError`] to standard error using the project locale when known.
@@ -39,16 +37,14 @@ fn fmt_command(args: &[String]) -> i32 {
     let mut tab_width: usize = 4;
     let mut files: Vec<String> = vec![];
     let default_locale = diagnostic_locale_for_cli(None);
-    let mut argument_index = 0usize;
+    let mut rest: &[String] = args;
     let arg_parse_round_cap = args.len().saturating_add(1);
-    // `argument_index` is an argv cursor (can advance by 2 for `-t 8`), not the loop index.
-    #[allow(clippy::explicit_counter_loop)]
-    for _ in 0..arg_parse_round_cap {
-        if argument_index >= args.len() {
+    for _parse_round in 0..arg_parse_round_cap {
+        if rest.is_empty() {
             break;
         }
-        let arg = &args[argument_index];
-        argument_index += 1;
+        let arg = &rest[0];
+        rest = &rest[1..];
         let (flag, opt_val) = if let Some(eq) = arg.find('=') {
             let (head, tail) = arg.split_at(eq);
             (head, Some(tail[1..].to_string()))
@@ -68,7 +64,7 @@ fn fmt_command(args: &[String]) -> i32 {
             }
             "-t" | "--tab" => {
                 if let Some(width) = opt_val
-                    .or_else(|| take_fmt_cli_argument(args, &mut argument_index))
+                    .or_else(|| take_next_cli_token(&mut rest))
                     .and_then(|token| token.parse::<usize>().ok())
                 {
                     tab_width = width;
@@ -76,7 +72,7 @@ fn fmt_command(args: &[String]) -> i32 {
             }
             "-w" | "--width" => {
                 let _ = opt_val
-                    .or_else(|| take_fmt_cli_argument(args, &mut argument_index))
+                    .or_else(|| take_next_cli_token(&mut rest))
                     .and_then(|token| token.parse::<u32>().ok());
             }
             candidate if cli_common::is_file_arg(candidate) => {

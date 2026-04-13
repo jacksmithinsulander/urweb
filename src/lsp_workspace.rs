@@ -151,11 +151,10 @@ pub fn workspace_root_from_initialize(params: &InitializeParams) -> Option<PathB
             return uri_to_file_path(&f.uri);
         }
     }
-    // Clients without `workspaceFolders` still send `rootUri` (deprecated in lsp-types but widely used).
-    #[allow(deprecated)]
-    {
-        params.root_uri.as_ref().and_then(uri_to_file_path)
-    }
+    // Clients without `workspaceFolders` still send `rootUri`; read it via JSON so we do not name the deprecated field.
+    let root_uri_value = serde_json::to_value(params).ok()?.get("rootUri")?.clone();
+    let uri: Uri = serde_json::from_value(root_uri_value).ok()?;
+    uri_to_file_path(&uri)
 }
 
 /// Find exactly one `*.urp` in `root` (non-recursive), matching the legacy Standard ML language server behaviour.

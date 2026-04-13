@@ -4,7 +4,7 @@
 //! then applies stable whitespace rules (trailing space removal, blank-line collapse, EOF newline).
 
 use crate::error_types::{CompileError, ErrorReporter};
-use crate::parse::{parse_ur, parse_urs, preprocess_ur_for_parse};
+use crate::parse::{parse_ur, parse_urs, preprocess_ur_for_parse, UrParseContext};
 
 /// Expand tab characters to spaces (column-aligned on `tab_width` boundaries).
 fn expand_tabs(line: &str, tab_width: usize) -> String {
@@ -60,14 +60,7 @@ pub fn format_ur(
 ) -> Result<String, Vec<CompileError>> {
     let pre = preprocess_ur_for_parse(source);
     let mut err = ErrorReporter::new_silent();
-    if parse_ur(
-        virtual_path,
-        &pre,
-        &mut err,
-        crate::db::ProjectDb::default(),
-    )
-    .is_none()
-    {
+    if parse_ur(virtual_path, &pre, &mut err, UrParseContext::default()).is_none() {
         return Err(err.errors);
     }
     Ok(layout_lines(&pre, tab_width))

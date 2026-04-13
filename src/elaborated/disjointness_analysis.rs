@@ -6,7 +6,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::elaborated::type_operations::hnorm_con;
+use crate::elaborated::types::type_operations::hnorm_con;
 use crate::elaborated::{Constructor, LocatedConstructor};
 use crate::error_types::{Located, Span};
 
@@ -428,14 +428,14 @@ pub fn assert(
 use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 static PROVED: AtomicUsize = AtomicUsize::new(0);
 
-/// Reset the proved-goal counter and [`crate::elaborated::type_operations::reset_stats`].
+/// Reset the proved-goal counter and [`crate::elaborated::types::type_operations::reset_stats`].
 ///
 /// # Returns
 ///
 /// Nothing.
 pub fn reset() {
     PROVED.store(0, AtomicOrdering::Relaxed);
-    crate::elaborated::type_operations::reset_stats();
+    crate::elaborated::types::type_operations::reset_stats();
 }
 
 /// Try to show two row constructors disjoint using `disjointness_hypotheses`.

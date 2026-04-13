@@ -66,12 +66,14 @@ impl ProjectState {
     ///
     /// [`AnalysisSnapshot`] with diagnostics and optional elaborated [`crate::elaborated::File`].
     pub fn analyze_buffer(&self, disk_ur_path: &Path, buffer_text: &str) -> AnalysisSnapshot {
-        let mut errors = ErrorReporter::new_silent();
+        let mut snapshot_settings = self.settings.clone(); // Per-snapshot settings so we can mint a job id.
+        snapshot_settings.begin_compilation_job(); // Fresh UUID for this LSP analysis pass (tracing correlation only).
+        let mut errors = ErrorReporter::from_settings_silent(&snapshot_settings); // Carries `compilation_id` without stderr echo.
         let Some(src_file) = parse_sources_with_overlay(
             &self.job,
             disk_ur_path,
             buffer_text,
-            &self.settings,
+            &snapshot_settings,
             &mut errors,
         ) else {
             return AnalysisSnapshot {
@@ -79,7 +81,7 @@ impl ProjectState {
                 elaborated: None,
             };
         };
-        let elab = elaborate(src_file, &self.settings, &mut errors);
+        let elab = elaborate(src_file, &snapshot_settings, &mut errors);
         if let Some(ref file) = elab {
             let open_key = crate::lsp_unused::open_key_for_buffer(&self.root, disk_ur_path);
             crate::lsp_unused::report_unused_top_level_values(file, &open_key, &mut errors);

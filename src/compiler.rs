@@ -16,6 +16,9 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::cli_common::cli_diagnostic_text;
+use crate::compiler_tracing::{
+    trace_compiler_job_debug, trace_compiler_job_info, TRACING_TARGET_COMPILER_JOB,
+};
 use crate::diagnostics::{DiagnosticId, DiagnosticLocale, DiagnosticPayload};
 use crate::error_types::ErrorReporter;
 use crate::settings::Settings;
@@ -32,6 +35,24 @@ pub(crate) static APPEND_NATIVE_INCLUDE_FALLBACK_INVOCATIONS: AtomicUsize = Atom
 pub(crate) static APPEND_NATIVE_LIBDIR_FALLBACK_INVOCATIONS: AtomicUsize = AtomicUsize::new(0);
 #[cfg(test)]
 pub(crate) static RESOLVE_BOOT_ROOT_INVOCATIONS: AtomicUsize = AtomicUsize::new(0);
+
+/// Refuses full `compile` / `compile_to_outputs` pipelines when the language profile has no codegen backend yet.
+fn ensure_batch_codegen_allows_language_profile(settings: &Settings) -> Result<()> {
+    if settings.typecheck_only {
+        return Ok(()); // `-tc` stops before codegen, so Ur core profile batch jobs are allowed.
+    }
+    if settings
+        .language_compilation_profile
+        .blocks_batch_codegen_pipeline()
+    {
+        anyhow::bail!(cli_diagnostic_text(
+            DiagnosticId::UrCoreCodegenRequiresUrWeb,
+            vec![],
+            settings.diagnostic_locale,
+        ));
+    }
+    Ok(())
+}
 
 /// When diagnostics were already printed to stderr, summarize why compilation stops (catalog copy).
 fn bail_if_errors_reported(
@@ -602,6 +623,9 @@ fn parse_sources_inner(
         ));
     }
 
+    // Effective database choice is needed before parsing `top.ur` so LangSec tiers match user modules.
+    let project_db = crate::db::effective_project_db(settings);
+
     // Load the Top library module (top.ur / top.urs) when basis_lib_dir is set.
     // This provides `folder`, `queryX`, `txt`, `eqNullable'`, etc. used by user code.
     // Matches the SML compiler's `elaborate` phase which also elaborates top.ur.
@@ -630,11 +654,12 @@ fn parse_sources_inner(
 
         match std::fs::read_to_string(&top_ur_path) {
             Ok(src) => {
+                let boot_parse_ctx = crate::parse::UrParseContext::boot_library(project_db);
                 match crate::parse::parse_ur(
                     &top_ur_path.to_string_lossy(),
                     &src,
                     errors,
-                    crate::db::ProjectDb::default(),
+                    boot_parse_ctx,
                 ) {
                     Some(ds) => {
                         let str_node = Located::new(source::Str::Const(ds), top_span.clone());
@@ -657,21 +682,30 @@ fn parse_sources_inner(
     }
 
     if let Some(ref db_path) = job.database {
-        let db_span = Span {
-            file: "<project>".into(),
-            ..Span::dummy()
-        };
-        decls.push(Located::new(
-            source::Decl::Database(db_path.clone()),
-            db_span,
-        ));
+        if settings
+            .language_compilation_profile
+            .injects_project_database_declaration()
+        {
+            let db_span = Span {
+                file: "<project>".into(),
+                ..Span::dummy()
+            };
+            decls.push(Located::new(
+                source::Decl::Database(db_path.clone()),
+                db_span,
+            ));
+        }
     }
 
     let mut had_errors = false;
-    let project_db = crate::db::effective_project_db(settings);
 
     // Needs real `basis.urs` so `Basis.string` / `transaction` resolve when elaborating the shim FFI.
-    if project_db.exposes_urweb_native_surface() && job.basis_lib_dir.is_some() {
+    if project_db.exposes_urweb_native_surface()
+        && job.basis_lib_dir.is_some()
+        && settings
+            .language_compilation_profile
+            .injects_urweb_native_prelude()
+    {
         let span = Span {
             file: "<urweb_native>.urs".into(),
             ..Span::dummy()
@@ -780,7 +814,17 @@ fn parse_sources_inner(
                             had_errors = true;
                             None
                         }
-                        Some(sgis) => Some(Located::new(source::Sgn::Const(sgis), sgn_span)),
+                        Some(sgis) => {
+                            if !crate::parse::validate_user_urs_module_for_profile(
+                                settings.language_compilation_profile,
+                                &sgis,
+                                &urs_path,
+                                errors,
+                            ) {
+                                had_errors = true;
+                            }
+                            Some(Located::new(source::Sgn::Const(sgis), sgn_span))
+                        }
                     }
                 }
             }
@@ -788,10 +832,22 @@ fn parse_sources_inner(
             None
         };
 
-        // Parse .ur body
-        match crate::parse::parse_ur(&ur_path, &ur_src, errors, project_db) {
+        // Parse .ur body (lexer XML modes follow the active language profile).
+        let user_parse_ctx = crate::parse::UrParseContext {
+            project_db,
+            language_profile: settings.language_compilation_profile,
+        };
+        match crate::parse::parse_ur(&ur_path, &ur_src, errors, user_parse_ctx) {
             None => had_errors = true,
             Some(ds) => {
+                if !crate::parse::validate_user_ur_module_for_profile(
+                    settings.language_compilation_profile,
+                    &ds,
+                    &ur_path,
+                    errors,
+                ) {
+                    had_errors = true;
+                }
                 let str_node = Located::new(source::Str::Const(ds), span.clone());
                 decls.push(Located::new(
                     source::Decl::Str(mname, sgn_opt, None, str_node, false),
@@ -809,15 +865,20 @@ fn parse_sources_inner(
     // The SML compiler appends `(Source.DExport final, loc)` where `final`
     // is the last module in the source list.  This makes page-returning functions
     // automatically exported as HTTP handlers without an explicit `export` line.
-    if let Some(last_src) = job.sources.last() {
-        let mname = module_of(last_src);
-        let export_span = crate::error_types::Span::dummy();
-        let str_node =
-            crate::error_types::Located::new(source::Str::Var(mname), export_span.clone());
-        decls.push(crate::error_types::Located::new(
-            source::Decl::Export(str_node),
-            export_span,
-        ));
+    if settings
+        .language_compilation_profile
+        .injects_last_module_export()
+    {
+        if let Some(last_src) = job.sources.last() {
+            let mname = module_of(last_src);
+            let export_span = crate::error_types::Span::dummy();
+            let str_node =
+                crate::error_types::Located::new(source::Str::Var(mname), export_span.clone());
+            decls.push(crate::error_types::Located::new(
+                source::Decl::Export(str_node),
+                export_span,
+            ));
+        }
     }
 
     Some(decls)
@@ -899,18 +960,28 @@ pub fn elaborate_boot_snapshot_with_project_prelude(
     let mut file = cached_boot.clone();
 
     if let Some(database_path) = &job.database {
-        let database_span = Span {
-            file: "<project>".into(),
-            ..Span::dummy()
-        };
-        file.push(Located::new(
-            source::Decl::Database(database_path.clone()),
-            database_span,
-        ));
+        if settings
+            .language_compilation_profile
+            .injects_project_database_declaration()
+        {
+            let database_span = Span {
+                file: "<project>".into(),
+                ..Span::dummy()
+            };
+            file.push(Located::new(
+                source::Decl::Database(database_path.clone()),
+                database_span,
+            ));
+        }
     }
 
     let project_db = crate::db::effective_project_db(settings);
-    if project_db.exposes_urweb_native_surface() && job.basis_lib_dir.is_some() {
+    if project_db.exposes_urweb_native_surface()
+        && job.basis_lib_dir.is_some()
+        && settings
+            .language_compilation_profile
+            .injects_urweb_native_prelude()
+    {
         let native_span = Span {
             file: "<urweb_native>.urs".into(),
             ..Span::dummy()
@@ -980,8 +1051,18 @@ pub fn elaborate_module_on_cached_boot(
             match crate::parse::parse_urs(&format!("{module_name}.urs"), text, &mut sgn_errors) {
                 None => return Err(format!("parse_urs failed: {sgn_errors:?}")), // Surface parse failure.
                 Some(sgis) => {
+                    let sig_path = format!("{module_name}.urs");
+                    let _ = crate::parse::validate_user_urs_module_for_profile(
+                        settings.language_compilation_profile,
+                        &sgis,
+                        &sig_path,
+                        errors,
+                    );
+                    if errors.has_hard_errors() {
+                        return Err(format!("ur-core surface validation failed: {errors:?}"));
+                    }
                     let sig_span = Span {
-                        file: format!("{module_name}.urs"), // Synthetic filename for error messages.
+                        file: sig_path,
                         ..Span::dummy()
                     };
                     Some(Located::new(source::Sgn::Const(sgis), sig_span)) // Wrap signature items in a Sgn node.
@@ -996,14 +1077,24 @@ pub fn elaborate_module_on_cached_boot(
         file: format!("{module_name}.ur"), // Synthetic filename for parse error spans.
         ..Span::dummy()
     };
-    let Some(user_decls) = crate::parse::parse_ur(
-        &impl_span.file,
-        ur_text,
-        &mut ur_errors,
-        crate::db::ProjectDb::default(), // Default project DB: no database configured.
-    ) else {
+    let user_parse_ctx = crate::parse::UrParseContext {
+        project_db: crate::db::ProjectDb::default(),
+        language_profile: settings.language_compilation_profile,
+    };
+    let Some(user_decls) =
+        crate::parse::parse_ur(&impl_span.file, ur_text, &mut ur_errors, user_parse_ctx)
+    else {
         return Err(format!("parse_ur failed: {ur_errors:?}")); // Surface parse failure.
     };
+    let _ = crate::parse::validate_user_ur_module_for_profile(
+        settings.language_compilation_profile,
+        &user_decls,
+        &impl_span.file,
+        errors,
+    );
+    if errors.has_hard_errors() {
+        return Err(format!("ur-core surface validation failed: {errors:?}"));
+    }
 
     // Wrap user declarations in a top-level structure declaration matching parse_sources_inner behavior.
     let str_node = Located::new(source::Str::Const(user_decls), impl_span.clone()); // Body of the module structure.
@@ -1013,12 +1104,17 @@ pub fn elaborate_module_on_cached_boot(
     )); // Append the user module as a top-level Str declaration.
 
     // Auto-export the module, matching the export appended by parse_sources_inner for the last source.
-    let export_span = Span::dummy(); // No source location for the synthetic export.
-    let export_ref = Located::new(
-        source::Str::Var(module_name.to_string()),
-        export_span.clone(),
-    ); // Reference to the module being exported.
-    file.push(Located::new(source::Decl::Export(export_ref), export_span)); // Append the export declaration.
+    if settings
+        .language_compilation_profile
+        .injects_last_module_export()
+    {
+        let export_span = Span::dummy(); // No source location for the synthetic export.
+        let export_ref = Located::new(
+            source::Str::Var(module_name.to_string()),
+            export_span.clone(),
+        ); // Reference to the module being exported.
+        file.push(Located::new(source::Decl::Export(export_ref), export_span)); // Append the export declaration.
+    }
 
     // Elaborate the combined source file.
     let Some(_elab) = elaborate(file, settings, errors) else {
@@ -1052,7 +1148,7 @@ pub fn elaborate_module_on_cached_boot_snapshot(
     module_name: &str,
     ur_text: &str,
     urs_text: Option<&str>,
-    _settings: &Settings,
+    settings: &Settings,
     errors: &mut ErrorReporter,
 ) -> Result<(), String> {
     use crate::error_types::{Located, Span};
@@ -1065,8 +1161,18 @@ pub fn elaborate_module_on_cached_boot_snapshot(
             match crate::parse::parse_urs(&format!("{module_name}.urs"), text, &mut sgn_errors) {
                 None => return Err(format!("parse_urs failed: {sgn_errors:?}")),
                 Some(sgis) => {
+                    let sig_path = format!("{module_name}.urs");
+                    let _ = crate::parse::validate_user_urs_module_for_profile(
+                        settings.language_compilation_profile,
+                        &sgis,
+                        &sig_path,
+                        errors,
+                    );
+                    if errors.has_hard_errors() {
+                        return Err(format!("ur-core surface validation failed: {errors:?}"));
+                    }
                     let sig_span = Span {
-                        file: format!("{module_name}.urs"),
+                        file: sig_path,
                         ..Span::dummy()
                     };
                     Some(Located::new(source::Sgn::Const(sgis), sig_span))
@@ -1080,14 +1186,24 @@ pub fn elaborate_module_on_cached_boot_snapshot(
         file: format!("{module_name}.ur"),
         ..Span::dummy()
     };
-    let Some(user_decls) = crate::parse::parse_ur(
-        &impl_span.file,
-        ur_text,
-        &mut ur_errors,
-        crate::db::ProjectDb::default(),
-    ) else {
+    let user_parse_ctx = crate::parse::UrParseContext {
+        project_db: crate::db::ProjectDb::default(),
+        language_profile: settings.language_compilation_profile,
+    };
+    let Some(user_decls) =
+        crate::parse::parse_ur(&impl_span.file, ur_text, &mut ur_errors, user_parse_ctx)
+    else {
         return Err(format!("parse_ur failed: {ur_errors:?}"));
     };
+    let _ = crate::parse::validate_user_ur_module_for_profile(
+        settings.language_compilation_profile,
+        &user_decls,
+        &impl_span.file,
+        errors,
+    );
+    if errors.has_hard_errors() {
+        return Err(format!("ur-core surface validation failed: {errors:?}"));
+    }
 
     let str_node = Located::new(source::Str::Const(user_decls), impl_span.clone());
     let mut file = vec![Located::new(
@@ -1095,12 +1211,17 @@ pub fn elaborate_module_on_cached_boot_snapshot(
         impl_span.clone(),
     )];
 
-    let export_span = Span::dummy();
-    let export_ref = Located::new(
-        source::Str::Var(module_name.to_string()),
-        export_span.clone(),
-    );
-    file.push(Located::new(source::Decl::Export(export_ref), export_span));
+    if settings
+        .language_compilation_profile
+        .injects_last_module_export()
+    {
+        let export_span = Span::dummy();
+        let export_ref = Located::new(
+            source::Str::Var(module_name.to_string()),
+            export_span.clone(),
+        );
+        file.push(Located::new(source::Decl::Export(export_ref), export_span));
+    }
 
     let Some(_elab) =
         crate::elaborated::elaborate::elab_file_from_boot_snapshot(boot_snapshot, file, errors)
@@ -1306,9 +1427,15 @@ pub fn core_specialize(file: crate::core::File) -> crate::core::File {
 /// Updated [`crate::core::File`] or `None` when errors were reported.
 pub fn core_rpcify(
     file: crate::core::File,
-    _settings: &Settings,
+    settings: &Settings,
     errors: &mut ErrorReporter,
 ) -> Option<crate::core::File> {
+    if !settings
+        .language_compilation_profile
+        .runs_rpc_elaboration_pass()
+    {
+        return Some(file);
+    }
     let mut had_errors = false;
     let result = crate::core::rpc_elaboration::rpcify(file, &mut |span, payload| {
         errors.report_type_at(span.clone(), payload);
@@ -1926,12 +2053,15 @@ pub fn cc_and_link(c_source: &str, output: &Path, job: &Job, settings: &Settings
     }
 
     if settings.verbosity >= 2 {
-        tracing::debug!(
-            cc = %cc,
-            c_file = %c_file.display(),
-            o_file = %o_file.display(),
-            "C compile (object) step"
-        );
+        trace_compiler_job_debug(
+            settings,
+            DiagnosticId::CliCompilerTracingCCompileObjectStep,
+            vec![
+                cc.to_string(),
+                c_file.display().to_string(),
+                o_file.display().to_string(),
+            ],
+        ); // Catalog-backed CC trace (project locale).
     }
     let compile_status = command_status_deadline(
         &mut compile_cmd,
@@ -2035,11 +2165,11 @@ pub fn cc_and_link(c_source: &str, output: &Path, job: &Job, settings: &Settings
     }
 
     if settings.verbosity >= 2 {
-        tracing::debug!(
-            linker = %linker_cmd_base,
-            output = %output.display(),
-            "C link step"
-        );
+        trace_compiler_job_debug(
+            settings,
+            DiagnosticId::CliCompilerTracingCLinkExeStep,
+            vec![linker_cmd_base.to_string(), output.display().to_string()],
+        ); // Catalog-backed link trace (project locale).
     }
     let link_banner = cli_diagnostic_text(
         DiagnosticId::CliToolBannerLink,
@@ -2182,6 +2312,8 @@ pub fn effective_project_db_for_workspace_root(
 /// # Returns
 ///
 /// [`CompileResult`] wrapping the path to the generated executable or an [`anyhow::Error`].
+/// When [`Settings::typecheck_only`] is true (`ur-compile -tc`), the success path returns the
+/// resolved project `.urp` path after core verification (no executable is produced).
 pub fn compile(urp_path: &Path, settings: &mut Settings) -> CompileResult {
     run_compile(urp_path, settings).into()
 }
@@ -2193,6 +2325,7 @@ fn run_compile(urp_path: &Path, settings: &mut Settings) -> Result<PathBuf> {
     let urp_path_buf = resolve_urp_project_path(urp_path);
     crate::db::apply_urp_manifest_diagnostic_locale(&urp_path_buf, settings)
         .map_err(|error_message| anyhow::anyhow!(error_message))?;
+    settings.begin_compilation_job(); // One correlation id for this pipeline run (errors and tracing).
     let mut errors = ErrorReporter::from_settings(settings);
     let mut job = crate::urp_parser::parse_urp_with_reporter(&urp_path_buf, &mut errors)?;
 
@@ -2212,8 +2345,24 @@ fn run_compile(urp_path: &Path, settings: &mut Settings) -> Result<PathBuf> {
     settings.scripts = job.scripts.clone();
     settings.debug = job.debug;
 
+    // Mint a fresh UUID v4 for this compilation job so every tracing event within the job
+    // carries the same id; filter by compilation_id in RUST_LOG or log aggregators.
+    settings.compilation_id = uuid::Uuid::new_v4().hyphenated().to_string();
+
     crate::compiler_tracing::init_compiler_tracing(settings);
-    tracing::info!(urp = %urp_path_buf.display(), verbosity = settings.verbosity, "starting Ur/Web compilation");
+    let _compile_job_span = tracing::info_span!(
+        target: TRACING_TARGET_COMPILER_JOB,
+        "compile_job",
+        compilation_id = %settings.compilation_id
+    )
+    .entered(); // Nest pipeline events under one job span; all child events inherit compilation_id.
+    trace_compiler_job_info(
+        settings,
+        DiagnosticId::CliCompilerTracingJobCompileStart,
+        vec![urp_path_buf.display().to_string()],
+    ); // Localized catalog message for job start.
+
+    ensure_batch_codegen_allows_language_profile(settings)?;
 
     let mut phase_t = Instant::now();
     // Phase 2: parse sources
@@ -2276,6 +2425,15 @@ fn run_compile(urp_path: &Path, settings: &mut Settings) -> Result<PathBuf> {
         settings.diagnostic_locale,
     )?;
     crate::compiler_tracing::log_phase_complete(settings, "core", phase_t);
+
+    if settings.typecheck_only {
+        trace_compiler_job_info(
+            settings,
+            DiagnosticId::CliCompilerTracingJobTypecheckFinished,
+            vec![urp_path_buf.display().to_string()],
+        );
+        return Ok(urp_path_buf);
+    }
 
     phase_t = Instant::now();
     // Monoize
@@ -2369,7 +2527,11 @@ fn run_compile(urp_path: &Path, settings: &mut Settings) -> Result<PathBuf> {
     cc_and_link(&c_code, &exe_path, &job, settings)?;
     crate::compiler_tracing::log_phase_complete(settings, "link", phase_t);
 
-    tracing::info!(exe = %exe_path.display(), "Ur/Web compilation finished");
+    trace_compiler_job_info(
+        settings,
+        DiagnosticId::CliCompilerTracingJobCompileFinished,
+        vec![exe_path.display().to_string()],
+    ); // Localized catalog message for successful link.
     Ok(exe_path)
 }
 
@@ -2379,7 +2541,8 @@ fn run_compile(urp_path: &Path, settings: &mut Settings) -> Result<PathBuf> {
 ///
 /// # Returns
 ///
-/// `(c_code, sql_ddl)` on success.
+/// `(c_code, sql_ddl)` on success. When [`Settings::typecheck_only`] is true, both strings are
+/// empty after core verification (no codegen runs).
 ///
 /// # Errors
 ///
@@ -2390,6 +2553,7 @@ pub fn compile_to_outputs(urp_path: &Path, settings: &mut Settings) -> Result<(S
     let urp_path_buf = resolve_urp_project_path(urp_path);
     crate::db::apply_urp_manifest_diagnostic_locale(&urp_path_buf, settings)
         .map_err(|error_message| anyhow::anyhow!(error_message))?;
+    settings.begin_compilation_job(); // One correlation id for this pipeline run (errors and tracing).
     let mut errors = ErrorReporter::from_settings(settings);
     let mut job = crate::urp_parser::parse_urp_with_reporter(&urp_path_buf, &mut errors)?;
     apply_boot_settings(&mut job, settings)
@@ -2407,8 +2571,24 @@ pub fn compile_to_outputs(urp_path: &Path, settings: &mut Settings) -> Result<(S
     settings.scripts = job.scripts.clone();
     settings.debug = job.debug;
 
+    // Mint a fresh UUID v4 for this compilation job so every tracing event within the job
+    // carries the same id; filter by compilation_id in RUST_LOG or log aggregators.
+    settings.compilation_id = uuid::Uuid::new_v4().hyphenated().to_string();
+
     crate::compiler_tracing::init_compiler_tracing(settings);
-    tracing::info!(urp = %urp_path_buf.display(), mode = "compile_to_outputs", "starting Ur/Web pipeline");
+    let _compile_job_span = tracing::info_span!(
+        target: TRACING_TARGET_COMPILER_JOB,
+        "compile_job",
+        compilation_id = %settings.compilation_id
+    )
+    .entered(); // Nest pipeline events under one job span; all child events inherit compilation_id.
+    trace_compiler_job_info(
+        settings,
+        DiagnosticId::CliCompilerTracingPipelineOutputsStart,
+        vec![urp_path_buf.display().to_string()],
+    ); // Localized catalog pipeline start.
+
+    ensure_batch_codegen_allows_language_profile(settings)?;
 
     let mut phase_t = Instant::now();
     let source_file = parse_sources(&job, settings, &mut errors)
@@ -2464,6 +2644,15 @@ pub fn compile_to_outputs(urp_path: &Path, settings: &mut Settings) -> Result<(S
     )?;
     crate::compiler_tracing::log_phase_complete(settings, "core", phase_t);
 
+    if settings.typecheck_only {
+        trace_compiler_job_info(
+            settings,
+            DiagnosticId::CliCompilerTracingJobTypecheckFinished,
+            vec![urp_path_buf.display().to_string()],
+        );
+        return Ok((String::new(), String::new()));
+    }
+
     phase_t = Instant::now();
     let mono_file = monoize(core_file, settings, &mut errors)
         .ok_or_else(|| anyhow_phase_incomplete(settings, "monomorphization"))?;
@@ -2514,7 +2703,11 @@ pub fn compile_to_outputs(urp_path: &Path, settings: &mut Settings) -> Result<(S
     let c_code = cjr_print(&cjr_file, settings);
     let sql_ddl = sql_generate(&cjr_file, settings);
     crate::compiler_tracing::log_phase_complete(settings, "codegen", phase_t);
-    tracing::info!("compile_to_outputs finished (no link step)");
+    trace_compiler_job_info(
+        settings,
+        DiagnosticId::CliCompilerTracingPipelineOutputsFinished,
+        vec![],
+    ); // Localized catalog pipeline end (no link step).
     Ok((c_code, sql_ddl))
 }
 
@@ -2536,6 +2729,7 @@ pub fn elaborate_project(urp_path: &Path, settings: &mut Settings) -> Result<()>
     let urp_path_buf = resolve_urp_project_path(urp_path);
     crate::db::apply_urp_manifest_diagnostic_locale(&urp_path_buf, settings)
         .map_err(|error_message| anyhow::anyhow!(error_message))?;
+    settings.begin_compilation_job(); // One correlation id for this pipeline run (errors and tracing).
     let mut errors = ErrorReporter::from_settings(settings);
     let mut job = crate::urp_parser::parse_urp_with_reporter(&urp_path_buf, &mut errors)?;
     apply_boot_settings(&mut job, settings)
@@ -2552,6 +2746,23 @@ pub fn elaborate_project(urp_path: &Path, settings: &mut Settings) -> Result<()>
     settings.headers = job.headers.clone();
     settings.scripts = job.scripts.clone();
     settings.debug = job.debug;
+
+    // Mint a fresh UUID v4 for this compilation job so every tracing event within the job
+    // carries the same id; filter by compilation_id in RUST_LOG or log aggregators.
+    settings.compilation_id = uuid::Uuid::new_v4().hyphenated().to_string();
+
+    crate::compiler_tracing::init_compiler_tracing(settings);
+    let _compile_job_span = tracing::info_span!(
+        target: TRACING_TARGET_COMPILER_JOB,
+        "compile_job",
+        compilation_id = %settings.compilation_id
+    )
+    .entered(); // Nest pipeline events under one job span; all child events inherit compilation_id.
+    trace_compiler_job_info(
+        settings,
+        DiagnosticId::CliCompilerTracingElaborateProjectStart,
+        vec![urp_path_buf.display().to_string()],
+    ); // Localized catalog parse/elaboration-only start.
 
     let source_file = parse_sources(&job, settings, &mut errors)
         .ok_or_else(|| anyhow_phase_incomplete(settings, "parsing"))?;
@@ -3161,6 +3372,62 @@ mod tests {
             out.is_some(),
             "demo/sum.ur must elaborate with full boot (Top opened like SML elabFile): {} errors",
             elab_errors.errors.len()
+        );
+        Ok(())
+    }
+
+    /// `demo/hello.ur` uses `return <xml>...</xml>` without an explicit monad annotation, so the
+    /// elaborator must follow the ML compiler's class-resolution order instead of rejecting the
+    /// intermediate `monad ?m` goal too early.
+    #[test]
+    fn elaborate_demo_hello_elaborates_after_boot_parity() -> anyhow::Result<()> {
+        const STACK: usize = crate::COMPILE_THREAD_STACK_BYTES;
+        let join_handle = std::thread::Builder::new()
+            .name("elaborate_demo_hello_large_stack".into())
+            .stack_size(STACK)
+            .spawn(elaborate_demo_hello_elaborates_after_boot_parity_body)
+            .with_context(|| "spawn demo/hello elaboration thread")?;
+        match join_handle.join() {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => return Err(error),
+            Err(panic_payload) => {
+                return Err(anyhow!(
+                    "demo/hello elaboration thread panicked: {:?}",
+                    panic_payload
+                ))
+            }
+        }
+        Ok(())
+    }
+
+    fn elaborate_demo_hello_elaborates_after_boot_parity_body() -> anyhow::Result<()> {
+        let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let lib_dir = manifest_dir.join("lib/ur");
+        let hello_ur = manifest_dir.join("demo/hello.ur");
+        if !lib_dir.join("basis.urs").is_file() || !hello_ur.is_file() {
+            return Ok(());
+        }
+        let dir = tempfile::tempdir()?;
+        std::fs::copy(&hello_ur, dir.path().join("hello.ur"))
+            .with_context(|| "copy demo/hello.ur into temp dir")?;
+        let job = Job {
+            sources: vec!["hello".into()],
+            basis_lib_dir: Some(lib_dir),
+            ..Default::default()
+        };
+        let mut parse_errors = ErrorReporter::new_silent();
+        let settings = Settings::new();
+        let tree = with_parse_test_cwd(dir.path(), || {
+            parse_sources(&job, &settings, &mut parse_errors)
+        });
+        let tree =
+            tree.unwrap_or_else(|| panic!("parse_sources failed: {:?}", parse_errors.errors));
+        let mut elab_errors = ErrorReporter::new_silent();
+        let out = elaborate(tree, &settings, &mut elab_errors);
+        assert!(
+            out.is_some(),
+            "demo/hello.ur must elaborate with full boot: {:?}",
+            elab_errors.errors
         );
         Ok(())
     }

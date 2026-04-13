@@ -15,7 +15,6 @@
 //! `entry` when `stopAtEntry` is set; **`loadedSource`** when new files show up in the inferior after stops.
 //!
 //! **Style:** this binary follows [README.md](../../README.md) Rust code style where edited.
-#![allow(clippy::result_large_err)] // [`ur::error_types::CompileError`] is the shared catalog error type.
 
 use ur::cli_common::{cli_diagnostic_text, diagnostic_locale_for_cli};
 use ur::diagnostics::DiagnosticId;
@@ -26,7 +25,7 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if let Err(run_error) = run(args) {
         let locale = diagnostic_locale_for_cli(None);
-        let text = format_compile_error_for_terminal(&run_error, locale);
+        let text = format_compile_error_for_terminal(run_error.as_ref(), locale);
         ur::cli_common::writeln_stderr_display(text);
         std::process::exit(1);
     }
@@ -35,7 +34,7 @@ fn main() {
 /// Run the Debug Adapter Protocol server, GDB machine-interface passthrough, interactive terminal mode, or print help.
 ///
 /// `args` is argv without the program name. `--dap` calls [`ur::debugger::run_dap_stdio`] on standard input and output.
-fn run(args: Vec<String>) -> Result<(), CompileError> {
+fn run(args: Vec<String>) -> Result<(), Box<CompileError>> {
     let locale = diagnostic_locale_for_cli(None);
     match args.first().map(|s| s.as_str()) {
         None | Some("-h") | Some("--help") => {
@@ -43,10 +42,10 @@ fn run(args: Vec<String>) -> Result<(), CompileError> {
             Ok(())
         }
         Some("--dap") => ur::debugger::run_dap_stdio().map_err(|dap_error| {
-            CompileError::catalog(
+            Box::new(CompileError::catalog(
                 DiagnosticId::CliDebuggerCliDapStdioFailed,
                 vec![format!("{dap_error:#}")],
-            )
+            ))
         }),
         Some("--gdb") => gdb_mi_passthrough(&args[1..]),
         Some("--tty") => gdb_tty(&args[1..]),
@@ -60,10 +59,10 @@ fn run(args: Vec<String>) -> Result<(), CompileError> {
                 ur::error_types::format_tool_diagnostic_banner_and_body("ur-debugger", &body);
             ur::cli_common::writeln_stderr_display(bannered);
             print_usage();
-            Err(CompileError::catalog(
+            Err(Box::new(CompileError::catalog(
                 DiagnosticId::CliDebuggerUnknownFlag,
                 vec![other.to_string()],
-            ))
+            )))
         }
         _ => {
             let body = cli_diagnostic_text(DiagnosticId::CliDebuggerMissingMode, vec![], locale);
@@ -71,10 +70,10 @@ fn run(args: Vec<String>) -> Result<(), CompileError> {
                 ur::error_types::format_tool_diagnostic_banner_and_body("ur-debugger", &body);
             ur::cli_common::writeln_stderr_display(bannered);
             print_usage();
-            Err(CompileError::catalog(
+            Err(Box::new(CompileError::catalog(
                 DiagnosticId::CliDebuggerMissingMode,
                 vec![],
-            ))
+            )))
         }
     }
 }
@@ -89,7 +88,7 @@ fn print_usage() {
 /// Run `gdb -q --interpreter=mi3` with extra arguments from `rest`.
 ///
 /// Skips a leading `--` in `rest` (tokens after `ur-debugger --gdb`). Returns `Ok` only if GDB exits successfully.
-fn gdb_mi_passthrough(rest: &[String]) -> Result<(), CompileError> {
+fn gdb_mi_passthrough(rest: &[String]) -> Result<(), Box<CompileError>> {
     let mut cmd = std::process::Command::new("gdb");
     cmd.args(["-q", "--interpreter=mi3"]);
     let args: Vec<&str> = rest
@@ -99,10 +98,10 @@ fn gdb_mi_passthrough(rest: &[String]) -> Result<(), CompileError> {
         .collect();
     cmd.args(args);
     let status = cmd.status().map_err(|spawn_error| {
-        CompileError::catalog(
+        Box::new(CompileError::catalog(
             DiagnosticId::CliDebuggerGdbSpawnFailed,
             vec![spawn_error.to_string()],
-        )
+        ))
     })?;
     if status.success() {
         Ok(())
@@ -111,10 +110,10 @@ fn gdb_mi_passthrough(rest: &[String]) -> Result<(), CompileError> {
             .code()
             .map(|code| code.to_string())
             .unwrap_or_else(|| "unknown".to_string());
-        Err(CompileError::catalog(
+        Err(Box::new(CompileError::catalog(
             DiagnosticId::CliDebuggerGdbExitedNonZero,
             vec![code],
-        ))
+        )))
     }
 }
 
@@ -122,7 +121,7 @@ fn gdb_mi_passthrough(rest: &[String]) -> Result<(), CompileError> {
 ///
 /// `rest` may start with `--run`, then the program path, then arguments for the debugged process.
 /// On Unix may replace this process with `exec`; elsewhere spawns GDB and waits. Returns `Ok` on clean GDB exit.
-fn gdb_tty(rest: &[String]) -> Result<(), CompileError> {
+fn gdb_tty(rest: &[String]) -> Result<(), Box<CompileError>> {
     let mut run_first = false;
     let mut i = 0usize;
     if rest.first().map(|s| s.as_str()) == Some("--run") {
@@ -130,7 +129,10 @@ fn gdb_tty(rest: &[String]) -> Result<(), CompileError> {
         i = 1;
     }
     let prog = rest.get(i).ok_or_else(|| {
-        CompileError::catalog(DiagnosticId::CliDebuggerCliTtyRequiresProgramPath, vec![])
+        Box::new(CompileError::catalog(
+            DiagnosticId::CliDebuggerCliTtyRequiresProgramPath,
+            vec![],
+        ))
     })?;
     let trailing: Vec<&str> = rest[i + 1..].iter().map(String::as_str).collect();
 
@@ -145,10 +147,10 @@ fn gdb_tty(rest: &[String]) -> Result<(), CompileError> {
         cmd.arg("--args").arg(prog);
         cmd.args(trailing);
         let e = cmd.exec();
-        Err(CompileError::catalog(
+        Err(Box::new(CompileError::catalog(
             DiagnosticId::CliDebuggerGdbExecFailed,
             vec![e.to_string()],
-        ))
+        )))
     }
     #[cfg(not(unix))]
     {
@@ -160,10 +162,10 @@ fn gdb_tty(rest: &[String]) -> Result<(), CompileError> {
         cmd.arg("--args").arg(prog);
         cmd.args(trailing);
         let status = cmd.status().map_err(|spawn_error| {
-            CompileError::catalog(
+            Box::new(CompileError::catalog(
                 DiagnosticId::CliDebuggerGdbSpawnFailed,
                 vec![spawn_error.to_string()],
-            )
+            ))
         })?;
         if status.success() {
             Ok(())
@@ -172,10 +174,10 @@ fn gdb_tty(rest: &[String]) -> Result<(), CompileError> {
                 .code()
                 .map(|code| code.to_string())
                 .unwrap_or_else(|| "unknown".to_string());
-            Err(CompileError::catalog(
+            Err(Box::new(CompileError::catalog(
                 DiagnosticId::CliDebuggerGdbExitedNonZero,
                 vec![code],
-            ))
+            )))
         }
     }
 }

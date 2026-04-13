@@ -27,12 +27,11 @@ use lsp_types::{
     Diagnostic, DiagnosticSeverity, NumberOrString, Position, PublishDiagnosticsParams, Range, Uri,
 };
 
-use crate::db::ProjectDb;
 use crate::diagnostics::DiagnosticLocale;
 use crate::error_types::{
     compile_error_diagnostic_code, format_compile_error_for_user, CompileError, ErrorReporter,
 };
-use crate::parse::parse_ur;
+use crate::parse::{parse_ur, UrParseContext};
 
 /// Returns true when `msg` looks like a benign editor disconnect (substring heuristic).
 ///
@@ -151,7 +150,7 @@ pub fn publish_diagnostics(
 
 /// Lex and parse `text` without loading the full project, then publish diagnostics.
 ///
-/// Uses [`parse_ur`] with an empty [`ProjectDb`]; handy for unsaved buffers when no `.urp` graph is open.
+/// Uses [`parse_ur`] with [`crate::parse::UrParseContext::default`] (full Ur/Web surface); handy for unsaved buffers when no `.urp` graph is open.
 ///
 /// # Arguments
 ///
@@ -169,7 +168,7 @@ pub fn publish_diagnostics(
 pub fn publish_parse_diagnostics(connection: &Connection, uri: &Uri, text: &str) -> Result<()> {
     let file_name = uri.as_str();
     let mut errors = ErrorReporter::new_silent();
-    let _ = parse_ur(file_name, text, &mut errors, ProjectDb::default());
+    let _ = parse_ur(file_name, text, &mut errors, UrParseContext::default());
     publish_diagnostics(connection, uri, &errors)
 }
 

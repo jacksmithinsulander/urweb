@@ -11,11 +11,78 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use uuid::Uuid;
+
 use crate::db::{ProjectDb, ProjectDbCtx};
 use crate::diagnostics::DiagnosticLocale;
 
 /// An FFI function identifier: `(module_name, function_name)`.
 pub type Ffi = (String, String);
+
+/// Selects how much of the historical Ur/Web pipeline applies (surface syntax, glue, and backends).
+///
+/// `UrWeb` is the default full-stack profile. `UrCore` is an experimental stricter surface aimed at
+/// separating the functional language from HTTP/SQL/JS codegen paths; full batch codegen still
+/// aborts until a dedicated ur-core backend exists, but `ur-compile -tc` may run through core verification.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LanguageCompilationProfile {
+    /// Full Ur/Web: XML literals, project export glue, RPC rewrite, JS client bundle, C/SQL output.
+    #[default]
+    UrWeb,
+    /// Ur language focus: no XML markup lexing in user modules, no auto-export, no project DB injection.
+    UrCore,
+}
+
+impl LanguageCompilationProfile {
+    /// Returns true when the lexer may enter XML modes for `<tag>...</tag>` inside user `.ur` files.
+    pub fn allows_xml_surface_markup(self) -> bool {
+        matches!(self, Self::UrWeb)
+    }
+
+    /// Returns true when [`crate::compiler::parse_sources_inner`] should append `export` for the last module.
+    pub fn injects_last_module_export(self) -> bool {
+        matches!(self, Self::UrWeb)
+    }
+
+    /// Returns true when a `database` line from the job file becomes a top-level `Decl::Database`.
+    pub fn injects_project_database_declaration(self) -> bool {
+        matches!(self, Self::UrWeb)
+    }
+
+    /// Returns true when the native-surface FFI shim is prepended for selected backends.
+    pub fn injects_urweb_native_prelude(self) -> bool {
+        matches!(self, Self::UrWeb)
+    }
+
+    /// Returns true when `core_rpcify` should rewrite `Basis.rpc` applications.
+    pub fn runs_rpc_elaboration_pass(self) -> bool {
+        matches!(self, Self::UrWeb)
+    }
+
+    /// Returns true when `js_compile` should walk the mono file for client code.
+    pub fn runs_javascript_compilation(self) -> bool {
+        matches!(self, Self::UrWeb)
+    }
+
+    /// Returns true when `compile` / `compile_to_outputs` must refuse to run the full codegen pipeline.
+    pub fn blocks_batch_codegen_pipeline(self) -> bool {
+        matches!(self, Self::UrCore)
+    }
+}
+
+impl std::str::FromStr for LanguageCompilationProfile {
+    type Err = ();
+
+    /// Parses case-insensitive `ur-web` / `urweb` and `ur-core` / `urcore`.
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        let normalized = raw.trim().to_ascii_lowercase();
+        match normalized.as_str() {
+            "ur-web" | "urweb" => Ok(Self::UrWeb),
+            "ur-core" | "urcore" => Ok(Self::UrCore),
+            _ => Err(()),
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Pattern matching helpers
@@ -262,11 +329,17 @@ pub struct Settings {
     /// User-facing diagnostic language from `ur.toml` `[package].language` (`en` / `sv` / `es`).
     pub diagnostic_locale: DiagnosticLocale,
 
-    /// UUID v4 minted at the start of each [`crate::compiler::compile`] invocation.
+    /// Ur vs Ur/Web pipeline selection (`-languageProfile` on `ur-compile`; default `ur-web`).
+    pub language_compilation_profile: LanguageCompilationProfile,
+
+    /// When true, batch `compile` / `compile_to_outputs` stop after core verification (`-tc` on `ur-compile`).
+    pub typecheck_only: bool,
+
+    /// UUID v4 minted by [`Self::begin_compilation_job`] at the start of each batch pipeline or LSP analysis snapshot.
     ///
-    /// Empty string before compilation begins; set by the compiler entry points so that every
-    /// tracing event and structured log within a single job carries the same id. Use
-    /// `RUST_LOG` filtering on `compilation_id` to follow one job through the pipeline.
+    /// Empty string before [`Self::begin_compilation_job`] runs; language server work clones settings,
+    /// mints a fresh id per snapshot, and passes it through [`crate::error_types::ErrorReporter`]
+    /// without putting it in editor-facing diagnostic text.
     pub compilation_id: String,
 
     // Static files
@@ -645,10 +718,20 @@ impl Settings {
             verbosity: 0,
             emit_phase_timing: false,
             diagnostic_locale: DiagnosticLocale::default(),
-            compilation_id: String::new(), // Populated by compiler::compile; empty until then.
+            language_compilation_profile: LanguageCompilationProfile::default(),
+            typecheck_only: false,
+            compilation_id: String::new(), // Filled by [`Self::begin_compilation_job`] when a pipeline starts.
             file_path: ".".into(),
             js_output: None,
         }
+    }
+
+    /// Mint a new RFC 4122 UUID v4 and assign it to [`Self::compilation_id`].
+    ///
+    /// Call once at the start of each batch compile pipeline or analysis snapshot so diagnostics and
+    /// [`tracing`] events can be correlated for that job.
+    pub fn begin_compilation_job(&mut self) {
+        self.compilation_id = Uuid::new_v4().to_string(); // Fresh random id for this compile or analysis pass.
     }
 
     // -----------------------------------------------------------------------
@@ -1459,5 +1542,16 @@ mod tests {
             "uw_Basis_string"
         );
         Ok(()) // return success to the test harness
+    }
+
+    /// [`Settings::begin_compilation_job`] must populate [`Settings::compilation_id`] with a random UUID v4 string.
+    #[test]
+    fn begin_compilation_job_mints_uuid_v4() {
+        let mut settings = Settings::new();
+        assert!(settings.compilation_id.is_empty()); // Default remains empty until a pipeline starts.
+        settings.begin_compilation_job(); // Mint one id for a compile or analysis snapshot.
+        let parsed =
+            Uuid::parse_str(&settings.compilation_id).expect("compilation_id must parse as UUID");
+        assert_eq!(parsed.get_version(), Some(uuid::Version::Random)); // v4 random UUID per RFC 4122.
     }
 }

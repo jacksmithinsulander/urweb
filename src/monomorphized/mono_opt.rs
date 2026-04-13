@@ -7,6 +7,8 @@
 //!
 //! SQL string scanners (`un_as`, `uwify_inner`, `uwify_viewify`) use bounded `for` loops over index
 //! space (`0..chars.len()`) with a moving cursor `i`, so work stays linear in the UTF-32 scalar count.
+//! LangSec string-token equivalence for SQL-adjacent **comparisons** uses
+//! [`crate::elaborated::langsec_string_identifiers_equivalent`] (see tests and `uwify_check_string` docs).
 
 use std::cell::RefCell;
 
@@ -313,8 +315,11 @@ fn un_as(s: &str) -> String {
     out.into_iter().collect()
 }
 
-/// Rename `_identifier` to `uw_identifier` in a SQL fragment
-/// (for `checkString`).
+/// Rename `_identifier` to `uw_identifier` in a SQL fragment (for `checkString`).
+///
+/// Identifier **equivalence** checks (space vs `_`) should use
+/// [`crate::elaborated::langsec_string_identifiers_equivalent`] so they stay aligned with
+/// the elaborated type-system policy; this pass only performs the `uw_` rewrite.
 fn uwify_check_string(s: &str) -> String {
     let chars: Vec<char> = s.chars().collect();
     let (prefix, start) = match chars.first() {
@@ -367,12 +372,12 @@ fn uwify_viewify(s: &str) -> String {
         if i >= chars.len() {
             break;
         }
-        let as_space_underscore = i + 4 < chars.len()
+        let as_then_leading_underscore = i + 3 < chars.len()
             && chars[i] == 'A'
             && chars[i + 1] == 'S'
-            && chars[i + 2] == ' '
+            && (chars[i + 2] == ' ' || chars[i + 2] == '_')
             && chars[i + 3] == '_';
-        match (as_space_underscore, chars[i] == '\'') {
+        match (as_then_leading_underscore, chars[i] == '\'') {
             (true, _) => {
                 out.extend("AS uw_".chars());
                 i += 4;
@@ -1873,6 +1878,23 @@ mod tests {
         let s = urlify_string("_hello");
         assert!(s.starts_with("_.5F"), "got: {}", s);
         Ok(()) // return success to the test harness
+    }
+
+    #[test]
+    fn langsec_string_identifiers_equivalent_matches_sql_adjacent_spellings() -> anyhow::Result<()>
+    {
+        assert!(crate::elaborated::langsec_string_identifiers_equivalent(
+            "Hello World!",
+            "Hello_World!"
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn uwify_viewify_treats_as_underscore_like_space_before_leading_underscore_alias(
+    ) -> anyhow::Result<()> {
+        assert_eq!(uwify_viewify("AS__x"), "AS uw_x");
+        Ok(())
     }
 
     #[test]

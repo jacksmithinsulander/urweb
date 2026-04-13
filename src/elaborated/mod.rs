@@ -11,7 +11,7 @@
 //! Pipeline entry points [`elaborate::elab_file`], [`unnest::unnest`], and [`explify::explify`] document
 //! `# Arguments`, `# Returns`, and error reporting (`ErrorReporter`) where relevant.
 //! [`elaborate`], [`elaboration_errors`], [`type_operations`], [`environment`] binders,
-//! [`disjointness_analysis`], and [`type_display`] use the same headings on their public helpers.
+//! [`disjointness_analysis`], [`type_display`], and [`type_tree`] use the same headings on their public helpers.
 
 pub mod disjointness_analysis;
 pub mod elaborate;
@@ -19,121 +19,25 @@ pub mod elaboration_errors;
 pub mod environment;
 pub mod explify;
 pub mod module_database;
-pub mod type_display;
-pub mod type_operations;
+pub mod types;
 pub mod unnest;
 pub mod utilities;
 
 use std::sync::{Arc, Mutex};
 
 use crate::datatype_kind::DatatypeKind;
-use crate::error_types::{Located, Span};
+use crate::error_types::Located;
 use crate::primitives::Prim;
 use crate::source::FfiMode;
 
-// ---------------------------------------------------------------------------
-// Kinds
-// ---------------------------------------------------------------------------
-
-pub type KUnifRef = Arc<Mutex<KUnif>>;
-
-#[derive(Debug, Clone)]
-pub enum KUnif {
-    /// Not yet solved; the closure checks validity.
-    Unknown,
-    Known(Box<LocatedKind>),
-}
-
-#[derive(Debug, Clone)]
-pub enum Kind {
-    Type,
-    Arrow(Box<LocatedKind>, Box<LocatedKind>),
-    Name,
-    Record(Box<LocatedKind>),
-    Unit,
-    Tuple(Vec<LocatedKind>),
-
-    Error,
-    /// Unification variable for a kind.
-    Unif(Span, String, KUnifRef),
-    /// Tuple unification variable (partially known).
-    TupleUnif(Span, Vec<(usize, LocatedKind)>, KUnifRef),
-
-    /// De Bruijn index into the kind environment.
-    Rel(usize),
-    /// Kind-level abstraction (for kind-polymorphism).
-    Fun(String, Box<LocatedKind>),
-}
-
-pub type LocatedKind = Located<Kind>;
-
-// ---------------------------------------------------------------------------
-// Constructors
-// ---------------------------------------------------------------------------
-
-pub type CUnifRef = Arc<Mutex<CUnif>>;
-
-#[derive(Debug, Clone)]
-pub enum CUnif {
-    Unknown,
-    Known(Box<LocatedConstructor>),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Explicitness {
-    Explicit,
-    Implicit,
-}
-
-#[derive(Debug, Clone)]
-pub enum Constructor {
-    TFun(Box<LocatedConstructor>, Box<LocatedConstructor>),
-    TCFun(
-        Explicitness,
-        String,
-        Box<LocatedKind>,
-        Box<LocatedConstructor>,
-    ),
-    TRecord(Box<LocatedConstructor>),
-    TDisjoint(
-        Box<LocatedConstructor>,
-        Box<LocatedConstructor>,
-        Box<LocatedConstructor>,
-    ),
-
-    /// De Bruijn index.
-    Rel(usize),
-    /// Globally unique name (from `CNamed`).
-    Named(usize),
-    /// Module projection: `module.path.name`.
-    ModProj(usize, Vec<String>, String),
-    App(Box<LocatedConstructor>, Box<LocatedConstructor>),
-    Abs(String, Box<LocatedKind>, Box<LocatedConstructor>),
-
-    KAbs(String, Box<LocatedConstructor>),
-    KApp(Box<LocatedConstructor>, Box<LocatedKind>),
-    TKFun(String, Box<LocatedConstructor>),
-
-    Name(String),
-
-    Record(
-        Box<LocatedKind>,
-        Vec<(LocatedConstructor, LocatedConstructor)>,
-    ),
-    Concat(Box<LocatedConstructor>, Box<LocatedConstructor>),
-    Map(Box<LocatedKind>, Box<LocatedKind>),
-
-    Unit,
-
-    Tuple(Vec<LocatedConstructor>),
-    Proj(Box<LocatedConstructor>, usize),
-
-    Error,
-    /// Elaboration-time unification variable.
-    Unif(usize, Span, Box<LocatedKind>, String, CUnifRef),
-}
-
-pub type LocatedConstructor = Located<Constructor>;
+pub use self::types::type_display;
+pub use self::types::type_operations;
+pub use self::types::type_tree;
+pub use self::types::{
+    canonicalize_langsec_string_identifier, langsec_string_identifiers_equivalent, CUnif, CUnifRef,
+    Constructor, DependentRefinementHost, Explicitness, KUnif, KUnifRef, Kind, LocatedConstructor,
+    LocatedKind, RuntimePrimitiveTag, StarClassifierRefinement, Types,
+};
 
 // ---------------------------------------------------------------------------
 // Patterns

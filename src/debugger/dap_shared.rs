@@ -11,12 +11,12 @@ use crate::error_types::CompileError;
 use super::dap_framing::{bump_seq, write_dap_message};
 use super::mi_parse::{classify_mi_line, mi_get_str, MiRecord};
 
-/// DAP notifier helpers return [`CompileError`] alongside GDB/MI (same catalog surface as the compiler).
-type Result<T> = std::result::Result<T, CompileError>;
+/// DAP notifier helpers box [`CompileError`] so Clippy does not flag large `Err` payloads on hot paths.
+type Result<T> = std::result::Result<T, Box<CompileError>>;
 
-/// Convert a poisoned mutex into a [`CompileError`]; the poison context string is included for diagnostics.
-fn mutex_poison_error(context: &str) -> CompileError {
-    CompileError::Io(std::io::Error::other(context.to_string())) // wrap poison message in I/O error for CompileError::Io
+/// Convert a poisoned mutex into a boxed [`CompileError`]; the poison context string is included for diagnostics.
+fn mutex_poison_error(context: &str) -> Box<CompileError> {
+    Box::new(CompileError::Io(std::io::Error::other(context.to_string()))) // wrap poison message in I/O error for CompileError::Io
 }
 
 pub struct DapState {
@@ -50,7 +50,7 @@ impl LoadedSourceNotifier {
         let mut known = self
             .known_paths
             .lock() // acquire the loaded-paths mutex
-            .map_err(|_| mutex_poison_error("known_paths mutex poisoned"))?; // convert PoisonError to CompileError
+            .map_err(|_| mutex_poison_error("known_paths mutex poisoned"))?; // convert PoisonError to boxed CompileError
         if !known.insert(path.clone()) {
             return Ok(());
         }
@@ -73,7 +73,7 @@ impl LoadedSourceNotifier {
         let mut st = self
             .dap
             .lock() // acquire the DAP transport mutex
-            .map_err(|_| mutex_poison_error("dap transport mutex poisoned"))?; // convert PoisonError to CompileError
+            .map_err(|_| mutex_poison_error("dap transport mutex poisoned"))?; // convert PoisonError to boxed CompileError
         let body: Value = json!({
             "reason": reason,
             "source": { "name": path, "path": path },
@@ -84,7 +84,9 @@ impl LoadedSourceNotifier {
             "event": "loadedSource",
             "body": body,
         });
-        write_dap_message(&mut st.out, &msg)?;
+        write_dap_message(&mut st.out, &msg).map_err(|io_error| {
+            Box::new(CompileError::from(io_error)) // surface stdio write failures as catalog-compatible I/O errors
+        })?;
         Ok(())
     }
 }

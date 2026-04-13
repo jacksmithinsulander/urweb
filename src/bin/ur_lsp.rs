@@ -27,18 +27,19 @@ use lsp_types::request::{
 use lsp_types::{
     CompletionOptions, CompletionParams, CompletionResponse, DidChangeTextDocumentParams,
     DidCloseTextDocumentParams, DidOpenTextDocumentParams, DocumentFormattingParams,
-    DocumentHighlight, DocumentHighlightKind, DocumentHighlightParams, DocumentSymbol,
-    DocumentSymbolParams, DocumentSymbolResponse, FoldingRangeParams,
-    FoldingRangeProviderCapability, GotoDefinitionParams, GotoDefinitionResponse, Hover,
-    HoverContents, HoverParams, InitializeParams, InlayHintParams, Location, OneOf,
-    PrepareRenameResponse, ReferenceParams, RenameOptions, RenameParams, SelectionRangeParams,
-    SelectionRangeProviderCapability, SemanticTokens, SemanticTokensFullOptions,
-    SemanticTokensLegend, SemanticTokensOptions, SemanticTokensParams,
-    SemanticTokensServerCapabilities, ServerCapabilities, ServerInfo, SignatureHelp,
-    SignatureHelpOptions, SignatureHelpParams, SignatureInformation, SymbolInformation, SymbolKind,
-    TextDocumentPositionParams, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit,
-    TypeDefinitionProviderCapability, Uri, WorkDoneProgressOptions, WorkspaceSymbolParams,
+    DocumentHighlight, DocumentHighlightKind, DocumentHighlightParams, DocumentSymbolParams,
+    DocumentSymbolResponse, FoldingRangeParams, FoldingRangeProviderCapability,
+    GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents, HoverParams,
+    InitializeParams, InlayHintParams, Location, OneOf, PrepareRenameResponse, ReferenceParams,
+    RenameOptions, RenameParams, SelectionRangeParams, SelectionRangeProviderCapability,
+    SemanticTokens, SemanticTokensFullOptions, SemanticTokensLegend, SemanticTokensOptions,
+    SemanticTokensParams, SemanticTokensServerCapabilities, ServerCapabilities, ServerInfo,
+    SignatureHelp, SignatureHelpOptions, SignatureHelpParams, SignatureInformation,
+    SymbolInformation, SymbolKind, TextDocumentPositionParams, TextDocumentSyncCapability,
+    TextDocumentSyncKind, TextEdit, TypeDefinitionProviderCapability, Uri, WorkDoneProgressOptions,
+    WorkspaceSymbolParams,
 };
+use serde_json::json;
 
 use ur::cli_common::{
     self, cli_diagnostic_text, diagnostic_locale_for_cli, diagnostic_locale_from_manifest_path,
@@ -314,7 +315,12 @@ fn schedule_analysis(
         let mut err = ur::error_types::ErrorReporter::new_silent();
         let file_label =
             uri_local_path_for_tooling(&uri).unwrap_or_else(|| uri.as_str().to_string());
-        let _ = ur::parse::parse_ur(&file_label, &text, &mut err, ur::db::ProjectDb::default());
+        let _ = ur::parse::parse_ur(
+            &file_label,
+            &text,
+            &mut err,
+            ur::parse::UrParseContext::default(),
+        );
         let snap = AnalysisSnapshot {
             errors: err,
             elaborated: None,
@@ -666,18 +672,15 @@ fn handle_request(
                 DocumentSymbolResponse::Nested(
                     lsp_semantics::document_symbols(elab, &fk)
                         .into_iter()
-                        .map(|row| {
-                            #[allow(deprecated)]
-                            DocumentSymbol {
-                                name: row.name,
-                                detail: Some(row.detail).filter(|d| !d.is_empty()),
-                                kind: SymbolKind::FUNCTION,
-                                tags: None,
-                                deprecated: None,
-                                range: row.range,
-                                selection_range: row.selection_range,
-                                children: None,
-                            }
+                        .filter_map(|row| {
+                            serde_json::from_value(json!({
+                                "name": row.name,
+                                "detail": Some(row.detail).filter(|d| !d.is_empty()),
+                                "kind": SymbolKind::FUNCTION,
+                                "range": row.range,
+                                "selectionRange": row.selection_range,
+                            }))
+                            .ok()
                         })
                         .collect(),
                 )
@@ -710,18 +713,16 @@ fn handle_request(
             .into_iter()
             .filter_map(|row| {
                 let uri: Uri = row.uri_str.parse().ok()?;
-                #[allow(deprecated)]
-                Some(SymbolInformation {
-                    name: row.name,
-                    kind: SymbolKind::FUNCTION,
-                    tags: None,
-                    deprecated: None,
-                    location: Location {
+                serde_json::from_value(json!({
+                    "name": row.name,
+                    "kind": SymbolKind::FUNCTION,
+                    "location": Location {
                         uri,
                         range: row.range,
                     },
-                    container_name: Some(row.type_str),
-                })
+                    "containerName": row.type_str,
+                }))
+                .ok()
             })
             .collect();
         connection

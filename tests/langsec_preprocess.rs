@@ -4,7 +4,7 @@ use ur::db::ProjectDb;
 use ur::error_types::ErrorReporter;
 use ur::parse::{
     parse_ur, parse_urs, preprocess_urs, rewrite_case_expressions, rewrite_datatype_constructors,
-    rewrite_sgn_where,
+    rewrite_sgn_where, UrParseContext,
 };
 
 #[test]
@@ -50,7 +50,7 @@ fn langsec_parse_profile_follows_db_class() {
 fn ur_roundtrip_minimal_decl_parses_after_rewrites() {
     let mut errors = ErrorReporter::new();
     let src = "val x = 1\n";
-    let out = parse_ur("t.ur", src, &mut errors, ProjectDb::default());
+    let out = parse_ur("t.ur", src, &mut errors, UrParseContext::default());
     assert!(out.is_some(), "parse errors: {:?}", errors.errors);
 }
 

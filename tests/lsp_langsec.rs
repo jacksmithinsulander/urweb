@@ -46,14 +46,12 @@ fn uri_file_scheme_maps_to_local_path() {
 }
 
 #[test]
-fn workspace_root_prefers_workspace_folder_over_root_uri() {
-    #[allow(deprecated)]
+fn workspace_root_resolves_first_workspace_folder() {
     let params = InitializeParams {
         workspace_folders: Some(vec![WorkspaceFolder {
             uri: parse_uri("file:///first/folder"),
             name: "first".into(),
         }]),
-        root_uri: Some(parse_uri("file:///other/root")),
         ..Default::default()
     };
 

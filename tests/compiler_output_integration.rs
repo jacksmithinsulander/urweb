@@ -2,7 +2,16 @@
 //! Catches mutants that replace compile_to_outputs with Ok((String::new(), String::new())),
 //! and mutants in cjr_print, sql_generate, cjrize, prepare that corrupt output.
 
-mod common;
+#[path = "common/compile_bounded.rs"]
+mod compile_bounded;
+#[path = "common/tempdir.rs"]
+mod tempdir;
+#[path = "common/write_file.rs"]
+mod write_file;
+
+use compile_bounded::compile_to_outputs_bounded;
+use tempdir::tempdir;
+use write_file::write_file;
 
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -11,18 +20,18 @@ use std::sync::OnceLock;
 /// construct (parse/elaboration failure). Tests use this to skip gracefully
 /// for features not yet fully implemented.
 fn try_compile(urp: &Path) -> Option<(String, String)> {
-    common::compile_to_outputs_bounded(urp.to_path_buf(), |_| {}).ok()
+    compile_to_outputs_bounded(urp.to_path_buf(), |_| {}).ok()
 }
 
 fn setup_project(urp_body: &str, module_body: &str) -> (tempfile::TempDir, PathBuf) {
-    let dir = common::tempdir("compiler_output_integration tempdir");
+    let dir = tempdir("compiler_output_integration tempdir");
     let dir_path = dir.path().to_path_buf();
-    common::write_file(
+    write_file(
         &dir_path.join("app.urp"),
         urp_body,
         "write compiler_output_integration app.urp",
     );
-    common::write_file(
+    write_file(
         &dir_path.join("mod1.ur"),
         module_body,
         "write compiler_output_integration mod1.ur",

@@ -11,7 +11,7 @@ use lsp_types::{
     SemanticTokenType, SemanticTokens, TextDocumentEdit, TextEdit, Uri, WorkspaceEdit,
 };
 
-use crate::elaborated::type_display::format_constructor;
+use crate::elaborated::types::type_display::format_constructor;
 use crate::elaborated::{Declaration, File as ElabFile};
 use crate::error_types::Span;
 use crate::parse::lexical_analyzer::{tokenize_xml_aware, Token};

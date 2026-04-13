@@ -13,7 +13,7 @@
 use crate::diagnostics::{
     render_diagnostic_body, DiagnosticId, DiagnosticLocale, DiagnosticPayload,
 };
-use crate::elaborated::type_display::{
+use crate::elaborated::types::type_display::{
     format_constructor, format_expression, format_kind, format_pattern, format_signature,
     format_signature_item,
 };

@@ -50,7 +50,7 @@ pub(crate) fn mlift_con_in_con(
     binder_count: usize,
     constructor: LocatedConstructor,
 ) -> LocatedConstructor {
-    crate::elaborated::type_operations::mlift_con_in_con(binder_count, constructor)
+    crate::elaborated::types::type_operations::mlift_con_in_con(binder_count, constructor)
 }
 
 // ---------------------------------------------------------------------------
@@ -106,7 +106,8 @@ pub mod kind {
     ) -> LocatedKind {
         let span = kind.span.clone();
         let mapped = match kind.node {
-            Kind::Type => Located::new(Kind::Type, span),
+            Kind::Typed(Types::Any) => Located::new(Kind::Typed(Types::Any), span),
+            Kind::Typed(type_tag) => Located::new(Kind::Typed(type_tag), span),
             Kind::Name => Located::new(Kind::Name, span),
             Kind::Unit => Located::new(Kind::Unit, span),
             Kind::Error => Located::new(Kind::Error, span),
@@ -223,7 +224,7 @@ pub mod kind {
     ) -> State {
         let state = fold_kind_binder(context, kind, initial_state);
         match &kind.node {
-            Kind::Type | Kind::Name | Kind::Unit | Kind::Error | Kind::Rel(_) => state,
+            Kind::Typed(_) | Kind::Name | Kind::Unit | Kind::Error | Kind::Rel(_) => state,
             Kind::Arrow(left_kind, right_kind) => {
                 let state = fold_b(left_kind, context, state, fold_kind_binder);
                 fold_b(right_kind, context, state, fold_kind_binder)
@@ -295,7 +296,7 @@ pub mod kind {
             return true;
         }
         match &kind.node {
-            Kind::Type | Kind::Name | Kind::Unit | Kind::Error | Kind::Rel(_) => false,
+            Kind::Typed(_) | Kind::Name | Kind::Unit | Kind::Error | Kind::Rel(_) => false,
             Kind::Arrow(left_kind, right_kind) => {
                 exists(left_kind, predicate) || exists(right_kind, predicate)
             }
@@ -2623,14 +2624,14 @@ pub mod sgn {
             SignatureItem::ClassAbs(x, n, k) => {
                 // ClassAbs introduces kind k -> Type
                 let arr_span = loc;
-                let k_type = Located::new(Kind::Type, arr_span.clone());
+                let k_type = Located::new(Kind::Typed(Types::Any), arr_span.clone());
                 let k_arr =
                     Located::new(Kind::Arrow(Box::new(k.clone()), Box::new(k_type)), arr_span);
                 Some(Binder::NamedC(x.clone(), *n, k_arr, None))
             }
             SignatureItem::Class(x, n, k, c) => {
                 let arr_span = loc;
-                let k_type = Located::new(Kind::Type, arr_span.clone());
+                let k_type = Located::new(Kind::Typed(Types::Any), arr_span.clone());
                 let k_arr =
                     Located::new(Kind::Arrow(Box::new(k.clone()), Box::new(k_type)), arr_span);
                 Some(Binder::NamedC(x.clone(), *n, k_arr, Some(c.clone())))

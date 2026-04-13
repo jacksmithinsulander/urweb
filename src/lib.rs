@@ -35,6 +35,8 @@ pub mod compiler_diagnostics;
 pub mod compiler_tracing;
 /// Project database choice (`ProjectDb`, SQL flavors, reserved backends, mangling, codegen gates).
 pub mod db;
+/// Canonical names for Basis-backed intrinsics (RPC, …) shared across compiler passes.
+pub mod intrinsics;
 /// Re-exports [`db`] for older `ur::dbms` paths.
 pub mod dbms {
     pub use super::db::*;

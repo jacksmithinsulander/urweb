@@ -25,7 +25,7 @@
 //! preimage of that grammar under a **specified** preprocessor chain:
 //!
 //! 1. **`.ur`**: `rewrite_datatype_constructors` → `rewrite_sgn_where` → `rewrite_case_expressions`,
-//!    then [`parse_ur`](parse_ur) runs [`XmlAwareLexer`](lexical_analyzer::XmlAwareLexer) + `FileParser`.
+//!    then [`parse_ur`](parse_ur) runs [`XmlAwareLexer`](lexical_analyzer::XmlAwareLexer) (XML modes optional via [`UrParseContext::language_profile`](ur_parse_context::UrParseContext)) + `FileParser`.
 //! 2. **`.urs`**: [`preprocess_urs`](preprocess_urs) (fuel-bounded), then lexer + `SgnItemsParser`.
 //!
 //! These rewrites are **total** string transducers on UTF-8 (invalid surrogate-edge cases are
@@ -40,7 +40,14 @@ pub mod expr_langsec;
 pub mod grammar_helpers;
 pub mod lexical_analyzer;
 mod sql_compat;
+pub mod surface_profile_validation;
+pub mod ur_parse_context;
 pub mod xml_helpers;
+
+pub use surface_profile_validation::{
+    validate_user_ur_module_for_profile, validate_user_urs_module_for_profile,
+};
+pub use ur_parse_context::UrParseContext;
 
 /// Name for LALRPOP reduce-value tuples (keeps generated `grammar.rs` clippy-clean for `type_complexity`).
 #[cfg(generated_parser)]
@@ -1825,8 +1832,8 @@ pub fn rewrite_datatype_constructors(input: &str) -> String {
 /// files still write ordinary `=`; we rewrite the first defining `=` after `::` on
 /// `con` / `class` lines to `sgn_def_con`.
 ///
-/// Line-oriented pass (not yet composed into [`preprocess_urs`]); kept for tooling / future merge.
-#[allow(dead_code)]
+/// Line-oriented pass (not yet composed into [`preprocess_urs`]); compiled only for unit tests until merged.
+#[cfg(test)]
 fn rewrite_sig_type_class_abstract_lines(input: &str) -> String {
     fn ident_head(rest: &str) -> Option<(String, &str)> {
         let mut it = rest.chars();
@@ -1977,6 +1984,16 @@ fn rewrite_sig_type_class_abstract_lines(input: &str) -> String {
         out.push('\n');
     }
     out
+}
+
+#[cfg(test)]
+mod rewrite_sig_type_class_abstract_lines_tests {
+    use super::rewrite_sig_type_class_abstract_lines;
+
+    #[test]
+    fn rewrite_sig_type_class_abstract_lines_smoke() {
+        assert_eq!(rewrite_sig_type_class_abstract_lines(""), "");
+    }
 }
 
 /// Preprocessed excerpt of `lib/ur/basis.urs` around byte `pos` (dev helpers / mutation tests).
@@ -2361,7 +2378,7 @@ fn format_parse_error_for_user(
 /// * `_filename` — Label for diagnostics (may be a path or virtual `file:` string).
 /// * `source` — Raw UTF-8 module text.
 /// * `errors` — Receives a plain or spanned error on failure.
-/// * `project_db` — Effective database / LangSec profile for this compile (`ur.toml`, `.urp`, CLI).
+/// * `parse_context` — Project database / LangSec profile plus language surface profile (`ur.toml`, `.urp`, CLI, `-languageProfile`).
 ///
 /// # Returns
 ///
@@ -2374,14 +2391,15 @@ pub fn parse_ur(
     _filename: &str,
     source: &str,
     errors: &mut ErrorReporter,
-    project_db: crate::db::ProjectDb,
+    parse_context: UrParseContext,
 ) -> Option<File> {
     #[cfg(generated_parser)]
     {
-        let _parse_profile = project_db.langsec_parse_profile();
-        let _ = (_parse_profile, project_db); // LangSec tiers branch on profile + db
+        let _parse_profile = parse_context.project_db.langsec_parse_profile();
+        let _ = (_parse_profile, parse_context.project_db); // LangSec tiers branch on profile + db
         let pre = preprocess_ur_for_parse(source);
-        let lexer = lexical_analyzer::XmlAwareLexer::new(&pre);
+        let allow_xml = parse_context.language_profile.allows_xml_surface_markup();
+        let lexer = lexical_analyzer::XmlAwareLexer::with_xml_markup_policy(&pre, allow_xml);
         match grammar::FileParser::new().parse(lexer) {
             Ok(mut file) => {
                 crate::source::attach_file_label_to_source_file(&mut file, _filename, &pre);
@@ -2477,7 +2495,7 @@ pub fn parse_ur(
     }
     #[cfg(not(generated_parser))]
     {
-        let _ = (_filename, source, project_db);
+        let _ = (_filename, source, parse_context);
         errors.report(CompileError::Plain(DiagnosticPayload::new(
             DiagnosticId::ParserNotLinkedUr,
             vec![],
@@ -2502,13 +2520,7 @@ pub fn parse_top_level_decl_count(
     source: &str,
     errors: &mut ErrorReporter,
 ) -> Option<usize> {
-    parse_ur(
-        virtual_path,
-        source,
-        errors,
-        crate::db::ProjectDb::default(),
-    )
-    .map(|f| f.len())
+    parse_ur(virtual_path, source, errors, UrParseContext::default()).map(|f| f.len())
 }
 
 /// Parse a `.urs` signature file after [`preprocess_urs`].
@@ -2579,6 +2591,7 @@ pub fn parse_urs(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::compiler_tracing::TRACING_TARGET_COMPILER_INTERNALS;
     use anyhow::Context as _; // .with_context() on Result/Option in tests
 
     #[test]
@@ -2607,7 +2620,7 @@ mod tests {
             "test.ur",
             "val x = 1",
             &mut errors,
-            crate::db::ProjectDb::default(),
+            UrParseContext::default(),
         );
         #[cfg(not(generated_parser))]
         {
@@ -2622,6 +2635,22 @@ mod tests {
         Ok(()) // return success to the test harness
     }
 
+    /// Ur core profile keeps `<` as the less-than token (no XML `BeginTag` for `<xml…`).
+    #[test]
+    #[cfg(generated_parser)]
+    fn ur_core_profile_parses_numeric_comparison_without_xml_mode() -> anyhow::Result<()> {
+        use crate::settings::LanguageCompilationProfile;
+        let mut errors = ErrorReporter::new_silent();
+        let ctx = UrParseContext {
+            project_db: crate::db::ProjectDb::default(),
+            language_profile: LanguageCompilationProfile::UrCore,
+        };
+        let file = parse_ur("core.ur", "val ok = 1 < 2\n", &mut errors, ctx)
+            .with_context(|| "parse ur-core")?;
+        assert_eq!(file.len(), 1, "single val under ur-core");
+        Ok(())
+    }
+
     /// LALRPOP actions use empty `Span::file`; post-parse attach must fill it for diagnostics.
     #[test]
     #[cfg(generated_parser)]
@@ -2630,13 +2659,8 @@ mod tests {
         use crate::source::Decl;
         let mut errors = ErrorReporter::new_silent();
         let path = "dir/Example.ur";
-        let file = parse_ur(
-            path,
-            "val x = 1",
-            &mut errors,
-            crate::db::ProjectDb::default(),
-        )
-        .with_context(|| "parse")?;
+        let file = parse_ur(path, "val x = 1", &mut errors, UrParseContext::default())
+            .with_context(|| "parse")?;
         let Decl::Val(pat, exp) = &file[0].node else {
             panic!("expected Val decl");
         };
@@ -2656,7 +2680,7 @@ mod tests {
             "m.ur",
             "val a = 1\nval b = 2",
             &mut errors,
-            crate::db::ProjectDb::default(),
+            UrParseContext::default(),
         )
         .with_context(|| "parse")?;
         let Decl::Val(_, exp_b) = &file[1].node else {
@@ -2680,7 +2704,7 @@ mod tests {
             "t.ur",
             "val u = @@x",
             &mut errors,
-            crate::db::ProjectDb::default(),
+            UrParseContext::default(),
         )
         .with_context(|| "parse")?;
         let Decl::Val(_, e) = &file[0].node else {
@@ -2704,7 +2728,7 @@ mod tests {
             "t.ur",
             "val u = @Foo.bar",
             &mut errors,
-            crate::db::ProjectDb::default(),
+            UrParseContext::default(),
         )
         .with_context(|| "parse")?;
         let Decl::Val(_, e) = &file[0].node else {
@@ -2725,13 +2749,8 @@ mod tests {
         // test returns Result to allow ? propagation
         use crate::source::{Decl, Exp, Inference};
         let mut errors = ErrorReporter::new_silent();
-        let file = parse_ur(
-            "t.ur",
-            "val u = @x",
-            &mut errors,
-            crate::db::ProjectDb::default(),
-        )
-        .with_context(|| "parse")?;
+        let file = parse_ur("t.ur", "val u = @x", &mut errors, UrParseContext::default())
+            .with_context(|| "parse")?;
         let Decl::Val(_, e) = &file[0].node else {
             panic!("expected Val");
         };
@@ -2753,7 +2772,7 @@ mod tests {
             "t.ur",
             "val u = x !",
             &mut errors,
-            crate::db::ProjectDb::default(),
+            UrParseContext::default(),
         )
         .with_context(|| "parse")?;
         let Decl::Val(_, e) = &file[0].node else {
@@ -2775,7 +2794,12 @@ mod tests {
             if c == '|' {
                 let s = i.saturating_sub(40);
                 let e = (i + 40).min(pp.len());
-                tracing::debug!(index = i, window = ?&pp[s..e], "preprocess_ur '|' bar location");
+                tracing::debug!(
+                    target: TRACING_TARGET_COMPILER_INTERNALS,
+                    index = i,
+                    window = ?&pp[s..e],
+                    "preprocess_ur '|' bar location"
+                );
             }
         }
         tracing::debug!(total_len = pp.len(), "preprocess_ur cookie.ur scan");
@@ -2793,8 +2817,18 @@ mod tests {
         let pos: usize = 504;
         let start = pos.saturating_sub(300);
         let end = (pos + 200).min(pp.len());
-        tracing::debug!(pos, window = %&pp[start..end], "preprocessed basis.urs window");
-        tracing::debug!(pos, char_at = ?pp.chars().nth(pos), "preprocessed char");
+        tracing::debug!(
+            target: TRACING_TARGET_COMPILER_INTERNALS,
+            pos,
+            window = %&pp[start..end],
+            "preprocessed basis.urs window"
+        );
+        tracing::debug!(
+            target: TRACING_TARGET_COMPILER_INTERNALS,
+            pos,
+            char_at = ?pp.chars().nth(pos),
+            "preprocessed char"
+        );
         Ok(()) // return success to the test harness
     }
 
@@ -2839,7 +2873,7 @@ mod tests {
             "t.ur",
             "val a = 1\nval b = 2",
             &mut errors,
-            crate::db::ProjectDb::default(),
+            UrParseContext::default(),
         )
         .map(|f| f.len());
         #[cfg(generated_parser)]
@@ -2864,7 +2898,7 @@ mod tests {
         let mut e2 = ErrorReporter::new_silent();
         let src = "val p = 1\nval q = 2\nval r = 3";
         let a = parse_top_level_decl_count("m.ur", src, &mut e1);
-        let b = parse_ur("m.ur", src, &mut e2, crate::db::ProjectDb::default()).map(|f| f.len());
+        let b = parse_ur("m.ur", src, &mut e2, UrParseContext::default()).map(|f| f.len());
         assert_eq!(a, b);
         #[cfg(generated_parser)]
         assert_eq!(a, Some(3));
@@ -3056,12 +3090,9 @@ mod tests {
             for expr in cases {
                 let file_src = format!("val _ = {}\n", expr);
                 let mut errs = ErrorReporter::new_silent();
-                let Some(file) = parse_ur(
-                    "equiv.ur",
-                    &file_src,
-                    &mut errs,
-                    crate::db::ProjectDb::default(),
-                ) else {
+                let Some(file) =
+                    parse_ur("equiv.ur", &file_src, &mut errs, UrParseContext::default())
+                else {
                     panic!("parse_ur failed for {:?}: {:?}", expr, errs.errors);
                 };
                 let Some(got) = file.iter().find_map(|d| {
@@ -3122,7 +3153,7 @@ mod tests {
             "adjacent.ur",
             source_text,
             &mut errors,
-            crate::db::ProjectDb::default(),
+            UrParseContext::default(),
         ) else {
             panic!("parse_ur failed: {:?}", errors.errors);
         };
@@ -3147,7 +3178,7 @@ mod tests {
             "field_upper.ur",
             "val demo = r.C\n",
             &mut errors,
-            crate::db::ProjectDb::default(),
+            UrParseContext::default(),
         )
         .with_context(|| "parse")?;
         let Decl::Val(_, expression) = &file[0].node else {
@@ -3171,7 +3202,7 @@ mod tests {
             "bind_desugar.ur",
             "fun demo q = ls <- q; return ls\n",
             &mut errors,
-            crate::db::ProjectDb::default(),
+            UrParseContext::default(),
         ) else {
             panic!("parse_ur failed: {:?}", errors.errors);
         };
@@ -3281,8 +3312,18 @@ con folder = K ==> fn r :: {K} =>
         let pos = 263usize;
         let start = pos.saturating_sub(40);
         let end = (pos + 40).min(pre.len());
-        tracing::debug!(pos, slice = ?pre.get(pos..pos + 1), "top.ur preprocess byte");
-        tracing::debug!(pos, context = ?&pre[start..end], "top.ur preprocess context");
+        tracing::debug!(
+            target: TRACING_TARGET_COMPILER_INTERNALS,
+            pos,
+            slice = ?pre.get(pos..pos + 1),
+            "top.ur preprocess byte"
+        );
+        tracing::debug!(
+            target: TRACING_TARGET_COMPILER_INTERNALS,
+            pos,
+            context = ?&pre[start..end],
+            "top.ur preprocess context"
+        );
         Ok(()) // return success to the test harness
     }
 
@@ -3437,7 +3478,7 @@ con folder = K ==> fn r :: {K} =>
             "post_fields.ur",
             source_text,
             &mut errors,
-            crate::db::ProjectDb::default(),
+            UrParseContext::default(),
         )
         .with_context(|| "postFields snippet should parse")?;
         assert!(!errors.has_errors(), "unexpected parse errors");
@@ -3502,7 +3543,7 @@ con folder = K ==> fn r :: {K} =>
             "annotated_fun_params.ur",
             source_text,
             &mut errors,
-            crate::db::ProjectDb::default(),
+            UrParseContext::default(),
         )
         .with_context(|| "annotated fun params should parse")?;
         assert!(!errors.has_errors(), "unexpected parse errors");
@@ -3667,7 +3708,7 @@ con folder = K ==> fn r :: {K} =>
             "nonempty_sql_table_param.ur",
             source_text,
             &mut errors,
-            crate::db::ProjectDb::default(),
+            UrParseContext::default(),
         )
         .with_context(|| "sql_table parameter should parse")?;
         assert!(!errors.has_errors(), "unexpected parse errors");
@@ -3721,7 +3762,7 @@ con folder = K ==> fn r :: {K} =>
             "tuple_binder.ur",
             source_text,
             &mut errors,
-            crate::db::ProjectDb::default(),
+            UrParseContext::default(),
         )
         .with_context(|| "tupled constructor lambda should parse")?;
         assert!(!errors.has_errors(), "unexpected parse errors");
@@ -3823,7 +3864,7 @@ con folder = K ==> fn r :: {K} =>
             "product_type.ur",
             source_text,
             &mut errors,
-            crate::db::ProjectDb::default(),
+            UrParseContext::default(),
         )
         .with_context(|| "product type constructor should parse")?;
         assert!(!errors.has_errors(), "unexpected parse errors");
@@ -3887,7 +3928,7 @@ con folder = K ==> fn r :: {K} =>
             "table_defaults.ur",
             source_text,
             &mut errors,
-            crate::db::ProjectDb::default(),
+            UrParseContext::default(),
         )
         .with_context(|| "table declaration should parse")?;
         assert!(!errors.has_errors(), "unexpected parse errors");
@@ -3927,7 +3968,7 @@ con folder = K ==> fn r :: {K} =>
             "table_primary_key.ur",
             source_text,
             &mut errors,
-            crate::db::ProjectDb::default(),
+            UrParseContext::default(),
         )
         .with_context(|| "table declaration with PRIMARY KEY should parse")?;
         assert!(!errors.has_errors(), "unexpected parse errors");
@@ -3968,7 +4009,7 @@ con folder = K ==> fn r :: {K} =>
             "table_constraints.ur",
             source_text,
             &mut errors,
-            crate::db::ProjectDb::default(),
+            UrParseContext::default(),
         )
         .ok_or_else(|| {
             anyhow::anyhow!("table declaration with constraints should parse: {errors:?}")

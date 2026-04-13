@@ -32,7 +32,7 @@ use crate::elaborated::{
     CaseMeta, Constructor, DatatypeDecl, Declaration, ElaboratedDeclaration, Explicitness,
     Expression, FieldMeta, Kind, LocatedConstructor, LocatedDeclaration,
     LocatedElaboratedDeclaration, LocatedExpression, LocatedKind, LocatedPattern, LocatedSignature,
-    LocatedSignatureItem, Pattern, RestMeta, Signature, SignatureItem,
+    LocatedSignatureItem, Pattern, RestMeta, Signature, SignatureItem, Types,
 };
 use crate::error_types::{Located, Span};
 
@@ -3487,7 +3487,7 @@ pub fn sgi_binds(elaboration_environment: Env, sgn_item: &LocatedSignatureItem) 
             orig_constrs_path: _,
             constrs,
         } => {
-            let kind_type = Located::new(Kind::Type, span.clone());
+            let kind_type = Located::new(Kind::Typed(Types::Any), span.clone());
             let datatype_kind = params
                 .iter()
                 .fold(kind_type.clone(), |accumulated_kind, _| {
@@ -3540,7 +3540,7 @@ fn sgi_binds_datatype(
     datatype_decl: &DatatypeDecl,
     span: &Span,
 ) -> Env {
-    let kind_type = Located::new(Kind::Type, span.clone());
+    let kind_type = Located::new(Kind::Typed(Types::Any), span.clone());
     // Build the kind for the datatype: (KType -> ... -> KType) with as many arrows
     // as there are type parameters.
     let datatype_kind: LocatedKind =
@@ -3587,7 +3587,7 @@ pub(crate) fn build_constructor_type(
     arg_type: Option<&LocatedConstructor>,
     span: Span,
 ) -> LocatedConstructor {
-    let kind_type = Located::new(Kind::Type, span.clone());
+    let kind_type = Located::new(Kind::Typed(Types::Any), span.clone());
     let num_params = type_params.len();
 
     // Build `T rel(n-1) rel(n-2) ... rel(0)` (apply all type params to the type constructor).
@@ -3669,7 +3669,7 @@ pub fn decl_binds(elaboration_environment: Env, declaration: &LocatedDeclaration
             orig_constrs_path: _,
             constrs,
         } => {
-            let kind_type = Located::new(Kind::Type, span.clone());
+            let kind_type = Located::new(Kind::Typed(Types::Any), span.clone());
             let datatype_kind = params
                 .iter()
                 .fold(kind_type.clone(), |accumulated_kind, _| {
@@ -3812,7 +3812,7 @@ fn decl_binds_datatype(
     datatype_decl: &DatatypeDecl,
     span: &Span,
 ) -> Env {
-    let kind_type = Located::new(Kind::Type, span.clone());
+    let kind_type = Located::new(Kind::Typed(Types::Any), span.clone());
     let _num_params = datatype_decl.params.len();
 
     // Build the full kind: `(KType -> ... -> KType)` with `num_params` arrows.
@@ -3874,7 +3874,7 @@ mod tests {
     }
 
     fn kind_type() -> LocatedKind {
-        Located::new(Kind::Type, dummy_span())
+        Located::new(Kind::Typed(Types::Any), dummy_span())
     }
 
     fn con_rel(index: usize) -> LocatedConstructor {
@@ -3890,7 +3890,7 @@ mod tests {
     fn hnorm_con_expression_head_inlines_named_alias() -> anyhow::Result<()> {
         // test returns Result to allow ? propagation
         let sp = dummy_span();
-        let k = Located::new(Kind::Type, sp.clone());
+        let k = Located::new(Kind::Typed(Types::Any), sp.clone());
         let def = Located::new(Constructor::Unit, sp.clone());
         let env = Env::empty().push_c_named_as("Ali".into(), 7usize, k, Some(def));
         let out = hnorm_con_expression_head(&env, con_named(7));
@@ -3903,7 +3903,7 @@ mod tests {
     fn hnorm_con_constructor_abstraction_inlines_named_alias() -> anyhow::Result<()> {
         // test returns Result to allow ? propagation
         let sp = dummy_span();
-        let k = Located::new(Kind::Type, sp.clone());
+        let k = Located::new(Kind::Typed(Types::Any), sp.clone());
         let def = Located::new(Constructor::Unit, sp.clone());
         let env = Env::empty().push_c_named_as("B".into(), 3usize, k, Some(def));
         let out = hnorm_con_constructor_abstraction(&env, con_named(3));
@@ -3915,7 +3915,7 @@ mod tests {
     fn hnorm_con_constructor_abstraction_reduces_named_kapp_app_alias() -> anyhow::Result<()> {
         // test returns Result to allow ? propagation
         let sp = dummy_span();
-        let type_kind = Located::new(Kind::Type, sp.clone());
+        let type_kind = Located::new(Kind::Typed(Types::Any), sp.clone());
         let identity_definition = Located::new(
             Constructor::KAbs(
                 "K".into(),
@@ -4064,7 +4064,7 @@ mod tests {
         let env = Env::empty().push_c_rel("a".to_string(), kind.clone());
         // 'a' is at index 0
         let (_, a_kind) = env.lookup_c_rel(0)?;
-        assert!(matches!(a_kind.node, Kind::Type));
+        assert!(matches!(a_kind.node, Kind::Typed(Types::Any)));
 
         let env2 = env.push_c_rel("b".to_string(), kind);
         // 'b' is now at 0, 'a' at 1

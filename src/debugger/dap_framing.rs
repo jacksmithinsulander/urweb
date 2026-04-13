@@ -31,19 +31,10 @@ pub fn read_dap_message<R: Read + BufRead>(
 ) -> io::Result<Option<serde_json::Value>> {
     let mut line = String::new();
     let mut len: Option<usize> = None;
-    // Count non-empty header lines; cap total header scans (blank after headers + one pass per line).
-    let mut header_lines_read = 0usize;
     let header_scan_budget = DAP_FRAMING_MAX_HEADER_LINES.saturating_add(2);
     let mut saw_header_blank_line = false;
-    // `header_lines_read` counts non-blank header lines, not the `for` index; clippy conflates the two.
-    #[allow(clippy::explicit_counter_loop)]
-    for _header_scan in 0..header_scan_budget {
-        if header_lines_read >= DAP_FRAMING_MAX_HEADER_LINES {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "DAP framing: too many header lines before blank line",
-            ));
-        }
+    let mut non_blank_header_markers: Vec<()> = Vec::new();
+    for _header_scan_round in 0..header_scan_budget {
         line.clear();
         if reader.read_line(&mut line)? == 0 {
             return Ok(None);
@@ -59,7 +50,13 @@ pub fn read_dap_message<R: Read + BufRead>(
             saw_header_blank_line = true;
             break;
         }
-        header_lines_read += 1;
+        if non_blank_header_markers.len() >= DAP_FRAMING_MAX_HEADER_LINES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "DAP framing: too many header lines before blank line",
+            ));
+        }
+        non_blank_header_markers.push(());
         if let Some(rest) = h.strip_prefix("Content-Length:") {
             len = Some(rest.trim().parse().map_err(|_| {
                 io::Error::new(io::ErrorKind::InvalidData, "invalid Content-Length")

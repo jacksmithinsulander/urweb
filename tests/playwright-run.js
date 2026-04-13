@@ -5,6 +5,7 @@
  * Test modules live in playwright-tests/<testname>.js and export: async (page, baseUrl) => void
  */
 const { chromium } = require('playwright');
+const { patchPageGoto } = require('./playwright-common');
 
 const testName = process.argv[2];
 const baseUrl = process.argv[3] || `http://localhost:${process.env.PORT || 8080}`;
@@ -32,6 +33,7 @@ try {
   const browser = await chromium.launch({ headless: true });
   try {
     const page = await browser.newPage();
+    patchPageGoto(page);
     await test(page, baseUrl.replace(/\/$/, ''));
   } finally {
     await browser.close();

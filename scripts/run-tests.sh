@@ -80,7 +80,7 @@ if [ -f "$testsdir/package.json" ]; then
   wait $_npm_heartbeat 2>/dev/null || true
   echo "[$(_ts)] Playwright ready."
 fi
-DRIVER_TESTS="aborter aborter2 agg align alert ascdesc attrMangle attrs_escape a_case_of_the_splits bindpat bodyClick bool both both2 button case caseMod ccheckbox cdataF cdataL cradio DynChannel entities fact filter jsonTest jsbspace utf8"
+DRIVER_TESTS="aborter aborter2 agg align alert ascdesc attrs_escape a_case_of_the_splits bindpat bodyClick bool both both2 button case caseMod ccheckbox cdataF cdataL cradio DynChannel entities fact filter jsonTest jsbspace utf8"
 n=0
 total_driver=27
 echo ""

@@ -224,7 +224,8 @@ _CLI: list[tuple[str, tuple[str, str, str]]] = [
             "  -iflow                 run information-flow analysis\n"
             "  -limit <class> <n>     set a resource limit\n"
             "  -startLspServer        run the Language Server on standard input/output\n"
-            "  -moduleOf <file>       print the Ur/Web module name for <file>",
+            "  -moduleOf <file>       print the Ur/Web module name for <file>\n"
+            "  -languageProfile <name>  `ur-web` (default) or `ur-core` (stricter surface; batch compile is blocked)",
             "Standardalternativ: -h, --help; -V, --version; -o, --output=FILE\n"
             "Kompilatorflaggor:\n"
             "  -h, -help, --help      visa denna översikt\n"
@@ -244,7 +245,8 @@ _CLI: list[tuple[str, tuple[str, str, str]]] = [
             "  -iflow                 informationsflödesanalys\n"
             "  -limit <klass> <n>     resursgräns\n"
             "  -startLspServer        Language Server på stdio\n"
-            "  -moduleOf <fil>        skriv modulnamn för fil",
+            "  -moduleOf <fil>        skriv modulnamn för fil\n"
+            "  -languageProfile <namn>  `ur-web` (standard) eller `ur-core` (striktare yta; batchkompilering blockeras)",
             "Opciones estándar: -h, --help; -V, --version; -o, --output=FILE\n"
             "Banderas del compilador:\n"
             "  -h, -help, --help      muestra esta ayuda\n"
@@ -264,7 +266,8 @@ _CLI: list[tuple[str, tuple[str, str, str]]] = [
             "  -iflow                 análisis de flujo de información\n"
             "  -limit <clase> <n>     límite de recurso\n"
             "  -startLspServer        servidor LSP en stdio\n"
-            "  -moduleOf <archivo>    muestra el nombre de módulo",
+            "  -moduleOf <archivo>    muestra el nombre de módulo\n"
+            "  -languageProfile <nombre>  `ur-web` (predeterminado) o `ur-core` (superficie más estricta; la compilación por lotes está bloqueada)",
         ),
     ),
     (
@@ -1391,6 +1394,110 @@ _CLI: list[tuple[str, tuple[str, str, str]]] = [
             "I could not configure the database engine from the project file.\n\n{0}",
             "Jag kunde inte ställa in databasmotorn från projektfilen.\n\n{0}",
             "No pude configurar el motor de base de datos desde el archivo del proyecto.\n\n{0}",
+        ),
+    ),
+    (
+        "CliCompilationJobCorrelationLine",
+        _t(
+            "[{0}]",
+            "[{0}]",
+            "[{0}]",
+        ),
+    ),
+    (
+        "CliCompilerTracingPhaseCompleteDebug",
+        _t(
+            "Phase {0}: completed in {1} ms.",
+            "Fas {0}: klar på {1} ms.",
+            "Fase {0}: completada en {1} ms.",
+        ),
+    ),
+    (
+        "CliCompilerTracingJobCompileStart",
+        _t(
+            "Starting Ur/Web compilation.\n\nProject: {0}",
+            "Startar Ur/Web-kompilering.\n\nProjekt: {0}",
+            "Iniciando compilación de Ur/Web.\n\nProyecto: {0}",
+        ),
+    ),
+    (
+        "CliCompilerTracingJobCompileFinished",
+        _t(
+            "Ur/Web compilation finished.\n\nExecutable: {0}",
+            "Ur/Web-kompilering klar.\n\nKörbar fil: {0}",
+            "Compilación de Ur/Web terminada.\n\nEjecutable: {0}",
+        ),
+    ),
+    (
+        "CliCompilerTracingPipelineOutputsStart",
+        _t(
+            "Starting Ur/Web pipeline (compile to C and SQL outputs).\n\nProject: {0}",
+            "Startar Ur/Web-pipeline (kompilera till C och SQL-utdata).\n\nProjekt: {0}",
+            "Iniciando pipeline de Ur/Web (compilar a salidas C y SQL).\n\nProyecto: {0}",
+        ),
+    ),
+    (
+        "CliCompilerTracingPipelineOutputsFinished",
+        _t(
+            "Finished Ur/Web pipeline (compile to outputs; no link step).",
+            "Ur/Web-pipeline klar (kompilera till utdata; ingen länkning).",
+            "Pipeline de Ur/Web terminada (salidas sin paso de enlazado).",
+        ),
+    ),
+    (
+        "CliCompilerTracingElaborateProjectStart",
+        _t(
+            "Starting Ur/Web parse and elaboration.\n\nProject: {0}",
+            "Startar Ur/Web parsning och elaborering.\n\nProjekt: {0}",
+            "Iniciando análisis y elaboración de Ur/Web.\n\nProyecto: {0}",
+        ),
+    ),
+    (
+        "CliCompilerTracingCCompileObjectStep",
+        _t(
+            "C compiler (object file).\n\nCompiler: {0}\nSource: {1}\nObject: {2}",
+            "C-kompilator (objektfil).\n\nKompilator: {0}\nKälla: {1}\nObjekt: {2}",
+            "Compilador C (archivo objeto).\n\nCompilador: {0}\nOrigen: {1}\nObjeto: {2}",
+        ),
+    ),
+    (
+        "CliCompilerTracingCLinkExeStep",
+        _t(
+            "C linker (executable).\n\nLinker: {0}\nOutput: {1}",
+            "C-länkare (körbar fil).\n\nLänkare: {0}\nUtdata: {1}",
+            "Enlazador C (ejecutable).\n\nEnlazador: {0}\nSalida: {1}",
+        ),
+    ),
+    (
+        "CliLanguageProfileInvalidValue",
+        _t(
+            "Unknown `-languageProfile` value `{0}`.\n\nUse `ur-web` (default) or `ur-core`.",
+            "Okänt värde för `-languageProfile`: `{0}`.\n\nAnvänd `ur-web` (standard) eller `ur-core`.",
+            "Valor desconocido de `-languageProfile`: `{0}`.\n\nUsa `ur-web` (predeterminado) o `ur-core`.",
+        ),
+    ),
+    (
+        "UrCoreSurfaceDeclNotAllowed",
+        _t(
+            "The Ur core language profile does not allow `{0}` in this module ({1}).\n\nUse the default ur-web profile, or remove this declaration.",
+            "Språkprofilen Ur core tillåter inte `{0}` i denna modul ({1}).\n\nAnvänd standardprofilen ur-web, eller ta bort deklarationen.",
+            "El perfil de lenguaje Ur core no permite `{0}` en este módulo ({1}).\n\nUsa el perfil ur-web predeterminado, o elimina esta declaración.",
+        ),
+    ),
+    (
+        "UrCoreCodegenRequiresUrWeb",
+        _t(
+            "The Ur core profile does not run the full Ur/Web code generator yet.\n\nOmit `-languageProfile ur-core` to build a native executable, or pass `-tc` to stop after parse, elaboration, and core verification (no C, SQL, or JavaScript output).",
+            "Profilen Ur core kör inte hela Ur/Web-kodgeneratorn än.\n\nUtelämna `-languageProfile ur-core` för att bygga en inbyggd exekverbar fil, eller ange `-tc` för att stoppa efter parsning, elaborering och kärnverifiering (ingen C-, SQL- eller JavaScript-utdata).",
+            "El perfil Ur core aún no ejecuta el generador completo de Ur/Web.\n\nOmite `-languageProfile ur-core` para compilar un ejecutable nativo, o pasa `-tc` para detener tras el análisis, la elaboración y la verificación del núcleo (sin salida C, SQL ni JavaScript).",
+        ),
+    ),
+    (
+        "CliCompilerTracingJobTypecheckFinished",
+        _t(
+            "Ur/Web type checking finished (`-tc`; no executable or generated C/SQL output).\n\nProject: {0}",
+            "Ur/Web-typtest klar (`-tc`; ingen körbar fil eller genererad C/SQL-utdata).\n\nProjekt: {0}",
+            "Comprobación de tipos de Ur/Web terminada (`-tc`; sin ejecutable ni salida C/SQL generada).\n\nProyecto: {0}",
         ),
     ),
 ]

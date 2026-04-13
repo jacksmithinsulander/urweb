@@ -1,7 +1,7 @@
 //! RPC identification and `EServerCall` injection pass.
 //!
-//! Scans the Core file to find all places where `Basis.rpc` or `Basis.tryRpc`
-//! are applied to a named transaction function, then replaces those
+//! Scans the Core file to find all places where the canonical RPC FFI bindings
+//! ([`crate::intrinsics::web_ffi`]) are applied to a named transaction function, then replaces those
 //! applications with `EServerCall` nodes and emits corresponding
 //! `DExport(Rpc(ReadWrite), n, false)` declarations.
 //!
@@ -13,6 +13,7 @@ use crate::core::*;
 use crate::diagnostics::{DiagnosticId, DiagnosticPayload};
 use crate::error_types::{Located, Span};
 use crate::export::{Effect, ExportKind};
+use crate::intrinsics::web_ffi::{is_basis_rpc_ffi, is_basis_try_rpc_ffi};
 use crate::settings::FailureMode;
 
 // ---------------------------------------------------------------------------
@@ -66,10 +67,10 @@ pub fn rpcify(file: File, error_reporter: &mut impl FnMut(&Span, DiagnosticPaylo
     for d in &file {
         if let Declaration::Val(_, n, _, e, _) = &d.node {
             match &e.node {
-                Expression::Ffi(m, f) if m == "Basis" && f == "rpc" => {
+                Expression::Ffi(m, f) if is_basis_rpc_ffi(m, f) => {
                     rpc_base_ids.insert(*n);
                 }
-                Expression::Ffi(m, f) if m == "Basis" && f == "tryRpc" => {
+                Expression::Ffi(m, f) if is_basis_try_rpc_ffi(m, f) => {
                     trpc_base_ids.insert(*n);
                 }
                 Expression::Named(n2) => {

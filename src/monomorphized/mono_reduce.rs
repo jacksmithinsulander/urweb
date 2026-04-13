@@ -17,6 +17,7 @@ use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 
+use crate::compiler_tracing::TRACING_TARGET_COMPILER_INTERNALS;
 use crate::error_types::{Located, Span};
 use crate::monomorphized::{
     environment::{lift_exp_in_exp, multi_lift, pat_binds_n, sub_exp_in_exp, Env},
@@ -1344,6 +1345,7 @@ fn reduce_node(env: &Env, e: Exp, span: &Span, ctx: &ReduceCtx, settings: &Setti
                 let cf = count_free(0, &body);
                 let multi_use = !ctx.full_mode && cf > 1;
                 tracing::debug!(
+                    target: TRACING_TARGET_COMPILER_INTERNALS,
                     variable = %x,
                     impure_arg,
                     free_under_lambda = cf,

@@ -16,7 +16,7 @@ use crate::diagnostics::{DiagnosticId, DiagnosticPayload};
 use crate::elaborated::{
     Constructor, Declaration, ElaboratedDeclaration, Explicitness, Expression, File, Kind,
     LocatedConstructor, LocatedDeclaration, LocatedElaboratedDeclaration, LocatedExpression,
-    LocatedKind, LocatedPattern, Pattern,
+    LocatedKind, LocatedPattern, Pattern, Types,
 };
 use crate::error_types::{ErrorReporter, Located};
 
@@ -1186,7 +1186,7 @@ impl<'a> UnnestCtx<'a> {
                     .cons
                     .get(cx)
                     .map(|(n, k)| (n.clone(), k.clone()))
-                    .unwrap_or_else(|| ("_".into(), Located::dummy(Kind::Type)));
+                    .unwrap_or_else(|| ("_".into(), Located::dummy(Kind::Typed(Types::Any))));
                 we = Located::new(
                     Exp::CAbs(
                         Explicitness::Explicit,

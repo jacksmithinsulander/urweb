@@ -26,9 +26,11 @@ use std::fmt::Write as _;
 use std::io::IsTerminal as _;
 use std::io::Write as _;
 
+use crate::cli_common::cli_diagnostic_text;
+use crate::compiler_tracing::TRACING_TARGET_COMPILER_JOB;
 use crate::diagnostics::{
-    format_diagnostic_payload_for_user, DiagnosticId, DiagnosticLocale, DiagnosticPayload,
-    DiagnosticSeverity,
+    diagnostic_id_as_u32, format_diagnostic_payload_for_user, DiagnosticId, DiagnosticLocale,
+    DiagnosticPayload, DiagnosticSeverity,
 };
 
 /// Minimum dash run width so banners never collapse to a tiny rule.
@@ -1175,6 +1177,8 @@ pub struct ErrorReporter {
     pub eprint: bool,
     /// Language for [`format_compile_error_for_terminal`] when `eprint` is true.
     pub diagnostic_locale: DiagnosticLocale,
+    /// Matches [`crate::settings::Settings::compilation_id`] for this job when set (batch compile or LSP snapshot).
+    pub compilation_id: String,
 }
 
 /// Default reporter prints each error to stderr as it is collected.
@@ -1184,6 +1188,7 @@ impl Default for ErrorReporter {
             errors: Vec::new(),
             eprint: true,
             diagnostic_locale: DiagnosticLocale::default(),
+            compilation_id: String::new(),
         }
     }
 }
@@ -1208,12 +1213,18 @@ impl ErrorReporter {
             errors: Vec::new(),
             eprint: true,
             diagnostic_locale,
+            compilation_id: String::new(),
         }
     }
 
     /// Build from merged compiler [`crate::settings::Settings`] (stderr echo on).
     pub fn from_settings(settings: &crate::settings::Settings) -> Self {
-        Self::new_with_locale(settings.diagnostic_locale)
+        Self {
+            errors: Vec::new(),
+            eprint: true,
+            diagnostic_locale: settings.diagnostic_locale,
+            compilation_id: settings.compilation_id.clone(),
+        }
     }
 
     /// Silent collection with explicit locale (language server analysis).
@@ -1222,6 +1233,7 @@ impl ErrorReporter {
             errors: Vec::new(),
             eprint: false,
             diagnostic_locale,
+            compilation_id: String::new(),
         }
     }
 
@@ -1230,17 +1242,30 @@ impl ErrorReporter {
         Self::new_silent_with_locale(DiagnosticLocale::default())
     }
 
-    /// Silent reporter using `settings.diagnostic_locale`.
+    /// Silent reporter using `settings.diagnostic_locale` and `settings.compilation_id`.
     pub fn from_settings_silent(settings: &crate::settings::Settings) -> Self {
-        Self::new_silent_with_locale(settings.diagnostic_locale)
+        Self {
+            errors: Vec::new(),
+            eprint: false,
+            diagnostic_locale: settings.diagnostic_locale,
+            compilation_id: settings.compilation_id.clone(),
+        }
     }
 
     /// Store `error` and optionally print it immediately.
     pub fn report(&mut self, error: CompileError) {
-        emit_diagnostic_tracing_event(&error); // Structured tracing at severity-matched level for `-vvvv` filtering.
+        emit_diagnostic_tracing_event(&error, &self.compilation_id, self.diagnostic_locale); // Catalog-backed tracing at severity-matched level for `-vvvv` filtering.
         if self.eprint {
             let rendered = format_compile_error_for_terminal(&error, self.diagnostic_locale); // Localized banner + body.
             let mut stderr_lock = std::io::stderr().lock(); // Avoid interleaving with other stderr users.
+            if !self.compilation_id.is_empty() {
+                let correlation_line = cli_diagnostic_text(
+                    DiagnosticId::CliCompilationJobCorrelationLine,
+                    vec![self.compilation_id.clone()],
+                    self.diagnostic_locale,
+                ); // Same catalog token as structured logs (`compilation_correlation_diagnostic_id`).
+                let _ = writeln!(stderr_lock, "{correlation_line}"); // Localized one-line job id via [`DiagnosticId::CliCompilationJobCorrelationLine`].
+            }
             let _ = writeln!(stderr_lock, "{rendered}"); // Primary diagnostic block.
             let _ = writeln!(stderr_lock); // Blank line before the next stderr message.
         }
@@ -1413,18 +1438,41 @@ fn compile_error_kind_label(error: &CompileError) -> &'static str {
     }
 }
 
+/// Primary [`DiagnosticId`] on `error` for structured log correlation (same catalog as user-visible text).
+fn compile_error_primary_diagnostic_id(error: &CompileError) -> DiagnosticId {
+    match error {
+        CompileError::Plain(payload)
+        | CompileError::AtSpan { payload, .. }
+        | CompileError::ParseError { payload, .. }
+        | CompileError::TypeError { payload, .. }
+        | CompileError::SqlError { payload, .. }
+        | CompileError::XmlError { payload, .. }
+        | CompileError::WarningAt { payload, .. } => payload.id, // Elaboration / parse catalog id.
+        CompileError::Io(_) => DiagnosticId::IoSomethingWrongReadingWriting, // I/O uses the generic read/write catalog entry.
+    }
+}
+
 /// Emit a [`tracing`] event at the level matching the payload's [`DiagnosticSeverity`].
 ///
 /// Called unconditionally from [`ErrorReporter::report`] so that structured logs mirror stderr
 /// output and `-vvv` / `RUST_LOG` filtering gates lower-severity diagnostics automatically.
-/// The event carries `kind` (category label) as a structured field; full rendering is left to
-/// the stderr path to avoid double rendering cost.
+/// Uses the same localized catalog body as [`CompileError::localized_body`] ([`TRACING_TARGET_COMPILER_JOB`]).
 ///
 /// # Arguments
 ///
 /// * `error` — The compile error that was just reported.
-fn emit_diagnostic_tracing_event(error: &CompileError) {
+/// * `compilation_id` — Job id from [`crate::settings::Settings::compilation_id`] when set; omit correlation fields when empty.
+/// * `locale` — Project language for [`CompileError::localized_body`].
+fn emit_diagnostic_tracing_event(
+    error: &CompileError,
+    compilation_id: &str,
+    locale: DiagnosticLocale,
+) {
     let kind = compile_error_kind_label(error); // Short stable label for the tracing `kind` field.
+    let catalog_message = error.localized_body(locale); // Same localized text as LSP / user channel.
+    let primary_catalog_id = diagnostic_id_as_u32(compile_error_primary_diagnostic_id(error)); // Payload catalog id.
+    let correlation_catalog_id =
+        diagnostic_id_as_u32(DiagnosticId::CliCompilationJobCorrelationLine); // Same id as stderr job line template.
     let severity = match error {
         CompileError::Plain(payload)
         | CompileError::AtSpan { payload, .. }
@@ -1435,12 +1483,113 @@ fn emit_diagnostic_tracing_event(error: &CompileError) {
         | CompileError::WarningAt { payload, .. } => payload.severity, // Severity from the catalog payload.
         CompileError::Io(_) => DiagnosticSeverity::Error, // I/O errors are always hard errors.
     };
+    let with_job_id = !compilation_id.is_empty(); // Only attach job correlation when this reporter has a minted id.
     match severity {
-        DiagnosticSeverity::Error => tracing::error!(kind, "diagnostic reported"), // Always visible.
-        DiagnosticSeverity::Warning => tracing::warn!(kind, "diagnostic reported"), // Always visible.
-        DiagnosticSeverity::Info => tracing::info!(kind, "diagnostic reported"), // Visible at -vv.
-        DiagnosticSeverity::Hint => tracing::info!(kind, "diagnostic reported"), // Visible at -vv.
-        DiagnosticSeverity::Debug => tracing::debug!(kind, "diagnostic reported"), // Visible at -vvv.
+        DiagnosticSeverity::Error => {
+            if with_job_id {
+                tracing::error!(
+                    target: TRACING_TARGET_COMPILER_JOB,
+                    kind,
+                    compilation_id = %compilation_id,
+                    compilation_correlation_diagnostic_id = correlation_catalog_id,
+                    catalog_diagnostic_id = primary_catalog_id,
+                    catalog_message = %catalog_message,
+                    "compiler_job_diagnostic"
+                ); // Always visible.
+            } else {
+                tracing::error!(
+                    target: TRACING_TARGET_COMPILER_JOB,
+                    kind,
+                    catalog_diagnostic_id = primary_catalog_id,
+                    catalog_message = %catalog_message,
+                    "compiler_job_diagnostic"
+                ); // Always visible.
+            }
+        }
+        DiagnosticSeverity::Warning => {
+            if with_job_id {
+                tracing::warn!(
+                    target: TRACING_TARGET_COMPILER_JOB,
+                    kind,
+                    compilation_id = %compilation_id,
+                    compilation_correlation_diagnostic_id = correlation_catalog_id,
+                    catalog_diagnostic_id = primary_catalog_id,
+                    catalog_message = %catalog_message,
+                    "compiler_job_diagnostic"
+                ); // Always visible.
+            } else {
+                tracing::warn!(
+                    target: TRACING_TARGET_COMPILER_JOB,
+                    kind,
+                    catalog_diagnostic_id = primary_catalog_id,
+                    catalog_message = %catalog_message,
+                    "compiler_job_diagnostic"
+                ); // Always visible.
+            }
+        }
+        DiagnosticSeverity::Info => {
+            if with_job_id {
+                tracing::info!(
+                    target: TRACING_TARGET_COMPILER_JOB,
+                    kind,
+                    compilation_id = %compilation_id,
+                    compilation_correlation_diagnostic_id = correlation_catalog_id,
+                    catalog_diagnostic_id = primary_catalog_id,
+                    catalog_message = %catalog_message,
+                    "compiler_job_diagnostic"
+                ); // Visible at -vv.
+            } else {
+                tracing::info!(
+                    target: TRACING_TARGET_COMPILER_JOB,
+                    kind,
+                    catalog_diagnostic_id = primary_catalog_id,
+                    catalog_message = %catalog_message,
+                    "compiler_job_diagnostic"
+                ); // Visible at -vv.
+            }
+        }
+        DiagnosticSeverity::Hint => {
+            if with_job_id {
+                tracing::info!(
+                    target: TRACING_TARGET_COMPILER_JOB,
+                    kind,
+                    compilation_id = %compilation_id,
+                    compilation_correlation_diagnostic_id = correlation_catalog_id,
+                    catalog_diagnostic_id = primary_catalog_id,
+                    catalog_message = %catalog_message,
+                    "compiler_job_diagnostic"
+                ); // Visible at -vv.
+            } else {
+                tracing::info!(
+                    target: TRACING_TARGET_COMPILER_JOB,
+                    kind,
+                    catalog_diagnostic_id = primary_catalog_id,
+                    catalog_message = %catalog_message,
+                    "compiler_job_diagnostic"
+                ); // Visible at -vv.
+            }
+        }
+        DiagnosticSeverity::Debug => {
+            if with_job_id {
+                tracing::debug!(
+                    target: TRACING_TARGET_COMPILER_JOB,
+                    kind,
+                    compilation_id = %compilation_id,
+                    compilation_correlation_diagnostic_id = correlation_catalog_id,
+                    catalog_diagnostic_id = primary_catalog_id,
+                    catalog_message = %catalog_message,
+                    "compiler_job_diagnostic"
+                ); // Visible at -vvv.
+            } else {
+                tracing::debug!(
+                    target: TRACING_TARGET_COMPILER_JOB,
+                    kind,
+                    catalog_diagnostic_id = primary_catalog_id,
+                    catalog_message = %catalog_message,
+                    "compiler_job_diagnostic"
+                ); // Visible at -vvv.
+            }
+        }
     }
 }
 

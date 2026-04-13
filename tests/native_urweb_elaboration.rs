@@ -1,7 +1,13 @@
 //! Fast checks for compiler-injected `UrwebNative` (`urweb_*`) with boot + native `dbms`.
 //! These assert the injected surface is present, opened, and curried with the expected arity.
 
-mod common;
+#[path = "common/tempdir.rs"]
+mod tempdir;
+#[path = "common/write_file.rs"]
+mod write_file;
+
+use tempdir::tempdir;
+use write_file::write_file;
 
 use std::path::PathBuf;
 use std::sync::OnceLock;
@@ -76,10 +82,10 @@ fn build_native_boot_snapshot(
         }
     };
 
-    let dir = common::tempdir("native boot snapshot tempdir");
+    let dir = tempdir("native boot snapshot tempdir");
     let root = dir.path();
     let urp_path = root.join("app.urp");
-    common::write_file(
+    write_file(
         &urp_path,
         backend.urp_body(),
         "write app.urp for native boot snapshot",
@@ -152,12 +158,12 @@ fn urweb_native_value_arity(
             }
         };
 
-    let mut arity = 0;
-    let mut current_type = value_type;
-    while let Constructor::TFun(_argument_type, result_type) = &current_type.node {
-        arity += 1;
-        current_type = result_type;
-    }
+    let arity = std::iter::successors(Some(value_type), |current_type| match &current_type.node {
+        Constructor::TFun(_argument_type, result_type) => Some(result_type),
+        _ => None,
+    })
+    .count()
+    .saturating_sub(1);
     Ok(arity)
 }
 

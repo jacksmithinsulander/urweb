@@ -761,6 +761,8 @@ enum LexMode {
 pub struct XmlAwareLexer<'a> {
     src: &'a [u8],
     pos: usize,
+    /// When false, `<foo>` is not treated as XML markup (Ur core profile user modules).
+    allow_xml_markup: bool,
     mode: LexMode,
     /// Stack of (return_mode, brace_depth) pushed by `{` in XML/XmlTag modes.
     brace_stack: Vec<(LexMode, usize)>,
@@ -777,10 +779,17 @@ pub struct XmlAwareLexer<'a> {
 }
 
 impl<'a> XmlAwareLexer<'a> {
+    /// Builds a lexer that allows XML literals (default Ur/Web behavior).
     pub fn new(src: &'a str) -> Self {
+        Self::with_xml_markup_policy(src, true)
+    }
+
+    /// Builds a lexer, optionally disabling XML tag modes for Ur core user modules.
+    pub fn with_xml_markup_policy(src: &'a str, allow_xml_markup: bool) -> Self {
         XmlAwareLexer {
             src: src.as_bytes(),
             pos: 0,
+            allow_xml_markup,
             mode: LexMode::Regular,
             brace_stack: Vec::new(),
             string_return: None,
@@ -1096,8 +1105,8 @@ impl<'a> XmlAwareLexer<'a> {
                 return Some(Ok((start, Token::Char(ch), self.pos)));
             }
 
-            // `<` — may be XML start or comparison operator
-            if b == b'<' {
+            // `<` — may be XML start or comparison operator (XML only when markup is enabled).
+            if b == b'<' && self.allow_xml_markup {
                 // Try `<xmlid/>` first (INITIAL XML self-closing)
                 let id_start = self.pos + 1;
                 let id_end = self.scan_xml_id(id_start);

@@ -17,8 +17,13 @@ use super::mi_parse::{
 /// Upper bound for GDB/MI driver loops; normal completion returns, breaks, or hits EOF earlier.
 const GDB_MI_DRIVER_LOOP_MAX_ROUNDS: u64 = u64::MAX;
 
-/// Result type for GDB/MI helpers: catalog-backed [`CompileError`] (same as compiler / LSP surfaces).
-type Result<T> = std::result::Result<T, CompileError>;
+/// Result type for GDB/MI helpers: boxed [`CompileError`] keeps `Result` small for Clippy.
+type Result<T> = std::result::Result<T, Box<CompileError>>;
+
+/// Wrap a catalog or I/O [`CompileError`] for the [`Result`] error channel used throughout this module.
+fn boxed(compile_error: CompileError) -> Box<CompileError> {
+    Box::new(compile_error) // share one allocation pattern across this module
+}
 
 fn debugger_io_error(context: &str) -> CompileError {
     CompileError::Io(io::Error::other(context.to_string()))
@@ -59,27 +64,27 @@ impl GdbSession {
             child.arg("--interpreter=mi3");
         }
         let mut child = child.spawn().map_err(|spawn_error| {
-            CompileError::catalog(
+            boxed(CompileError::catalog(
                 DiagnosticId::CliDebuggerSpawnMiBackendFailed,
                 vec![
                     exe.to_string(),
                     mi_mode.to_string(),
                     spawn_error.to_string(),
                 ],
-            )
+            ))
         })?;
         let stdin = child
             .stdin
             .take()
-            .ok_or_else(|| debugger_io_error("debugger child missing stdin pipe"))?;
+            .ok_or_else(|| boxed(debugger_io_error("debugger child missing stdin pipe")))?;
         let stdout = child
             .stdout
             .take()
-            .ok_or_else(|| debugger_io_error("debugger child missing stdout pipe"))?;
+            .ok_or_else(|| boxed(debugger_io_error("debugger child missing stdout pipe")))?;
         let stderr = child
             .stderr
             .take()
-            .ok_or_else(|| debugger_io_error("debugger child missing stderr pipe"))?;
+            .ok_or_else(|| boxed(debugger_io_error("debugger child missing stderr pipe")))?;
         thread::spawn(move || {
             let mut br = BufReader::new(stderr);
             let mut line = String::new();
@@ -137,7 +142,10 @@ impl GdbSession {
 
     fn read_line_raw(&mut self) -> Result<String> {
         let mut guard = self.lines.lock().map_err(|_| {
-            CompileError::catalog(DiagnosticId::CliDebuggerGdbLineQueueMutexPoisoned, vec![])
+            boxed(CompileError::catalog(
+                DiagnosticId::CliDebuggerGdbLineQueueMutexPoisoned,
+                vec![],
+            ))
         })?;
         for _ in 0..GDB_MI_DRIVER_LOOP_MAX_ROUNDS {
             match guard.pop_front() {
@@ -148,25 +156,25 @@ impl GdbSession {
                     return Ok(l);
                 }
                 Some(GdbLine::Eof) => {
-                    return Err(CompileError::catalog(
+                    return Err(boxed(CompileError::catalog(
                         DiagnosticId::CliDebuggerGdbStdoutClosed,
                         vec![],
-                    ));
+                    )));
                 }
                 None => {
                     guard = self.line_cv.wait(guard).map_err(|_| {
-                        CompileError::catalog(
+                        boxed(CompileError::catalog(
                             DiagnosticId::CliDebuggerGdbLineQueueMutexPoisoned,
                             vec![],
-                        )
+                        ))
                     })?;
                 }
             }
         }
-        Err(CompileError::catalog(
+        Err(boxed(CompileError::catalog(
             DiagnosticId::CliDebuggerGdbMiDriverLoopExhausted,
             vec![],
-        ))
+        )))
     }
 
     fn send_cmd(&mut self, cmd: &str) -> Result<u64> {
@@ -175,8 +183,10 @@ impl GdbSession {
         let full = format!("{t}{cmd}\n");
         self.stdin
             .write_all(full.as_bytes())
-            .map_err(CompileError::from)?;
-        self.stdin.flush().map_err(CompileError::from)?;
+            .map_err(|io_error| boxed(CompileError::from(io_error)))?;
+        self.stdin
+            .flush()
+            .map_err(|io_error| boxed(CompileError::from(io_error)))?;
         Ok(t)
     }
 
@@ -199,10 +209,10 @@ impl GdbSession {
                     payload: pl,
                 }) if tok == token => {
                     let msg = mi_get_str(pl, "msg").unwrap_or("GDB/MI error");
-                    return Err(CompileError::catalog(
+                    return Err(boxed(CompileError::catalog(
                         DiagnosticId::CliDebuggerGdbMiReported,
                         vec![msg.to_string()],
-                    ));
+                    )));
                 }
                 Some(MiRecord::Result {
                     token: tok,
@@ -221,10 +231,10 @@ impl GdbSession {
                 _ => {}
             }
         }
-        Err(CompileError::catalog(
+        Err(boxed(CompileError::catalog(
             DiagnosticId::CliDebuggerGdbMiDriverLoopExhausted,
             vec![],
-        ))
+        )))
     }
 
     /// `-exec-*` style command: wait for `token^running` then `*stopped,...`.
@@ -251,10 +261,10 @@ impl GdbSession {
                     payload: pl,
                 }) if tok == t => {
                     let msg = mi_get_str(pl, "msg").unwrap_or("GDB/MI error");
-                    return Err(CompileError::catalog(
+                    return Err(boxed(CompileError::catalog(
                         DiagnosticId::CliDebuggerGdbMiReported,
                         vec![msg.to_string()],
-                    ));
+                    )));
                 }
                 Some(MiRecord::ExecAsync {
                     class: "running", ..
@@ -270,10 +280,10 @@ impl GdbSession {
                 _ => {}
             }
         }
-        Err(CompileError::catalog(
+        Err(boxed(CompileError::catalog(
             DiagnosticId::CliDebuggerGdbMiDriverLoopExhausted,
             vec![],
-        ))
+        )))
     }
 
     pub fn file_exec_and_symbols(&mut self, program: &str) -> Result<()> {
@@ -455,10 +465,10 @@ impl GdbSession {
                     payload: pl,
                 }) if tok == t => {
                     let msg = mi_get_str(pl, "msg").unwrap_or("GDB/MI error");
-                    return Err(CompileError::catalog(
+                    return Err(boxed(CompileError::catalog(
                         DiagnosticId::CliDebuggerGdbMiReported,
                         vec![msg.to_string()],
-                    ));
+                    )));
                 }
                 Some(MiRecord::Result {
                     token: tok,
@@ -476,10 +486,10 @@ impl GdbSession {
                 _ => {}
             }
         }
-        Err(CompileError::catalog(
+        Err(boxed(CompileError::catalog(
             DiagnosticId::CliDebuggerGdbMiDriverLoopExhausted,
             vec![],
-        ))
+        )))
     }
 
     /// Evaluate an expression in the given thread/frame (watch / debug console).
@@ -499,10 +509,10 @@ impl GdbSession {
     /// Assign to a variable in the current stack frame (DAP `setVariable`).
     pub fn set_variable(&mut self, thread: u64, frame: u32, name: &str, value: &str) -> Result<()> {
         if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
-            return Err(CompileError::catalog(
+            return Err(boxed(CompileError::catalog(
                 DiagnosticId::CliDebuggerSetVariableNameNotSimpleCIdentifier,
                 vec![],
-            ));
+            )));
         }
         self.thread_select(thread)?;
         self.mi_simple(&format!("-stack-select-frame {frame}"))?;

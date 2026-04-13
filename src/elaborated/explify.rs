@@ -68,7 +68,7 @@ fn recovery_str(span: Span) -> expl::LocatedStructure {
 fn explify_kind(k: elab::LocatedKind, errors: &mut ErrorReporter) -> expl::LocatedKind {
     let span = k.span.clone();
     match k.node {
-        elab::Kind::Type => Located::new(expl::Kind::Type, span),
+        elab::Kind::Typed(_) => Located::new(expl::Kind::Type, span),
         elab::Kind::Arrow(k1, k2) => Located::new(
             expl::Kind::Arrow(
                 Box::new(explify_kind(*k1, errors)),

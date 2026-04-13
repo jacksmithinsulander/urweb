@@ -2819,14 +2819,17 @@ pub fn cjr_print(file: &crate::c_like_representation::File, settings: &Settings)
 
     // Build global forward declarations (prototypes) for all named functions
     let mut global_protos: Vec<String> = Vec::new();
+    let mut function_symbols: HashMap<usize, String> = HashMap::new();
     for d in &all_ds {
         match &d.node {
             Decl::Fun(fx, n, args, ran, _) => {
                 global_protos.push(p_proto(&full_env, fx, *n, args, ran));
+                function_symbols.insert(*n, format!("__uwn_{}_{}", ident(fx), n));
             }
             Decl::FunRec(vis) => {
                 for (fx, n, args, ran, _) in vis {
                     global_protos.push(p_proto(&full_env, fx, *n, args, ran));
+                    function_symbols.insert(*n, format!("__uwn_{}_{}", ident(fx), n));
                 }
             }
             _ => {}
@@ -2908,6 +2911,12 @@ pub fn cjr_print(file: &crate::c_like_representation::File, settings: &Settings)
         String::new()
     } else {
         global_initializers.join("\n")
+    };
+    let c_symbol_for = |id: usize| -> String {
+        function_symbols
+            .get(&id)
+            .cloned()
+            .unwrap_or_else(|| format!("__uwn__{id}"))
     };
 
     // Build output
@@ -3052,7 +3061,7 @@ pub fn cjr_print(file: &crate::c_like_representation::File, settings: &Settings)
         ));
     }
     if !db_name.is_empty() {
-        out.push_str(&format!("__uwn__{}(ctx, 0);\n", initialize_id));
+        out.push_str(&format!("{}(ctx, 0);\n", c_symbol_for(initialize_id)));
     }
     out.push_str("}\n\n");
 
@@ -3064,7 +3073,7 @@ pub fn cjr_print(file: &crate::c_like_representation::File, settings: &Settings)
         ));
     }
     if !db_name.is_empty() {
-        out.push_str(&format!("__uwn__{}(ctx, cli);\n", expunge_id));
+        out.push_str(&format!("{}(ctx, cli);\n", c_symbol_for(expunge_id)));
     }
     out.push_str("}\n\n");
 
@@ -3093,8 +3102,8 @@ pub fn cjr_print(file: &crate::c_like_representation::File, settings: &Settings)
     if let Some(on_err_n) = on_error_id {
         out.push_str(&format!(
             "static void uw_onError(uw_context ctx, char *msg) {{\n\
-             uw_write(ctx, __uwn__{}(ctx, msg, 0));\n}}\n\n",
-            on_err_n
+             uw_write(ctx, {}(ctx, msg, 0));\n}}\n\n",
+            c_symbol_for(on_err_n)
         ));
     }
 
