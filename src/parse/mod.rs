@@ -383,6 +383,14 @@ fn repair_misparsed_lambda_annotation_expression(expression: &mut crate::source:
                 }
             }
             Con::Proj(inner, _) => repair_misparsed_lambda_annotation_constructor(inner),
+            Con::Enum(arms) => {
+                // Walk each arm's argument constructors for annotation repair.
+                for (_, arg_cons) in arms.iter_mut() {
+                    for arg_con in arg_cons.iter_mut() {
+                        repair_misparsed_lambda_annotation_constructor(arg_con);
+                    }
+                }
+            }
             Con::Var(_, _) | Con::Name(_) | Con::Map | Con::Unit | Con::Wild(_) => {}
         }
     }
@@ -512,6 +520,14 @@ fn repair_misparsed_lambda_annotation_file(file: &mut File) {
                 }
             }
             Con::Proj(inner, _) => repair_misparsed_lambda_annotation_constructor_in_decl(inner),
+            Con::Enum(arms) => {
+                // Walk each arm's argument constructors for annotation repair.
+                for (_, arg_cons) in arms.iter_mut() {
+                    for arg_con in arg_cons.iter_mut() {
+                        repair_misparsed_lambda_annotation_constructor_in_decl(arg_con);
+                    }
+                }
+            }
             Con::Var(_, _) | Con::Name(_) | Con::Map | Con::Unit | Con::Wild(_) => {}
         }
     }
@@ -2556,6 +2572,56 @@ pub fn parse_urs(
                     _filename,
                     &preprocessed,
                 );
+                if let Err(detail) =
+                    sql_compat::repair_sql_placeholders_in_signature_items(&mut items)
+                {
+                    let label_span = Span {
+                        file: _filename.to_string(),
+                        ..Span::dummy()
+                    };
+                    errors.report(CompileError::parse_at_with_hint(
+                        label_span,
+                        DiagnosticPayload::new(
+                            DiagnosticId::ParseUrsSyntaxFailed,
+                            vec![
+                                _filename.to_string(),
+                                format!(
+                                    "failed to repair SQL placeholders in signature: {:?}",
+                                    detail.args
+                                ),
+                            ],
+                        ),
+                        DiagnosticId::HintParseUrsSyntax,
+                        vec![],
+                    ));
+                    return None;
+                }
+                let source_lines: Vec<&str> = preprocessed.lines().collect();
+                if let Err(detail) = sql_compat::repair_table_constraints_in_signature_items(
+                    &source_lines,
+                    &mut items,
+                ) {
+                    let label_span = Span {
+                        file: _filename.to_string(),
+                        ..Span::dummy()
+                    };
+                    errors.report(CompileError::parse_at_with_hint(
+                        label_span,
+                        DiagnosticPayload::new(
+                            DiagnosticId::ParseUrsSyntaxFailed,
+                            vec![
+                                _filename.to_string(),
+                                format!(
+                                    "failed to repair table constraints in signature: {:?}",
+                                    detail.args
+                                ),
+                            ],
+                        ),
+                        DiagnosticId::HintParseUrsSyntax,
+                        vec![],
+                    ));
+                    return None;
+                }
                 Some(items)
             }
             Err(parse_error) => {
@@ -3990,6 +4056,87 @@ con folder = K ==> fn r :: {K} =>
                     if module_path == &vec!["Basis".to_string()] && name == "no_constraint"
             ),
             "expected absent non-PK constraints to default to Basis.no_constraint, got {:?}",
+            constraint_expression
+        );
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(generated_parser)]
+    fn parse_signature_table_defaults_to_basis_no_constraint_values() -> anyhow::Result<()> {
+        let source_text = "signature S = sig\n    table t : {Id : int, Name : string}\nend\n";
+        let mut errors = ErrorReporter::new_silent();
+        let parsed = parse_ur(
+            "signature_table_defaults.ur",
+            source_text,
+            &mut errors,
+            UrParseContext::default(),
+        )
+        .with_context(|| "signature table declaration should parse")?;
+        assert!(!errors.has_errors(), "unexpected parse errors");
+
+        let crate::source::Decl::Sgn(_, signature) = &parsed[0].node else {
+            panic!("expected signature declaration, got {:?}", parsed[0].node);
+        };
+        let crate::source::Sgn::Const(items) = &signature.node else {
+            panic!("expected constant signature body, got {:?}", signature.node);
+        };
+        let crate::source::SgnItem::Table(_, _, primary_key_expression, constraint_expression) =
+            &items[0].node
+        else {
+            panic!("expected table signature item, got {:?}", items[0].node);
+        };
+        assert!(
+            matches!(
+                &primary_key_expression.node,
+                crate::source::Exp::Var(module_path, name, crate::source::Inference::Infer)
+                    if module_path == &vec!["Basis".to_string()] && name == "no_primary_key"
+            ),
+            "expected plain signature tables to default to Basis.no_primary_key, got {:?}",
+            primary_key_expression
+        );
+        assert!(
+            matches!(
+                &constraint_expression.node,
+                crate::source::Exp::Var(module_path, name, crate::source::Inference::Infer)
+                    if module_path == &vec!["Basis".to_string()] && name == "no_constraint"
+            ),
+            "expected plain signature tables to default to Basis.no_constraint, got {:?}",
+            constraint_expression
+        );
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(generated_parser)]
+    fn parse_urs_table_defaults_to_basis_no_constraint_values() -> anyhow::Result<()> {
+        let source_text = "table t : {Id : int, Name : string}\n";
+        let mut errors = ErrorReporter::new_silent();
+        let parsed = parse_urs("signature_table_defaults.urs", source_text, &mut errors)
+            .with_context(|| "standalone signature table declaration should parse")?;
+        assert!(!errors.has_errors(), "unexpected parse errors");
+
+        let crate::source::SgnItem::Table(_, _, primary_key_expression, constraint_expression) =
+            &parsed[0].node
+        else {
+            panic!("expected table signature item, got {:?}", parsed[0].node);
+        };
+        assert!(
+            matches!(
+                &primary_key_expression.node,
+                crate::source::Exp::Var(module_path, name, crate::source::Inference::Infer)
+                    if module_path == &vec!["Basis".to_string()] && name == "no_primary_key"
+            ),
+            "expected plain .urs tables to default to Basis.no_primary_key, got {:?}",
+            primary_key_expression
+        );
+        assert!(
+            matches!(
+                &constraint_expression.node,
+                crate::source::Exp::Var(module_path, name, crate::source::Inference::Infer)
+                    if module_path == &vec!["Basis".to_string()] && name == "no_constraint"
+            ),
+            "expected plain .urs tables to default to Basis.no_constraint, got {:?}",
             constraint_expression
         );
         Ok(())

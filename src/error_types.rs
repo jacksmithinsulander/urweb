@@ -29,8 +29,9 @@ use std::io::Write as _;
 use crate::cli_common::cli_diagnostic_text;
 use crate::compiler_tracing::TRACING_TARGET_COMPILER_JOB;
 use crate::diagnostics::{
-    diagnostic_id_as_u32, format_diagnostic_payload_for_user, DiagnosticId, DiagnosticLocale,
-    DiagnosticPayload, DiagnosticSeverity,
+    diagnostic_id_as_u32, format_diagnostic_payload_for_user,
+    format_diagnostic_payload_for_user_colored, DiagnosticId, DiagnosticLocale, DiagnosticPayload,
+    DiagnosticSeverity,
 };
 
 /// Minimum dash run width so banners never collapse to a tiny rule.
@@ -538,11 +539,12 @@ fn format_compile_error_for_terminal_inner(
     let mut out = String::new();
     let write_result = match error {
         CompileError::Plain(_) => {
-            let localized = error.localized_body(locale);
+            // Use the colored body so any diff_hints in the payload produce highlighted output.
+            let localized = error.localized_body_colored(locale);
             write_plain_diagnostic_colored_to_string(&mut out, "ERROR", localized.as_str(), tone)
         }
         CompileError::AtSpan { span, .. } => {
-            let localized = error.localized_body(locale);
+            let localized = error.localized_body_colored(locale); // colored body with diff highlights
             write_located_diagnostic_colored_to_string(
                 &mut out,
                 "ERROR",
@@ -552,7 +554,7 @@ fn format_compile_error_for_terminal_inner(
             )
         }
         CompileError::ParseError { span, .. } => {
-            let localized = error.localized_body(locale);
+            let localized = error.localized_body_colored(locale); // colored body with diff highlights
             write_located_diagnostic_colored_to_string(
                 &mut out,
                 "PARSE",
@@ -562,7 +564,7 @@ fn format_compile_error_for_terminal_inner(
             )
         }
         CompileError::TypeError { span, .. } => {
-            let localized = error.localized_body(locale);
+            let localized = error.localized_body_colored(locale); // colored body with diff highlights
             write_located_diagnostic_colored_to_string(
                 &mut out,
                 "TYPE",
@@ -572,7 +574,7 @@ fn format_compile_error_for_terminal_inner(
             )
         }
         CompileError::SqlError { span, .. } => {
-            let localized = error.localized_body(locale);
+            let localized = error.localized_body_colored(locale); // colored body with diff highlights
             write_located_diagnostic_colored_to_string(
                 &mut out,
                 "SQL",
@@ -582,7 +584,7 @@ fn format_compile_error_for_terminal_inner(
             )
         }
         CompileError::XmlError { span, .. } => {
-            let localized = error.localized_body(locale);
+            let localized = error.localized_body_colored(locale); // colored body with diff highlights
             write_located_diagnostic_colored_to_string(
                 &mut out,
                 "XML",
@@ -592,7 +594,7 @@ fn format_compile_error_for_terminal_inner(
             )
         }
         CompileError::WarningAt { span, .. } => {
-            let localized = error.localized_body(locale);
+            let localized = error.localized_body_colored(locale); // colored body with diff highlights
             write_located_diagnostic_colored_to_string(
                 &mut out,
                 "WARNING",
@@ -917,6 +919,39 @@ impl CompileError {
                     locale,
                 );
                 format!("{intro}\n\n    {io_error}")
+            }
+        }
+    }
+
+    /// Render the body of this error with ANSI diff highlights on type-pair args.
+    ///
+    /// Used exclusively on the terminal-color path inside
+    /// [`format_compile_error_for_terminal_inner`].  Payloads that carry no
+    /// [`crate::diagnostics::payload::DiagnosticPayload::diff_hints`] render identically to
+    /// [`localized_body`], so this method is safe to call for every error variant.
+    ///
+    /// # Arguments
+    ///
+    /// * `locale` — Active project language.
+    ///
+    /// # Returns
+    ///
+    /// Rendered body string with embedded ANSI escape sequences where diff hints are present.
+    pub fn localized_body_colored(&self, locale: DiagnosticLocale) -> String {
+        match self {
+            CompileError::Plain(payload)
+            | CompileError::AtSpan { payload, .. }
+            | CompileError::ParseError { payload, .. }
+            | CompileError::TypeError { payload, .. }
+            | CompileError::SqlError { payload, .. }
+            | CompileError::XmlError { payload, .. }
+            | CompileError::WarningAt { payload, .. } => {
+                // Use the colored renderer so diff_hints are applied where present.
+                format_diagnostic_payload_for_user_colored(payload, locale)
+            }
+            CompileError::Io(_) => {
+                // I/O errors carry no type pairs; fall back to the plain renderer.
+                self.localized_body(locale)
             }
         }
     }

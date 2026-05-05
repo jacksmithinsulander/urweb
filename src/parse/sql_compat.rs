@@ -4,8 +4,9 @@ use crate::parse::grammar_helpers::{
     desugar_sql_delete_expression, desugar_sql_insert_expression, desugar_sql_select_query,
     desugar_sql_update_expression, sql_default_table_field_expression,
     sql_dynamic_field_expression, sql_field_expression, sql_join_expression,
-    sql_select_dynamic_fields_item, sql_select_expression_item, sql_select_single_field_item,
-    sql_table_reference_with_alias, sql_true_expression, SqlJoinKind, SqlSelectSpec,
+    sql_row_field_expression, sql_select_dynamic_fields_item, sql_select_expression_item,
+    sql_select_single_field_item, sql_table_reference_with_alias, sql_true_expression, SqlJoinKind,
+    SqlSelectSpec,
 };
 use crate::primitives::{Prim, StringMode};
 use crate::source::{Con, Decl, Exp, File, Inference, Kind, LocCon, LocExp, Pat};
@@ -608,7 +609,7 @@ fn parse_single_constraint_expression(
         return build_unique_constraint_expression(&names, span);
     }
     if let Some(rest) = trimmed.strip_prefix("CHECK ") {
-        let parsed_check_expression = parse_sql_value(rest, span).map_err(|inner| {
+        let parsed_check_expression = parse_check_sql_value(rest, span).map_err(|inner| {
             DiagnosticPayload::new(
                 DiagnosticId::SqlCompatUnsupportedPlaceholder,
                 vec![format!(
@@ -769,7 +770,11 @@ fn repair_table_constraints_in_structure(
         crate::source::Str::Proj(inner, _) => {
             repair_table_constraints_in_structure(source_lines, inner)
         }
-        crate::source::Str::Fun(_, _, _, body) => {
+        crate::source::Str::Fun(_, argument_signature, result_signature, body) => {
+            repair_table_constraints_in_signature(source_lines, argument_signature)?;
+            if let Some(result_signature) = result_signature {
+                repair_table_constraints_in_signature(source_lines, result_signature)?;
+            }
             repair_table_constraints_in_structure(source_lines, body)
         }
         crate::source::Str::App(left, right) => {
@@ -778,6 +783,66 @@ fn repair_table_constraints_in_structure(
         }
         crate::source::Str::Var(_) => Ok(()),
     }
+}
+
+fn repair_table_constraints_in_signature(
+    source_lines: &[&str],
+    signature: &mut crate::source::LocSgn,
+) -> Result<(), DiagnosticPayload> {
+    match &mut signature.node {
+        crate::source::Sgn::Const(items) => {
+            repair_table_constraints_in_signature_items(source_lines, items)
+        }
+        crate::source::Sgn::Var(_) | crate::source::Sgn::Proj(_, _, _) => Ok(()),
+        crate::source::Sgn::Fun(_, argument_signature, result_signature) => {
+            repair_table_constraints_in_signature(source_lines, argument_signature)?;
+            repair_table_constraints_in_signature(source_lines, result_signature)
+        }
+        crate::source::Sgn::Where(inner_signature, _, _, _) => {
+            repair_table_constraints_in_signature(source_lines, inner_signature)
+        }
+    }
+}
+
+pub fn repair_table_constraints_in_signature_items(
+    source_lines: &[&str],
+    items: &mut [crate::source::LocSgnItem],
+) -> Result<(), DiagnosticPayload> {
+    for item in items {
+        match &mut item.node {
+            crate::source::SgnItem::Table(_, _, primary_key_expression, constraint_expression) => {
+                let first_constraint_line = item.span.last.line as usize;
+                let collected_lines: Vec<&str> = source_lines
+                    .iter()
+                    .skip(first_constraint_line)
+                    .take_while(|line| is_table_constraint_line(line.trim_start()))
+                    .copied()
+                    .collect();
+                let (parsed_primary_key, parsed_constraints) =
+                    parse_table_constraint_lines(&collected_lines, &item.span)?;
+                *primary_key_expression = parsed_primary_key;
+                *constraint_expression = parsed_constraints;
+            }
+            crate::source::SgnItem::Str(_, nested_signature)
+            | crate::source::SgnItem::Sgn(_, nested_signature)
+            | crate::source::SgnItem::Include(nested_signature) => {
+                repair_table_constraints_in_signature(source_lines, nested_signature)?;
+            }
+            crate::source::SgnItem::Functor(_, _, argument_signature, result_signature) => {
+                repair_table_constraints_in_signature(source_lines, argument_signature)?;
+                repair_table_constraints_in_signature(source_lines, result_signature)?;
+            }
+            crate::source::SgnItem::ConAbs(_, _)
+            | crate::source::SgnItem::Con(_, _, _)
+            | crate::source::SgnItem::Datatype(_)
+            | crate::source::SgnItem::DatatypeImp(_, _, _)
+            | crate::source::SgnItem::Val(_, _)
+            | crate::source::SgnItem::Constraint(_, _)
+            | crate::source::SgnItem::ClassAbs(_, _)
+            | crate::source::SgnItem::Class(_, _, _) => {}
+        }
+    }
+    Ok(())
 }
 
 pub fn repair_table_constraints_in_file(
@@ -802,8 +867,20 @@ pub fn repair_table_constraints_in_file(
             Decl::Export(structure_expression) => {
                 repair_table_constraints_in_structure(source_lines, structure_expression)?
             }
-            Decl::Str(_, _, _, structure_expression, _) | Decl::OpenStr(structure_expression) => {
+            Decl::Str(_, signature, _, structure_expression, _) => {
+                if let Some(signature) = signature {
+                    repair_table_constraints_in_signature(source_lines, signature)?;
+                }
                 repair_table_constraints_in_structure(source_lines, structure_expression)?
+            }
+            Decl::OpenStr(structure_expression) => {
+                repair_table_constraints_in_structure(source_lines, structure_expression)?
+            }
+            Decl::Sgn(_, signature) => {
+                repair_table_constraints_in_signature(source_lines, signature)?
+            }
+            Decl::FfiStr(_, signature, _) => {
+                repair_table_constraints_in_signature(source_lines, signature)?
             }
             Decl::Val(_, _)
             | Decl::ValRec(_)
@@ -812,8 +889,6 @@ pub fn repair_table_constraints_in_file(
             | Decl::Con(_, _, _)
             | Decl::Datatype(_)
             | Decl::DatatypeImp(_, _, _)
-            | Decl::Sgn(_, _)
-            | Decl::FfiStr(_, _, _)
             | Decl::Open(_, _)
             | Decl::Constraint(_, _)
             | Decl::OpenConstraints(_, _)
@@ -968,11 +1043,25 @@ fn split_top_level_commas(source_text: &str) -> Vec<String> {
     parts
 }
 
+type BareSqlIdentifierParser = fn(String, &Span) -> LocExp;
+
 fn parse_sql_value(source_text: &str, span: &Span) -> Result<LocExp, DiagnosticPayload> {
+    parse_sql_value_with_default(source_text, span, sql_default_table_field_expression)
+}
+
+fn parse_check_sql_value(source_text: &str, span: &Span) -> Result<LocExp, DiagnosticPayload> {
+    parse_sql_value_with_default(source_text, span, sql_row_field_expression)
+}
+
+fn parse_sql_value_with_default(
+    source_text: &str,
+    span: &Span,
+    bare_identifier_parser: BareSqlIdentifierParser,
+) -> Result<LocExp, DiagnosticPayload> {
     let trimmed = trim_wrapping_parens(source_text);
     if let Some((left, right)) = split_top_level(trimmed, "OR") {
-        let left_expression = parse_sql_value(&left, span)?;
-        let right_expression = parse_sql_value(&right, span)?;
+        let left_expression = parse_sql_value_with_default(&left, span, bare_identifier_parser)?;
+        let right_expression = parse_sql_value_with_default(&right, span, bare_identifier_parser)?;
         return Ok(Located::new(
             crate::parse::grammar_helpers::sql_binary_expression(
                 "or",
@@ -985,8 +1074,8 @@ fn parse_sql_value(source_text: &str, span: &Span) -> Result<LocExp, DiagnosticP
         ));
     }
     if let Some((left, right)) = split_top_level(trimmed, "AND") {
-        let left_expression = parse_sql_value(&left, span)?;
-        let right_expression = parse_sql_value(&right, span)?;
+        let left_expression = parse_sql_value_with_default(&left, span, bare_identifier_parser)?;
+        let right_expression = parse_sql_value_with_default(&right, span, bare_identifier_parser)?;
         return Ok(Located::new(
             crate::parse::grammar_helpers::sql_binary_expression(
                 "and",
@@ -999,8 +1088,8 @@ fn parse_sql_value(source_text: &str, span: &Span) -> Result<LocExp, DiagnosticP
         ));
     }
     if let Some((left, right)) = split_top_level(trimmed, "<>") {
-        let left_expression = parse_sql_value(&left, span)?;
-        let right_expression = parse_sql_value(&right, span)?;
+        let left_expression = parse_sql_value_with_default(&left, span, bare_identifier_parser)?;
+        let right_expression = parse_sql_value_with_default(&right, span, bare_identifier_parser)?;
         return Ok(crate::parse::grammar_helpers::sql_binary_expression(
             "ne",
             left_expression,
@@ -1009,8 +1098,8 @@ fn parse_sql_value(source_text: &str, span: &Span) -> Result<LocExp, DiagnosticP
         ));
     }
     if let Some((left, right)) = split_top_level(trimmed, ">=") {
-        let left_expression = parse_sql_value(&left, span)?;
-        let right_expression = parse_sql_value(&right, span)?;
+        let left_expression = parse_sql_value_with_default(&left, span, bare_identifier_parser)?;
+        let right_expression = parse_sql_value_with_default(&right, span, bare_identifier_parser)?;
         return Ok(crate::parse::grammar_helpers::sql_binary_expression(
             "ge",
             left_expression,
@@ -1019,8 +1108,8 @@ fn parse_sql_value(source_text: &str, span: &Span) -> Result<LocExp, DiagnosticP
         ));
     }
     if let Some((left, right)) = split_top_level(trimmed, "=") {
-        let left_expression = parse_sql_value(&left, span)?;
-        let right_expression = parse_sql_value(&right, span)?;
+        let left_expression = parse_sql_value_with_default(&left, span, bare_identifier_parser)?;
+        let right_expression = parse_sql_value_with_default(&right, span, bare_identifier_parser)?;
         return Ok(crate::parse::grammar_helpers::sql_binary_expression(
             "eq",
             left_expression,
@@ -1029,8 +1118,8 @@ fn parse_sql_value(source_text: &str, span: &Span) -> Result<LocExp, DiagnosticP
         ));
     }
     if let Some((left, right)) = split_top_level(trimmed, "<=") {
-        let left_expression = parse_sql_value(&left, span)?;
-        let right_expression = parse_sql_value(&right, span)?;
+        let left_expression = parse_sql_value_with_default(&left, span, bare_identifier_parser)?;
+        let right_expression = parse_sql_value_with_default(&right, span, bare_identifier_parser)?;
         return Ok(crate::parse::grammar_helpers::sql_binary_expression(
             "le",
             left_expression,
@@ -1039,8 +1128,8 @@ fn parse_sql_value(source_text: &str, span: &Span) -> Result<LocExp, DiagnosticP
         ));
     }
     if let Some((left, right)) = split_top_level(trimmed, ">") {
-        let left_expression = parse_sql_value(&left, span)?;
-        let right_expression = parse_sql_value(&right, span)?;
+        let left_expression = parse_sql_value_with_default(&left, span, bare_identifier_parser)?;
+        let right_expression = parse_sql_value_with_default(&right, span, bare_identifier_parser)?;
         return Ok(crate::parse::grammar_helpers::sql_binary_expression(
             "gt",
             left_expression,
@@ -1049,8 +1138,8 @@ fn parse_sql_value(source_text: &str, span: &Span) -> Result<LocExp, DiagnosticP
         ));
     }
     if let Some((left, right)) = split_top_level(trimmed, "<") {
-        let left_expression = parse_sql_value(&left, span)?;
-        let right_expression = parse_sql_value(&right, span)?;
+        let left_expression = parse_sql_value_with_default(&left, span, bare_identifier_parser)?;
+        let right_expression = parse_sql_value_with_default(&right, span, bare_identifier_parser)?;
         return Ok(crate::parse::grammar_helpers::sql_binary_expression(
             "lt",
             left_expression,
@@ -1059,7 +1148,8 @@ fn parse_sql_value(source_text: &str, span: &Span) -> Result<LocExp, DiagnosticP
         ));
     }
     if let Some(prefix) = trimmed.strip_suffix("IS NULL") {
-        let value_expression = parse_sql_value(prefix.trim(), span)?;
+        let value_expression =
+            parse_sql_value_with_default(prefix.trim(), span, bare_identifier_parser)?;
         return Ok(crate::parse::grammar_helpers::sql_is_null_expression(
             value_expression,
             span,
@@ -1139,10 +1229,7 @@ fn parse_sql_value(source_text: &str, span: &Span) -> Result<LocExp, DiagnosticP
             .map(|first_char| first_char.is_ascii_alphabetic())
             .unwrap_or(false)
         {
-            return Ok(sql_default_table_field_expression(
-                trimmed.to_string(),
-                span,
-            ));
+            return Ok(bare_identifier_parser(trimmed.to_string(), span));
         }
     }
     if let Ok(expression) = parse_expression_fragment(trimmed) {
@@ -1480,13 +1567,18 @@ pub fn repair_sql_placeholders_in_file(file: &mut File) -> Result<(), Diagnostic
                 repair_expression(second_expression)?;
             }
             Decl::Export(structure_expression) => repair_structure(structure_expression)?,
-            Decl::Str(_, _, _, structure_expression, _) => repair_structure(structure_expression)?,
+            Decl::Str(_, signature, _, structure_expression, _) => {
+                if let Some(signature) = signature {
+                    repair_signature(signature)?;
+                }
+                repair_structure(structure_expression)?
+            }
             Decl::OpenStr(structure_expression) => repair_structure(structure_expression)?,
+            Decl::Sgn(_, signature) => repair_signature(signature)?,
+            Decl::FfiStr(_, signature, _) => repair_signature(signature)?,
             Decl::Con(_, _, _)
             | Decl::Datatype(_)
             | Decl::DatatypeImp(_, _, _)
-            | Decl::Sgn(_, _)
-            | Decl::FfiStr(_, _, _)
             | Decl::Open(_, _)
             | Decl::Constraint(_, _)
             | Decl::OpenConstraints(_, _)
@@ -1507,11 +1599,66 @@ fn repair_structure(
     match &mut structure_expression.node {
         crate::source::Str::Const(declarations) => repair_sql_placeholders_in_file(declarations),
         crate::source::Str::Proj(inner, _) => repair_structure(inner),
-        crate::source::Str::Fun(_, _, _, body) => repair_structure(body),
+        crate::source::Str::Fun(_, argument_signature, result_signature, body) => {
+            repair_signature(argument_signature)?;
+            if let Some(result_signature) = result_signature {
+                repair_signature(result_signature)?;
+            }
+            repair_structure(body)
+        }
         crate::source::Str::App(left, right) => {
             repair_structure(left)?;
             repair_structure(right)
         }
         crate::source::Str::Var(_) => Ok(()),
     }
+}
+
+fn repair_signature(signature: &mut crate::source::LocSgn) -> Result<(), DiagnosticPayload> {
+    match &mut signature.node {
+        crate::source::Sgn::Const(items) => repair_signature_items(items),
+        crate::source::Sgn::Var(_) | crate::source::Sgn::Proj(_, _, _) => Ok(()),
+        crate::source::Sgn::Fun(_, argument_signature, result_signature) => {
+            repair_signature(argument_signature)?;
+            repair_signature(result_signature)
+        }
+        crate::source::Sgn::Where(inner_signature, _, _, _) => repair_signature(inner_signature),
+    }
+}
+
+pub fn repair_signature_items(
+    items: &mut [crate::source::LocSgnItem],
+) -> Result<(), DiagnosticPayload> {
+    for item in items {
+        match &mut item.node {
+            crate::source::SgnItem::Table(_, _, primary_key_expression, constraint_expression) => {
+                repair_expression(primary_key_expression)?;
+                repair_expression(constraint_expression)?;
+            }
+            crate::source::SgnItem::Str(_, nested_signature)
+            | crate::source::SgnItem::Sgn(_, nested_signature)
+            | crate::source::SgnItem::Include(nested_signature) => {
+                repair_signature(nested_signature)?;
+            }
+            crate::source::SgnItem::Functor(_, _, argument_signature, result_signature) => {
+                repair_signature(argument_signature)?;
+                repair_signature(result_signature)?;
+            }
+            crate::source::SgnItem::ConAbs(_, _)
+            | crate::source::SgnItem::Con(_, _, _)
+            | crate::source::SgnItem::Datatype(_)
+            | crate::source::SgnItem::DatatypeImp(_, _, _)
+            | crate::source::SgnItem::Val(_, _)
+            | crate::source::SgnItem::Constraint(_, _)
+            | crate::source::SgnItem::ClassAbs(_, _)
+            | crate::source::SgnItem::Class(_, _, _) => {}
+        }
+    }
+    Ok(())
+}
+
+pub fn repair_sql_placeholders_in_signature_items(
+    items: &mut [crate::source::LocSgnItem],
+) -> Result<(), DiagnosticPayload> {
+    repair_signature_items(items)
 }

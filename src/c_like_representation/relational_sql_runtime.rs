@@ -90,11 +90,43 @@ fn gen_sqlite_c_code(
         out.push_str("sqlite3_stmt *stmt;\n");
         out.push_str("int res;\n");
         for (tbl, _) in tables {
+            let query = format!(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = '{tbl}'"
+            );
             out.push_str(&format!(
-                "res = sqlite3_prepare_v2(conn->conn, \"SELECT COUNT(*) FROM {tbl}\", -1, &stmt, NULL);\n",
+                "{{ int _prepare_rc;\n\
+do {{ _prepare_rc = sqlite3_prepare_v2(conn->conn, \"{query}\", -1, &stmt, NULL); if (_prepare_rc == SQLITE_BUSY) sleep(1); }} while (_prepare_rc == SQLITE_BUSY);\n\
+if (_prepare_rc != SQLITE_OK) {{\n\
+char _sqlerrmsg[1024];\n\
+strncpy(_sqlerrmsg, sqlite3_errmsg(conn->conn), sizeof(_sqlerrmsg)-1);\n\
+_sqlerrmsg[sizeof(_sqlerrmsg)-1] = 0;\n\
+sqlite3_close(conn->conn);\n\
+uw_error(ctx, FATAL, \"Query preparation failed (%s):<br />{query}\", _sqlerrmsg); }}\n\
+}}\n",
             ));
             out.push_str(&format!(
-                "if (res != SQLITE_OK) uw_error(ctx, FATAL, \"Table {tbl} does not exist in the database.\");\n",
+                "while ((res = sqlite3_step(stmt)) == SQLITE_BUSY)\n\
+sleep(1);\n\
+if (res == SQLITE_DONE) {{\n\
+sqlite3_finalize(stmt);\n\
+sqlite3_close(conn->conn);\n\
+uw_error(ctx, FATAL, \"No row returned:<br />{query}\");\n\
+}}\n\
+if (res != SQLITE_ROW) {{\n\
+sqlite3_finalize(stmt);\n\
+sqlite3_close(conn->conn);\n\
+uw_error(ctx, FATAL, \"Error getting row:<br />{query}\");\n\
+}}\n\
+if (sqlite3_column_count(stmt) != 1) {{\n\
+sqlite3_finalize(stmt);\n\
+sqlite3_close(conn->conn);\n\
+uw_error(ctx, FATAL, \"Bad column count:<br />{query}\");\n\
+}}\n\
+if (sqlite3_column_int(stmt, 0) != 1) {{\n\
+sqlite3_finalize(stmt);\n\
+sqlite3_close(conn->conn);\n\
+uw_error(ctx, FATAL, \"Table '{tbl}' does not exist.\");\n\
+}}\n",
             ));
             out.push_str("sqlite3_finalize(stmt);\n");
         }

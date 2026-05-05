@@ -12,6 +12,46 @@ use crate::elaborated as elab;
 use crate::error_types::{ErrorReporter, Located, Span};
 use crate::explicit as expl;
 use crate::primitives::Prim;
+use std::cell::RefCell;
+
+thread_local! {
+    static EXPLIFY_DEBUG_CONTEXT: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+}
+
+struct ExplifyDebugContextGuard;
+
+impl Drop for ExplifyDebugContextGuard {
+    fn drop(&mut self) {
+        EXPLIFY_DEBUG_CONTEXT.with(|context| {
+            let _ = context.borrow_mut().pop();
+        });
+    }
+}
+
+fn push_explify_debug_context(label: String) -> Option<ExplifyDebugContextGuard> {
+    if std::env::var("URWEB_DEBUG_EXPLIFY_ERROR_CONTEXT")
+        .ok()
+        .as_deref()
+        != Some("1")
+    {
+        return None;
+    }
+    EXPLIFY_DEBUG_CONTEXT.with(|context| {
+        context.borrow_mut().push(label);
+    });
+    Some(ExplifyDebugContextGuard)
+}
+
+fn format_explify_debug_context() -> String {
+    EXPLIFY_DEBUG_CONTEXT.with(|context| {
+        let labels = context.borrow();
+        if labels.is_empty() {
+            "<root>".to_string()
+        } else {
+            labels.join(" -> ")
+        }
+    })
+}
 
 // ---------------------------------------------------------------------------
 // Public entry point
@@ -68,7 +108,17 @@ fn recovery_str(span: Span) -> expl::LocatedStructure {
 fn explify_kind(k: elab::LocatedKind, errors: &mut ErrorReporter) -> expl::LocatedKind {
     let span = k.span.clone();
     match k.node {
-        elab::Kind::Typed(_) => Located::new(expl::Kind::Type, span),
+        // Error/poison classifier: report before recovering so the caller learns about it.
+        elab::Kind::Typed(elab::Types::Error(..)) => {
+            errors.report_type_at_with_hint(
+                span.clone(),
+                DiagnosticPayload::new(DiagnosticId::ExplifyKindErrorPlaceholder, vec![]),
+                DiagnosticId::HintExplifyKindErrorPlaceholder,
+                vec![],
+            );
+            recovery_kind(span)
+        }
+        elab::Kind::Star | elab::Kind::Typed(_) => Located::new(expl::Kind::Type, span), // both are kind Type
         elab::Kind::Arrow(k1, k2) => Located::new(
             expl::Kind::Arrow(
                 Box::new(explify_kind(*k1, errors)),
@@ -85,15 +135,6 @@ fn explify_kind(k: elab::LocatedKind, errors: &mut ErrorReporter) -> expl::Locat
             expl::Kind::Tuple(ks.into_iter().map(|k| explify_kind(k, errors)).collect()),
             span,
         ),
-        elab::Kind::Error => {
-            errors.report_type_at_with_hint(
-                span.clone(),
-                DiagnosticPayload::new(DiagnosticId::ExplifyKindErrorPlaceholder, vec![]),
-                DiagnosticId::HintExplifyKindErrorPlaceholder,
-                vec![],
-            );
-            recovery_kind(span)
-        }
         elab::Kind::Unif(unif_span, _, unif_ref) => {
             let guard = crate::compiler_diagnostics::lock_for_compile(
                 unif_ref.as_ref(),
@@ -142,9 +183,12 @@ fn explify_kind(k: elab::LocatedKind, errors: &mut ErrorReporter) -> expl::Locat
             }
         }
         elab::Kind::Rel(n) => Located::new(expl::Kind::Rel(n), span),
-        elab::Kind::Fun(x, k) => {
-            Located::new(expl::Kind::Fun(x, Box::new(explify_kind(*k, errors))), span)
-        }
+        // KFun is the implicit kind quantifier (from source `K --> k`).
+        // Explify to explicit::Kind::Fun with an anonymous placeholder binder name.
+        elab::Kind::KFun(body) => Located::new(
+            expl::Kind::Fun("_K".into(), Box::new(explify_kind(*body, errors))),
+            span,
+        ),
     }
 }
 
@@ -247,6 +291,18 @@ fn explify_con(
             span,
         ),
         elab::Constructor::Error => {
+            if std::env::var("URWEB_DEBUG_EXPLIFY_ERROR_CONTEXT")
+                .ok()
+                .as_deref()
+                == Some("1")
+            {
+                eprintln!(
+                    "explify constructor error placeholder span={}:{} context={}",
+                    span.file,
+                    span.first.line,
+                    format_explify_debug_context(),
+                );
+            }
             errors.report_type_at(
                 span.clone(),
                 DiagnosticPayload::new(DiagnosticId::ExplifyUnexpectedConstructorError, vec![]),
@@ -265,7 +321,7 @@ fn explify_con(
                     let lifted = crate::elaborated::utilities::mlift_con_in_con(nl, c);
                     explify_con(lifted, errors)
                 }
-                elab::CUnif::Unknown => {
+                elab::CUnif::Unknown(_) => {
                     errors.report_type_at_with_hint(
                         span.clone(),
                         DiagnosticPayload::new(
@@ -278,6 +334,22 @@ fn explify_con(
                     recovery_con(span)
                 }
             }
+        }
+        // An anonymous sum type: explify each arm's argument constructors and pass through.
+        elab::Constructor::Enum(arms) => {
+            // Map each arm's argument constructors through explify_con independently.
+            let explified_arms = arms
+                .into_iter()
+                .map(|(tag_name, arg_constructors)| {
+                    // Explify every argument constructor in this arm.
+                    let explified_args = arg_constructors
+                        .into_iter()
+                        .map(|arg_constructor| explify_con(arg_constructor, errors))
+                        .collect();
+                    (tag_name, explified_args)
+                })
+                .collect();
+            Located::new(expl::Constructor::Enum(explified_arms), span)
         }
     }
 }
@@ -326,6 +398,10 @@ fn explify_pat(p: elab::LocatedPattern, errors: &mut ErrorReporter) -> expl::Loc
 
 fn explify_exp(e: elab::LocatedExpression, errors: &mut ErrorReporter) -> expl::LocatedExpression {
     let span = e.span.clone();
+    let _context_guard = push_explify_debug_context(format!(
+        "exp {:?} @ {}:{}",
+        e.node, span.file, span.first.line
+    ));
     match e.node {
         elab::Expression::Prim(p) => Located::new(expl::Expression::Prim(p), span),
         elab::Expression::Rel(n) => Located::new(expl::Expression::Rel(n), span),
@@ -545,6 +621,10 @@ fn explify_sgi(
     errors: &mut ErrorReporter,
 ) -> Option<expl::LocatedSignatureItem> {
     let span = sgi.span.clone();
+    let _context_guard = push_explify_debug_context(format!(
+        "sgi {:?} @ {}:{}",
+        sgi.node, span.file, span.first.line
+    ));
     match sgi.node {
         elab::SignatureItem::ConAbs(x, n, k) => Some(Located::new(
             expl::SignatureItem::ConAbs(x, n, explify_kind(k, errors)),
@@ -634,6 +714,10 @@ fn explify_sgi(
 
 fn explify_sgn(sgn: elab::LocatedSignature, errors: &mut ErrorReporter) -> expl::LocatedSignature {
     let span = sgn.span.clone();
+    let _context_guard = push_explify_debug_context(format!(
+        "sgn {:?} @ {}:{}",
+        sgn.node, span.file, span.first.line
+    ));
     match sgn.node {
         elab::Signature::Const(sgis) => Located::new(
             expl::Signature::Const(
@@ -681,6 +765,10 @@ fn explify_sgn(sgn: elab::LocatedSignature, errors: &mut ErrorReporter) -> expl:
 
 fn explify_str(str_: elab::LocatedStructure, errors: &mut ErrorReporter) -> expl::LocatedStructure {
     let span = str_.span.clone();
+    let _context_guard = push_explify_debug_context(format!(
+        "str {:?} @ {}:{}",
+        str_.node, span.file, span.first.line
+    ));
     match str_.node {
         elab::Structure::Const(ds) => Located::new(
             expl::Structure::Const(
@@ -729,6 +817,10 @@ fn explify_decl(
     errors: &mut ErrorReporter,
 ) -> Option<expl::LocatedDeclaration> {
     let span = d.span.clone();
+    let _context_guard = push_explify_debug_context(format!(
+        "decl {:?} @ {}:{}",
+        d.node, span.file, span.first.line
+    ));
     match d.node {
         elab::Declaration::Constructor(x, n, k, c) => Some(Located::new(
             expl::Declaration::Constructor(x, n, explify_kind(k, errors), explify_con(c, errors)),

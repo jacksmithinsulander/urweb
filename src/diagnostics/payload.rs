@@ -56,6 +56,15 @@ pub struct DiagnosticPayload {
     /// Defaults to [`DiagnosticSeverity::Error`]; use [`DiagnosticPayload::with_severity`] to
     /// override for warnings, informational notes, or debug details.
     pub severity: DiagnosticSeverity,
+    /// Pairs of `(inferred_arg_index, expected_arg_index)` that a color-aware renderer should
+    /// diff-highlight against each other using word-level LCS comparison.
+    ///
+    /// An empty list (the default) means no diff highlighting is applied. When non-empty each
+    /// pair tells [`crate::diagnostics::render::render_diagnostic_body_colored`] to replace
+    /// `args[inferred_arg_index]` and `args[expected_arg_index]` with ANSI-highlighted versions
+    /// before template substitution. Plain-mode rendering ignores this field entirely, so the
+    /// payload is fully backwards-compatible.
+    pub diff_hints: Vec<(usize, usize)>,
 }
 
 impl DiagnosticPayload {
@@ -76,6 +85,7 @@ impl DiagnosticPayload {
             suffix_payloads: Vec::new(),
             hint: None,
             severity: DiagnosticSeverity::default(), // Default to Error so existing callers are unaffected.
+            diff_hints: Vec::new(), // No diff hints by default; callers opt in via with_diff_hint.
         }
     }
 
@@ -127,6 +137,26 @@ impl DiagnosticPayload {
     /// `self` with `suffix` pushed onto [`DiagnosticPayload::suffix_payloads`].
     pub fn with_suffix(mut self, suffix: DiagnosticPayload) -> Self {
         self.suffix_payloads.push(suffix);
+        self
+    }
+
+    /// Mark two arg indices as a type diff pair for color-aware rendering.
+    ///
+    /// When [`crate::diagnostics::render::render_diagnostic_body_colored`] processes this payload it
+    /// will compute a word-level diff between `args[inferred_idx]` and `args[expected_idx]` and
+    /// replace both with ANSI-highlighted versions before template substitution. Plain-mode
+    /// rendering (LSP, pipes, `NO_COLOR`) ignores these hints entirely.
+    ///
+    /// # Arguments
+    ///
+    /// * `inferred_idx` — Index into [`DiagnosticPayload::args`] for the inferred (found) type string.
+    /// * `expected_idx` — Index into [`DiagnosticPayload::args`] for the expected (needed) type string.
+    ///
+    /// # Returns
+    ///
+    /// `self` with the pair appended to [`DiagnosticPayload::diff_hints`].
+    pub fn with_diff_hint(mut self, inferred_idx: usize, expected_idx: usize) -> Self {
+        self.diff_hints.push((inferred_idx, expected_idx)); // record the index pair for the colored renderer
         self
     }
 }

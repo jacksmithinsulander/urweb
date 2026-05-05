@@ -4,6 +4,7 @@ use super::ids::DiagnosticId;
 use super::locale::DiagnosticLocale;
 use super::payload::{DiagnosticHint, DiagnosticPayload};
 use super::template_tables::diagnostic_template;
+use super::type_diff;
 
 /// Same trailer as legacy [`crate::error_types::HINT_TRAILER_PREFIX`] for hint paragraphs.
 pub const HINT_TRAILER_PREFIX: &str = "\n  hint: ";
@@ -78,6 +79,81 @@ pub fn format_diagnostic_payload_for_user(
     let body = render_diagnostic_body(payload, locale);
     if let Some(hint) = &payload.hint {
         let hint_text = render_hint(hint, locale);
+        if hint_text.is_empty() {
+            return body;
+        }
+        return format!("{body}{}{hint_text}", HINT_TRAILER_PREFIX);
+    }
+    body
+}
+
+/// Recursively render a [`DiagnosticPayload`] with word-level diff ANSI highlighting on type pairs.
+///
+/// Identical to [`render_diagnostic_body`] except that for each pair `(i, j)` in
+/// [`DiagnosticPayload::diff_hints`] the args at those indices are replaced with their
+/// ANSI-highlighted diff versions before template substitution. Suffix payloads are also rendered
+/// via this function so nested constructor-mismatch messages benefit from the same highlighting.
+///
+/// This function is only called on the terminal-color path; LSP and plain-text output continue
+/// using [`render_diagnostic_body`], which ignores `diff_hints` entirely.
+///
+/// # Arguments
+///
+/// * `payload` — Structured diagnostic tree, possibly carrying diff hints.
+/// * `locale` — Active project language.
+///
+/// # Returns
+///
+/// Localized primary body with ANSI color codes embedded at the diverging tokens.
+pub fn render_diagnostic_body_colored(
+    payload: &DiagnosticPayload,
+    locale: DiagnosticLocale,
+) -> String {
+    let mut effective_args = payload.args.clone(); // start from the plain args; we may replace some
+
+    // Apply diff highlighting to every (inferred, expected) pair registered on this payload.
+    for &(inferred_idx, expected_idx) in &payload.diff_hints {
+        if inferred_idx < effective_args.len() && expected_idx < effective_args.len() {
+            // Compute the word-level diff between the two formatted type strings.
+            let (colored_inferred, colored_expected) = type_diff::diff_type_strings(
+                &effective_args[inferred_idx],
+                &effective_args[expected_idx],
+            );
+            effective_args[inferred_idx] = colored_inferred; // replace inferred arg with red-highlighted version
+            effective_args[expected_idx] = colored_expected; // replace expected arg with green-highlighted version
+        }
+    }
+
+    // Render suffix payloads recursively so nested constructor/kind errors also highlight diffs.
+    for suffix in &payload.suffix_payloads {
+        effective_args.push(render_diagnostic_body_colored(suffix, locale));
+    }
+
+    let template_str = diagnostic_template(payload.id, locale); // fetch the localized catalog template
+    apply_template(template_str, &effective_args) // substitute colored args into the template
+}
+
+/// Full multi-paragraph user text with ANSI diff highlighting: primary body plus optional hint trailer.
+///
+/// Mirrors [`format_diagnostic_payload_for_user`] but delegates body rendering to
+/// [`render_diagnostic_body_colored`] so any registered diff hints are applied.  Hint text is
+/// rendered without diff highlighting because hints do not contain type-pair arguments.
+///
+/// # Arguments
+///
+/// * `payload` — Catalog id, args, suffix payloads, diff hints, and optional hint.
+/// * `locale` — Active project language.
+///
+/// # Returns
+///
+/// String with embedded ANSI escape sequences, suitable for the terminal-color path only.
+pub fn format_diagnostic_payload_for_user_colored(
+    payload: &DiagnosticPayload,
+    locale: DiagnosticLocale,
+) -> String {
+    let body = render_diagnostic_body_colored(payload, locale); // build the colored body
+    if let Some(hint) = &payload.hint {
+        let hint_text = render_hint(hint, locale); // hints are plain; no diff highlighting needed
         if hint_text.is_empty() {
             return body;
         }

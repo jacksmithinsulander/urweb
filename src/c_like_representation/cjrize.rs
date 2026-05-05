@@ -77,6 +77,8 @@ fn typ_eq(a: &mono::Typ, b: &mono::Typ) -> bool {
         (mono::Typ::List(a), mono::Typ::List(b)) => typ_eq(&a.node, &b.node),
         (mono::Typ::Source, mono::Typ::Source) => true,
         (mono::Typ::Signal(a), mono::Typ::Signal(b)) => typ_eq(&a.node, &b.node),
+        // Two Transaction types are equal when their result types are equal.
+        (mono::Typ::Transaction(a), mono::Typ::Transaction(b)) => typ_eq(&a.node, &b.node),
         _ => false,
     }
 }
@@ -240,6 +242,14 @@ fn cify_typ_dtmap(
         mono::Typ::Signal(_) => {
             // Should have been filtered out before reaching here
             Located::new(Typ::Ffi("Basis".to_string(), "bogus".to_string()), loc)
+        }
+        mono::Typ::Transaction(inner) => {
+            // Lower Typ::Transaction(t) to Fun(unit_record, t) at the C level.
+            // A transaction is a suspended computation: () -> t, matching the
+            // original representation before Transaction became a distinct variant.
+            let unit_record = Located::new(Typ::Record(sm.find(&[], vec![])), loc.clone());
+            let cinner = cify_typ_dtmap(inner, sm, dtmap);
+            Located::new(Typ::Fun(Box::new(unit_record), Box::new(cinner)), loc)
         }
     }
 }
@@ -444,6 +454,16 @@ fn cify_exp(e: &mono::LocExp, sm: &mut Sm, errors: &mut ErrorReporter) -> LocExp
         }
 
         mono::Exp::Abs(_, _, _, _) => {
+            let _ = (|| -> std::io::Result<()> {
+                let mut file = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open("/tmp/urweb-cjr-abs.log")?;
+                std::io::Write::write_all(
+                    &mut file,
+                    format!("cjrize stray abs at {:?}:\n{:#?}\n\n", loc, e).as_bytes(),
+                )
+            })();
             errors.report_at(
                 loc.clone(),
                 DiagnosticPayload::new(DiagnosticId::CjrizeAnonymousFunctionRemains, Vec::new()),
@@ -746,18 +766,223 @@ fn cify_exp(e: &mono::LocExp, sm: &mut Sm, errors: &mut ErrorReporter) -> LocExp
 // Table constraint flattening
 // ---------------------------------------------------------------------------
 
+#[derive(Clone)]
+enum StaticSqlVal {
+    String(String),
+    Int(i64),
+    Bool(bool),
+    Record(Vec<(String, StaticSqlVal)>),
+}
+
+fn static_sql_val_to_string(v: StaticSqlVal) -> Option<String> {
+    match v {
+        StaticSqlVal::String(s) => Some(s),
+        StaticSqlVal::Int(n) => Some(n.to_string()),
+        StaticSqlVal::Bool(true) => Some("1".into()),
+        StaticSqlVal::Bool(false) => Some("0".into()),
+        StaticSqlVal::Record(_) => None,
+    }
+}
+
+fn trivial_sql_proof(e: &mono::LocExp) -> bool {
+    match &e.node {
+        mono::Exp::Prim(Prim::Int(0)) => true,
+        mono::Exp::Record(xets) => xets.is_empty(),
+        _ => false,
+    }
+}
+
+fn flatten_sql_app_chain<'a>(
+    e: &'a mono::LocExp,
+    args: &mut Vec<&'a mono::LocExp>,
+) -> &'a mono::LocExp {
+    match &e.node {
+        mono::Exp::App(f, a) => {
+            let head = flatten_sql_app_chain(f, args);
+            args.push(a);
+            head
+        }
+        _ => e,
+    }
+}
+
+fn derive_sql_alias(table_name: &str) -> String {
+    let stem = table_name.rsplit('_').next().unwrap_or("t");
+    stem.chars()
+        .next()
+        .map(|c| c.to_ascii_uppercase().to_string())
+        .unwrap_or_else(|| "T".into())
+}
+
+fn eval_static_sql_value(
+    e: &mono::LocExp,
+    env: &[StaticSqlVal],
+    named: &HashMap<usize, mono::LocExp>,
+) -> Option<StaticSqlVal> {
+    match &e.node {
+        mono::Exp::Rel(n) => env.get(*n).cloned(),
+        mono::Exp::Named(n) => named
+            .get(n)
+            .and_then(|exp| eval_static_sql_value(exp, env, named)),
+        mono::Exp::Prim(Prim::String(_, s)) => Some(StaticSqlVal::String(s.clone())),
+        mono::Exp::Prim(Prim::Int(n)) => Some(StaticSqlVal::Int(*n)),
+        mono::Exp::Record(xets) => {
+            let mut out = Vec::with_capacity(xets.len());
+            for (name, inner, _) in xets {
+                out.push((name.clone(), eval_static_sql_value(inner, env, named)?));
+            }
+            Some(StaticSqlVal::Record(out))
+        }
+        mono::Exp::Field(e1, name) => match eval_static_sql_value(e1, env, named)? {
+            StaticSqlVal::Record(fields) => fields
+                .into_iter()
+                .find(|(field_name, _)| field_name == name)
+                .map(|(_, v)| v),
+            _ => None,
+        },
+        mono::Exp::Con(
+            crate::datatype_kind::DatatypeKind::Enum,
+            mono::PatCon::Ffi {
+                module,
+                datatyp,
+                con,
+                ..
+            },
+            None,
+        ) if module == "Basis" && datatyp == "bool" => Some(StaticSqlVal::Bool(con == "True")),
+        mono::Exp::Strcat(e1, e2) => Some(StaticSqlVal::String(format!(
+            "{}{}",
+            eval_static_sql_string(e1, env, named)?,
+            eval_static_sql_string(e2, env, named)?
+        ))),
+        mono::Exp::Ffi(module, name) if module == "Basis" => match name.as_str() {
+            "sql_no_limit" | "sql_no_offset" | "sql_subset_all" | "sql_asc" => {
+                Some(StaticSqlVal::String(String::new()))
+            }
+            "sql_desc" => Some(StaticSqlVal::String(" DESC".into())),
+            _ => None,
+        },
+        mono::Exp::FfiApp(module, name, args) if module == "Basis" => match name.as_str() {
+            "sqlifyInt" if args.len() == 1 => {
+                match eval_static_sql_value(&args[0].0, env, named)? {
+                    StaticSqlVal::Int(n) => Some(StaticSqlVal::String(n.to_string())),
+                    other => Some(StaticSqlVal::String(static_sql_val_to_string(other)?)),
+                }
+            }
+            "sqlifyFloat" if args.len() == 1 => Some(StaticSqlVal::String(eval_static_sql_string(
+                &args[0].0, env, named,
+            )?)),
+            "sqlifyChar" if args.len() == 1 => Some(StaticSqlVal::String(eval_static_sql_string(
+                &args[0].0, env, named,
+            )?)),
+            "sqlifyString" if args.len() == 1 => Some(StaticSqlVal::String(
+                eval_static_sql_string(&args[0].0, env, named)?,
+            )),
+            "checkString" if args.len() == 1 => Some(StaticSqlVal::String(eval_static_sql_string(
+                &args[0].0, env, named,
+            )?)),
+            _ => None,
+        },
+        mono::Exp::App(_, _) => {
+            let mut args = Vec::new();
+            let head = flatten_sql_app_chain(e, &mut args);
+            let args: Vec<&mono::LocExp> = args;
+            if let Some(StaticSqlVal::String(s)) = eval_static_sql_value(head, env, named) {
+                if args.iter().all(|arg| trivial_sql_proof(arg)) {
+                    return Some(StaticSqlVal::String(s));
+                }
+            }
+            match &head.node {
+                mono::Exp::Ffi(module, name) if module == "Basis" => match name.as_str() {
+                    "sql_from_table" if args.len() >= 2 => {
+                        let table = eval_static_sql_string(args[args.len() - 1], env, named)?;
+                        let alias = derive_sql_alias(&table);
+                        Some(StaticSqlVal::String(format!("{table} AS T_{alias}")))
+                    }
+                    "sql_window" if args.len() >= 2 => {
+                        eval_static_sql_value(args[args.len() - 1], env, named)
+                    }
+                    _ => None,
+                },
+                _ => None,
+            }
+        }
+        mono::Exp::Case(disc, arms, _) => {
+            let disc_val = eval_static_sql_value(disc, env, named)?;
+            for (pat, arm) in arms {
+                let matches = match (&pat.node, &disc_val) {
+                    (mono::Pat::Var(_, _), _) => true,
+                    (mono::Pat::Prim(Prim::String(_, s)), StaticSqlVal::String(v)) => s == v,
+                    (mono::Pat::Prim(Prim::String(_, s)), StaticSqlVal::Bool(true)) => {
+                        s == "1" || s.eq_ignore_ascii_case("true")
+                    }
+                    (mono::Pat::Prim(Prim::String(_, s)), StaticSqlVal::Bool(false)) => {
+                        s == "0" || s.eq_ignore_ascii_case("false")
+                    }
+                    (mono::Pat::Prim(Prim::Int(n)), StaticSqlVal::Int(v)) => *n == *v,
+                    (
+                        mono::Pat::Con(
+                            crate::datatype_kind::DatatypeKind::Enum,
+                            mono::PatCon::Ffi {
+                                module,
+                                datatyp,
+                                con,
+                                ..
+                            },
+                            None,
+                        ),
+                        StaticSqlVal::Bool(v),
+                    ) => {
+                        module == "Basis"
+                            && datatyp == "bool"
+                            && ((*v && con == "True") || (!*v && con == "False"))
+                    }
+                    _ => false,
+                };
+                if matches {
+                    let mut env2 = env.to_vec();
+                    if matches!(pat.node, mono::Pat::Var(_, _)) {
+                        env2.insert(0, disc_val.clone());
+                    }
+                    return eval_static_sql_value(arm, &env2, named);
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+fn eval_static_sql_string(
+    e: &mono::LocExp,
+    env: &[StaticSqlVal],
+    named: &HashMap<usize, mono::LocExp>,
+) -> Option<String> {
+    eval_static_sql_value(e, env, named).and_then(static_sql_val_to_string)
+}
+
 /// Flatten a Mono expression representing table constraints into `(field, value)` pairs.
 ///
 /// Mirrors the `flatten` function in `cjrize.sml`.
-fn flatten_constraint(e: &mono::LocExp, errors: &mut ErrorReporter) -> Vec<(String, String)> {
+fn flatten_constraint(
+    e: &mono::LocExp,
+    errors: &mut ErrorReporter,
+    named: &HashMap<usize, mono::LocExp>,
+) -> Vec<(String, String)> {
     cjrize_test_tick();
     match &e.node {
         mono::Exp::Record(xets) if xets.is_empty() => vec![],
         mono::Exp::Record(xets) if xets.len() == 1 => {
             let (x, val_e, _) = &xets[0];
-            if let mono::Exp::Prim(Prim::String(_, s)) = &val_e.node {
-                vec![(x.clone(), s.clone())]
+            if let Some(s) = eval_static_sql_string(val_e, &[], named) {
+                vec![(x.clone(), s)]
             } else {
+                if std::env::var("URWEB_DEBUG_CJR_SQL").ok().as_deref() == Some("1") {
+                    eprintln!(
+                        "cjrize flatten_constraint non-string field label={} expr={:#?}",
+                        x, val_e
+                    );
+                }
                 errors.report_at_with_hint(
                     e.span.clone(),
                     DiagnosticPayload::new(
@@ -771,11 +996,14 @@ fn flatten_constraint(e: &mono::LocExp, errors: &mut ErrorReporter) -> Vec<(Stri
             }
         }
         mono::Exp::Strcat(e1, e2) => {
-            let mut v = flatten_constraint(e1, errors);
-            v.extend(flatten_constraint(e2, errors));
+            let mut v = flatten_constraint(e1, errors, named);
+            v.extend(flatten_constraint(e2, errors, named));
             v
         }
         _ => {
+            if std::env::var("URWEB_DEBUG_CJR_SQL").ok().as_deref() == Some("1") {
+                eprintln!("cjrize flatten_constraint unsupported expr={:#?}", e);
+            }
             errors.report_at_with_hint(
                 e.span.clone(),
                 DiagnosticPayload::new(
@@ -809,10 +1037,218 @@ fn stub_body(t: &mono::LocTyp, loc: &Span) -> mono::LocExp {
     }
 }
 
+fn exp_contains_abs(e: &mono::LocExp) -> bool {
+    crate::monomorphized::utilities::exp::exists(e, &|_| false, &|node| {
+        matches!(node, mono::Exp::Abs(_, _, _, _))
+    })
+}
+
+fn reduce_head_apps_for_cjr(e: mono::LocExp) -> mono::LocExp {
+    let loc = e.span.clone();
+    match e.node {
+        mono::Exp::App(f, arg) => {
+            let f = reduce_head_apps_for_cjr(*f);
+            let arg = reduce_head_apps_for_cjr(*arg);
+            match f.node {
+                mono::Exp::Abs(_, _, _, body) => reduce_head_apps_for_cjr(
+                    crate::monomorphized::environment::sub_exp_in_exp(0, &arg, &body),
+                ),
+                mono::Exp::Let(x, t, e1, body) => {
+                    let lifted_arg = lift_mono_exp(0, arg);
+                    let app = Located::new(mono::Exp::App(body, Box::new(lifted_arg)), loc.clone());
+                    reduce_head_apps_for_cjr(Located::new(
+                        mono::Exp::Let(x, t, e1, Box::new(app)),
+                        loc,
+                    ))
+                }
+                other => Located::new(
+                    mono::Exp::App(Box::new(Located::new(other, f.span)), Box::new(arg)),
+                    loc,
+                ),
+            }
+        }
+        mono::Exp::Abs(x, dom, ran, body) => Located::new(
+            mono::Exp::Abs(x, dom, ran, Box::new(reduce_head_apps_for_cjr(*body))),
+            loc,
+        ),
+        mono::Exp::Con(dk, pc, eo) => Located::new(
+            mono::Exp::Con(
+                dk,
+                pc,
+                eo.map(|inner| Box::new(reduce_head_apps_for_cjr(*inner))),
+            ),
+            loc,
+        ),
+        mono::Exp::Some(t, inner) => Located::new(
+            mono::Exp::Some(t, Box::new(reduce_head_apps_for_cjr(*inner))),
+            loc,
+        ),
+        mono::Exp::FfiApp(m, x, args) => Located::new(
+            mono::Exp::FfiApp(
+                m,
+                x,
+                args.into_iter()
+                    .map(|(arg, t)| (reduce_head_apps_for_cjr(arg), t))
+                    .collect(),
+            ),
+            loc,
+        ),
+        mono::Exp::Unop(op, inner) => Located::new(
+            mono::Exp::Unop(op, Box::new(reduce_head_apps_for_cjr(*inner))),
+            loc,
+        ),
+        mono::Exp::Binop(intness, op, left, right) => Located::new(
+            mono::Exp::Binop(
+                intness,
+                op,
+                Box::new(reduce_head_apps_for_cjr(*left)),
+                Box::new(reduce_head_apps_for_cjr(*right)),
+            ),
+            loc,
+        ),
+        mono::Exp::Record(xets) => Located::new(
+            mono::Exp::Record(
+                xets.into_iter()
+                    .map(|(name, exp, t)| (name, reduce_head_apps_for_cjr(exp), t))
+                    .collect(),
+            ),
+            loc,
+        ),
+        mono::Exp::Field(inner, field) => Located::new(
+            mono::Exp::Field(Box::new(reduce_head_apps_for_cjr(*inner)), field),
+            loc,
+        ),
+        mono::Exp::Case(disc, arms, meta) => Located::new(
+            mono::Exp::Case(
+                Box::new(reduce_head_apps_for_cjr(*disc)),
+                arms.into_iter()
+                    .map(|(pat, arm)| (pat, reduce_head_apps_for_cjr(arm)))
+                    .collect(),
+                meta,
+            ),
+            loc,
+        ),
+        mono::Exp::Strcat(left, right) => Located::new(
+            mono::Exp::Strcat(
+                Box::new(reduce_head_apps_for_cjr(*left)),
+                Box::new(reduce_head_apps_for_cjr(*right)),
+            ),
+            loc,
+        ),
+        mono::Exp::Error(inner, t) => Located::new(
+            mono::Exp::Error(Box::new(reduce_head_apps_for_cjr(*inner)), t),
+            loc,
+        ),
+        mono::Exp::ReturnBlob { blob, mime_type, t } => Located::new(
+            mono::Exp::ReturnBlob {
+                blob: blob.map(|inner| Box::new(reduce_head_apps_for_cjr(*inner))),
+                mime_type: Box::new(reduce_head_apps_for_cjr(*mime_type)),
+                t,
+            },
+            loc,
+        ),
+        mono::Exp::Redirect(inner, t) => Located::new(
+            mono::Exp::Redirect(Box::new(reduce_head_apps_for_cjr(*inner)), t),
+            loc,
+        ),
+        mono::Exp::Write(inner) => Located::new(
+            mono::Exp::Write(Box::new(reduce_head_apps_for_cjr(*inner))),
+            loc,
+        ),
+        mono::Exp::Seq(left, right) => Located::new(
+            mono::Exp::Seq(
+                Box::new(reduce_head_apps_for_cjr(*left)),
+                Box::new(reduce_head_apps_for_cjr(*right)),
+            ),
+            loc,
+        ),
+        mono::Exp::Let(x, t, e1, e2) => Located::new(
+            mono::Exp::Let(
+                x,
+                t,
+                Box::new(reduce_head_apps_for_cjr(*e1)),
+                Box::new(reduce_head_apps_for_cjr(*e2)),
+            ),
+            loc,
+        ),
+        mono::Exp::Closure(n, envs) => Located::new(
+            mono::Exp::Closure(n, envs.into_iter().map(reduce_head_apps_for_cjr).collect()),
+            loc,
+        ),
+        mono::Exp::Query(qm) => Located::new(
+            mono::Exp::Query(mono::QueryMeta {
+                exps: qm.exps,
+                tables: qm.tables,
+                state: qm.state,
+                query: Box::new(reduce_head_apps_for_cjr(*qm.query)),
+                body: Box::new(reduce_head_apps_for_cjr(*qm.body)),
+                initial: Box::new(reduce_head_apps_for_cjr(*qm.initial)),
+            }),
+            loc,
+        ),
+        mono::Exp::Dml(inner, mode) => Located::new(
+            mono::Exp::Dml(Box::new(reduce_head_apps_for_cjr(*inner)), mode),
+            loc,
+        ),
+        mono::Exp::Nextval(inner) => Located::new(
+            mono::Exp::Nextval(Box::new(reduce_head_apps_for_cjr(*inner))),
+            loc,
+        ),
+        mono::Exp::Setval(seq, count) => Located::new(
+            mono::Exp::Setval(
+                Box::new(reduce_head_apps_for_cjr(*seq)),
+                Box::new(reduce_head_apps_for_cjr(*count)),
+            ),
+            loc,
+        ),
+        mono::Exp::Uurlify(inner, t, flag) => Located::new(
+            mono::Exp::Uurlify(Box::new(reduce_head_apps_for_cjr(*inner)), t, flag),
+            loc,
+        ),
+        mono::Exp::JavaScript(mode, inner) => Located::new(
+            mono::Exp::JavaScript(mode, Box::new(reduce_head_apps_for_cjr(*inner))),
+            loc,
+        ),
+        mono::Exp::SignalReturn(inner) => Located::new(
+            mono::Exp::SignalReturn(Box::new(reduce_head_apps_for_cjr(*inner))),
+            loc,
+        ),
+        mono::Exp::SignalBind(left, right) => Located::new(
+            mono::Exp::SignalBind(
+                Box::new(reduce_head_apps_for_cjr(*left)),
+                Box::new(reduce_head_apps_for_cjr(*right)),
+            ),
+            loc,
+        ),
+        mono::Exp::SignalSource(inner) => Located::new(
+            mono::Exp::SignalSource(Box::new(reduce_head_apps_for_cjr(*inner))),
+            loc,
+        ),
+        mono::Exp::ServerCall(inner, t, eff, mode) => Located::new(
+            mono::Exp::ServerCall(Box::new(reduce_head_apps_for_cjr(*inner)), t, eff, mode),
+            loc,
+        ),
+        mono::Exp::Recv(inner, t) => Located::new(
+            mono::Exp::Recv(Box::new(reduce_head_apps_for_cjr(*inner)), t),
+            loc,
+        ),
+        mono::Exp::Sleep(inner) => Located::new(
+            mono::Exp::Sleep(Box::new(reduce_head_apps_for_cjr(*inner))),
+            loc,
+        ),
+        mono::Exp::Spawn(inner) => Located::new(
+            mono::Exp::Spawn(Box::new(reduce_head_apps_for_cjr(*inner))),
+            loc,
+        ),
+        other => Located::new(other, loc),
+    }
+}
+
 fn cify_decl(
     d: &mono::LocDecl,
     sm: &mut Sm,
     errors: &mut ErrorReporter,
+    named: &HashMap<usize, mono::LocExp>,
 ) -> (
     Option<LocDecl>,
     Option<(ExportKind, String, usize, Vec<LocTyp>, LocTyp, bool)>,
@@ -858,10 +1294,27 @@ fn cify_decl(
                 Typ::Fun(..) => {
                     let mut args = Vec::new();
                     let (ran, body) = unravel_fun(ct.clone(), effective_e, &loc, &mut args);
+                    let body = reduce_head_apps_for_cjr(body);
+                    if exp_contains_abs(&body) {
+                        eprintln!("cjrize nested abs in val fun body: {}", x);
+                        let _ = (|| -> std::io::Result<()> {
+                            let mut file = std::fs::OpenOptions::new()
+                                .create(true)
+                                .append(true)
+                                .open("/tmp/urweb-cjr-bodies.log")?;
+                            std::io::Write::write_all(
+                                &mut file,
+                                format!("VAL FUN {x} @ {:?}\n{body:#?}\n\n", loc).as_bytes(),
+                            )
+                        })();
+                    }
                     let cbody = cify_exp(&body, sm, errors);
                     Decl::Fun(x.clone(), *n, args, ran, cbody)
                 }
                 _ => {
+                    if exp_contains_abs(&effective_e) {
+                        eprintln!("cjrize nested abs in val expr: {}", x);
+                    }
                     let ce = cify_exp(&effective_e, sm, errors);
                     Decl::Val(x.clone(), *n, ct, ce)
                 }
@@ -891,10 +1344,28 @@ fn cify_decl(
                         Typ::Fun(..) => {
                             let mut args = Vec::new();
                             let (ran, body) = unravel_fun(ct, effective_e, &loc, &mut args);
+                            let body = reduce_head_apps_for_cjr(body);
+                            if exp_contains_abs(&body) {
+                                eprintln!("cjrize nested abs in valrec fun body: {}", x);
+                                let _ = (|| -> std::io::Result<()> {
+                                    let mut file = std::fs::OpenOptions::new()
+                                        .create(true)
+                                        .append(true)
+                                        .open("/tmp/urweb-cjr-bodies.log")?;
+                                    std::io::Write::write_all(
+                                        &mut file,
+                                        format!("VALREC FUN {x} @ {:?}\n{body:#?}\n\n", loc)
+                                            .as_bytes(),
+                                    )
+                                })();
+                            }
                             let cbody = cify_exp(&body, sm, errors);
                             (x.clone(), *n, args, ran, cbody)
                         }
                         _ => {
+                            if exp_contains_abs(&effective_e) {
+                                eprintln!("cjrize nested abs in valrec expr: {}", x);
+                            }
                             errors.report_at(
                                 loc.clone(),
                                 DiagnosticPayload::new(
@@ -944,7 +1415,7 @@ fn cify_decl(
                     String::new()
                 }
             };
-            let constraints = flatten_constraint(ce, errors);
+            let constraints = flatten_constraint(ce, errors, named);
             (
                 Some(Located::new(
                     Decl::Table(name.clone(), cxts, pk, constraints),
@@ -961,28 +1432,26 @@ fn cify_decl(
                 .iter()
                 .map(|(x, t)| (x.clone(), cify_typ(t, sm)))
                 .collect();
-            let sql = match &e.node {
-                mono::Exp::Prim(Prim::String(_, s)) => s.clone(),
-                mono::Exp::FfiApp(m, x, args)
-                    if m == "Basis" && x == "viewify" && args.len() == 1 =>
-                {
-                    match &args[0].0.node {
-                        mono::Exp::Prim(Prim::String(_, s)) => s.clone(),
-                        _ => {
-                            errors.report(CompileError::sql_at_with_hint(
-                                e.span.clone(),
-                                DiagnosticPayload::new(
-                                    DiagnosticId::SqlViewNotPlainString,
-                                    Vec::new(),
-                                ),
-                                DiagnosticId::HintSqlViewNotPlainStringStrcat,
-                                Vec::new(),
-                            ));
-                            String::new()
+            let sql = if let mono::Exp::FfiApp(m, x, args) = &e.node {
+                if m == "Basis" && x == "viewify" && args.len() == 1 {
+                    if let Some(s) = eval_static_sql_string(&args[0].0, &[], named) {
+                        s
+                    } else {
+                        if std::env::var("URWEB_DEBUG_CJR_SQL").ok().as_deref() == Some("1") {
+                            eprintln!("cjrize viewify non-string arg={:#?}", args[0].0);
                         }
+                        errors.report(CompileError::sql_at_with_hint(
+                            e.span.clone(),
+                            DiagnosticPayload::new(DiagnosticId::SqlViewNotPlainString, Vec::new()),
+                            DiagnosticId::HintSqlViewNotPlainStringStrcat,
+                            Vec::new(),
+                        ));
+                        String::new()
                     }
-                }
-                _ => {
+                } else {
+                    if std::env::var("URWEB_DEBUG_CJR_SQL").ok().as_deref() == Some("1") {
+                        eprintln!("cjrize view unsupported expr={:#?}", e);
+                    }
                     errors.report(CompileError::sql_at_with_hint(
                         e.span.clone(),
                         DiagnosticPayload::new(DiagnosticId::SqlViewNotPlainString, Vec::new()),
@@ -991,6 +1460,19 @@ fn cify_decl(
                     ));
                     String::new()
                 }
+            } else if let Some(s) = eval_static_sql_string(e, &[], named) {
+                s
+            } else {
+                if std::env::var("URWEB_DEBUG_CJR_SQL").ok().as_deref() == Some("1") {
+                    eprintln!("cjrize view unsupported expr={:#?}", e);
+                }
+                errors.report(CompileError::sql_at_with_hint(
+                    e.span.clone(),
+                    DiagnosticPayload::new(DiagnosticId::SqlViewNotPlainString, Vec::new()),
+                    DiagnosticId::HintSqlViewNotPlainStringLiteral,
+                    Vec::new(),
+                ));
+                String::new()
             };
             (
                 Some(Located::new(Decl::View(name.clone(), cxts, sql), loc)),
@@ -1123,9 +1605,16 @@ pub fn cjrize(file: mono::File, errors: &mut ErrorReporter) -> Option<cjr::File>
     let mut ds: Vec<LocDecl> = Vec::new();
     // export entries (without sidedness — to be filled from mono_ps)
     let mut ps_raw: Vec<(ExportKind, String, usize, Vec<LocTyp>, LocTyp, bool)> = Vec::new();
+    let mut named: HashMap<usize, mono::LocExp> = HashMap::new();
 
     for mono_decl in &mono_decls {
-        let (dop, pop) = cify_decl(mono_decl, &mut sm, errors);
+        if let mono::Decl::Val(_, n, _, e, _) = &mono_decl.node {
+            named.insert(*n, e.clone());
+        }
+    }
+
+    for mono_decl in &mono_decls {
+        let (dop, pop) = cify_decl(mono_decl, &mut sm, errors, &named);
 
         // Emit struct declarations accumulated so far.
         for (id, fields) in sm.drain_decls() {

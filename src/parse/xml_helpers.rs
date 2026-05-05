@@ -75,6 +75,206 @@ pub fn wrap_fun_params(params: Vec<FunParam>, body: LocExp) -> LocExp {
         })
 }
 
+pub fn materialize_dummy_spans_in_exp(mut expression: LocExp, anchor: &Span) -> LocExp {
+    fn fill_kind_spans(kind: &mut LocKind, anchor: &Span) {
+        if is_dummy_parser_repair_span(&kind.span) {
+            kind.span = anchor.clone();
+        }
+        match &mut kind.node {
+            Kind::Arrow(left, right) => {
+                fill_kind_spans(left, anchor);
+                fill_kind_spans(right, anchor);
+            }
+            Kind::Record(inner) | Kind::Fun(_, inner) => fill_kind_spans(inner, anchor),
+            Kind::Tuple(items) => {
+                for item in items {
+                    fill_kind_spans(item, anchor);
+                }
+            }
+            Kind::Type | Kind::Name | Kind::Unit | Kind::Wild | Kind::Var(_) => {}
+        }
+    }
+
+    fn fill_con_spans(constructor: &mut LocCon, anchor: &Span) {
+        if is_dummy_parser_repair_span(&constructor.span) {
+            constructor.span = anchor.clone();
+        }
+        match &mut constructor.node {
+            Con::Annot(inner, kind) => {
+                fill_con_spans(inner, anchor);
+                fill_kind_spans(kind, anchor);
+            }
+            Con::TFun(left, right) | Con::App(left, right) | Con::Concat(left, right) => {
+                fill_con_spans(left, anchor);
+                fill_con_spans(right, anchor);
+            }
+            Con::TCFun(_, _, kind, body) => {
+                fill_kind_spans(kind, anchor);
+                fill_con_spans(body, anchor);
+            }
+            Con::TRecord(inner) | Con::KAbs(_, inner) | Con::TKFun(_, inner) => {
+                fill_con_spans(inner, anchor);
+            }
+            Con::TDisjoint(left, right, body) => {
+                fill_con_spans(left, anchor);
+                fill_con_spans(right, anchor);
+                fill_con_spans(body, anchor);
+            }
+            Con::Abs(_, kind, body) => {
+                if let Some(kind) = kind {
+                    fill_kind_spans(kind, anchor);
+                }
+                fill_con_spans(body, anchor);
+            }
+            Con::Record(fields) => {
+                for (field_name, field_value) in fields {
+                    fill_con_spans(field_name, anchor);
+                    fill_con_spans(field_value, anchor);
+                }
+            }
+            Con::Tuple(items) => {
+                for item in items {
+                    fill_con_spans(item, anchor);
+                }
+            }
+            Con::Proj(inner, _) => fill_con_spans(inner, anchor),
+            Con::Enum(arms) => {
+                for (_, payloads) in arms {
+                    for payload in payloads {
+                        fill_con_spans(payload, anchor);
+                    }
+                }
+            }
+            Con::Wild(kind) => fill_kind_spans(kind, anchor),
+            Con::Var(_, _) | Con::Name(_) | Con::Map | Con::Unit => {}
+        }
+    }
+
+    fn fill_pat_spans(pattern: &mut LocPat, anchor: &Span) {
+        if is_dummy_parser_repair_span(&pattern.span) {
+            pattern.span = anchor.clone();
+        }
+        match &mut pattern.node {
+            Pat::Con(_, _, Some(argument_pattern)) => fill_pat_spans(argument_pattern, anchor),
+            Pat::Record(fields, _) => {
+                for (_, field_pattern) in fields {
+                    fill_pat_spans(field_pattern, anchor);
+                }
+            }
+            Pat::Annot(inner_pattern, annotation) => {
+                fill_pat_spans(inner_pattern, anchor);
+                fill_con_spans(annotation, anchor);
+            }
+            Pat::Var(_) | Pat::Prim(_) | Pat::Con(_, _, None) => {}
+        }
+    }
+
+    fn preserves_lambda_annotation_repair_marker(
+        pattern: &LocPat,
+        branch_expression: &LocExp,
+    ) -> bool {
+        matches!(
+            (&pattern.node, &branch_expression.node),
+            (
+                Pat::Annot(inner_pattern, annotation_constructor),
+                Exp::Abs(_, None, _)
+            )
+                if matches!(inner_pattern.as_ref().node, Pat::Var(_))
+                    && matches!(&annotation_constructor.node, Con::Var(module_path, _) if module_path.is_empty())
+                    && is_dummy_parser_repair_span(&branch_expression.span)
+        )
+    }
+
+    fn fill_exp_spans(expression: &mut LocExp, anchor: &Span) {
+        if is_dummy_parser_repair_span(&expression.span) {
+            expression.span = anchor.clone();
+        }
+        match &mut expression.node {
+            Exp::Annot(inner, constructor) => {
+                fill_exp_spans(inner, anchor);
+                fill_con_spans(constructor, anchor);
+            }
+            Exp::App(function_expression, argument_expression)
+            | Exp::Concat(function_expression, argument_expression)
+            | Exp::Infix(_, function_expression, argument_expression) => {
+                fill_exp_spans(function_expression, anchor);
+                fill_exp_spans(argument_expression, anchor);
+            }
+            Exp::Abs(_, annotation, body) => {
+                if let Some(annotation) = annotation {
+                    fill_con_spans(annotation, anchor);
+                }
+                fill_exp_spans(body, anchor);
+            }
+            Exp::CApp(inner, constructor) => {
+                fill_exp_spans(inner, anchor);
+                fill_con_spans(constructor, anchor);
+            }
+            Exp::CAbs(_, _, kind, body) => {
+                fill_kind_spans(kind, anchor);
+                fill_exp_spans(body, anchor);
+            }
+            Exp::Disjoint(left, right, body) => {
+                fill_con_spans(left, anchor);
+                fill_con_spans(right, anchor);
+                fill_exp_spans(body, anchor);
+            }
+            Exp::DisjointApp(inner) | Exp::KAbs(_, inner) => fill_exp_spans(inner, anchor),
+            Exp::Record(fields, _) => {
+                for (field_name, field_expression) in fields {
+                    fill_con_spans(field_name, anchor);
+                    fill_exp_spans(field_expression, anchor);
+                }
+            }
+            Exp::Field(inner, field_constructor)
+            | Exp::Cut(inner, field_constructor)
+            | Exp::CutMulti(inner, field_constructor) => {
+                fill_exp_spans(inner, anchor);
+                fill_con_spans(field_constructor, anchor);
+            }
+            Exp::Case(scrutinee, branches) => {
+                fill_exp_spans(scrutinee, anchor);
+                for (pattern, branch_expression) in branches {
+                    fill_pat_spans(pattern, anchor);
+                    if preserves_lambda_annotation_repair_marker(pattern, branch_expression) {
+                        if let Exp::Abs(_, _, inner_body) = &mut branch_expression.node {
+                            fill_exp_spans(inner_body, anchor);
+                        }
+                    } else {
+                        fill_exp_spans(branch_expression, anchor);
+                    }
+                }
+            }
+            Exp::Let(declarations, body) => {
+                for declaration in declarations {
+                    if is_dummy_parser_repair_span(&declaration.span) {
+                        declaration.span = anchor.clone();
+                    }
+                    match &mut declaration.node {
+                        EDecl::Val(pattern, bound_expression) => {
+                            fill_pat_spans(pattern, anchor);
+                            fill_exp_spans(bound_expression, anchor);
+                        }
+                        EDecl::ValRec(bindings) => {
+                            for (_, annotation, bound_expression) in bindings {
+                                if let Some(annotation) = annotation {
+                                    fill_con_spans(annotation, anchor);
+                                }
+                                fill_exp_spans(bound_expression, anchor);
+                            }
+                        }
+                    }
+                }
+                fill_exp_spans(body, anchor);
+            }
+            Exp::Prim(_) | Exp::Var(_, _, _) | Exp::Wild | Exp::Hole => {}
+        }
+    }
+
+    fill_exp_spans(&mut expression, anchor);
+    expression
+}
+
 fn annotated_var_pattern_supports_direct_lambda(
     pattern_span: &Span,
     pattern: &LocPat,
@@ -126,12 +326,20 @@ pub enum XmlAttr {
     Normal(LocCon, LocExp),
 }
 
-/// Capitalize the first character of an XML attribute name: "href" → "Href".
+/// Mirror the ML grammar's `makeAttr` helper:
+/// `type` -> `Typ`, `name` -> `Nam`, otherwise capitalize and translate `-` to `_`.
 pub fn capitalize_attr(s: &str) -> String {
-    let mut chars = s.chars();
-    match chars.next() {
-        None => String::new(),
-        Some(c) => c.to_uppercase().to_string() + chars.as_str(),
+    match s {
+        "type" => "Typ".to_string(),
+        "name" => "Nam".to_string(),
+        _ => {
+            let translated = s.replace('-', "_");
+            let mut chars = translated.chars();
+            match chars.next() {
+                None => String::new(),
+                Some(c) => c.to_uppercase().to_string() + chars.as_str(),
+            }
+        }
     }
 }
 
@@ -159,9 +367,47 @@ pub fn xml_attrs_push(mut acc: XmlAttrsAcc, a: XmlAttr) -> XmlAttrsAcc {
         XmlAttr::DynClass(e) => *dcls = Some(e),
         XmlAttr::Style(e) => *sty = Some(e),
         XmlAttr::DynStyle(e) => *dsty = Some(e),
-        XmlAttr::Normal(k, v) => av.push((k, v)),
+        XmlAttr::Normal(k, v) => av.push((k.clone(), bless_xml_literal_attr_value(&k, v))),
     }
     acc
+}
+
+fn basis_var_expression(name: &str, span: Span) -> LocExp {
+    Located::new(
+        Exp::Var(vec!["Basis".into()], name.into(), Inference::Infer),
+        span,
+    )
+}
+
+fn is_primitive_literal_expression(expression: &LocExp) -> bool {
+    matches!(expression.node, Exp::Prim(_))
+}
+
+fn bless_xml_literal_attr_value(attr_name: &LocCon, attr_value: LocExp) -> LocExp {
+    let Con::Name(name) = &attr_name.node else {
+        return attr_value;
+    };
+    if !is_primitive_literal_expression(&attr_value) {
+        return attr_value;
+    }
+
+    let bless_function_name = match name.as_str() {
+        "Href" | "Src" => Some("bless"),
+        "Nam" => Some("blessMeta"),
+        _ => None,
+    };
+    let Some(bless_function_name) = bless_function_name else {
+        return attr_value;
+    };
+
+    let span = attr_value.span.clone();
+    Located::new(
+        Exp::App(
+            Box::new(basis_var_expression(bless_function_name, span.clone())),
+            Box::new(attr_value),
+        ),
+        span,
+    )
 }
 
 /// Desugar `<tag attrs>…` opening (before XML content) to the curried `Basis.tag` / `form` / etc.

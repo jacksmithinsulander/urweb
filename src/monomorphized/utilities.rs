@@ -1,12 +1,18 @@
 //! Utility traversals over the Mono AST.
 //!
 //! Ports `mono_util.sml`.
+//!
+//! Also provides the **Level 3 bridge**: functions that convert [`crate::primitives::Prim`]
+//! literals into [`crate::elaborated::types::TypedValue`] / [`crate::elaborated::types::ScalarValue`]
+//! for type-aware constant folding and analysis.
 
 use crate::datatype_kind::DatatypeKind;
+use crate::elaborated::types::{ScalarTypeTag, ScalarValue, TypeHierarchy, TypedValue, Values};
 use crate::monomorphized::{
     CaseMeta, Decl, Exp, JavaScriptMode, LocDecl, LocExp, LocPat, LocTyp, Pat, Policy, QueryMeta,
     Typ,
 };
+use crate::primitives::{Prim, StringMode};
 
 // ---------------------------------------------------------------------------
 // Helper: sort record fields alphabetically (mirrors `sortFields` in SML)
@@ -65,6 +71,7 @@ pub mod typ {
             Typ::List(..) => 5,
             Typ::Source => 6,
             Typ::Signal(..) => 7,
+            Typ::Transaction(..) => 8, // Transaction has the highest tag for ordering stability
         }
     }
 
@@ -90,6 +97,8 @@ pub mod typ {
             (Typ::List(t1), Typ::List(t2)) => compare(t1, t2),
             (Typ::Source, Typ::Source) => Ordering::Equal,
             (Typ::Signal(t1), Typ::Signal(t2)) => compare(t1, t2),
+            // Compare two Transaction types by their result type.
+            (Typ::Transaction(t1), Typ::Transaction(t2)) => compare(t1, t2),
             _ => tag(left).cmp(&tag(right)),
         }
     }
@@ -137,6 +146,8 @@ pub mod typ {
             Typ::Option(t) => Typ::Option(Box::new(map(*t, f))),
             Typ::List(t) => Typ::List(Box::new(map(*t, f))),
             Typ::Signal(t) => Typ::Signal(Box::new(map(*t, f))),
+            // Recurse into the result type of a transaction.
+            Typ::Transaction(t) => Typ::Transaction(Box::new(map(*t, f))),
             other => other,
         }
     }
@@ -174,6 +185,8 @@ pub mod typ {
             Typ::Option(inner) => exists(inner, predicate),
             Typ::List(inner) => exists(inner, predicate),
             Typ::Signal(inner) => exists(inner, predicate),
+            // Check inside the result type of a transaction.
+            Typ::Transaction(inner) => exists(inner, predicate),
             _ => false,
         }
     }
@@ -200,6 +213,8 @@ pub mod typ {
             Typ::Option(inner) => fold(inner, accumulator, folder),
             Typ::List(inner) => fold(inner, accumulator, folder),
             Typ::Signal(inner) => fold(inner, accumulator, folder),
+            // Fold over the result type of a transaction.
+            Typ::Transaction(inner) => fold(inner, accumulator, folder),
             _ => accumulator,
         }
     }
@@ -417,12 +432,12 @@ pub mod exp {
             }
 
             Exp::Query(qm) => {
-                let exps2 = qm
+                let exps2: Vec<(String, LocTyp)> = qm
                     .exps
                     .into_iter()
                     .map(|(x, t)| (x, map_typ_with_ctx(t, ctx, ft)))
                     .collect();
-                let tables2 = qm
+                let tables2: Vec<(String, Vec<(String, LocTyp)>)> = qm
                     .tables
                     .into_iter()
                     .map(|(x, xts)| {
@@ -436,7 +451,28 @@ pub mod exp {
                 let state2 = map_typ_with_ctx(qm.state, ctx, ft);
                 let query2 = map_b(*qm.query, ctx, ft, fe, bind);
                 // body is evaluated with two extra bindings for "r" and "acc"
-                let body2 = map_b(*qm.body, ctx, ft, fe, bind);
+                let row_t = crate::error_types::Located::new(
+                    Typ::Record(
+                        exps2
+                            .iter()
+                            .cloned()
+                            .chain(tables2.iter().map(|(x, xts)| {
+                                (
+                                    x.clone(),
+                                    crate::error_types::Located::new(
+                                        Typ::Record(xts.clone()),
+                                        state2.span.clone(),
+                                    ),
+                                )
+                            }))
+                            .collect(),
+                    ),
+                    state2.span.clone(),
+                );
+                let mut body_ctx = ctx.clone();
+                bind(&mut body_ctx, &Binder::RelE("r".into(), row_t));
+                bind(&mut body_ctx, &Binder::RelE("acc".into(), state2.clone()));
+                let body2 = map_b(*qm.body, &mut body_ctx, ft, fe, bind);
                 let initial2 = map_b(*qm.initial, ctx, ft, fe, bind);
                 Exp::Query(QueryMeta {
                     exps: exps2,
@@ -1106,6 +1142,79 @@ pub mod decl {
 }
 
 // ---------------------------------------------------------------------------
+// Level 3 bridge: Prim ↔ TypedValue
+// ---------------------------------------------------------------------------
+//
+// These functions connect Level 3 (term/literal values, `Prim`) to the
+// `TypedValue<i64>` / `ScalarValue<i64>` hierarchy so that passes like
+// `mono_opt` can perform type-aware constant folding.
+
+/// Returns the [`ScalarTypeTag`] for a [`Prim`] literal.
+///
+/// This is the narrowest bridge — just the type discriminant, no value conversion.
+/// Use [`prim_to_typed_value`] when you also need the concrete value.
+pub fn prim_scalar_type(prim: &Prim) -> ScalarTypeTag {
+    match prim {
+        Prim::Int(_) => ScalarTypeTag::Int, // signed 64-bit integer literal
+        Prim::Float(_) => ScalarTypeTag::Float, // IEEE-754 double literal
+        Prim::String(_, _) => ScalarTypeTag::String, // UTF-8 string literal
+        Prim::Char(_) => ScalarTypeTag::Char, // Unicode character literal
+    }
+}
+
+/// Convert a [`Prim`] literal into a [`TypedValue<i64>`] for type-aware constant folding.
+///
+/// Integer and char values are stored as `i64`.  Float values are stored with their bits
+/// reinterpreted as `i64` — use [`TypedValue::as_float`] to recover the `f64`.
+/// String bytes are stored in [`ScalarValue::String`].
+pub fn prim_to_typed_value(prim: &Prim) -> TypedValue<i64> {
+    match prim {
+        Prim::Int(n) => TypedValue::from_int(*n), // delegate to the TypedValue constructor
+        Prim::Float(f) => TypedValue::from_float(*f), // store float bits via from_float
+        Prim::String(_, s) => TypedValue {
+            value: Values::Scalar(ScalarValue::String(s.as_bytes().to_vec())), // UTF-8 bytes
+            type_tag: TypeHierarchy::Scalar(ScalarTypeTag::String),            // string classifier
+        },
+        Prim::Char(c) => TypedValue {
+            value: Values::Scalar(ScalarValue::Int(*c as i64)), // char as unicode scalar i64
+            type_tag: TypeHierarchy::Scalar(ScalarTypeTag::Char), // char classifier (not Int)
+        },
+    }
+}
+
+/// Convert a [`TypedValue<i64>`] back to a [`Prim`] if the value is representable.
+///
+/// Only scalar variants with a clear `Prim` counterpart are converted; compound values
+/// and arrays return `None`.  Float bits are reinterpreted from the stored `i64`.
+pub fn typed_value_to_prim(tv: &TypedValue<i64>) -> Option<Prim> {
+    match (&tv.value, &tv.type_tag) {
+        // Integer stored as i64 → Prim::Int.
+        (Values::Scalar(ScalarValue::Int(n)), TypeHierarchy::Scalar(ScalarTypeTag::Int)) => {
+            Some(Prim::Int(*n)) // straightforward reconstruction
+        }
+        // Float bits stored as i64 → reinterpret as f64 → Prim::Float.
+        (Values::Scalar(ScalarValue::Float(bits)), TypeHierarchy::Scalar(ScalarTypeTag::Float)) => {
+            Some(Prim::Float(f64::from_bits(*bits as u64))) // reinterpret bits
+        }
+        // String bytes → UTF-8 decode → Prim::String.
+        (
+            Values::Scalar(ScalarValue::String(bytes)),
+            TypeHierarchy::Scalar(ScalarTypeTag::String),
+        ) => {
+            let s = String::from_utf8(bytes.clone()).ok()?; // reject non-UTF-8
+            Some(Prim::String(StringMode::Normal, s)) // Normal mode on reconstruction
+        }
+        // Char stored as i64 unicode scalar → Prim::Char.
+        (Values::Scalar(ScalarValue::Int(n)), TypeHierarchy::Scalar(ScalarTypeTag::Char)) => {
+            let scalar = u32::try_from(*n).ok()?; // char must fit in u32
+            char::from_u32(scalar).map(Prim::Char) // validate unicode scalar
+        }
+        // Any other combination cannot be converted back to Prim.
+        _ => None,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -1253,5 +1362,71 @@ mod tests {
         sort_fields(&mut fields);
         assert_eq!(fields[0].0, "a");
         assert_ne!(fields[0].0, before, "sort_fields must reorder");
+    }
+
+    // ── Prim ↔ TypedValue bridge tests ──────────────────────────────────────
+
+    #[test]
+    fn prim_int_round_trips_through_typed_value() {
+        let original = Prim::Int(42); // a concrete integer literal
+        let typed = prim_to_typed_value(&original); // convert to TypedValue
+        assert_eq!(typed.as_int(), Some(42)); // value is preserved
+        assert_eq!(typed_value_to_prim(&typed), Some(Prim::Int(42))); // round-trip
+    }
+
+    #[test]
+    fn prim_float_round_trips_through_typed_value() {
+        // Use a value that is not an approximation of a well-known constant.
+        let test_value: f64 = 1.234_567_891; // arbitrary test value (not a named constant)
+        let original = Prim::Float(test_value); // a float literal
+        let typed = prim_to_typed_value(&original);
+        let recovered = typed.as_float().expect("should recover f64");
+        // Bit-exact round-trip: the f64 value must be recovered without any loss.
+        assert_eq!(
+            recovered.to_bits(),
+            test_value.to_bits(),
+            "float bits must survive round-trip"
+        );
+        let prim_back = typed_value_to_prim(&typed).expect("float should round-trip");
+        if let Prim::Float(f) = prim_back {
+            assert_eq!(f.to_bits(), test_value.to_bits()); // same bits recovered
+        } else {
+            panic!("expected Prim::Float");
+        }
+    }
+
+    #[test]
+    fn prim_string_round_trips_through_typed_value() {
+        let original = Prim::String(StringMode::Normal, "hello".into()); // string literal
+        let typed = prim_to_typed_value(&original); // convert to TypedValue
+        let recovered = typed_value_to_prim(&typed); // convert back
+        assert_eq!(
+            recovered,
+            Some(Prim::String(StringMode::Normal, "hello".into()))
+        );
+    }
+
+    #[test]
+    fn typed_value_fold_int_binop_add() {
+        let left = TypedValue::from_int(10); // first operand
+        let right = TypedValue::from_int(32); // second operand
+        let result =
+            TypedValue::fold_int_binop(&left, &right, "+").expect("addition should succeed");
+        assert_eq!(result.as_int(), Some(42)); // 10 + 32 = 42
+    }
+
+    #[test]
+    fn typed_value_fold_int_binop_div_by_zero_returns_none() {
+        let left = TypedValue::from_int(10);
+        let right = TypedValue::from_int(0); // division by zero must be guarded
+        let result = TypedValue::fold_int_binop(&left, &right, "/");
+        assert!(result.is_none(), "division by zero must return None");
+    }
+
+    #[test]
+    fn prim_scalar_type_returns_correct_tag() {
+        assert_eq!(prim_scalar_type(&Prim::Int(0)), ScalarTypeTag::Int); // Int tag
+        assert_eq!(prim_scalar_type(&Prim::Float(0.0)), ScalarTypeTag::Float); // Float tag
+        assert_eq!(prim_scalar_type(&Prim::Char('x')), ScalarTypeTag::Char); // Char tag
     }
 }

@@ -131,6 +131,8 @@ fn fmt_typ(t: &LocTyp) -> String {
         Typ::List(inner) => format!("List({})", fmt_typ(inner)),
         Typ::Source => "Source".to_string(),
         Typ::Signal(inner) => format!("Signal({})", fmt_typ(inner)),
+        // Format Transaction as Tx(...) for JS debug output.
+        Typ::Transaction(inner) => format!("Tx({})", fmt_typ(inner)),
     }
 }
 

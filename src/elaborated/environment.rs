@@ -32,7 +32,7 @@ use crate::elaborated::{
     CaseMeta, Constructor, DatatypeDecl, Declaration, ElaboratedDeclaration, Explicitness,
     Expression, FieldMeta, Kind, LocatedConstructor, LocatedDeclaration,
     LocatedElaboratedDeclaration, LocatedExpression, LocatedKind, LocatedPattern, LocatedSignature,
-    LocatedSignatureItem, Pattern, RestMeta, Signature, SignatureItem, Types,
+    LocatedSignatureItem, Pattern, RestMeta, Signature, SignatureItem,
 };
 use crate::error_types::{Located, Span};
 
@@ -183,11 +183,18 @@ pub fn hnorm_con_expression_head(
     elaboration_environment: &Env,
     mut constructor: LocatedConstructor,
 ) -> LocatedConstructor {
+    let mut seen_shapes: std::collections::HashSet<String> = std::collections::HashSet::new();
     for _ in 0u32..32u32 {
-        constructor = type_operations::hnorm_con(expand_named_left_spine_in_constructor(
+        let next_constructor = type_operations::hnorm_con(expand_named_left_spine_in_constructor(
             elaboration_environment,
             &constructor,
         ));
+        let next_shape = crate::elaborated::type_display::format_constructor(&next_constructor);
+        if !seen_shapes.insert(next_shape) {
+            constructor = next_constructor;
+            break;
+        }
+        constructor = next_constructor;
     }
     constructor
 }
@@ -800,11 +807,14 @@ fn lift_kind_in_kind_recursively(kind_bound: usize, kind: LocatedKind) -> Locate
                 .map(|k| lift_kind_in_kind_recursively(kind_bound, k))
                 .collect(),
         ),
-        Kind::Fun(name, body) => Kind::Fun(
-            name,
-            Box::new(lift_kind_in_kind_recursively(kind_bound + 1, *body)),
-        ),
-        other => other,
+        Kind::KFun(body) => {
+            // KFun binds a kind variable, so increment the bound before recursing into the body.
+            Kind::KFun(Box::new(lift_kind_in_kind_recursively(
+                kind_bound + 1,
+                *body,
+            )))
+        }
+        other => other, // Leaf kinds (Typed, Name, Unit, etc.) have no Rel nodes to lift.
     };
     Located::new(node, span)
 }
@@ -919,6 +929,19 @@ fn lift_kind_in_con_recursively(
         Constructor::Unif(nesting_level, span_ref, kind_annotation, name, unif_ref) => {
             Constructor::Unif(nesting_level, span_ref, kind_annotation, name, unif_ref)
         }
+        // Recursively lift kind indices in each argument constructor for every enum arm.
+        Constructor::Enum(arms) => Constructor::Enum(
+            arms.into_iter()
+                .map(|(tag_name, arg_constructors)| {
+                    // Lift kind indices in each argument constructor.
+                    let lifted_args = arg_constructors
+                        .into_iter()
+                        .map(|arg| lift_kind_in_con_recursively(kind_bound, arg))
+                        .collect();
+                    (tag_name, lifted_args)
+                })
+                .collect(),
+        ),
     };
     Located::new(node, span)
 }
@@ -2093,9 +2116,24 @@ impl Env {
         self.rel_c.len()
     }
 
+    /// Return the number of relative kind bindings currently in scope.
+    pub fn rel_k_len(&self) -> usize {
+        self.rel_k.len()
+    }
+
     /// Return the number of relative expression bindings currently in scope.
     pub fn rel_e_len(&self) -> usize {
         self.rel_e.len()
+    }
+
+    /// Return the greatest named constructor id currently visible, if any.
+    pub fn max_named_constructor_id(&self) -> Option<usize> {
+        self.named_c.keys().copied().max()
+    }
+
+    /// Return the greatest named structure id currently visible, if any.
+    pub fn max_named_structure_id(&self) -> Option<usize> {
+        self.named_str.keys().copied().max()
     }
 
     /// Return the classes map (read-only) for typeclass resolution.
@@ -2160,7 +2198,7 @@ fn class_head_of(constructor: &LocatedConstructor) -> Option<ClassName> {
             );
             match &*guard {
                 super::CUnif::Known(inner) => class_head_of(inner),
-                super::CUnif::Unknown => None,
+                super::CUnif::Unknown(_) => None,
             }
         }
         _ => None,
@@ -2190,7 +2228,7 @@ fn class_lookup_key_in_env(
                 super::CUnif::Known(inner) => {
                     class_lookup_key_in_env(elaboration_environment, inner)
                 }
-                super::CUnif::Unknown => None,
+                super::CUnif::Unknown(_) => None,
             }
         }
         _ => class_head_of(constructor),
@@ -2434,7 +2472,7 @@ fn rewrite_signature_projection_constructor(
                         current_path,
                     );
                 }
-                super::CUnif::Unknown => Constructor::Unif(
+                super::CUnif::Unknown(_) => Constructor::Unif(
                     *level,
                     unif_span.clone(),
                     kind.clone(),
@@ -2726,7 +2764,7 @@ fn rule_in(
                         drop(guard);
                         quantifiers(&inner, quantifier_kinds)
                     }
-                    super::CUnif::Unknown => None,
+                    super::CUnif::Unknown(_) => None,
                 }
             }
             Constructor::TCFun(_, _, kind_annotation, body) => {
@@ -2902,13 +2940,44 @@ fn project_str_field(
                         ));
                     }
                 }
-                extend_signature_projection_maps(&mut projection_maps, &item);
+                extend_signature_projection_maps(&mut projection_maps, item);
             }
             None
         }
         Signature::Error => Some(Located::new(Signature::Error, signature.span.clone())),
         _ => None,
     }
+}
+
+pub fn projected_structure_field_signature(
+    elaboration_environment: &Env,
+    root_module_id: usize,
+    path: &[String],
+    field: &str,
+) -> Option<LocatedSignature> {
+    let (_, root_signature) = elaboration_environment
+        .lookup_str_named(root_module_id)
+        .ok()?;
+    let mut current_signature = hnorm_sgn(elaboration_environment, root_signature);
+    let mut current_path = Vec::new();
+    for path_field in path {
+        let next_signature = project_str_field(
+            elaboration_environment,
+            &current_signature,
+            root_module_id,
+            &current_path,
+            path_field,
+        )?;
+        current_signature = hnorm_sgn(elaboration_environment, &next_signature);
+        current_path.push(path_field.clone());
+    }
+    project_str_field(
+        elaboration_environment,
+        &current_signature,
+        root_module_id,
+        &current_path,
+        field,
+    )
 }
 
 /// Walk a `SgnConst` to find sub-signature `field` and return it.
@@ -2933,7 +3002,7 @@ fn project_sgn_field(
                         ));
                     }
                 }
-                extend_signature_projection_maps(&mut projection_maps, &item);
+                extend_signature_projection_maps(&mut projection_maps, item);
             }
             None
         }
@@ -3107,56 +3176,61 @@ pub(crate) fn resolve_modproj_constructor_definition(
         return None;
     };
     let current_path = path.to_vec();
-    let result = match items.as_ref() {
-        // Search the final signature for a concrete constructor item with this field name.
-        _ => {
-            let mut projection_maps = SignatureProjectionMaps::default();
-            for item in items.iter() {
-                match &item.node {
-                    SignatureItem::Constructor(field_name, _, _, definition)
-                        if field_name == name =>
-                    {
-                        let rewritten_definition = rewrite_signature_projection_constructor(
-                            definition,
-                            &projection_maps,
-                            module_id,
-                            &current_path,
-                        );
-                        match &rewritten_definition.node {
-                            Constructor::ModProj(def_module_id, def_path, def_name)
-                                if *def_module_id == module_id
-                                    && def_path == &current_path
-                                    && def_name == name =>
-                            {
-                                return None;
-                            }
-                            _ => return Some(rewritten_definition),
+    // Search the final signature for a concrete constructor item with this field name.
+    let result = {
+        let mut projection_maps = SignatureProjectionMaps::default();
+        let mut resolved_definition: Option<LocatedConstructor> = None;
+        for item in items.iter() {
+            match &item.node {
+                SignatureItem::Constructor(field_name, _, _, definition) if field_name == name => {
+                    let rewritten_definition = rewrite_signature_projection_constructor(
+                        definition,
+                        &projection_maps,
+                        module_id,
+                        &current_path,
+                    );
+                    match &rewritten_definition.node {
+                        Constructor::ModProj(def_module_id, def_path, def_name)
+                            if *def_module_id == module_id
+                                && def_path == &current_path
+                                && def_name == name =>
+                        {
+                            resolved_definition = None;
+                            break;
+                        }
+                        _ => {
+                            resolved_definition = Some(rewritten_definition);
+                            break;
                         }
                     }
-                    SignatureItem::Class(field_name, _, _, definition) if field_name == name => {
-                        let rewritten_definition = rewrite_signature_projection_constructor(
-                            definition,
-                            &projection_maps,
-                            module_id,
-                            &current_path,
-                        );
-                        match &rewritten_definition.node {
-                            Constructor::ModProj(def_module_id, def_path, def_name)
-                                if *def_module_id == module_id
-                                    && def_path == &current_path
-                                    && def_name == name =>
-                            {
-                                return None;
-                            }
-                            _ => return Some(rewritten_definition),
-                        }
-                    }
-                    _ => {}
                 }
-                extend_signature_projection_maps(&mut projection_maps, &item);
+                SignatureItem::Class(field_name, _, _, definition) if field_name == name => {
+                    let rewritten_definition = rewrite_signature_projection_constructor(
+                        definition,
+                        &projection_maps,
+                        module_id,
+                        &current_path,
+                    );
+                    match &rewritten_definition.node {
+                        Constructor::ModProj(def_module_id, def_path, def_name)
+                            if *def_module_id == module_id
+                                && def_path == &current_path
+                                && def_name == name =>
+                        {
+                            resolved_definition = None;
+                            break;
+                        }
+                        _ => {
+                            resolved_definition = Some(rewritten_definition);
+                            break;
+                        }
+                    }
+                }
+                _ => {}
             }
-            None
+            extend_signature_projection_maps(&mut projection_maps, item);
         }
+        resolved_definition
     };
     if let Ok(mut guard) = cache.lock() {
         guard.insert(cache_key, result.clone());
@@ -3487,7 +3561,7 @@ pub fn sgi_binds(elaboration_environment: Env, sgn_item: &LocatedSignatureItem) 
             orig_constrs_path: _,
             constrs,
         } => {
-            let kind_type = Located::new(Kind::Typed(Types::Any), span.clone());
+            let kind_type = Located::new(Kind::Star, span.clone());
             let datatype_kind = params
                 .iter()
                 .fold(kind_type.clone(), |accumulated_kind, _| {
@@ -3540,7 +3614,7 @@ fn sgi_binds_datatype(
     datatype_decl: &DatatypeDecl,
     span: &Span,
 ) -> Env {
-    let kind_type = Located::new(Kind::Typed(Types::Any), span.clone());
+    let kind_type = Located::new(Kind::Star, span.clone());
     // Build the kind for the datatype: (KType -> ... -> KType) with as many arrows
     // as there are type parameters.
     let datatype_kind: LocatedKind =
@@ -3587,7 +3661,7 @@ pub(crate) fn build_constructor_type(
     arg_type: Option<&LocatedConstructor>,
     span: Span,
 ) -> LocatedConstructor {
-    let kind_type = Located::new(Kind::Typed(Types::Any), span.clone());
+    let kind_type = Located::new(Kind::Star, span.clone());
     let num_params = type_params.len();
 
     // Build `T rel(n-1) rel(n-2) ... rel(0)` (apply all type params to the type constructor).
@@ -3669,7 +3743,7 @@ pub fn decl_binds(elaboration_environment: Env, declaration: &LocatedDeclaration
             orig_constrs_path: _,
             constrs,
         } => {
-            let kind_type = Located::new(Kind::Typed(Types::Any), span.clone());
+            let kind_type = Located::new(Kind::Star, span.clone());
             let datatype_kind = params
                 .iter()
                 .fold(kind_type.clone(), |accumulated_kind, _| {
@@ -3812,7 +3886,7 @@ fn decl_binds_datatype(
     datatype_decl: &DatatypeDecl,
     span: &Span,
 ) -> Env {
-    let kind_type = Located::new(Kind::Typed(Types::Any), span.clone());
+    let kind_type = Located::new(Kind::Star, span.clone());
     let _num_params = datatype_decl.params.len();
 
     // Build the full kind: `(KType -> ... -> KType)` with `num_params` arrows.
@@ -3874,7 +3948,7 @@ mod tests {
     }
 
     fn kind_type() -> LocatedKind {
-        Located::new(Kind::Typed(Types::Any), dummy_span())
+        Located::new(Kind::Star, dummy_span())
     }
 
     fn con_rel(index: usize) -> LocatedConstructor {
@@ -3890,7 +3964,7 @@ mod tests {
     fn hnorm_con_expression_head_inlines_named_alias() -> anyhow::Result<()> {
         // test returns Result to allow ? propagation
         let sp = dummy_span();
-        let k = Located::new(Kind::Typed(Types::Any), sp.clone());
+        let k = Located::new(Kind::Star, sp.clone());
         let def = Located::new(Constructor::Unit, sp.clone());
         let env = Env::empty().push_c_named_as("Ali".into(), 7usize, k, Some(def));
         let out = hnorm_con_expression_head(&env, con_named(7));
@@ -3903,7 +3977,7 @@ mod tests {
     fn hnorm_con_constructor_abstraction_inlines_named_alias() -> anyhow::Result<()> {
         // test returns Result to allow ? propagation
         let sp = dummy_span();
-        let k = Located::new(Kind::Typed(Types::Any), sp.clone());
+        let k = Located::new(Kind::Star, sp.clone());
         let def = Located::new(Constructor::Unit, sp.clone());
         let env = Env::empty().push_c_named_as("B".into(), 3usize, k, Some(def));
         let out = hnorm_con_constructor_abstraction(&env, con_named(3));
@@ -3915,7 +3989,7 @@ mod tests {
     fn hnorm_con_constructor_abstraction_reduces_named_kapp_app_alias() -> anyhow::Result<()> {
         // test returns Result to allow ? propagation
         let sp = dummy_span();
-        let type_kind = Located::new(Kind::Typed(Types::Any), sp.clone());
+        let type_kind = Located::new(Kind::Star, sp.clone());
         let identity_definition = Located::new(
             Constructor::KAbs(
                 "K".into(),
@@ -3933,9 +4007,10 @@ mod tests {
         let env = Env::empty().push_c_named_as(
             "PolyIdentity".into(),
             17usize,
+            // Kind::Fun is gone; represent ∀K. K -> K as Arrow(Any, Arrow(Rel(0), Rel(0))).
             Located::new(
-                Kind::Fun(
-                    "K".into(),
+                Kind::Arrow(
+                    Box::new(Located::new(Kind::Star, sp.clone())),
                     Box::new(Located::new(
                         Kind::Arrow(
                             Box::new(Located::new(Kind::Rel(0), sp.clone())),
@@ -4064,7 +4139,7 @@ mod tests {
         let env = Env::empty().push_c_rel("a".to_string(), kind.clone());
         // 'a' is at index 0
         let (_, a_kind) = env.lookup_c_rel(0)?;
-        assert!(matches!(a_kind.node, Kind::Typed(Types::Any)));
+        assert!(matches!(a_kind.node, Kind::Star));
 
         let env2 = env.push_c_rel("b".to_string(), kind);
         // 'b' is now at 0, 'a' at 1
@@ -4188,6 +4263,46 @@ mod tests {
             None => return Err(anyhow!("expected named structure lookup for MyMod")),
         };
         assert_eq!(*id, 20);
+        Ok(()) // return success to the test harness
+    }
+
+    /// Regression: projected constructor definitions must resolve stably from a structure signature.
+    #[test]
+    fn resolve_modproj_constructor_definition_from_structure_signature() -> anyhow::Result<()> {
+        // test returns Result to allow ? propagation
+        let module_id = 20_123usize;
+        let constructor_id = 20_124usize;
+        let definition = Located::new(Constructor::Unit, dummy_span());
+        let signature = Located::new(
+            Signature::Const(vec![Located::new(
+                SignatureItem::Constructor(
+                    "Ty".to_string(),
+                    constructor_id,
+                    kind_type(),
+                    definition.clone(),
+                ),
+                dummy_span(),
+            )]),
+            dummy_span(),
+        );
+        let env =
+            Env::empty().push_str_named_as_no_enrich("Projected".to_string(), module_id, signature);
+
+        let first = resolve_modproj_constructor_definition(&env, module_id, &[], "Ty")
+            .ok_or_else(|| anyhow!("expected projected constructor definition"))?;
+        let second = resolve_modproj_constructor_definition(&env, module_id, &[], "Ty")
+            .ok_or_else(|| anyhow!("expected cached projected constructor definition"))?;
+
+        assert!(
+            matches!(first.node, Constructor::Unit),
+            "expected Unit projection, got {:?}",
+            first.node
+        );
+        assert!(
+            matches!(second.node, Constructor::Unit),
+            "expected stable cached Unit projection, got {:?}",
+            second.node
+        );
         Ok(()) // return success to the test harness
     }
 

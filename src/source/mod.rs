@@ -98,6 +98,12 @@ pub enum Con {
     /// Projection from a tuple: `c.N`
     Proj(Box<LocCon>, usize),
 
+    /// Anonymous sum type: `[Tag1 | Tag2 of Con1 * Con2 | ...]`
+    ///
+    /// Each arm is `(tag_name, arg_constructors)`. Zero arg constructors means
+    /// a nullary (unit-payload) constructor arm.
+    Enum(Vec<(String, Vec<LocCon>)>),
+
     /// Wildcard to be inferred (annotated with the expected kind)
     Wild(Box<LocKind>),
 }

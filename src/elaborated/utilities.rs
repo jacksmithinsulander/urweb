@@ -106,11 +106,11 @@ pub mod kind {
     ) -> LocatedKind {
         let span = kind.span.clone();
         let mapped = match kind.node {
-            Kind::Typed(Types::Any) => Located::new(Kind::Typed(Types::Any), span),
+            Kind::Star => Located::new(Kind::Star, span),
             Kind::Typed(type_tag) => Located::new(Kind::Typed(type_tag), span),
             Kind::Name => Located::new(Kind::Name, span),
             Kind::Unit => Located::new(Kind::Unit, span),
-            Kind::Error => Located::new(Kind::Error, span),
+            // Kind::Error no longer exists as a variant; errors are now Kind::Typed(Types::Error(..)).
             Kind::Rel(de_bruijn_index) => Located::new(Kind::Rel(de_bruijn_index), span),
 
             Kind::Arrow(left_kind, right_kind) => {
@@ -132,11 +132,10 @@ pub mod kind {
                     .collect();
                 Located::new(Kind::Tuple(kinds_mapped), span)
             }
-            Kind::Fun(variable_name, body) => {
-                context.push(Binder::RelK(variable_name.clone()));
+            // KFun is the implicit kind quantifier (elaborated from source Kind::Fun).
+            Kind::KFun(body) => {
                 let body_mapped = map_b(*body, context, fold_kind_binder);
-                context.pop();
-                Located::new(Kind::Fun(variable_name, Box::new(body_mapped)), span)
+                Located::new(Kind::KFun(Box::new(body_mapped)), span)
             }
             // Unification variable: if solved, recurse into the solution.
             Kind::Unif(span_inner, state, reference) => {
@@ -224,7 +223,8 @@ pub mod kind {
     ) -> State {
         let state = fold_kind_binder(context, kind, initial_state);
         match &kind.node {
-            Kind::Typed(_) | Kind::Name | Kind::Unit | Kind::Error | Kind::Rel(_) => state,
+            // Star and Typed are leaf kinds; errors are Kind::Typed(Types::Error(..)).
+            Kind::Star | Kind::Typed(_) | Kind::Name | Kind::Unit | Kind::Rel(_) => state,
             Kind::Arrow(left_kind, right_kind) => {
                 let state = fold_b(left_kind, context, state, fold_kind_binder);
                 fold_b(right_kind, context, state, fold_kind_binder)
@@ -233,11 +233,8 @@ pub mod kind {
             Kind::Tuple(kinds) => kinds.iter().fold(state, |accumulator, kind_item| {
                 fold_b(kind_item, context, accumulator, fold_kind_binder)
             }),
-            Kind::Fun(variable_name, body) => {
-                let mut extended_context = context.to_vec();
-                extended_context.push(Binder::RelK(variable_name.clone()));
-                fold_b(body, &extended_context, state, fold_kind_binder)
-            }
+            // KFun is the implicit kind quantifier; recurse into the body.
+            Kind::KFun(body) => fold_b(body, context, state, fold_kind_binder),
             Kind::Unif(_, _, reference) => {
                 let known_kind = {
                     let guard = crate::compiler_diagnostics::lock_for_compile(
@@ -296,13 +293,14 @@ pub mod kind {
             return true;
         }
         match &kind.node {
-            Kind::Typed(_) | Kind::Name | Kind::Unit | Kind::Error | Kind::Rel(_) => false,
+            Kind::Star | Kind::Typed(_) | Kind::Name | Kind::Unit | Kind::Rel(_) => false, // leaf kinds
             Kind::Arrow(left_kind, right_kind) => {
                 exists(left_kind, predicate) || exists(right_kind, predicate)
             }
+            // KFun: recurse into the body under the implicit kind quantifier.
+            Kind::KFun(body) => exists(body, predicate),
             Kind::Record(inner) => exists(inner, predicate),
             Kind::Tuple(kinds) => kinds.iter().any(|kind_item| exists(kind_item, predicate)),
-            Kind::Fun(_, body) => exists(body, predicate),
             Kind::Unif(_, _, reference) => {
                 let known_kind = {
                     let guard = crate::compiler_diagnostics::lock_for_compile(
@@ -605,7 +603,7 @@ pub mod con {
                     );
                     match &*guard {
                         CUnif::Known(known) => Some(*known.clone()),
-                        CUnif::Unknown => None,
+                        CUnif::Unknown(_) => None,
                     }
                 };
                 match known_constructor {
@@ -618,6 +616,21 @@ pub mod con {
                         span,
                     ),
                 }
+            }
+            // Recursively map each argument constructor inside each enum arm.
+            Constructor::Enum(arms) => {
+                let mapped_arms = arms
+                    .into_iter()
+                    .map(|(tag_name, arg_constructors)| {
+                        // Map each argument constructor within the arm.
+                        let mapped_args = arg_constructors
+                            .into_iter()
+                            .map(|arg| map_b(arg, context, fold_kind_binder, fold_con_binder))
+                            .collect();
+                        (tag_name, mapped_args)
+                    })
+                    .collect();
+                Located::new(Constructor::Enum(mapped_arms), span)
             }
         };
         fold_con_binder(context, mapped)
@@ -823,7 +836,7 @@ pub mod con {
                     );
                     match &*guard {
                         CUnif::Known(known) => Some(*known.clone()),
-                        CUnif::Unknown => None,
+                        CUnif::Unknown(_) => None,
                     }
                 };
                 match known_constructor {
@@ -839,6 +852,14 @@ pub mod con {
                     }
                     None => accumulator,
                 }
+            }
+            // Fold over each argument constructor in each enum arm.
+            Constructor::Enum(arms) => {
+                arms.iter().fold(accumulator, |acc, (_, arg_constructors)| {
+                    arg_constructors.iter().fold(acc, |acc2, arg| {
+                        fold_b(arg, context, acc2, fold_kind_binder, fold_con_binder)
+                    })
+                })
             }
         }
     }
@@ -921,7 +942,7 @@ pub mod con {
                     );
                     match &*guard {
                         CUnif::Known(known) => Some(*known.clone()),
-                        CUnif::Unknown => None,
+                        CUnif::Unknown(_) => None,
                     }
                 };
                 match known_constructor {
@@ -932,6 +953,12 @@ pub mod con {
                     None => false,
                 }
             }
+            // Check predicate on each argument constructor across all enum arms.
+            Constructor::Enum(arms) => arms.iter().any(|(_, arg_constructors)| {
+                arg_constructors
+                    .iter()
+                    .any(|arg| exists(arg, kind_predicate, constructor_predicate))
+            }),
         }
     }
 }
@@ -2624,14 +2651,14 @@ pub mod sgn {
             SignatureItem::ClassAbs(x, n, k) => {
                 // ClassAbs introduces kind k -> Type
                 let arr_span = loc;
-                let k_type = Located::new(Kind::Typed(Types::Any), arr_span.clone());
+                let k_type = Located::new(Kind::Star, arr_span.clone());
                 let k_arr =
                     Located::new(Kind::Arrow(Box::new(k.clone()), Box::new(k_type)), arr_span);
                 Some(Binder::NamedC(x.clone(), *n, k_arr, None))
             }
             SignatureItem::Class(x, n, k, c) => {
                 let arr_span = loc;
-                let k_type = Located::new(Kind::Typed(Types::Any), arr_span.clone());
+                let k_type = Located::new(Kind::Star, arr_span.clone());
                 let k_arr =
                     Located::new(Kind::Arrow(Box::new(k.clone()), Box::new(k_type)), arr_span);
                 Some(Binder::NamedC(x.clone(), *n, k_arr, Some(c.clone())))

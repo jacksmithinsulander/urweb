@@ -14,7 +14,9 @@ use crate::c_like_representation::{
 };
 use crate::compiler_diagnostics::lock_for_compile;
 use crate::datatype_kind::DatatypeKind;
+use crate::db::{ProjectDb, SqlFlavor};
 use crate::export::{Effect, ExportKind};
+use crate::monomorphized::numeric_narrowing::NarrowingTable;
 use crate::monomorphized::{DbMode, Sidedness};
 use crate::settings::{FailureMode, Settings};
 
@@ -828,54 +830,72 @@ pub fn p_exp(env: &CjrEnv, e: &LocExp, settings: &Settings) -> String {
 
         Exp::Nextval { seq, prepared } => {
             let seq_s = p_exp(env, seq, settings);
-            let nextval_common = |query_expr: &str| -> String {
-                format!(
-                    "if (res == NULL) {{\n\
-                       uw_try_reconnecting_and_restarting(ctx);\n\
-                       uw_error(ctx, FATAL, \"Ur/Web / SQL: could not run NEXTVAL (out of memory or database unreachable).\");\n\
-                     }}\n\
-                     if (PQresultStatus(res) != PGRES_TUPLES_OK) {{\n\
-                       PQclear(res);\n\
-                       uw_error(ctx, FATAL, \"Ur/Web / SQL: NEXTVAL failed.\\nSQL: %s\\nServer: %s\", {q}, PQerrorMessage(conn));\n\
-                     }}\n\
-                     n = PQntuples(res);\n\
-                     if (n != 1) {{\n\
-                       PQclear(res);\n\
-                       uw_error(ctx, FATAL, \"Ur/Web / SQL: NEXTVAL returned the wrong row count (expected 1, got %d).\\nSQL: %s\\nServer: %s\", n, {q}, PQerrorMessage(conn));\n\
-                     }}\n\
-                     n = uw_Basis_stringToInt_error(ctx, PQgetvalue(res, 0, 0));\n\
-                     PQclear(res);\n",
-                    q = query_expr,
-                )
-            };
-            match prepared {
-                Some(pq) => {
-                    let query_literal = format!("\"{}\"", pq.query.replace('"', "\\\""));
-                    let exec_call = if settings.persistent() {
+            match settings.resolved_db_backend() {
+                ProjectDb::Sql(SqlFlavor::Sqlite) => format!(
+                    "({{\n\
+                     uw_Basis_int n;\n\
+                     uw_ensure_transaction(ctx);\n\
+                     uw_conn *conn = uw_get_db(ctx);\n\
+                     char *insert = uw_Basis_strcat(ctx, \"INSERT INTO \", uw_Basis_strcat(ctx, {seq}, \" VALUES (NULL)\"));\n\
+                     char *delete = uw_Basis_strcat(ctx, \"DELETE FROM \", {seq});\n\
+                     if (sqlite3_exec(conn->conn, insert, NULL, NULL, NULL) != SQLITE_OK) uw_error(ctx, FATAL, \"'nextval' INSERT failed: %s\", sqlite3_errmsg(conn->conn));\n\
+                     n = sqlite3_last_insert_rowid(conn->conn);\n\
+                     if (sqlite3_exec(conn->conn, delete, NULL, NULL, NULL) != SQLITE_OK) uw_error(ctx, FATAL, \"'nextval' DELETE failed: %s\", sqlite3_errmsg(conn->conn));\n\
+                     n;\n\
+                     }})",
+                    seq = seq_s,
+                ),
+                _ => {
+                    let nextval_common = |query_expr: &str| -> String {
                         format!(
-                            "PQexecPrepared(conn, \"uw{}\", 0, NULL, NULL, NULL, 0)",
-                            pq.id
-                        )
-                    } else {
-                        format!(
-                            "PQexecParams(conn, \"{}\", 0, NULL, NULL, NULL, NULL, 0)",
-                            pq.query.replace('"', "\\\"")
+                            "if (res == NULL) {{\n\
+                               uw_try_reconnecting_and_restarting(ctx);\n\
+                               uw_error(ctx, FATAL, \"Ur/Web / SQL: could not run NEXTVAL (out of memory or database unreachable).\");\n\
+                             }}\n\
+                             if (PQresultStatus(res) != PGRES_TUPLES_OK) {{\n\
+                               PQclear(res);\n\
+                               uw_error(ctx, FATAL, \"Ur/Web / SQL: NEXTVAL failed.\\nSQL: %s\\nServer: %s\", {q}, PQerrorMessage(conn));\n\
+                             }}\n\
+                             n = PQntuples(res);\n\
+                             if (n != 1) {{\n\
+                               PQclear(res);\n\
+                               uw_error(ctx, FATAL, \"Ur/Web / SQL: NEXTVAL returned the wrong row count (expected 1, got %d).\\nSQL: %s\\nServer: %s\", n, {q}, PQerrorMessage(conn));\n\
+                             }}\n\
+                             n = uw_Basis_stringToInt_error(ctx, PQgetvalue(res, 0, 0));\n\
+                             PQclear(res);\n",
+                            q = query_expr,
                         )
                     };
-                    let nc = nextval_common(&query_literal);
-                    format!(
-                        "({{\nuw_Basis_int n;\nuw_ensure_transaction(ctx);\nPGconn *conn = uw_get_db(ctx);\nPGresult *res = {exec};\n{nc}n;\n}})",
-                        exec = exec_call,
-                        nc = nc,
-                    )
-                }
-                None => {
-                    let nc = nextval_common("query");
-                    format!(
-                        "({{\nuw_Basis_int n;\nuw_ensure_transaction(ctx);\nPGconn *conn = uw_get_db(ctx);\nchar *query = uw_Basis_strcat(ctx, \"SELECT NEXTVAL('\", uw_Basis_strcat(ctx, {seq}, \"')\"));\nPGresult *res = PQexecParams(conn, query, 0, NULL, NULL, NULL, NULL, 0);\n{nc}n;\n}})",
-                        seq = seq_s,
-                        nc = nc,
-                    )
+                    match prepared {
+                        Some(pq) => {
+                            let query_literal = format!("\"{}\"", escape_c_string(&pq.query));
+                            let exec_call = if settings.persistent() {
+                                format!(
+                                    "PQexecPrepared(conn, \"uw{}\", 0, NULL, NULL, NULL, 0)",
+                                    pq.id
+                                )
+                            } else {
+                                format!(
+                                    "PQexecParams(conn, \"{}\", 0, NULL, NULL, NULL, NULL, 0)",
+                                    escape_c_string(&pq.query)
+                                )
+                            };
+                            let nc = nextval_common(&query_literal);
+                            format!(
+                                "({{\nuw_Basis_int n;\nuw_ensure_transaction(ctx);\nPGconn *conn = uw_get_db(ctx);\nPGresult *res = {exec};\n{nc}n;\n}})",
+                                exec = exec_call,
+                                nc = nc,
+                            )
+                        }
+                        None => {
+                            let nc = nextval_common("query");
+                            format!(
+                                "({{\nuw_Basis_int n;\nuw_ensure_transaction(ctx);\nPGconn *conn = uw_get_db(ctx);\nchar *query = uw_Basis_strcat(ctx, \"SELECT NEXTVAL('\", uw_Basis_strcat(ctx, {seq}, \"')\"));\nPGresult *res = PQexecParams(conn, query, 0, NULL, NULL, NULL, NULL, 0);\n{nc}n;\n}})",
+                                seq = seq_s,
+                                nc = nc,
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -883,11 +903,17 @@ pub fn p_exp(env: &CjrEnv, e: &LocExp, settings: &Settings) -> String {
         Exp::Setval { seq, count } => {
             let seq_s = p_exp(env, seq, settings);
             let count_s = p_exp(env, count, settings);
-            format!(
-                "({{\nuw_ensure_transaction(ctx);\nPGconn *conn = uw_get_db(ctx);\nchar *query = uw_Basis_strcat(ctx, \"SELECT SETVAL('\", uw_Basis_strcat(ctx, {seq}, uw_Basis_strcat(ctx, \"', \", uw_Basis_strcat(ctx, uw_Basis_sqlifyInt(ctx, {count}), \")\"))));\nPGresult *res = PQexecParams(conn, query, 0, NULL, NULL, NULL, NULL, 0);\nif (res == NULL) {{ uw_try_reconnecting_and_restarting(ctx); uw_error(ctx, FATAL, \"Ur/Web / SQL: could not allocate memory for SETVAL (database may be unreachable).\"); }}\nif (PQresultStatus(res) != PGRES_TUPLES_OK) {{ PQclear(res); uw_error(ctx, FATAL, \"Ur/Web / SQL: SETVAL query failed.\\nSQL: %s\\nServer: %s\", query, PQerrorMessage(conn)); }}\nPQclear(res);\n0;\n}})",
-                seq = seq_s,
-                count = count_s,
-            )
+            match settings.resolved_db_backend() {
+                ProjectDb::Sql(SqlFlavor::Sqlite) => {
+                    "({\nuw_error(ctx, FATAL, \"Ur/Web / SQL: SETVAL is unsupported for SQLite.\");\n0;\n})"
+                        .to_string()
+                }
+                _ => format!(
+                    "({{\nuw_ensure_transaction(ctx);\nPGconn *conn = uw_get_db(ctx);\nchar *query = uw_Basis_strcat(ctx, \"SELECT SETVAL('\", uw_Basis_strcat(ctx, {seq}, uw_Basis_strcat(ctx, \"', \", uw_Basis_strcat(ctx, uw_Basis_sqlifyInt(ctx, {count}), \")\"))));\nPGresult *res = PQexecParams(conn, query, 0, NULL, NULL, NULL, NULL, 0);\nif (res == NULL) {{ uw_try_reconnecting_and_restarting(ctx); uw_error(ctx, FATAL, \"Ur/Web / SQL: could not allocate memory for SETVAL (database may be unreachable).\"); }}\nif (PQresultStatus(res) != PGRES_TUPLES_OK) {{ PQclear(res); uw_error(ctx, FATAL, \"Ur/Web / SQL: SETVAL query failed.\\nSQL: %s\\nServer: %s\", query, PQerrorMessage(conn)); }}\nPQclear(res);\n0;\n}})",
+                    seq = seq_s,
+                    count = count_s,
+                ),
+            }
         }
 
         Exp::Uurlify(e1, t, from_client) => {
@@ -965,8 +991,12 @@ fn p_ensql(t: &crate::settings::SqlType, expr: &str) -> String {
     }
 }
 
-/// Generate C code to read a Postgres column value.
-fn p_getcol(
+fn escape_c_string(s: &str) -> String {
+    cjr_test_tick();
+    s.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+fn p_getcol_postgres(
     col: usize,
     t: &crate::settings::SqlType,
     wont_leak_strings: bool,
@@ -992,9 +1022,7 @@ fn p_getcol(
             SqlType::Time => format!("uw_Basis_unsqlTime(ctx, {})", e),
             SqlType::Clocktime => format!("uw_Basis_unsqlClocktime(ctx, {})", e),
             SqlType::Calendardate => format!("uw_Basis_unsqlCalendardate(ctx, {})", e),
-            SqlType::Blob => {
-                format!("uw_Basis_stringToBlob_error(ctx, {}, {})", e, e_len)
-            }
+            SqlType::Blob => format!("uw_Basis_stringToBlob_error(ctx, {}, {})", e, e_len),
             SqlType::Channel => format!("uw_Basis_stringToChannel_error(ctx, {})", e),
             SqlType::Client => format!("uw_Basis_stringToClient_error(ctx, {})", e),
             SqlType::Nullable(inner) => p_unsql(inner, e, e_len, wont_leak_strings),
@@ -1005,22 +1033,19 @@ fn p_getcol(
     let getlength = format!("PQgetlength(res, i, {})", col);
 
     match t {
-        SqlType::Nullable(inner) => {
-            let getter = match inner.as_ref() {
-                SqlType::String => {
-                    let inner_expr = p_unsql(inner, &getvalue, &getlength, wont_leak_strings);
-                    format!("(PQgetisnull(res, i, {col}) ? NULL : {inner_expr})")
-                }
-                _ => {
-                    let ctype = inner.c_type();
-                    let inner_expr = p_unsql(inner, &getvalue, &getlength, wont_leak_strings);
-                    format!(
-                        "(PQgetisnull(res, i, {col}) ? NULL : ({{\n{ctype} *tmp = uw_malloc(ctx, sizeof({ctype}));\n*tmp = {inner_expr};\ntmp;\n}}))"
-                    )
-                }
-            };
-            getter
-        }
+        SqlType::Nullable(inner) => match inner.as_ref() {
+            SqlType::String => {
+                let inner_expr = p_unsql(inner, &getvalue, &getlength, wont_leak_strings);
+                format!("(PQgetisnull(res, i, {col}) ? NULL : {inner_expr})")
+            }
+            _ => {
+                let ctype = inner.c_type();
+                let inner_expr = p_unsql(inner, &getvalue, &getlength, wont_leak_strings);
+                format!(
+                    "(PQgetisnull(res, i, {col}) ? NULL : ({{\n{ctype} *tmp = uw_malloc(ctx, sizeof({ctype}));\n*tmp = {inner_expr};\ntmp;\n}}))"
+                )
+            }
+        },
         _ => {
             let value_expr = p_unsql(t, &getvalue, &getlength, wont_leak_strings);
             format!(
@@ -1034,13 +1059,104 @@ fn p_getcol(
     }
 }
 
+fn p_getcol_sqlite(
+    col: usize,
+    t: &crate::settings::SqlType,
+    wont_leak_strings: bool,
+    loc_str: &str,
+) -> String {
+    cjr_test_tick();
+    use crate::settings::SqlType;
+
+    fn p_unsql(t: &SqlType, col: usize, wont_leak_strings: bool) -> String {
+        cjr_test_tick();
+        match t {
+            SqlType::Int => format!("sqlite3_column_int64(stmt, {})", col),
+            SqlType::Float => format!("sqlite3_column_double(stmt, {})", col),
+            SqlType::String => {
+                if wont_leak_strings {
+                    format!("(uw_Basis_string)sqlite3_column_text(stmt, {})", col)
+                } else {
+                    format!(
+                        "uw_strdup(ctx, (uw_Basis_string)sqlite3_column_text(stmt, {}))",
+                        col
+                    )
+                }
+            }
+            SqlType::Char => format!("sqlite3_column_text(stmt, {})[0]", col),
+            SqlType::Bool => format!("(uw_Basis_bool)sqlite3_column_int(stmt, {})", col),
+            SqlType::Time => format!(
+                "uw_Basis_stringToTimef_error(ctx, \"%Y-%m-%d %H:%M:%S\", (uw_Basis_string)sqlite3_column_text(stmt, {}))",
+                col
+            ),
+            SqlType::Clocktime => format!(
+                "uw_Basis_stringToClocktimef_error(ctx, \"%H:%M:%S\", (uw_Basis_string)sqlite3_column_text(stmt, {}))",
+                col
+            ),
+            SqlType::Calendardate => format!(
+                "uw_Basis_stringToCalendardatef_error(ctx, \"%Y-%m-%d\", (uw_Basis_string)sqlite3_column_text(stmt, {}))",
+                col
+            ),
+            SqlType::Blob => format!(
+                "({{\nchar *data = (char *)sqlite3_column_blob(stmt, {col});\nint len = sqlite3_column_bytes(stmt, {col});\nuw_Basis_blob b = {{len, uw_memdup(ctx, data, len)}};\nb;\n}})",
+                col = col
+            ),
+            SqlType::Channel => format!(
+                "({{\nsqlite3_int64 n = sqlite3_column_int64(stmt, {col});\nuw_Basis_channel ch = {{n >> 32, n & 0xFFFFFFFF}};\nch;\n}})",
+                col = col
+            ),
+            SqlType::Client => format!("sqlite3_column_int(stmt, {})", col),
+            SqlType::Nullable(inner) => p_unsql(inner, col, wont_leak_strings),
+        }
+    }
+
+    match t {
+        SqlType::Nullable(inner) => match inner.as_ref() {
+            SqlType::String => {
+                let inner_expr = p_unsql(inner, col, wont_leak_strings);
+                format!("(sqlite3_column_type(stmt, {col}) == SQLITE_NULL ? NULL : {inner_expr})")
+            }
+            _ => {
+                let ctype = inner.c_type();
+                let inner_expr = p_unsql(inner, col, wont_leak_strings);
+                format!(
+                    "(sqlite3_column_type(stmt, {col}) == SQLITE_NULL ? NULL : ({{\n{ctype} *tmp = uw_malloc(ctx, sizeof({ctype}));\n*tmp = {inner_expr};\ntmp;\n}}))"
+                )
+            }
+        },
+        _ => {
+            let value_expr = p_unsql(t, col, wont_leak_strings);
+            format!(
+                "(sqlite3_column_type(stmt, {col}) == SQLITE_NULL ? ({{ {ctype} tmp; uw_error(ctx, FATAL, \"{loc}: Unexpectedly NULL field #{col}\"); tmp; }}) : {value_expr})",
+                col = col,
+                ctype = t.c_type(),
+                loc = loc_str,
+                value_expr = value_expr,
+            )
+        }
+    }
+}
+
+fn p_getcol(
+    col: usize,
+    t: &crate::settings::SqlType,
+    wont_leak_strings: bool,
+    loc_str: &str,
+    settings: &Settings,
+) -> String {
+    cjr_test_tick();
+    match settings.resolved_db_backend() {
+        ProjectDb::Sql(SqlFlavor::Sqlite) => p_getcol_sqlite(col, t, wont_leak_strings, loc_str),
+        _ => p_getcol_postgres(col, t, wont_leak_strings, loc_str),
+    }
+}
+
 /// Generate C code to declare and fill Postgres prepared-statement parameters.
 fn make_params(inputs: &[(String, crate::settings::SqlType)]) -> String {
     cjr_test_tick();
     use crate::settings::SqlType;
     let mut out = String::new();
 
-    // paramFormats array
     out.push_str("static const int paramFormats[] = { ");
     let formats: Vec<String> = inputs
         .iter()
@@ -1049,7 +1165,6 @@ fn make_params(inputs: &[(String, crate::settings::SqlType)]) -> String {
     out.push_str(&formats.join(", "));
     out.push_str(" };\n");
 
-    // paramLengths
     let has_blob = inputs.iter().any(|(_, t)| t.is_blob());
     if has_blob {
         out.push_str(&format!(
@@ -1059,9 +1174,7 @@ fn make_params(inputs: &[(String, crate::settings::SqlType)]) -> String {
         for (i, (e, t)) in inputs.iter().enumerate() {
             let len_expr = match t {
                 SqlType::Blob => format!("{}.size", e),
-                SqlType::Nullable(inner) if inner.is_blob() => {
-                    format!("{e}?{e}->size:0")
-                }
+                SqlType::Nullable(inner) if inner.is_blob() => format!("{e}?{e}->size:0"),
                 _ => "0".into(),
             };
             out.push_str(&format!("paramLengths[{}] = {};\n", i, len_expr));
@@ -1070,7 +1183,6 @@ fn make_params(inputs: &[(String, crate::settings::SqlType)]) -> String {
         out.push_str("const int *paramLengths = paramFormats;\n");
     }
 
-    // paramValues
     out.push_str(&format!(
         "const char **paramValues = uw_malloc(ctx, {} * sizeof(char*));\n",
         inputs.len()
@@ -1083,8 +1195,110 @@ fn make_params(inputs: &[(String, crate::settings::SqlType)]) -> String {
     out
 }
 
-/// Generate the common Postgres query loop (after `res` is set).
-fn query_common(
+fn sqlite_bind_nonnull_call(index: usize, arg: &str, t: &crate::settings::SqlType) -> String {
+    cjr_test_tick();
+    use crate::settings::SqlType;
+    match t {
+        SqlType::Int => format!("sqlite3_bind_int64(stmt, {index}, {arg})"),
+        SqlType::Float => format!("sqlite3_bind_double(stmt, {index}, {arg})"),
+        SqlType::String => {
+            format!("sqlite3_bind_text(stmt, {index}, {arg}, -1, SQLITE_TRANSIENT)")
+        }
+        SqlType::Bool => format!("sqlite3_bind_int(stmt, {index}, {arg})"),
+        SqlType::Time => format!(
+            "sqlite3_bind_text(stmt, {index}, uw_Basis_timef(ctx, \"%Y-%m-%d %H:%M:%S\", {arg}), -1, SQLITE_TRANSIENT)"
+        ),
+        SqlType::Clocktime => format!(
+            "sqlite3_bind_text(stmt, {index}, uw_Basis_clocktimef(ctx, \"%H:%M:%S\", {arg}), -1, SQLITE_TRANSIENT)"
+        ),
+        SqlType::Calendardate => format!(
+            "sqlite3_bind_text(stmt, {index}, uw_Basis_calendardatef(ctx, \"%Y-%m-%d\", {arg}), -1, SQLITE_TRANSIENT)"
+        ),
+        SqlType::Blob => format!(
+            "sqlite3_bind_blob(stmt, {index}, {arg}.data, {arg}.size, SQLITE_TRANSIENT)"
+        ),
+        SqlType::Channel => format!(
+            "sqlite3_bind_int64(stmt, {index}, ((sqlite3_int64){arg}.cli << 32) | {arg}.chn)"
+        ),
+        SqlType::Client => format!("sqlite3_bind_int(stmt, {index}, {arg})"),
+        SqlType::Char | SqlType::Nullable(_) => unreachable!(),
+    }
+}
+
+fn sqlite_bind_error_check(index: usize, bind_expr: &str, loc_str: &str) -> String {
+    cjr_test_tick();
+    format!(
+        "if ({bind_expr} != SQLITE_OK) uw_error(ctx, FATAL, \"{loc}: Error binding parameter #{index}: %s\", sqlite3_errmsg(conn->conn));\n",
+        bind_expr = bind_expr,
+        loc = loc_str,
+        index = index,
+    )
+}
+
+fn sqlite_bind_param(
+    index: usize,
+    arg: &str,
+    t: &crate::settings::SqlType,
+    loc_str: &str,
+) -> String {
+    cjr_test_tick();
+    use crate::settings::SqlType;
+    match t {
+        SqlType::Char => format!(
+            "{{\nchar {arg}s[] = {{{arg}, 0}};\nint uw_bind_rc_{index} = sqlite3_bind_text(stmt, {index}, {arg}s, -1, SQLITE_TRANSIENT);\nif (uw_bind_rc_{index} != SQLITE_OK) uw_error(ctx, FATAL, \"{loc}: Error binding parameter #{index}: %s\", sqlite3_errmsg(conn->conn));\n}}\n",
+            arg = arg,
+            index = index,
+            loc = loc_str,
+        ),
+        SqlType::Nullable(inner) => match inner.as_ref() {
+            SqlType::Char => format!(
+                "{{\nint uw_bind_rc_{index};\nif ({arg} == NULL) uw_bind_rc_{index} = sqlite3_bind_null(stmt, {index});\nelse {{\nchar {arg}s[] = {{(*{arg}), 0}};\nuw_bind_rc_{index} = sqlite3_bind_text(stmt, {index}, {arg}s, -1, SQLITE_TRANSIENT);\n}}\nif (uw_bind_rc_{index} != SQLITE_OK) uw_error(ctx, FATAL, \"{loc}: Error binding parameter #{index}: %s\", sqlite3_errmsg(conn->conn));\n}}\n",
+                arg = arg,
+                index = index,
+                loc = loc_str,
+            ),
+            SqlType::String => {
+                let bind_expr = format!(
+                    "({arg} == NULL ? sqlite3_bind_null(stmt, {index}) : {inner})",
+                    arg = arg,
+                    index = index,
+                    inner = sqlite_bind_nonnull_call(index, arg, inner),
+                );
+                sqlite_bind_error_check(index, &bind_expr, loc_str)
+            }
+            _ => {
+                let inner_arg = format!("(*{})", arg);
+                let bind_expr = format!(
+                    "({arg} == NULL ? sqlite3_bind_null(stmt, {index}) : {inner})",
+                    arg = arg,
+                    index = index,
+                    inner = sqlite_bind_nonnull_call(index, &inner_arg, inner),
+                );
+                sqlite_bind_error_check(index, &bind_expr, loc_str)
+            }
+        },
+        _ => {
+            let bind_expr = sqlite_bind_nonnull_call(index, arg, t);
+            sqlite_bind_error_check(index, &bind_expr, loc_str)
+        }
+    }
+}
+
+fn make_sqlite_bindings(inputs: &[(String, crate::settings::SqlType)], loc_str: &str) -> String {
+    cjr_test_tick();
+    let mut out = String::new();
+    for (i, (_, t)) in inputs.iter().enumerate() {
+        out.push_str(&sqlite_bind_param(
+            i + 1,
+            &format!("arg{}", i + 1),
+            t,
+            loc_str,
+        ));
+    }
+    out
+}
+
+fn query_common_postgres(
     loc_str: &str,
     query_expr: &str,
     outputs: &[(String, crate::settings::SqlType)],
@@ -1129,14 +1343,36 @@ fn query_common(
     )
 }
 
+fn query_common_sqlite(loc_str: &str, query_expr: &str, do_cols: &str) -> String {
+    cjr_test_tick();
+    format!(
+        "int r;\n\
+         sqlite3_reset(stmt);\n\
+         uw_end_region(ctx);\n\
+         while ((r = sqlite3_step(stmt)) == SQLITE_ROW) {{\n\
+           {do_cols}\
+         }}\n\
+         if (r == SQLITE_BUSY) {{\n\
+           sleep(1);\n\
+           uw_error(ctx, UNLIMITED_RETRY, \"Database is busy\");\n\
+         }}\n\
+         if (r != SQLITE_DONE) uw_error(ctx, FATAL, \"{loc}: query step failed: %s<br />%s\", {q}, sqlite3_errmsg(conn->conn));\n",
+        loc = loc_str,
+        q = query_expr,
+        do_cols = do_cols,
+    )
+}
+
 /// Generate the `do_cols` body: read all output columns into the row struct.
 fn make_do_cols(
     rnum: usize,
     outputs: &[(String, crate::settings::SqlType)],
     body_s: &str,
+    state_t: &str,
     env_depth: usize,
     wont_leak_strings: bool,
     loc_str: &str,
+    settings: &Settings,
 ) -> String {
     cjr_test_tick();
     let mut out = format!(
@@ -1144,12 +1380,12 @@ fn make_do_cols(
          {st} __uwr_acc_{dep1} = acc;\n\n",
         rn = rnum,
         dep = env_depth,
-        st = "/* state */",
+        st = state_t,
         dep1 = env_depth + 1,
     );
 
     for (i, (proj, t)) in outputs.iter().enumerate() {
-        let col_s = p_getcol(i, t, wont_leak_strings, loc_str);
+        let col_s = p_getcol(i, t, wont_leak_strings, loc_str, settings);
         out.push_str(&format!(
             "__uwr_r_{dep}.{proj} = {col};\n",
             dep = env_depth,
@@ -1259,10 +1495,6 @@ fn get_pargs(
     }
 }
 
-// ---------------------------------------------------------------------------
-// Query and DML printing (Postgres)
-// ---------------------------------------------------------------------------
-
 fn p_exp_query(env: &CjrEnv, qm: &QueryMeta, settings: &Settings) -> String {
     cjr_test_tick();
     let state_t = p_typ(env, &qm.state);
@@ -1271,7 +1503,6 @@ fn p_exp_query(env: &CjrEnv, qm: &QueryMeta, settings: &Settings) -> String {
     let loc_str = "query";
     let env_depth = env.count_e_rels();
 
-    // Sort exps and expand tables to get the full output column list
     let mut exps: Vec<(String, crate::settings::SqlType)> = qm
         .exps
         .iter()
@@ -1294,87 +1525,148 @@ fn p_exp_query(env: &CjrEnv, qm: &QueryMeta, settings: &Settings) -> String {
     let outputs: Vec<(String, crate::settings::SqlType)> =
         exps.into_iter().chain(table_cols).collect();
 
-    // Build the body expression in an extended environment (push r and acc)
     let mut env2 = env.clone();
     let row_t = crate::error_types::Located::dummy(Typ::Record(qm.rnum));
     env2.push_e_rel("r", row_t);
     env2.push_e_rel("acc", qm.state.clone());
     let body_s = p_exp(&env2, &qm.body, settings);
 
-    let do_cols = make_do_cols(qm.rnum, &outputs, &body_s, env_depth, false, loc_str);
+    let do_cols = make_do_cols(
+        qm.rnum, &outputs, &body_s, &state_t, env_depth, false, loc_str, settings,
+    );
 
-    match &qm.prepared {
-        None => {
-            let query_common_s = query_common(loc_str, "query", &outputs, &do_cols);
-            format!(
-                "(({{\n\
-                 {state_t} acc = {initial_s};\n\
-                 int dummy = (uw_begin_region(ctx), 0);\n\
-                 uw_ensure_transaction(ctx);\n\
-                 char *query = {query_s};\n\n\
-                 PGconn *conn = uw_get_db(ctx);\n\
-                 PGresult *res = PQexecParams(conn, query, 0, NULL, NULL, NULL, NULL, 0);\n\n\
-                 {query_common}\
-                 acc;\n\
-                 }}))",
-                state_t = state_t,
-                initial_s = initial_s,
-                query_s = query_s,
-                query_common = query_common_s,
-            )
-        }
-        Some(pq) => {
-            let inputs = get_pargs(&qm.query, env, settings);
-            let params_s = if inputs.is_empty() {
-                String::new()
-            } else {
-                make_params(&inputs)
-            };
-            let n_inputs = inputs.len();
-            let query_common_s = query_common(
-                loc_str,
-                &format!("\"{}\"", pq.query.replace('"', "\\\"")),
-                &outputs,
-                &do_cols,
-            );
-            let arg_decls: String = inputs
-                .iter()
-                .enumerate()
-                .map(|(i, (e, t))| format!("{} arg{} = {};\n", t.c_type(), i + 1, e))
-                .collect();
-            let exec_call = if settings.persistent() {
+    match settings.resolved_db_backend() {
+        ProjectDb::Sql(SqlFlavor::Sqlite) => match &qm.prepared {
+            None => {
+                let query_common_s = query_common_sqlite(loc_str, "query", &do_cols);
                 format!(
-                    "PQexecPrepared(conn, \"uw{id}\", {n}, paramValues, paramLengths, paramFormats, 0)",
-                    id = pq.id,
-                    n = n_inputs,
+                    "(({{\n\
+                     {state_t} acc = {initial_s};\n\
+                     int dummy = (uw_begin_region(ctx), 0);\n\
+                     uw_ensure_transaction(ctx);\n\
+                     char *query = {query_s};\n\
+                     uw_conn *conn = uw_get_db(ctx);\n\
+                     sqlite3_stmt *stmt;\n\
+                     if (sqlite3_prepare_v2(conn->conn, query, -1, &stmt, NULL) != SQLITE_OK) uw_error(ctx, FATAL, \"Error preparing statement: %s<br />%s\", query, sqlite3_errmsg(conn->conn));\n\
+                     uw_push_cleanup(ctx, (void (*)(void *))sqlite3_finalize, stmt);\n\
+                     {query_common}\
+                     uw_pop_cleanup(ctx);\n\
+                     acc;\n\
+                     }}))",
+                    state_t = state_t,
+                    initial_s = initial_s,
+                    query_s = query_s,
+                    query_common = query_common_s,
                 )
-            } else {
+            }
+            Some(pq) => {
+                let inputs = get_pargs(&qm.query, env, settings);
+                let arg_decls: String = inputs
+                    .iter()
+                    .enumerate()
+                    .map(|(i, (e, t))| format!("{} arg{} = {};\n", t.c_type(), i + 1, e))
+                    .collect();
+                let bindings = make_sqlite_bindings(&inputs, loc_str);
+                let query_literal = escape_c_string(&pq.query);
+                let query_common_s =
+                    query_common_sqlite(loc_str, &format!("\"{}\"", query_literal), &do_cols);
                 format!(
-                    "PQexecParams(conn, \"{q}\", {n}, NULL, paramValues, paramLengths, paramFormats, 0)",
-                    q = pq.query.replace('"', "\\\""),
-                    n = n_inputs,
+                    "(({{\n\
+                     {state_t} acc = {initial_s};\n\
+                     int dummy = (uw_begin_region(ctx), 0);\n\
+                     uw_ensure_transaction(ctx);\n\
+                     uw_conn *conn = uw_get_db(ctx);\n\
+                     {arg_decls}\
+                     sqlite3_stmt *stmt;\n\
+                     if (sqlite3_prepare_v2(conn->conn, \"{query}\", -1, &stmt, NULL) != SQLITE_OK) uw_error(ctx, FATAL, \"Error preparing statement: {query}<br />%s\", sqlite3_errmsg(conn->conn));\n\
+                     uw_push_cleanup(ctx, (void (*)(void *))sqlite3_finalize, stmt);\n\
+                     {bindings}\
+                     {query_common}\
+                     uw_pop_cleanup(ctx);\n\
+                     acc;\n\
+                     }}))",
+                    state_t = state_t,
+                    initial_s = initial_s,
+                    arg_decls = arg_decls,
+                    query = query_literal,
+                    bindings = bindings,
+                    query_common = query_common_s,
                 )
-            };
-            format!(
-                "(({{\n\
-                 {state_t} acc = {initial_s};\n\
-                 int dummy = (uw_begin_region(ctx), 0);\n\
-                 uw_ensure_transaction(ctx);\n\
-                 {arg_decls}\n\
-                 PGconn *conn = uw_get_db(ctx);\n\
-                 {params}\n\
-                 PGresult *res = {exec};\n\n\
-                 {query_common}\
-                 acc;\n\
-                 }}))",
-                state_t = state_t,
-                initial_s = initial_s,
-                arg_decls = arg_decls,
-                params = params_s,
-                exec = exec_call,
-                query_common = query_common_s,
-            )
-        }
+            }
+        },
+        _ => match &qm.prepared {
+            None => {
+                let query_common_s = query_common_postgres(loc_str, "query", &outputs, &do_cols);
+                format!(
+                    "(({{\n\
+                     {state_t} acc = {initial_s};\n\
+                     int dummy = (uw_begin_region(ctx), 0);\n\
+                     uw_ensure_transaction(ctx);\n\
+                     char *query = {query_s};\n\n\
+                     PGconn *conn = uw_get_db(ctx);\n\
+                     PGresult *res = PQexecParams(conn, query, 0, NULL, NULL, NULL, NULL, 0);\n\n\
+                     {query_common}\
+                     acc;\n\
+                     }}))",
+                    state_t = state_t,
+                    initial_s = initial_s,
+                    query_s = query_s,
+                    query_common = query_common_s,
+                )
+            }
+            Some(pq) => {
+                let inputs = get_pargs(&qm.query, env, settings);
+                let params_s = if inputs.is_empty() {
+                    String::new()
+                } else {
+                    make_params(&inputs)
+                };
+                let n_inputs = inputs.len();
+                let query_common_s = query_common_postgres(
+                    loc_str,
+                    &format!("\"{}\"", escape_c_string(&pq.query)),
+                    &outputs,
+                    &do_cols,
+                );
+                let arg_decls: String = inputs
+                    .iter()
+                    .enumerate()
+                    .map(|(i, (e, t))| format!("{} arg{} = {};\n", t.c_type(), i + 1, e))
+                    .collect();
+                let exec_call = if settings.persistent() {
+                    format!(
+                        "PQexecPrepared(conn, \"uw{id}\", {n}, paramValues, paramLengths, paramFormats, 0)",
+                        id = pq.id,
+                        n = n_inputs,
+                    )
+                } else {
+                    format!(
+                        "PQexecParams(conn, \"{q}\", {n}, NULL, paramValues, paramLengths, paramFormats, 0)",
+                        q = escape_c_string(&pq.query),
+                        n = n_inputs,
+                    )
+                };
+                format!(
+                    "(({{\n\
+                     {state_t} acc = {initial_s};\n\
+                     int dummy = (uw_begin_region(ctx), 0);\n\
+                     uw_ensure_transaction(ctx);\n\
+                     {arg_decls}\n\
+                     PGconn *conn = uw_get_db(ctx);\n\
+                     {params}\n\
+                     PGresult *res = {exec};\n\n\
+                     {query_common}\
+                     acc;\n\
+                     }}))",
+                    state_t = state_t,
+                    initial_s = initial_s,
+                    arg_decls = arg_decls,
+                    params = params_s,
+                    exec = exec_call,
+                    query_common = query_common_s,
+                )
+            }
+        },
     }
 }
 
@@ -1382,136 +1674,216 @@ fn p_exp_dml(env: &CjrEnv, dm: &DmlMeta, settings: &Settings) -> String {
     cjr_test_tick();
     let dml_s = p_exp(env, &dm.dml, settings);
     let loc_str = "dml";
-
-    let make_savepoint = match dm.mode {
-        FailureMode::None => {
-            "PGresult *res = PQexec(conn, \"SAVEPOINT s\");\n\
-             if (res == NULL) { uw_try_reconnecting_and_restarting(ctx); uw_error(ctx, FATAL, \"Ur/Web / SQL: could not allocate memory for SAVEPOINT (database may be unreachable).\"); }\n\
-             if (PQresultStatus(res) != PGRES_COMMAND_OK) { PQclear(res); uw_error(ctx, FATAL, \"Ur/Web / SQL: SAVEPOINT failed (nested transaction could not start).\"); }\n\
-             PQclear(res);\n\n"
-        }
-        FailureMode::Error => "",
-    };
-
-    let dml_common = |dml_expr: &str| -> String {
-        let error_case = match dm.mode {
-            FailureMode::Error => format!(
-                "PQclear(res);\nuw_error(ctx, FATAL, \"{loc}: Ur/Web / SQL: insert/update/delete failed.\\nSQL: %s\\nServer: %s\", {dml}, PQerrorMessage(conn));",
-                loc = loc_str,
-                dml = dml_expr,
-            ),
-            FailureMode::None => format!(
-                "uw_set_error_message(ctx, PQerrorMessage(conn));\n\
-                 res = PQexec(conn, \"ROLLBACK TO s\");\n\
-                 if (res == NULL) {{ uw_try_reconnecting_and_restarting(ctx); uw_error(ctx, FATAL, \"Ur/Web / SQL: could not allocate memory for ROLLBACK TO (database may be unreachable).\"); }}\n\
-                 if (PQresultStatus(res) != PGRES_COMMAND_OK) {{ PQclear(res); uw_error(ctx, FATAL, \"{loc}: Ur/Web / SQL: ROLLBACK TO SAVEPOINT failed after a DML error.\\nSQL: %s\\nServer: %s\", {dml}, PQerrorMessage(conn)); }}\n\
-                 PQclear(res);",
-                loc = loc_str,
-                dml = dml_expr,
-            ),
-        };
-        let success_case = match dm.mode {
-            FailureMode::Error => "PQclear(res);\n".into(),
-            FailureMode::None => format!(
-                " else {{\n\
-                 PQclear(res);\n\
-                 res = PQexec(conn, \"RELEASE s\");\n\
-                 if (res == NULL) {{ uw_try_reconnecting_and_restarting(ctx); uw_error(ctx, FATAL, \"Ur/Web / SQL: could not allocate memory for RELEASE SAVEPOINT (database may be unreachable).\"); }}\n\
-                 if (PQresultStatus(res) != PGRES_COMMAND_OK) {{ PQclear(res); uw_error(ctx, FATAL, \"{loc}: Ur/Web / SQL: RELEASE SAVEPOINT failed.\\nSQL: %s\\nServer: %s\", {dml}, PQerrorMessage(conn)); }}\n\
-                 PQclear(res);\n}}\n",
-                loc = loc_str,
-                dml = dml_expr,
-            ),
-        };
-        format!(
-            "if (res == NULL) {{\n\
-               uw_try_reconnecting_and_restarting(ctx);\n\
-               uw_error(ctx, FATAL, \"Ur/Web / SQL: could not allocate memory for DML result (database may be unreachable).\");\n\
-             }}\n\
-             if (PQresultStatus(res) != PGRES_COMMAND_OK) {{\n\
-               if (!strcmp_nullsafe(PQresultErrorField(res, PG_DIAG_SQLSTATE), \"40001\")) {{ PQclear(res); uw_error(ctx, UNLIMITED_RETRY, \"Ur/Web / SQL: serialization conflict — retrying this transaction.\"); }}\n\
-               if (!strcmp_nullsafe(PQresultErrorField(res, PG_DIAG_SQLSTATE), \"40P01\")) {{ PQclear(res); uw_error(ctx, UNLIMITED_RETRY, \"Ur/Web / SQL: deadlock detected — retrying this transaction.\"); }}\n\
-               {error}\n\
-             }}{success}",
-            error = error_case,
-            success = success_case,
-        )
-    };
-
     let mode_result = match dm.mode {
         FailureMode::Error => "0",
         FailureMode::None => "uw_dup_and_clear_error_message(ctx)",
     };
 
-    match &dm.prepared {
-        None => {
-            let dml_common_s = dml_common("dml");
-            format!(
-                "(uw_begin_region(ctx), ({{\n\
-                 char *dml = {dml_s};\n\
-                 PGconn *conn = uw_get_db(ctx);\n\
-                 PGresult *res;\n\
-                 {savepoint}\
-                 res = PQexecParams(conn, dml, 0, NULL, NULL, NULL, NULL, 0);\n\n\
-                 uw_ensure_transaction(ctx);\n\n\
-                 {dml_common}\n\
-                 uw_end_region(ctx);\n\
-                 {mode_result};\n\
-                 }}))",
-                dml_s = dml_s,
-                savepoint = make_savepoint,
-                dml_common = dml_common_s,
-                mode_result = mode_result,
-            )
+    match settings.resolved_db_backend() {
+        ProjectDb::Sql(SqlFlavor::Sqlite) => {
+            let dml_common = |dml_expr: &str| -> String {
+                let failure = match dm.mode {
+                    FailureMode::Error => format!(
+                        "uw_error(ctx, FATAL, \"{loc}: DML step failed: %s<br />%s\", {dml}, sqlite3_errmsg(conn->conn));",
+                        loc = loc_str,
+                        dml = dml_expr,
+                    ),
+                    FailureMode::None => {
+                        "uw_set_error_message(ctx, sqlite3_errmsg(conn->conn));".to_string()
+                    }
+                };
+                format!(
+                    "int r;\n\
+                     if ((r = sqlite3_step(stmt)) == SQLITE_BUSY) {{\n\
+                       sleep(1);\n\
+                       uw_error(ctx, UNLIMITED_RETRY, \"Database is busy\");\n\
+                     }}\n\
+                     if (r != SQLITE_DONE) {failure}\n",
+                    failure = failure,
+                )
+            };
+
+            match &dm.prepared {
+                None => {
+                    let dml_common_s = dml_common("dml");
+                    format!(
+                        "(uw_begin_region(ctx), ({{\n\
+                         char *dml = {dml_s};\n\
+                         uw_ensure_transaction(ctx);\n\
+                         uw_conn *conn = uw_get_db(ctx);\n\
+                         sqlite3_stmt *stmt;\n\
+                         if (sqlite3_prepare_v2(conn->conn, dml, -1, &stmt, NULL) != SQLITE_OK) uw_error(ctx, FATAL, \"Error preparing statement: %s<br />%s\", dml, sqlite3_errmsg(conn->conn));\n\
+                         uw_push_cleanup(ctx, (void (*)(void *))sqlite3_finalize, stmt);\n\
+                         {dml_common}\
+                         uw_pop_cleanup(ctx);\n\
+                         uw_end_region(ctx);\n\
+                         {mode_result};\n\
+                         }}))",
+                        dml_s = dml_s,
+                        dml_common = dml_common_s,
+                        mode_result = mode_result,
+                    )
+                }
+                Some(pd) => {
+                    let inputs = get_pargs(&dm.dml, env, settings);
+                    let arg_decls: String = inputs
+                        .iter()
+                        .enumerate()
+                        .map(|(i, (e, t))| format!("{} arg{} = {};\n", t.c_type(), i + 1, e))
+                        .collect();
+                    let bindings = make_sqlite_bindings(&inputs, loc_str);
+                    let dml_literal = escape_c_string(&pd.dml);
+                    let dml_common_s = dml_common(&format!("\"{}\"", dml_literal));
+                    format!(
+                        "(uw_begin_region(ctx), ({{\n\
+                         uw_ensure_transaction(ctx);\n\
+                         uw_conn *conn = uw_get_db(ctx);\n\
+                         {arg_decls}\
+                         sqlite3_stmt *stmt;\n\
+                         if (sqlite3_prepare_v2(conn->conn, \"{dml}\", -1, &stmt, NULL) != SQLITE_OK) uw_error(ctx, FATAL, \"Error preparing statement: {dml}<br />%s\", sqlite3_errmsg(conn->conn));\n\
+                         uw_push_cleanup(ctx, (void (*)(void *))sqlite3_finalize, stmt);\n\
+                         {bindings}\
+                         {dml_common}\
+                         uw_pop_cleanup(ctx);\n\
+                         uw_end_region(ctx);\n\
+                         {mode_result};\n\
+                         }}))",
+                        arg_decls = arg_decls,
+                        dml = dml_literal,
+                        bindings = bindings,
+                        dml_common = dml_common_s,
+                        mode_result = mode_result,
+                    )
+                }
+            }
         }
-        Some(pd) => {
-            let inputs = get_pargs(&dm.dml, env, settings);
-            let params_s = if inputs.is_empty() {
-                String::new()
-            } else {
-                make_params(&inputs)
+        _ => {
+            let make_savepoint = match dm.mode {
+                FailureMode::None => {
+                    "PGresult *res = PQexec(conn, \"SAVEPOINT s\");\n\
+                     if (res == NULL) { uw_try_reconnecting_and_restarting(ctx); uw_error(ctx, FATAL, \"Ur/Web / SQL: could not allocate memory for SAVEPOINT (database may be unreachable).\"); }\n\
+                     if (PQresultStatus(res) != PGRES_COMMAND_OK) { PQclear(res); uw_error(ctx, FATAL, \"Ur/Web / SQL: SAVEPOINT failed (nested transaction could not start).\"); }\n\
+                     PQclear(res);\n\n"
+                }
+                FailureMode::Error => "",
             };
-            let n_inputs = inputs.len();
-            let arg_decls: String = inputs
-                .iter()
-                .enumerate()
-                .map(|(i, (e, t))| format!("{} arg{} = {};\n", t.c_type(), i + 1, e))
-                .collect();
-            let exec_call = if settings.persistent() {
+
+            let dml_common = |dml_expr: &str| -> String {
+                let error_case = match dm.mode {
+                    FailureMode::Error => format!(
+                        "PQclear(res);\nuw_error(ctx, FATAL, \"{loc}: Ur/Web / SQL: insert/update/delete failed.\\nSQL: %s\\nServer: %s\", {dml}, PQerrorMessage(conn));",
+                        loc = loc_str,
+                        dml = dml_expr,
+                    ),
+                    FailureMode::None => format!(
+                        "uw_set_error_message(ctx, PQerrorMessage(conn));\n\
+                         res = PQexec(conn, \"ROLLBACK TO s\");\n\
+                         if (res == NULL) {{ uw_try_reconnecting_and_restarting(ctx); uw_error(ctx, FATAL, \"Ur/Web / SQL: could not allocate memory for ROLLBACK TO (database may be unreachable).\"); }}\n\
+                         if (PQresultStatus(res) != PGRES_COMMAND_OK) {{ PQclear(res); uw_error(ctx, FATAL, \"{loc}: Ur/Web / SQL: ROLLBACK TO SAVEPOINT failed after a DML error.\\nSQL: %s\\nServer: %s\", {dml}, PQerrorMessage(conn)); }}\n\
+                         PQclear(res);",
+                        loc = loc_str,
+                        dml = dml_expr,
+                    ),
+                };
+                let success_case = match dm.mode {
+                    FailureMode::Error => "PQclear(res);\n".into(),
+                    FailureMode::None => format!(
+                        " else {{\n\
+                         PQclear(res);\n\
+                         res = PQexec(conn, \"RELEASE s\");\n\
+                         if (res == NULL) {{ uw_try_reconnecting_and_restarting(ctx); uw_error(ctx, FATAL, \"Ur/Web / SQL: could not allocate memory for RELEASE SAVEPOINT (database may be unreachable).\"); }}\n\
+                         if (PQresultStatus(res) != PGRES_COMMAND_OK) {{ PQclear(res); uw_error(ctx, FATAL, \"{loc}: Ur/Web / SQL: RELEASE SAVEPOINT failed.\\nSQL: %s\\nServer: %s\", {dml}, PQerrorMessage(conn)); }}\n\
+                         PQclear(res);\n}}\n",
+                        loc = loc_str,
+                        dml = dml_expr,
+                    ),
+                };
                 format!(
-                    "PQexecPrepared(conn, \"uw{id}\", {n}, paramValues, paramLengths, paramFormats, 0)",
-                    id = pd.id,
-                    n = n_inputs,
-                )
-            } else {
-                format!(
-                    "PQexecParams(conn, \"{q}\", {n}, NULL, paramValues, paramLengths, paramFormats, 0)",
-                    q = pd.dml.replace('"', "\\\""),
-                    n = n_inputs,
+                    "if (res == NULL) {{\n\
+                       uw_try_reconnecting_and_restarting(ctx);\n\
+                       uw_error(ctx, FATAL, \"Ur/Web / SQL: could not allocate memory for DML result (database may be unreachable).\");\n\
+                     }}\n\
+                     if (PQresultStatus(res) != PGRES_COMMAND_OK) {{\n\
+                       if (!strcmp_nullsafe(PQresultErrorField(res, PG_DIAG_SQLSTATE), \"40001\")) {{ PQclear(res); uw_error(ctx, UNLIMITED_RETRY, \"Ur/Web / SQL: serialization conflict — retrying this transaction.\"); }}\n\
+                       if (!strcmp_nullsafe(PQresultErrorField(res, PG_DIAG_SQLSTATE), \"40P01\")) {{ PQclear(res); uw_error(ctx, UNLIMITED_RETRY, \"Ur/Web / SQL: deadlock detected — retrying this transaction.\"); }}\n\
+                       {error}\n\
+                     }}{success}",
+                    error = error_case,
+                    success = success_case,
                 )
             };
-            let dml_expr = format!("\"{}\"", pd.dml.replace('"', "\\\""));
-            let dml_common_s = dml_common(&dml_expr);
-            format!(
-                "(uw_begin_region(ctx), ({{\n\
-                 PGconn *conn = uw_get_db(ctx);\n\
-                 {arg_decls}\n\
-                 {params}\n\
-                 PGresult *res;\n\
-                 {savepoint}\
-                 res = {exec};\n\n\
-                 uw_ensure_transaction(ctx);\n\n\
-                 {dml_common}\n\
-                 uw_end_region(ctx);\n\
-                 {mode_result};\n\
-                 }}))",
-                arg_decls = arg_decls,
-                params = params_s,
-                savepoint = make_savepoint,
-                exec = exec_call,
-                dml_common = dml_common_s,
-                mode_result = mode_result,
-            )
+
+            match &dm.prepared {
+                None => {
+                    let dml_common_s = dml_common("dml");
+                    format!(
+                        "(uw_begin_region(ctx), ({{\n\
+                         char *dml = {dml_s};\n\
+                         PGconn *conn = uw_get_db(ctx);\n\
+                         PGresult *res;\n\
+                         {savepoint}\
+                         res = PQexecParams(conn, dml, 0, NULL, NULL, NULL, NULL, 0);\n\n\
+                         uw_ensure_transaction(ctx);\n\n\
+                         {dml_common}\n\
+                         uw_end_region(ctx);\n\
+                         {mode_result};\n\
+                         }}))",
+                        dml_s = dml_s,
+                        savepoint = make_savepoint,
+                        dml_common = dml_common_s,
+                        mode_result = mode_result,
+                    )
+                }
+                Some(pd) => {
+                    let inputs = get_pargs(&dm.dml, env, settings);
+                    let params_s = if inputs.is_empty() {
+                        String::new()
+                    } else {
+                        make_params(&inputs)
+                    };
+                    let n_inputs = inputs.len();
+                    let arg_decls: String = inputs
+                        .iter()
+                        .enumerate()
+                        .map(|(i, (e, t))| format!("{} arg{} = {};\n", t.c_type(), i + 1, e))
+                        .collect();
+                    let exec_call = if settings.persistent() {
+                        format!(
+                            "PQexecPrepared(conn, \"uw{id}\", {n}, paramValues, paramLengths, paramFormats, 0)",
+                            id = pd.id,
+                            n = n_inputs,
+                        )
+                    } else {
+                        format!(
+                            "PQexecParams(conn, \"{q}\", {n}, NULL, paramValues, paramLengths, paramFormats, 0)",
+                            q = escape_c_string(&pd.dml),
+                            n = n_inputs,
+                        )
+                    };
+                    let dml_expr = format!("\"{}\"", escape_c_string(&pd.dml));
+                    let dml_common_s = dml_common(&dml_expr);
+                    format!(
+                        "(uw_begin_region(ctx), ({{\n\
+                         PGconn *conn = uw_get_db(ctx);\n\
+                         {arg_decls}\n\
+                         {params}\n\
+                         PGresult *res;\n\
+                         {savepoint}\
+                         res = {exec};\n\n\
+                         uw_ensure_transaction(ctx);\n\n\
+                         {dml_common}\n\
+                         uw_end_region(ctx);\n\
+                         {mode_result};\n\
+                         }}))",
+                        arg_decls = arg_decls,
+                        params = params_s,
+                        savepoint = make_savepoint,
+                        exec = exec_call,
+                        dml_common = dml_common_s,
+                        mode_result = mode_result,
+                    )
+                }
+            }
         }
     }
 }
@@ -1649,10 +2021,17 @@ fn format_line_directive_for_span(span: &crate::error_types::Span) -> Option<Str
     Some(format!("#line {} \"{}\"\n", span.first.line, path))
 }
 
+/// Emit the C code for a single top-level CJR declaration.
+///
+/// When `narrowing_table` contains an entry for a `Decl::Val` named ID, the
+/// emitted C type uses the narrowed width (e.g., `uint8_t`) instead of the
+/// generic `uw_Basis_int`, allowing the C compiler to use the smallest register
+/// and memory footprint for statically-known literals.
 fn p_decl(
     env: &CjrEnv,
     d: &LocDecl,
     settings: &Settings,
+    narrowing_table: &NarrowingTable,
     global_initializers: &mut Vec<String>,
 ) -> String {
     cjr_test_tick();
@@ -1684,7 +2063,12 @@ fn p_decl(
         Decl::DatatypeForward(_, _, _) => String::new(),
 
         Decl::Val(x, n, t, e) => {
-            let t_s = p_typ(env, t);
+            // Use the narrowed C type when static analysis proved the value fits in
+            // a smaller type (e.g., `uint8_t` for literal 42 vs `uw_Basis_int`).
+            let t_s = narrowing_table
+                .lookup_named(*n)
+                .map(|narrowed| narrowed.c_type_name().to_string()) // narrowed width type
+                .unwrap_or_else(|| p_typ(env, t)); // fallback: declared type
             let name = p_named_name(*n, x);
             let val_s = p_exp(env, e, settings);
             global_initializers.push(format!("{} = {};", name, val_s));
@@ -2753,7 +3137,18 @@ fn gen_cookie_sig() -> &'static str {
 // ---------------------------------------------------------------------------
 
 /// Generate a C source file from a CJR file.
-pub fn cjr_print(file: &crate::c_like_representation::File, settings: &Settings) -> String {
+///
+/// # Arguments
+///
+/// * `file` — The CJR intermediate representation to lower to C.
+/// * `settings` — Compiler settings.
+/// * `narrowing_table` — Maps named declaration IDs to their narrowed numeric C type.
+///   `Decl::Val` entries found in this table get narrow types (e.g., `uint8_t`).
+pub fn cjr_print(
+    file: &crate::c_like_representation::File,
+    settings: &Settings,
+    narrowing_table: &NarrowingTable,
+) -> String {
     #[cfg(test)]
     cjr_test_reset_print_ticks();
     let (ds, ps) = file;
@@ -2805,7 +3200,13 @@ pub fn cjr_print(file: &crate::c_like_representation::File, settings: &Settings)
     // Print each declaration using the full_env (for forward references)
     let mut decl_outputs: Vec<String> = Vec::new();
     for d in &all_ds {
-        let body = p_decl(&full_env, d, settings, &mut global_initializers);
+        let body = p_decl(
+            &full_env,
+            d,
+            settings,
+            narrowing_table,
+            &mut global_initializers,
+        );
         if body.is_empty() {
             continue;
         }
@@ -3200,7 +3601,7 @@ mod tests {
     fn empty_file_generates_header() -> anyhow::Result<()> {
         // test returns Result to allow ? propagation
         let settings = Settings::default();
-        let result = cjr_print(&(vec![], vec![]), &settings);
+        let result = cjr_print(&(vec![], vec![]), &settings, &NarrowingTable::default());
         assert!(
             result.contains("#include"),
             "output must contain #include, got:\n{}",
@@ -3213,7 +3614,7 @@ mod tests {
     fn empty_file_generates_uw_app() -> anyhow::Result<()> {
         // test returns Result to allow ? propagation
         let settings = Settings::default();
-        let result = cjr_print(&(vec![], vec![]), &settings);
+        let result = cjr_print(&(vec![], vec![]), &settings, &NarrowingTable::default());
         assert!(
             result.contains("uw_app uw_application"),
             "output must contain uw_app struct, got:\n{}",
@@ -3227,7 +3628,7 @@ mod tests {
     fn uw_app_inputs_len_one_without_form_exports() -> anyhow::Result<()> {
         // test returns Result to allow ? propagation
         let settings = Settings::default();
-        let result = cjr_print(&(vec![], vec![]), &settings);
+        let result = cjr_print(&(vec![], vec![]), &settings, &NarrowingTable::default());
         assert!(
             result.contains("uw_application = {\n1,"),
             "first uw_app field should be inputs_len 1, got:\n{}",
@@ -3263,7 +3664,11 @@ mod tests {
             DbMode::NoDb,
             false,
         );
-        let result = cjr_print(&(vec![struc], vec![export]), &settings);
+        let result = cjr_print(
+            &(vec![struc], vec![export]),
+            &settings,
+            &NarrowingTable::default(),
+        );
         assert!(
             result.contains("static int uw_input_num(const char *name) {")
                 && !result.contains("static int uw_input_num(const char *name) { return -1; }"),
@@ -3302,7 +3707,11 @@ mod tests {
             DbMode::NoDb,
             false,
         );
-        let result = cjr_print(&(vec![struc], vec![export]), &settings);
+        let result = cjr_print(
+            &(vec![struc], vec![export]),
+            &settings,
+            &NarrowingTable::default(),
+        );
         assert!(
             result.contains("Sig") && result.contains("field1"),
             "expected Sig and field1 in uw_input_num, got:\n{}",
@@ -3319,7 +3728,7 @@ mod tests {
         let settings = Settings::default();
         let t_int = dummy(Typ::Ffi("Basis".into(), "int".into()));
         let d = dummy(Decl::Struct(1, vec![("x".into(), t_int)]));
-        let result = cjr_print(&(vec![d], vec![]), &settings);
+        let result = cjr_print(&(vec![d], vec![]), &settings, &NarrowingTable::default());
         assert!(
             result.contains("struct __uws_1"),
             "must contain struct __uws_1, got:\n{}",
@@ -3349,7 +3758,7 @@ mod tests {
             constrs: vec![("Red".into(), 10, None), ("Blue".into(), 11, None)],
         };
         let d = dummy(Decl::Datatype(vec![dt]));
-        let result = cjr_print(&(vec![d], vec![]), &settings);
+        let result = cjr_print(&(vec![d], vec![]), &settings, &NarrowingTable::default());
         assert!(
             result.contains("enum __uwe_Color_5"),
             "must contain enum name, got:\n{}",
@@ -3375,7 +3784,7 @@ mod tests {
         let t = dummy(Typ::Ffi("Basis".into(), "int".into()));
         let e = dummy(Exp::Prim(Prim::Int(42)));
         let d = dummy(Decl::Val("answer".into(), 7, t, e));
-        let result = cjr_print(&(vec![d], vec![]), &settings);
+        let result = cjr_print(&(vec![d], vec![]), &settings, &NarrowingTable::default());
         assert!(
             result.contains("__uwn_answer_7"),
             "must contain named global, got:\n{}",
@@ -3389,6 +3798,39 @@ mod tests {
         Ok(()) // return success to the test harness
     }
 
+    /// When the narrowing table has an entry for a `Decl::Val` named ID, the emitted
+    /// C declaration uses the narrowed type (e.g., `uint8_t`) instead of `uw_Basis_int`.
+    #[test]
+    fn val_decl_uses_narrowed_type_when_available() -> anyhow::Result<()> {
+        use crate::monomorphized::numeric_narrowing::NarrowingTable;
+        use crate::primitives::{NarrowedNumeric, UintWidth};
+
+        let settings = Settings::default();
+        // Declared type is `Basis.int` (the generic big integer type).
+        let t = dummy(Typ::Ffi("Basis".into(), "int".into()));
+        let e = dummy(Exp::Prim(Prim::Int(200)));
+        // Named ID is 99; expression value 200 fits in u8 (0..=255).
+        let d = dummy(Decl::Val("small".into(), 99, t, e));
+
+        // Build a narrowing table that says id 99 narrowed to Uint(U8).
+        let mut table = NarrowingTable::new();
+        table.named.insert(99, NarrowedNumeric::Uint(UintWidth::U8));
+
+        let result = cjr_print(&(vec![d], vec![]), &settings, &table);
+        // The emitted declaration must use `uint8_t`, not `uw_Basis_int`.
+        assert!(
+            result.contains("uint8_t"),
+            "narrowed declaration must use uint8_t, got:\n{}",
+            result
+        );
+        assert!(
+            !result.contains("uw_Basis_int"),
+            "narrowed declaration must not use uw_Basis_int, got:\n{}",
+            result
+        );
+        Ok(())
+    }
+
     #[test]
     fn fun_decl_emits_static_function() -> anyhow::Result<()> {
         // test returns Result to allow ? propagation
@@ -3396,7 +3838,7 @@ mod tests {
         let ran = dummy(Typ::Ffi("Basis".into(), "int".into()));
         let body = dummy(Exp::Prim(Prim::Int(0)));
         let d = dummy(Decl::Fun("myFun".into(), 3, vec![], ran, body));
-        let result = cjr_print(&(vec![d], vec![]), &settings);
+        let result = cjr_print(&(vec![d], vec![]), &settings, &NarrowingTable::default());
         assert!(
             result.contains("static"),
             "function must be static, got:\n{}",
@@ -3565,7 +4007,7 @@ mod tests {
         // test returns Result to allow ? propagation
         let settings = Settings::default();
         let d = dummy(Decl::JavaScript("alert(1)".into()));
-        let result = cjr_print(&(vec![d], vec![]), &settings);
+        let result = cjr_print(&(vec![d], vec![]), &settings, &NarrowingTable::default());
         assert!(
             result.contains("static char jslib[]"),
             "must contain jslib, got:\n{}",
@@ -3621,7 +4063,7 @@ mod tests {
             initialize: 0,
             uses_similar: false,
         });
-        let result = cjr_print(&(vec![d], vec![]), &settings);
+        let result = cjr_print(&(vec![d], vec![]), &settings, &NarrowingTable::default());
         assert!(
             !result.is_empty() && result.len() > 100,
             "cjr_print must generate substantial output for Database decl"
@@ -3645,7 +4087,7 @@ mod tests {
             ),
         ];
         let d = dummy(Decl::Table("users".into(), xts, "".into(), vec![]));
-        let result = cjr_print(&(vec![d], vec![]), &settings);
+        let result = cjr_print(&(vec![d], vec![]), &settings, &NarrowingTable::default());
         assert!(
             result.contains("users"),
             "Table decl must produce output with table name (catches delete Decl::Table arm): {}",
@@ -3672,7 +4114,7 @@ mod tests {
             ],
         };
         let d = dummy(Decl::Datatype(vec![dt]));
-        let result = cjr_print(&(vec![d], vec![]), &settings);
+        let result = cjr_print(&(vec![d], vec![]), &settings, &NarrowingTable::default());
         assert!(
             result.contains("uw_app") && result.len() > 100,
             "Option datatype path must be exercised (DatatypeKind::Option branch)"
@@ -3692,7 +4134,7 @@ mod tests {
             constrs: vec![("Mk".into(), 11, Some(unit))],
         };
         let d = dummy(Decl::Datatype(vec![dt]));
-        let result = cjr_print(&(vec![d], vec![]), &settings);
+        let result = cjr_print(&(vec![d], vec![]), &settings, &NarrowingTable::default());
         assert!(
             result.contains("Pair") || result.contains("__uwc_Mk"),
             "Default datatype must emit (catches delete Datatype arm in is_unboxable)"
@@ -3707,7 +4149,7 @@ mod tests {
         let ran = dummy(Typ::Ffi("Basis".into(), "int".into()));
         let body = dummy(Exp::Prim(Prim::Int(0)));
         let d = dummy(Decl::FunRec(vec![("f".into(), 5, vec![], ran, body)]));
-        let result = cjr_print(&(vec![d], vec![]), &settings);
+        let result = cjr_print(&(vec![d], vec![]), &settings, &NarrowingTable::default());
         assert!(
             result.contains("__uwn_f_5") || result.contains("static"),
             "FunRec must emit (catches delete Decl::FunRec arm)"
@@ -3720,7 +4162,7 @@ mod tests {
         // test returns Result to allow ? propagation
         let settings = Settings::default();
         let d = dummy(Decl::Sequence("seq".into()));
-        let result = cjr_print(&(vec![d], vec![]), &settings);
+        let result = cjr_print(&(vec![d], vec![]), &settings, &NarrowingTable::default());
         assert!(!result.is_empty(), "Sequence decl must produce output");
         Ok(()) // return success to the test harness
     }
@@ -3730,7 +4172,7 @@ mod tests {
         // test returns Result to allow ? propagation
         let settings = Settings::default();
         let d = dummy(Decl::Cookie("sess".into()));
-        let result = cjr_print(&(vec![d], vec![]), &settings);
+        let result = cjr_print(&(vec![d], vec![]), &settings, &NarrowingTable::default());
         assert!(
             !result.is_empty(),
             "Cookie decl must produce output (catches delete Decl::Cookie arm)"
@@ -3743,7 +4185,7 @@ mod tests {
         // test returns Result to allow ? propagation
         let settings = Settings::default();
         let d = dummy(Decl::DatatypeForward(DatatypeKind::Enum, "E".into(), 1));
-        let result = cjr_print(&(vec![d], vec![]), &settings);
+        let result = cjr_print(&(vec![d], vec![]), &settings, &NarrowingTable::default());
         assert!(
             result.contains("E") || !result.is_empty(),
             "DatatypeForward must produce output"
@@ -3876,7 +4318,7 @@ mod tests {
         let settings = Settings::default();
         let t = dummy(Typ::Ffi("Basis".into(), "string".into()));
         let d = dummy(Decl::Struct(1, vec![("s".into(), t)]));
-        let result = cjr_print(&(vec![d], vec![]), &settings);
+        let result = cjr_print(&(vec![d], vec![]), &settings, &NarrowingTable::default());
         assert!(
             result.contains("uw_Basis_string"),
             "Basis.string must produce uw_Basis_string, got: {}",
@@ -3892,7 +4334,7 @@ mod tests {
         let settings = Settings::default();
         let t = dummy(Typ::Ffi("Basis".into(), "bool".into()));
         let d = dummy(Decl::Struct(1, vec![("b".into(), t)]));
-        let result = cjr_print(&(vec![d], vec![]), &settings);
+        let result = cjr_print(&(vec![d], vec![]), &settings, &NarrowingTable::default());
         assert!(
             result.contains("uw_Basis_bool"),
             "Basis.bool must produce uw_Basis_bool, got: {}",
@@ -3908,7 +4350,7 @@ mod tests {
         let settings = Settings::default();
         let t = dummy(Typ::Ffi("Basis".into(), "clocktime".into()));
         let d = dummy(Decl::Struct(1, vec![("t".into(), t)]));
-        let result = cjr_print(&(vec![d], vec![]), &settings);
+        let result = cjr_print(&(vec![d], vec![]), &settings, &NarrowingTable::default());
         assert!(
             result.contains("uw_Basis_clocktime"),
             "Basis.clocktime must produce uw_Basis_clocktime, got: {}",
@@ -3974,7 +4416,11 @@ mod tests {
             DbMode::NoDb,
             false,
         );
-        let result = cjr_print(&(vec![d], vec![export]), &settings);
+        let result = cjr_print(
+            &(vec![d], vec![export]),
+            &settings,
+            &NarrowingTable::default(),
+        );
         assert!(
             result.contains("unurlify_")
                 || result.contains("urlify_")
@@ -4007,7 +4453,7 @@ mod tests {
         let settings = Settings::default();
         let t = dummy(Typ::Ffi("Basis".into(), "float".into()));
         let d = dummy(Decl::Struct(1, vec![("f".into(), t)]));
-        let result = cjr_print(&(vec![d], vec![]), &settings);
+        let result = cjr_print(&(vec![d], vec![]), &settings, &NarrowingTable::default());
         assert!(
             result.contains("uw_Basis_float"),
             "Basis.float must produce uw_Basis_float, got: {}",
@@ -4026,7 +4472,7 @@ mod tests {
             "uw_t".into(),
             vec![("col".into(), IndexMode::Equality)],
         ));
-        let result = cjr_print(&(vec![d], vec![]), &settings);
+        let result = cjr_print(&(vec![d], vec![]), &settings, &NarrowingTable::default());
         // Index doesn't produce C output directly; ensure file still parses.
         assert!(
             result.contains("#include") || !result.is_empty(),

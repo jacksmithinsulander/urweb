@@ -430,6 +430,30 @@ pub mod con {
                 );
                 Constructor::Proj(Box::new(inner_mapped), projection_index)
             }
+
+            // Map each arm's argument constructors; tag names are not constructors and pass through.
+            Constructor::Enum(arms) => {
+                let mapped_arms = arms
+                    .into_iter()
+                    .map(|(tag_name, arg_constructors)| {
+                        // Map every argument constructor in this arm.
+                        let mapped_args = arg_constructors
+                            .into_iter()
+                            .map(|arg_constructor| {
+                                map_b(
+                                    arg_constructor,
+                                    context,
+                                    kind_mapper,
+                                    constructor_mapper,
+                                    bind_callback,
+                                )
+                            })
+                            .collect();
+                        (tag_name, mapped_args)
+                    })
+                    .collect();
+                Constructor::Enum(mapped_arms)
+            }
         }
     }
 
@@ -510,6 +534,13 @@ pub mod con {
             }),
 
             Constructor::Proj(inner, _) => exists(inner, kind_predicate, constructor_predicate),
+
+            // Check predicate against every argument constructor in every arm.
+            Constructor::Enum(arms) => arms.iter().any(|(_, arg_constructors)| {
+                arg_constructors.iter().any(|arg_constructor| {
+                    exists(arg_constructor, kind_predicate, constructor_predicate)
+                })
+            }),
         }
     }
 
@@ -593,6 +624,17 @@ pub mod con {
                 }),
 
             Constructor::Proj(inner, _) => fold(inner, accumulator, fold_kind, fold_con),
+
+            // Fold over every argument constructor in every arm; tag names are not constructors.
+            Constructor::Enum(arms) => {
+                arms.iter().fold(accumulator, |acc, (_, arg_constructors)| {
+                    arg_constructors
+                        .iter()
+                        .fold(acc, |inner_acc, arg_constructor| {
+                            fold(arg_constructor, inner_acc, fold_kind, fold_con)
+                        })
+                })
+            }
         }
     }
 }

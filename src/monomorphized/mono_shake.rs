@@ -50,6 +50,8 @@ fn shake_typ(
         }
         Typ::Record(xts) => xts.iter().fold(s, |s, (_, t)| shake_typ(s, cdef, t)),
         Typ::Option(inner) | Typ::List(inner) | Typ::Signal(inner) => shake_typ(s, cdef, inner),
+        // Shake the result type of a transaction to keep reachable datatypes alive.
+        Typ::Transaction(inner) => shake_typ(s, cdef, inner),
         Typ::Ffi(_, _) | Typ::Source => s,
     }
 }

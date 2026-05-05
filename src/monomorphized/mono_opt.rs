@@ -1689,18 +1689,26 @@ fn opt_exp_peephole(
         // -----------------------------------------------------------------------
         // Arithmetic constant folding
         // -----------------------------------------------------------------------
-        Exp::Binop(intness, ref op, ref e1, ref e2) => match (&e1.node, &e2.node, op.as_str()) {
-            (Exp::Prim(Prim::Int(n1)), Exp::Prim(Prim::Int(n2)), "+") => {
-                Exp::Prim(Prim::Int(n1.wrapping_add(*n2)))
+        // When both operands are integer literals, use TypedValue::fold_int_binop so
+        // the fold goes through the typed-value layer (type-safe, div-by-zero guarded).
+        // The result is converted back to Prim via utilities::typed_value_to_prim.
+        Exp::Binop(intness, ref op, ref e1, ref e2) => {
+            if let (Exp::Prim(Prim::Int(n1)), Exp::Prim(Prim::Int(n2))) = (&e1.node, &e2.node) {
+                // Convert both operands to typed values so folding is type-aware.
+                let tv1 = utilities::prim_to_typed_value(&Prim::Int(*n1));
+                let tv2 = utilities::prim_to_typed_value(&Prim::Int(*n2));
+                // Attempt the fold; fall through to the unchanged Binop on failure.
+                if let Some(folded) =
+                    crate::elaborated::types::TypedValue::fold_int_binop(&tv1, &tv2, op)
+                {
+                    if let Some(result_prim) = utilities::typed_value_to_prim(&folded) {
+                        return Exp::Prim(result_prim); // constant-folded to a literal
+                    }
+                }
             }
-            (Exp::Prim(Prim::Int(n1)), Exp::Prim(Prim::Int(n2)), "-") => {
-                Exp::Prim(Prim::Int(n1.wrapping_sub(*n2)))
-            }
-            (Exp::Prim(Prim::Int(n1)), Exp::Prim(Prim::Int(n2)), "*") => {
-                Exp::Prim(Prim::Int(n1.wrapping_mul(*n2)))
-            }
-            _ => Exp::Binop(intness, op.clone(), e1.clone(), e2.clone()),
-        },
+            // Non-literal or unsupported op: leave the Binop in place.
+            Exp::Binop(intness, op.clone(), e1.clone(), e2.clone())
+        }
 
         other => other,
     }

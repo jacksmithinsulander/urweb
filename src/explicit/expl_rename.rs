@@ -102,6 +102,21 @@ fn rename_con(st: &St, lc: expl::LocatedConstructor) -> expl::LocatedConstructor
         expl::Constructor::Proj(c, i) => {
             mk(expl::Constructor::Proj(Box::new(rename_con(st, *c)), i))
         }
+        // Rename each arm's argument constructors, passing through tag names unchanged.
+        expl::Constructor::Enum(arms) => {
+            let renamed_arms = arms
+                .into_iter()
+                .map(|(tag_name, arg_constructors)| {
+                    // Rename every argument constructor in this arm.
+                    let renamed_args = arg_constructors
+                        .into_iter()
+                        .map(|arg_constructor| rename_con(st, arg_constructor))
+                        .collect();
+                    (tag_name, renamed_args)
+                })
+                .collect();
+            mk(expl::Constructor::Enum(renamed_arms))
+        }
     }
 }
 

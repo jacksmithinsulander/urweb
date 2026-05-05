@@ -66,6 +66,31 @@ fn extend_env_with_pat(env: &[(String, LocTyp)], p: &LocPat) -> Vec<(String, Loc
         .collect()
 }
 
+fn extend_env_with_query(
+    env: &[(String, LocTyp)],
+    qm: &crate::monomorphized::QueryMeta,
+) -> Vec<(String, LocTyp)> {
+    let row_t = Located::new(
+        Typ::Record(
+            qm.exps
+                .iter()
+                .cloned()
+                .chain(qm.tables.iter().map(|(x, xts)| {
+                    (
+                        x.clone(),
+                        Located::new(Typ::Record(xts.clone()), qm.state.span.clone()),
+                    )
+                }))
+                .collect(),
+        ),
+        qm.state.span.clone(),
+    );
+    vec![("acc".into(), qm.state.clone()), ("r".into(), row_t)]
+        .into_iter()
+        .chain(env.iter().cloned())
+        .collect()
+}
+
 /// Collect all free variable *levels* in `e`.
 ///
 /// A "level" is `n - depth` for `Exp::Rel(n)` encountered at binder depth
@@ -153,7 +178,7 @@ fn collect_free(e: &LocExp, depth: usize, out: &mut BTreeSet<usize>) {
         }
         Query(qm) => {
             collect_free(&qm.query, depth, out);
-            collect_free(&qm.body, depth, out);
+            collect_free(&qm.body, depth + 2, out);
             collect_free(&qm.initial, depth, out);
         }
     }
@@ -253,7 +278,7 @@ fn squish_node(vs: &[usize], depth: usize, e: Exp) -> Exp {
             use crate::monomorphized::QueryMeta;
             Query(QueryMeta {
                 query: Box::new(squish_at(vs, depth, *qm.query)),
-                body: Box::new(squish_at(vs, depth, *qm.body)),
+                body: Box::new(squish_at(vs, depth + 2, *qm.body)),
                 initial: Box::new(squish_at(vs, depth, *qm.initial)),
                 ..qm
             })
@@ -483,9 +508,10 @@ impl<'a> State<'a> {
             Closure(n, envs) => Closure(n, envs.into_iter().map(|a| rw!(a)).collect()),
             Query(qm) => {
                 use crate::monomorphized::QueryMeta;
+                let body_env = extend_env_with_query(env, &qm);
                 Query(QueryMeta {
                     query: Box::new(rw!(*qm.query)),
-                    body: Box::new(rw!(*qm.body)),
+                    body: Box::new(self.rw(&body_env, *qm.body)),
                     initial: Box::new(rw!(*qm.initial)),
                     ..qm
                 })

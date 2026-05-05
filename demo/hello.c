@@ -32,7 +32,7 @@ sqlite3 *sqlite;
 sqlite3_stmt *stmt;
 uw_conn *conn;
 
-if (sqlite3_open("/tmp/urweb.db", &sqlite) != SQLITE_OK) uw_error(ctx, FATAL, "Can't open SQLite database.");
+if (sqlite3_open("/tmp/hello.db", &sqlite) != SQLITE_OK) uw_error(ctx, FATAL, "Can't open SQLite database.");
 
 if (sqlite3_exec(sqlite, "PRAGMA foreign_keys = ON", NULL, NULL, NULL) != SQLITE_OK)
 uw_error(ctx, FATAL, "Can't enable foreign_keys for SQLite database");
@@ -114,6 +114,13 @@ static inline uw_Basis_string uw_Basis_attrOptional(
     return uw_Basis_mstrcat(ctx, " ", name, "=\"", val, "\"", NULL);
 }
 
+/* Function prototypes */
+static uw_unit __uwn_wrap_main_1755(uw_context, uw_unit, uw_unit);
+
+static uw_unit __uwn_wrap_main_1755(uw_context ctx, uw_unit __uwr_x0_0, uw_unit __uwr___1) {
+return(((uw_write(ctx, "\n<head"), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "class", "")), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "style", "")), 0), ((uw_write(ctx, ">\n<title"), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "class", "")), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "style", "")), 0), ((uw_write(ctx, ">Hello world!</title>\n</head>\n<body"), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "class", "")), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "style", "")), 0), ((uw_write(ctx, ">\n<h1"), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "class", "")), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "style", "")), 0), (uw_write(ctx, ">Hello world!</h1>\n</body>\n"), 0))))))))))))));
+}
+
 static void uw_setup_limits(void) {
 }
 
@@ -158,6 +165,24 @@ static int uw_check_meta(const char *m) {
 }
 
 static void uw_handle(uw_context ctx, char *request) {
+if (!strncmp(request, "/Hello/main", 11) && (request[11] == 0 || request[11] == '/')) {
+request += 11;
+if (*request == '/') ++request;
+uw_write_header(ctx, "Content-type: text/html; charset=utf-8\r\n");
+uw_write(ctx, uw_begin_html5);
+uw_mayReturnIndirectly(ctx);
+uw_set_could_write_db(ctx, 0);
+uw_set_at_most_one_query(ctx, 0);
+uw_set_needs_push(ctx, 0);
+uw_set_needs_sig(ctx, 0);
+uw_login(ctx);
+{
+uw_unit arg0 = uw_Basis_unurlifyUnit(ctx, &request);
+__uwn_wrap_main_1755(ctx, arg0, 0);
+uw_write(ctx, "</html>");
+return;
+}
+}
 uw_clear_headers(ctx);
 uw_write_header(ctx, uw_supports_direct_status ? "HTTP/1.1 404 Not Found\r\n" : "Status: 404 Not Found\r\n");
 uw_write_header(ctx, "Content-type: text/plain\r\n");

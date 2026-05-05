@@ -39,18 +39,21 @@ pub fn kind_unification_payload(failure: &KindUnificationFailure) -> DiagnosticP
                 DiagnosticId::KindOccursCheckFailed,
                 vec![format_kind(found_kind), format_kind(expected_kind)],
             )
+            .with_diff_hint(0, 1) // arg 0 = found kind, arg 1 = expected kind — highlight differences
         }
         KindUnificationFailure::IncompatibleKinds(found_kind, expected_kind) => {
             DiagnosticPayload::new(
                 DiagnosticId::IncompatibleKinds,
                 vec![format_kind(found_kind), format_kind(expected_kind)],
             )
+            .with_diff_hint(0, 1) // arg 0 = found kind, arg 1 = expected kind — highlight differences
         }
         KindUnificationFailure::ScopePreventsUnification(first_kind, second_kind) => {
             DiagnosticPayload::new(
                 DiagnosticId::ScopePreventsKindUnification,
                 vec![format_kind(first_kind), format_kind(second_kind)],
             )
+            .with_diff_hint(0, 1) // arg 0 = first kind, arg 1 = second kind — highlight differences
         }
     }
 }
@@ -82,18 +85,21 @@ pub fn constructor_unification_payload(
                 DiagnosticId::ConstructorOccursCheckFailed,
                 vec![format_constructor(left), format_constructor(right)],
             )
+            .with_diff_hint(0, 1) // arg 0 = left constructor, arg 1 = right constructor
         }
         ConstructorUnificationFailure::IncompatibleConstructors(left, right) => {
             DiagnosticPayload::new(
                 DiagnosticId::IncompatibleConstructorsUnif,
                 vec![format_constructor(left), format_constructor(right)],
             )
+            .with_diff_hint(0, 1) // arg 0 = left constructor, arg 1 = right constructor
         }
         ConstructorUnificationFailure::TypeFunctionExplicitnessMismatch(left, right) => {
             DiagnosticPayload::new(
                 DiagnosticId::TypeFunctionExplicitnessMismatch,
                 vec![format_constructor(left), format_constructor(right)],
             )
+            .with_diff_hint(0, 1) // arg 0 = left constructor, arg 1 = right constructor
         }
         ConstructorUnificationFailure::UnexpectedKindForKindofQuery(
             kind,
@@ -163,6 +169,7 @@ pub fn constructor_unification_payload(
                 DiagnosticId::ScopePreventsConstructorUnification,
                 vec![format_constructor(left), format_constructor(right)],
             )
+            .with_diff_hint(0, 1) // arg 0 = left constructor, arg 1 = right constructor
         }
     }
 }
@@ -502,6 +509,7 @@ pub fn compile_error_from_expression_elaboration_error(
                     format_constructor(expected_constructor),
                 ],
             )
+            .with_diff_hint(0, 1) // arg 0 = inferred type, arg 1 = expected type — highlight where they differ
             .with_suffix(constructor_unification_payload(unification_failure)),
             DiagnosticId::HintExpressionUnificationFailure,
             Vec::new(),
@@ -536,7 +544,8 @@ pub fn compile_error_from_expression_elaboration_error(
                 DiagnosticPayload::new(
                     DiagnosticId::IncompatibleConstructorsExpression,
                     vec![format_constructor(left), format_constructor(right)],
-                ),
+                )
+                .with_diff_hint(0, 1), // arg 0 = left constructor, arg 1 = right constructor
                 DiagnosticId::HintIncompatibleConstructorsExpression,
                 Vec::new(),
             )
@@ -566,6 +575,7 @@ pub fn compile_error_from_expression_elaboration_error(
                     format_constructor(expected_constructor),
                 ],
             )
+            .with_diff_hint(0, 1) // arg 0 = inferred pattern type, arg 1 = expected pattern type
             .with_suffix(constructor_unification_payload(unification_failure)),
             DiagnosticId::HintPatternUnificationFailure,
             Vec::new(),

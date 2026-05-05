@@ -26,7 +26,7 @@ use crate::parse::grammar_helpers::{
     tuple_product_type_constructor,
 };
 use crate::parse::xml_helpers::{
-    XmlAttr, XmlAttrsAcc, FunParam, capitalize_attr, xml_attrs_empty, xml_attrs_push, xml_desugar_tag_open,
+    XmlAttr, XmlAttrsAcc, FunParam, capitalize_attr, materialize_dummy_spans_in_exp, xml_attrs_empty, xml_attrs_push, xml_desugar_tag_open,
     xml_empty_cdata, xml_empty_cdata_for_self_closing_tag, wrap_fun_params, str_to_decl_open,
 };
 
@@ -681,6 +681,9 @@ AtomConNode: Con = {
     "[" "]" => Con::Record(vec![]),
     // Non-empty row literal: `[nm = T, ...]` or punned `[nm, ...]`
     "[" <fields:ConFieldList> "]" => Con::Record(fields),
+    // Anonymous sum type: `[| Tag1 | Tag2 of Con | Tag3 of Con1 * Con2]`
+    // The leading `|` disambiguates from row literals (which start with IDENT or UIDENT + `=`).
+    "[" "|" <arms:EnumArmList> "]" => Con::Enum(arms),
     // Parenthesised constructors — use ConInParen to isolate the `_ ::` case
     // from the general `_` reduction state (avoids LALR state merge dropping
     // the `::` shift).
@@ -741,6 +744,26 @@ ConFieldList: Vec<(LocCon, LocCon)> = {
 ConField: (LocCon, LocCon) = {
     <name:AtomCon> "=" <c:Con> => (name, c),
     <name:AtomCon> => con_record_field_pun(name),
+};
+
+// Anonymous sum type arm list: `Tag1 | Tag2 of Con | ...`
+// Left-recursive so longer lists parse efficiently.
+EnumArmList: Vec<(String, Vec<LocCon>)> = {
+    <a:EnumArm> => vec![a],
+    <mut rest:EnumArmList> "|" <a:EnumArm> => { rest.push(a); rest },
+};
+
+// A single arm: `TagName` (nullary) or `TagName of Con1 * Con2` (with args).
+EnumArm: (String, Vec<LocCon>) = {
+    <name:"UIDENT"> "of" <args:EnumArmArgs> => (name, args),
+    <name:"UIDENT"> => (name, vec![]),
+};
+
+// Product-separated argument constructors: `Con1 * Con2 * ...`
+// Uses AppCon (function-application level) for each factor to avoid ambiguity.
+EnumArmArgs: Vec<LocCon> = {
+    <c:AppCon> => vec![c],
+    <mut cs:EnumArmArgs> "*" <c:AppCon> => { cs.push(c); cs },
 };
 
 /// Named record type fields: `nm : T, ...` (uses `:` not `=`)
@@ -912,7 +935,7 @@ ExpNode: Exp = {
     // by keeping fn out of NonSeqExp so the left of `;` is always NonSeqExp).
     // Uses LambdaParams (allows `x : T` annotated params) not FnLamParams.
     "fn" <params:LambdaParams> "=>" <e:Exp> =>
-        wrap_fun_params(params, e).node,
+        materialize_dummy_spans_in_exp(wrap_fun_params(params, e.clone()), &e.span).node,
     // Monadic bind: `x <- e1; e2`  (also `_ <- e1; e2`)
     <name:"IDENT"> "<-" <e1:NonSeqExp> ";" <e2:Exp> =>
         desugar_monadic_bind(name, e1, e2),
@@ -1705,7 +1728,8 @@ FunBind: (String, Option<LocCon>, LocExp) = {
             e
         };
         // Wrap all lambda parameters (kind, constructor, term, disjointness) around the body.
-        let body = wrap_fun_params(params, annotated_body);
+        let anchor_span = annotated_body.span.clone();
+        let body = materialize_dummy_spans_in_exp(wrap_fun_params(params, annotated_body), &anchor_span);
         // Always use None for the opt_con field: the annotation is now inside the body.
         (name, None, body)
     },

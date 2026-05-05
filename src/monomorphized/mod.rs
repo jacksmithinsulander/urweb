@@ -19,6 +19,7 @@ pub mod mono_reduce;
 pub mod mono_shake;
 pub mod monoize;
 pub mod name_js;
+pub mod numeric_narrowing;
 pub mod path_check;
 pub mod script_check;
 pub mod side_check;
@@ -47,6 +48,12 @@ pub enum Typ {
     List(Box<LocTyp>),
     Source,
     Signal(Box<LocTyp>),
+    /// Ur/Web `transaction t` — an error-bearing monadic computation that returns `t`.
+    ///
+    /// This makes error-bearing types structurally visible in the mono pipeline
+    /// (reflecting `Types::Error` from the elaborated layer) without changing any
+    /// Ur/Web surface syntax: users still write `transaction t`.
+    Transaction(Box<LocTyp>),
 }
 
 /// Shared mutable reference to a datatype definition (for recursive types).

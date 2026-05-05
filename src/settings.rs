@@ -860,10 +860,22 @@ impl Settings {
         Self::is_valid_meta(s) && Self::check_rules(&self.meta_rules, s)
     }
 
+    /// Resolve the active protocol name.
+    ///
+    /// The legacy ML compiler initializes the protocol table with `http` as the ambient default,
+    /// so an unset Rust [`Settings::protocol`] slot must behave the same way.
+    pub fn effective_protocol(&self) -> &str {
+        if self.protocol.is_empty() {
+            "http"
+        } else {
+            self.protocol.as_str()
+        }
+    }
+
     /// Return true if the current protocol uses persistent connections (fastcgi, http).
     /// Persistent protocols use `PQexecPrepared`; non-persistent use `PQexecParams`.
     pub fn persistent(&self) -> bool {
-        matches!(self.protocol.as_str(), "fastcgi" | "http")
+        matches!(self.effective_protocol(), "fastcgi" | "http")
     }
 
     pub(crate) fn is_valid_mime(s: &str) -> bool {
@@ -1032,6 +1044,14 @@ mod tests {
         s.protocol = "http".into();
         assert!(s.persistent());
         Ok(()) // return success to the test harness
+    }
+
+    #[test]
+    fn effective_protocol_defaults_to_http() -> anyhow::Result<()> {
+        let s = Settings::new();
+        assert_eq!(s.effective_protocol(), "http");
+        assert!(s.persistent(), "default protocol should behave like http");
+        Ok(())
     }
 
     #[test]

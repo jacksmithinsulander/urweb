@@ -379,6 +379,14 @@ pub fn sql_default_table_field_expression(field_name: String, span: &Span) -> Lo
     sql_field_expression("T".to_string(), field_name, span)
 }
 
+pub fn sql_row_field_expression(field_name: String, span: &Span) -> LocExp {
+    constructor_apply_expression(
+        basis_var_expression("sql_exp", span),
+        sql_name_constructor(&field_name, span),
+        span,
+    )
+}
+
 fn sql_order_by_nil_expression(span: &Span) -> LocExp {
     constructor_apply_expression(
         basis_var_expression("sql_order_by_Nil", span),
@@ -669,7 +677,15 @@ pub fn sql_join_expression(
     };
     let mut table_names = left.0;
     table_names.extend(right.0);
-    let joined_left = apply_expression(basis_var_expression(helper_name, span), left.1, span);
+    let join_expression = match join_kind {
+        SqlJoinKind::Inner => basis_var_expression(helper_name, span),
+        SqlJoinKind::Left => apply_expression(
+            basis_var_expression(helper_name, span),
+            Located::new(Exp::Wild, span.clone()),
+            span,
+        ),
+    };
+    let joined_left = apply_expression(join_expression, left.1, span);
     let joined_right = apply_expression(joined_left, right.1, span);
     (table_names, apply_expression(joined_right, predicate, span))
 }
@@ -855,4 +871,72 @@ pub fn desugar_simple_sql_select(
         Box::new(basis_var_expression("sql_query", span)),
         Box::new(query_record),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sql_left_join_inserts_wildcard_nullify_argument() {
+        let span = Span::dummy();
+        let left = (vec!["t".into()], basis_var_expression("left_from", &span));
+        let right = (vec!["u".into()], basis_var_expression("right_from", &span));
+        let predicate = basis_var_expression("pred", &span);
+
+        let (_names, expression) =
+            sql_join_expression(SqlJoinKind::Left, left, right, predicate, &span);
+
+        let Exp::App(joined_right, _) = &expression.node else {
+            panic!("expected final left-join expression to apply the predicate");
+        };
+        let Exp::App(joined_left, _) = &joined_right.node else {
+            panic!("expected left-join expression to apply the right source");
+        };
+        let Exp::App(helper_application, _) = &joined_left.node else {
+            panic!("expected left-join expression to apply the left source");
+        };
+        let Exp::App(helper_head, wildcard_argument) = &helper_application.node else {
+            panic!("expected left-join helper to receive a synthesized wildcard argument");
+        };
+
+        assert!(
+            matches!(wildcard_argument.node, Exp::Wild),
+            "left joins must supply a wildcard implicit argument for nullify witness synthesis"
+        );
+        assert!(
+            matches!(helper_head.node, Exp::Var(_, ref name, _) if name == "sql_left_join"),
+            "left joins must still call the sql_left_join helper"
+        );
+    }
+
+    #[test]
+    fn sql_inner_join_does_not_insert_wildcard_argument() {
+        let span = Span::dummy();
+        let left = (vec!["t".into()], basis_var_expression("left_from", &span));
+        let right = (vec!["u".into()], basis_var_expression("right_from", &span));
+        let predicate = basis_var_expression("pred", &span);
+
+        let (_names, expression) =
+            sql_join_expression(SqlJoinKind::Inner, left, right, predicate, &span);
+
+        let Exp::App(joined_right, _) = &expression.node else {
+            panic!("expected final inner-join expression to apply the predicate");
+        };
+        let Exp::App(joined_left, _) = &joined_right.node else {
+            panic!("expected inner-join expression to apply the right source");
+        };
+        let Exp::App(helper_head, first_argument) = &joined_left.node else {
+            panic!("expected inner-join expression to apply the left source");
+        };
+
+        assert!(
+            !matches!(first_argument.node, Exp::Wild),
+            "inner joins must not add the outer-join nullify wildcard argument"
+        );
+        assert!(
+            matches!(helper_head.node, Exp::Var(_, ref name, _) if name == "sql_inner_join"),
+            "inner joins must still call the sql_inner_join helper"
+        );
+    }
 }

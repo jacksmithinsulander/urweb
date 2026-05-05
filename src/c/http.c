@@ -504,22 +504,31 @@ int main(int argc, char *argv[]) {
   {
   case AF_INET:
     my_size = sizeof(my_addr.ipv4);
+#if defined(__APPLE__) || defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__)
+    my_addr.ipv4.sin_len = my_size;
+#endif
     my_addr.ipv4.sin_port = htons(uw_port);
     break;
 
   case AF_INET6:
     my_size = sizeof(my_addr.ipv6);
+#if defined(__APPLE__) || defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__)
+    my_addr.ipv6.sin6_len = my_size;
+#endif
     my_addr.ipv6.sin6_port = htons(uw_port);
     break;
 
   case AF_UNIX:
     unlink(my_addr.un.sun_path);
     my_size = sizeof(my_addr.un);
+#if defined(__APPLE__) || defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__)
+    my_addr.un.sun_len = my_size;
+#endif
     break;
   }
 
   if (bind(sockfd, &my_addr.sa, my_size) < 0) {
-    fprintf(stderr, "Listener socket bind failed\n");
+    fprintf(stderr, "Listener socket bind failed: %s\n", strerror(errno));
     return 1;
   }
 

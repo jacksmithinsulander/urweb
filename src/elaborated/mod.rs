@@ -35,8 +35,8 @@ pub use self::types::type_operations;
 pub use self::types::type_tree;
 pub use self::types::{
     canonicalize_langsec_string_identifier, langsec_string_identifiers_equivalent, CUnif, CUnifRef,
-    Constructor, DependentRefinementHost, Explicitness, KUnif, KUnifRef, Kind, LocatedConstructor,
-    LocatedKind, RuntimePrimitiveTag, StarClassifierRefinement, Types,
+    Constructor, Explicitness, KUnif, KUnifRef, Kind, LocatedConstructor, LocatedKind,
+    StarClassifierRefinement, Type, TypeHead, Types,
 };
 
 // ---------------------------------------------------------------------------

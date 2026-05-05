@@ -8,6 +8,7 @@
 //! **Style:** new/edited Rust here follows [README.md](../../README.md) Rust code style (exceptions documented there).
 
 pub mod corify;
+pub mod enum_desugar;
 pub mod environment;
 pub mod expl_rename;
 pub mod utilities;
@@ -69,6 +70,12 @@ pub enum Constructor {
 
     Tuple(Vec<LocatedConstructor>),
     Proj(Box<LocatedConstructor>, usize),
+
+    /// Anonymous sum type: tagged arms each with zero or more argument constructors.
+    ///
+    /// Matches `elab::Constructor::Enum` after explify. Each arm is a tag name paired
+    /// with its argument constructors (empty vec for nullary arms).
+    Enum(Vec<(String, Vec<LocatedConstructor>)>),
 }
 
 pub type LocatedConstructor = Located<Constructor>;

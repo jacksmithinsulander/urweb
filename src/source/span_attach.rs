@@ -115,6 +115,14 @@ fn walk_con(con: &mut Con, label: &str, pre: &str, line_table: &[usize]) {
         }
         Con::Proj(inner, _) => attach_on_located(inner, label, pre, line_table, walk_con),
         Con::Wild(k) => attach_on_located(k, label, pre, line_table, walk_kind),
+        Con::Enum(arms) => {
+            // Walk each arm's argument constructors for span attachment.
+            for (_, arg_cons) in arms.iter_mut() {
+                for arg_con in arg_cons.iter_mut() {
+                    attach_on_located(arg_con, label, pre, line_table, walk_con);
+                }
+            }
+        }
     }
 }
 

@@ -99,6 +99,19 @@ pub fn lift_kind_in_con(c: LocatedConstructor, bound: usize) -> LocatedConstruct
             Constructor::Tuple(cs.into_iter().map(|c| lift_kind_in_con(c, bound)).collect())
         }
         Constructor::Proj(c, n) => Constructor::Proj(Box::new(lift_kind_in_con(*c, bound)), n),
+        // Lift kind indices in each arm's argument constructors; tag names are not constructors.
+        Constructor::Enum(arms) => Constructor::Enum(
+            arms.into_iter()
+                .map(|(tag_name, arg_constructors)| {
+                    // Lift kind indices in every argument constructor for this arm.
+                    let lifted_args = arg_constructors
+                        .into_iter()
+                        .map(|arg_constructor| lift_kind_in_con(arg_constructor, bound))
+                        .collect();
+                    (tag_name, lifted_args)
+                })
+                .collect(),
+        ),
     };
     Located::new(node, span)
 }
@@ -163,6 +176,19 @@ pub fn lift_con_in_con(c: LocatedConstructor, bound: usize) -> LocatedConstructo
             Constructor::Tuple(cs.into_iter().map(|c| lift_con_in_con(c, bound)).collect())
         }
         Constructor::Proj(c, n) => Constructor::Proj(Box::new(lift_con_in_con(*c, bound)), n),
+        // Lift constructor indices in each arm's argument constructors; tag names are not constructors.
+        Constructor::Enum(arms) => Constructor::Enum(
+            arms.into_iter()
+                .map(|(tag_name, arg_constructors)| {
+                    // Lift constructor indices in every argument constructor for this arm.
+                    let lifted_args = arg_constructors
+                        .into_iter()
+                        .map(|arg_constructor| lift_con_in_con(arg_constructor, bound))
+                        .collect();
+                    (tag_name, lifted_args)
+                })
+                .collect(),
+        ),
     };
     Located::new(node, span)
 }

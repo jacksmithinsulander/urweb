@@ -3,7 +3,48 @@
 //! This module is the single home for:
 //! - kind AST (`Kind`, `KUnif`);
 //! - constructor/type AST (`Constructor`, `CUnif`);
-//! - traditional primitive Ur/Web type tags (`Types`).
+//! - builtin type-head universe (`TypeHead`, aliased as `Types` for compatibility);
+//!
+//! ## Three-level type hierarchy
+//!
+//! The compiler works at three distinct levels; mixing them up causes bugs.
+//!
+//! ```text
+//!   LEVEL 1 — KINDS  (classify type constructors)
+//!     Kind::Arrow(k1, k2)              — kind of type constructors, e.g. list : * → *
+//!     Kind::KFun(body)                 — implicit kind quantifier, e.g. mapU : K ==> {K}
+//!     Kind::Star                       — the plain kind * ("is a complete type"; no head refinement)
+//!     Kind::Typed(TypeHead::Function(..)) — * refined: this type is specifically a → b
+//!     Kind::Typed(Types::Error(..))    — * refined: error/poison propagation
+//!     Kind::Typed(Types::Int)          — * refined: this type is int   (future elaborator use)
+//!
+//!   LEVEL 2 — TYPES / CONSTRUCTORS  (the types themselves)
+//!     Constructor::TFun(a, b)   — the type  a → b  (has kind *)
+//!     Constructor::App(f, x)    — type application, e.g. option int
+//!     Typ::Fun / Typ::Transaction  — monomorphised equivalents
+//!
+//!   LEVEL 3 — TERMS / VALUES  (runtime data)
+//!     Prim::Int(i64) / Prim::Float(f64)   — literal integer/float values
+//!     ScalarValue<NumType>                — typed value at the term level
+//!     TypedValue<NumType>                 — value + its ScalarTypeTag / TypeHierarchy
+//! ```
+//!
+//! **`KFun` vs `Arrow` vs `TypeHead::Function`** are NOT interchangeable:
+//! - `Arrow(k1,k2)` classifies things at Level 1 that still need a kind argument to become a
+//!   complete type (e.g. `list : * → *`).
+//! - `KFun(body)` is an implicit forall over a kind variable (e.g. `mapU : K ==> ...`).
+//! - `TypeHead::Function(dom,cod)` refines `*` at Level 1 to say a _complete_ type is a function
+//!   type, not a base type; `int → string` has kind `Typed(Function(..))`.
+//!
+//! **`TypeHead` scalar variants carry no value payload.** The kind of `42 : int` is `*` — the
+//! same kind as `"foo" : string`.  Literal values live at Level 3 in `Prim`.  Carrying a
+//! numeric value inside `TypeHead::Int(isize)` would make `TypeHead::Int(3) ≠ TypeHead::Int(4)`,
+//! meaning two `int`-kinded constructors would have incompatible kinds — obviously wrong.
+//! All scalar `TypeHead` variants are therefore pure discriminants (unit variants).
+//!
+//! **`ScalarValue<NumType>` / `TypedValue<NumType>`** bridge Level 2 and Level 3:
+//! they pair a concrete value (from `Prim`) with its type tag (from `ScalarTypeTag` /
+//! `TypeHierarchy`).  Use `prim_to_typed_value` in `monomorphized::utilities` to convert.
 //!
 //! ## LangSec strings (Ur/Web policy)
 //!
@@ -30,6 +71,7 @@ use std::hash::Hash;
 use std::sync::{Arc, Mutex};
 
 use crate::error_types::{Located, Span};
+use crate::primitives::{classify_prim_number, NumericKind, Prim};
 
 /// Normalizes one character for [`langsec_string_identifiers_equivalent`].
 #[inline]
@@ -58,142 +100,530 @@ pub fn canonicalize_langsec_string_identifier(text: &str) -> String {
         .collect()
 }
 
-/// Traditional primitive Ur/Web type tags (kind-level classifiers only).
-///
-/// These variants intentionally carry **no** runtime evidence (no literals, no heap
-/// blobs): values and proofs live on constructors / expressions, not on `Types`.
-///
-/// [`Types::Function`] and [`Types::Error`] refine Ur’s kind `Type` (`*`) for elaborated
-/// **spines** that still use unchanged surface syntax (`t1 -> t2`, `transaction t`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Types {
-    /// Compatibility classifier for unknown / not-yet-specialized type facts.
-    Any,
+#[derive(Debug, Clone)]
+pub enum ScalarValue<NumType> {
+    /// UTF-8 byte string value.
+    String(Vec<u8>),
+    /// Signed 64-bit integer value.
+    Int(NumType),
+    /// Unsigned 64-bit integer value.
+    Uint(NumType),
+    /// Numeric value whose subtype (int/uint/float) is resolved by the compiler.
+    Number(NumType),
+    /// IEEE-754 double-precision float value (bits stored as `NumType`).
+    Float(NumType),
+    Bool(bool),
+    Char(char),
+    Time(usize),
+    Blob(Vec<u8>),
+    Unit,
+}
+
+#[derive(Debug, Clone)]
+pub enum CompoundValue<NumType> {
     /// Functions are a first class citizen type in the rust ur web compiler type system.
     /// the classic ur web syntax remain the same, but under the hood, functions are handled
     /// as a type. We are using dependent types to make types flexible and easy to reason about.
     /// This way, functions can take other functions as arguments and return other functions as results.
-    /// Also records can include functions as fields, as long as they are not recursive, and dont 
+    /// Also records can include functions as fields, as long as they are not recursive, and dont
     /// ruin anything on the client side.
-    Function,
-    /// Errors are a first class citizen type in the rust ur web compiler type system.
+    Function(Box<LocatedKind>, Box<LocatedKind>),
+    /// Error is a first class citizen type in the rust ur web compiler type system.
     /// This works similar as in the rust type system, where errors are a type that can be returned by a function.
     /// But again, the ur/web syntax remains the same, and the error type is not special in any way.
     /// But through dependent types, we can make errors more flexible and easy to reason about.
-    Error,
+    Error(Vec<u8>),
+    Array(ArrayValue<NumType>),
+}
+
+/// Homogeneous runtime array value, classified by a fixed concrete element type.
+///
+/// Each variant carries the element values directly.  There is no `AnyArray` — every
+/// array must know its element type at construction time (LangSec closed-set discipline).
+#[derive(Debug, Clone)]
+pub enum ArrayValue<NumType> {
+    /// Homogeneous array of UTF-8 string elements.
+    StringArray(Vec<Vec<u8>>),
+    /// Homogeneous array of signed integer elements.
+    IntArray(Vec<NumType>),
+    /// Homogeneous array of unsigned integer elements.
+    UintArray(Vec<NumType>),
+    /// Homogeneous array of numeric elements (subtype resolved by compiler).
+    NumberArray(Vec<NumType>),
+    /// Homogeneous array of IEEE-754 float elements (bits stored as `NumType`).
+    FloatArray(Vec<NumType>),
+    /// Homogeneous array of boolean elements.
+    BoolArray(Vec<bool>),
+    /// Homogeneous array of function (closure) elements; domain/codomain kinds stored per entry.
+    FunctionArray(Vec<(Box<LocatedKind>, Box<LocatedKind>)>),
+    /// Homogeneous array of error-payload elements.
+    ErrorArray(Vec<Vec<u8>>),
+    /// Homogeneous array of timestamp elements (stored as `usize` epoch offsets).
+    TimeArray(Vec<usize>),
+    /// Homogeneous array of opaque binary blob elements.
+    BlobArray(Vec<Vec<u8>>),
+}
+
+/// Traditional primitive Ur/Web type tags (kind-level classifiers only).
+///
+/// Some variants carry **type-level evidence** (kind arguments for dependent classifiers,
+/// byte payloads for literal-typed variants).  Values live on constructors / expressions.
+///
+/// [`Types::Function`] and [`Types::Error`] refine Ur’s kind `Type` (`*`) for elaborated
+/// **spines** that still use unchanged surface syntax (`t1 -> t2`, `transaction t`).
+///
+/// **Equality and hashing** are intentionally coarse for the `Function` variant: two
+/// function classifiers are considered equal regardless of their domain/codomain kinds
+/// (structural type equality is checked at the [`Constructor`] level, not here).
+#[derive(Debug, Clone)]
+pub enum TypeHead {
+    /// Function type classifier: `domain -> codomain`.
+    ///
+    /// Carries the domain and codomain kinds as evidence for dependent elaboration paths.
+    /// Equality is intentionally opaque (two `Function` classifiers are always equal here).
+    Function(Box<LocatedKind>, Box<LocatedKind>),
+    /// Error / transaction-type classifier (analogous to Rust’s `Result`-bearing type).
+    ///
+    /// The byte payload is reserved for structured error descriptors; use an empty vec for
+    /// the "any error" representative.
+    Error(Vec<u8>),
+    /// String primitive classifier. Pure discriminant — no literal payload.
+    /// (Values live in `Prim::String` / `ScalarValue::String` at the term level.)
     String,
+    /// Signed integer primitive classifier. Pure discriminant — no literal payload.
+    /// (Values live in `Prim::Int` / `ScalarValue::Int` at the term level.)
     Int,
+    /// Unsigned integer primitive classifier. Pure discriminant.
     Uint,
-    /// Number is a slightly looser number type, that can represent any number, including integers and floats.
+    /// Numeric supertype classifier: accepts any number (int, uint, or float).
+    ///
+    /// Used by the compiler when a numeric context is known but the precise
+    /// subtype (`Int` / `Uint` / `Float`) is resolved later.
+    /// Not gradual typing — it is a concrete algebraic type that the compiler
+    /// narrows to the smallest representable subtype during constant folding.
     Number,
+    /// Boolean primitive classifier. Pure discriminant.
     Bool,
+    /// IEEE-754 floating-point classifier. Pure discriminant.
     Float,
+    /// Character primitive classifier. Pure discriminant.
     Char,
+    /// Unit (empty record) classifier. Pure discriminant.
     Unit,
+    /// Time / timestamp classifier. Pure discriminant.
     Time,
+    /// Opaque binary blob classifier. Pure discriminant.
     Blob,
-    /// Homogeneous array whose elements are classified as [`Types::String`].
+    /// Homogeneous `String` array classifier.
     StringArray,
-    /// Homogeneous array whose elements are classified as [`Types::Int`].
+    /// Homogeneous `Int` array classifier.
     IntArray,
-    /// Homogeneous array whose elements are classified as [`Types::Uint`].
+    /// Homogeneous `Uint` array classifier.
     UintArray,
-    /// Homogeneous array whose elements are classified as [`Types::Number`].
+    /// Homogeneous `Number` array classifier (elements are numeric, subtype resolved at codegen).
     NumberArray,
-    /// Homogeneous array whose elements are classified as [`Types::Float`].
+    /// Homogeneous `Float` array classifier.
     FloatArray,
-    /// Homogeneous array whose elements are classified as [`Types::Bool`].
+    /// Homogeneous `Bool` array classifier.
     BoolArray,
-    /// Homogeneous array whose elements are classified as [`Types::Char`].
+    /// Homogeneous `Char` array classifier.
     CharArray,
-    /// Homogeneous array whose elements are classified as [`Types::Time`].
+    /// Homogeneous `Time` array classifier.
     TimeArray,
-    /// Homogeneous array whose elements are classified as [`Types::Blob`].
+    /// Homogeneous `Blob` array classifier.
     BlobArray,
-    /// Homogeneous array whose elements are classified as [`Types::Function`] (Ur `list (t1 -> t2)`).
+    /// Homogeneous `Function` array classifier.
     FunctionArray,
-    /// Homogeneous array whose elements are classified as [`Types::Error`] (Ur `list (transaction t)`).
+    /// Homogeneous `Error` array classifier.
     ErrorArray,
 }
 
-/// Kind-level primitive tags used in gradual typing checks (`Kind::Typed`).
-pub trait RuntimePrimitiveTag: Copy + Eq + Hash + fmt::Display {
-    /// Returns the single classifier that stands for “any runtime primitive”.
-    fn compatibility_top() -> Self;
+/// Backward-compatibility alias for [`TypeHead`].
+///
+/// `TypeHead` is now the canonical name (Step 6 of the types.rs refactor).
+/// `Types` is kept as a deprecated alias so that existing call sites compile without churn;
+pub type Types = TypeHead;
 
-    /// Returns true when this tag is [`RuntimePrimitiveTag::compatibility_top`].
-    fn is_compatibility_top(self) -> bool;
+// ── Hierarchical type-category helpers ────────────────────────────────────────
+//
+// The enums below provide a *hierarchical* view of the same primitive types, for
+// use with [`TypedValue`] and higher-level tooling.  They do NOT replace the flat
+// [`Types`] enum used by [`Kind::Typed`] — they live alongside it.
 
-    /// Returns true when two classifiers may unify at a runtime-type kind boundary.
+/// Scalar primitive type discriminants for the [`TypeHierarchy`] categorization.
+///
+/// Closed set — one variant per concrete scalar head in [`TypeHead`].  No top/any element:
+/// the LangSec principle requires explicit type information at every construction site.
+/// Use [`TypeHead::as_scalar_type_tag`] to convert a kind classifier to a scalar tag.
+/// Use `prim_scalar_type` in `monomorphized::utilities` to map a `Prim` literal to a tag.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum ScalarTypeTag {
+    /// Corresponds to [`TypeHead::String`].
+    String,
+    /// Corresponds to [`TypeHead::Int`].
+    Int,
+    /// Corresponds to [`TypeHead::Uint`].
+    Uint,
+    /// Corresponds to [`TypeHead::Number`] — the compiler-resolved numeric supertype.
+    Number,
+    /// Corresponds to [`TypeHead::Float`].
+    Float,
+    /// Corresponds to [`TypeHead::Bool`].
+    Bool,
+    /// Corresponds to [`TypeHead::Char`].
+    Char,
+    /// Corresponds to [`TypeHead::Time`].
+    Time,
+    /// Corresponds to [`TypeHead::Blob`].
+    Blob,
+    /// Corresponds to [`TypeHead::Unit`].
+    Unit,
+}
+
+/// Compound type discriminants for the [`TypeHierarchy`] categorization.
+#[derive(Debug, Clone)]
+pub enum CompoundTypeTag {
+    /// Function type: carries the domain and codomain [`TypeHierarchy`] classifiers.
     ///
-    /// Default: symmetric [`RuntimePrimitiveTag::runtime_primitive_instance_of`] (either
-    /// side may be the compatibility top).
-    fn runtime_primitive_compatible(self, other: Self) -> bool {
-        self.runtime_primitive_instance_of(other) || other.runtime_primitive_instance_of(self)
-    }
-
-    /// Returns true when `self` is no more informative than `wider` along the
-    /// declarative “instance-of” preorder induced by the top element (`Any` absorbs all).
-    fn runtime_primitive_instance_of(self, wider: Self) -> bool;
+    /// Equality is opaque: two `Function` tags compare equal regardless of their
+    /// domain/codomain — structural equality lives at the [`Constructor`] level.
+    Function(Box<TypeHierarchy>, Box<TypeHierarchy>),
+    /// Error / transaction type classifier. Corresponds to [`Types::Error`].
+    Error,
 }
 
-impl RuntimePrimitiveTag for Types {
-    fn compatibility_top() -> Self {
-        Types::Any
-    }
-
-    fn is_compatibility_top(self) -> bool {
-        self == Types::Any
-    }
-
-    fn runtime_primitive_instance_of(self, wider: Self) -> bool {
-        wider.is_compatibility_top() || self == wider
+impl PartialEq for CompoundTypeTag {
+    /// Compares compound type tags: `Function` variants are always equal (opaque),
+    /// `Error` equals `Error`.
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            // Function tags are opaque — domain/codomain are not compared here.
+            (CompoundTypeTag::Function(..), CompoundTypeTag::Function(..)) => true,
+            (CompoundTypeTag::Error, CompoundTypeTag::Error) => true,
+            _ => false,
+        }
     }
 }
 
-/// Refinements of Ur’s kind `Type` (`*`) used by elaboration for non-scalar classifiers
-/// ([`Types::Function`], [`Types::Error`]) while leaving surface syntax unchanged.
-pub trait StarClassifierRefinement: RuntimePrimitiveTag {
-    /// Returns true for [`Types::Function`] and [`Types::Error`] (not [`Types::Any`], not scalars).
-    fn is_star_structural_refinement(self) -> bool;
+/// `CompoundTypeTag: Eq` follows from the manual `PartialEq`.
+impl Eq for CompoundTypeTag {}
+
+impl std::hash::Hash for CompoundTypeTag {
+    /// Hashes only the discriminant; `Function` domain/codomain are opaque.
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        std::mem::discriminant(self).hash(state);
+    }
 }
 
-impl StarClassifierRefinement for Types {
-    fn is_star_structural_refinement(self) -> bool {
+/// Homogeneous-array type discriminants for the [`TypeHierarchy`] categorization.
+///
+/// Closed set — one variant per concrete array head in [`TypeHead`].  No `AnyArray`:
+/// the LangSec principle requires that every array carries an explicit element type.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum ArrayTypeTag {
+    /// Homogeneous `String` array. Corresponds to [`TypeHead::StringArray`].
+    StringArray,
+    /// Homogeneous `Int` array. Corresponds to [`TypeHead::IntArray`].
+    IntArray,
+    /// Homogeneous `Uint` array. Corresponds to [`TypeHead::UintArray`].
+    UintArray,
+    /// Homogeneous `Number` array. Corresponds to [`TypeHead::NumberArray`].
+    NumberArray,
+    /// Homogeneous `Float` array. Corresponds to [`TypeHead::FloatArray`].
+    FloatArray,
+    /// Homogeneous `Bool` array. Corresponds to [`TypeHead::BoolArray`].
+    BoolArray,
+    /// Homogeneous `Function` array. Corresponds to [`TypeHead::FunctionArray`].
+    FunctionArray,
+    /// Homogeneous `Error` array. Corresponds to [`TypeHead::ErrorArray`].
+    ErrorArray,
+}
+
+/// Hierarchical type-category classifier for use with [`TypedValue`].
+///
+/// Complements the flat [`TypeHead`] enum used by [`Kind::Typed`]: groups discriminants
+/// into scalar, compound, and array categories.  No `Any` / top element — every typed
+/// value must know its concrete category at construction time (algebraic, closed-set).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum TypeHierarchy {
+    /// A scalar primitive type. See [`ScalarTypeTag`].
+    Scalar(ScalarTypeTag),
+    /// A compound (function or error) type. See [`CompoundTypeTag`].
+    Compound(CompoundTypeTag),
+    /// A homogeneous array type. See [`ArrayTypeTag`].
+    Array(ArrayTypeTag),
+}
+
+/// Runtime values organized by category, parameterized over the concrete numeric type.
+///
+/// `NumType` lets callers choose the numeric representation (e.g., `i64` or `f64`).
+#[derive(Debug, Clone)]
+pub enum Values<NumType> {
+    /// A scalar value (string, integer, float, bool).
+    Scalar(ScalarValue<NumType>),
+    /// A compound value (function closure or error payload).
+    Compound(CompoundValue<NumType>),
+}
+
+impl<NumType: PartialEq> PartialEq for Values<NumType> {
+    /// Compares two values by delegating to the inner variant equality.
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Values::Scalar(left), Values::Scalar(right)) => left == right,
+            (Values::Compound(left), Values::Compound(right)) => left == right,
+            _ => false,
+        }
+    }
+}
+
+/// `Values<NumType>: Eq` follows from `PartialEq` when `NumType: PartialEq`.
+impl<NumType: PartialEq> Eq for Values<NumType> {}
+
+/// `PartialEq` for [`ScalarValue`]: numeric equality uses standard `==`.
+///
+/// Note: float variants use Rust’s built-in `==` (NaN ≠ NaN per IEEE 754).
+/// Use [`Types`]’s `to_bits()` hashing path when total equality is needed.
+impl<NumType: PartialEq> PartialEq for ScalarValue<NumType> {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (ScalarValue::String(left), ScalarValue::String(right)) => left == right,
+            (ScalarValue::Int(left), ScalarValue::Int(right)) => left == right,
+            (ScalarValue::Uint(left), ScalarValue::Uint(right)) => left == right,
+            (ScalarValue::Number(left), ScalarValue::Number(right)) => left == right,
+            (ScalarValue::Float(left), ScalarValue::Float(right)) => left == right,
+            (ScalarValue::Bool(left), ScalarValue::Bool(right)) => left == right,
+            _ => false,
+        }
+    }
+}
+
+/// `ScalarValue<NumType>: Eq` follows from `PartialEq` when `NumType: PartialEq`.
+impl<NumType: PartialEq> Eq for ScalarValue<NumType> {}
+
+/// `PartialEq` for [`CompoundValue`]: function values are opaque (two functions compare
+/// equal regardless of their closure contents); error payloads compare by content.
+impl<NumType: PartialEq> PartialEq for CompoundValue<NumType> {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            // Function closures are opaque — structural equality is checked elsewhere.
+            (CompoundValue::Function(..), CompoundValue::Function(..)) => true,
+            (CompoundValue::Error(left), CompoundValue::Error(right)) => left == right,
+            (CompoundValue::Array(left), CompoundValue::Array(right)) => left == right,
+            _ => false,
+        }
+    }
+}
+
+/// `CompoundValue<NumType>: Eq` follows from `PartialEq` when `NumType: PartialEq`.
+impl<NumType: PartialEq> Eq for CompoundValue<NumType> {}
+
+/// `PartialEq` for [`ArrayValue`]: element-wise comparison.
+///
+/// `FunctionArray` elements are individually opaque, so two `FunctionArray` values
+/// compare equal when they have the same length.
+impl<NumType: PartialEq> PartialEq for ArrayValue<NumType> {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (ArrayValue::StringArray(left), ArrayValue::StringArray(right)) => left == right,
+            (ArrayValue::IntArray(left), ArrayValue::IntArray(right)) => left == right,
+            (ArrayValue::UintArray(left), ArrayValue::UintArray(right)) => left == right,
+            (ArrayValue::NumberArray(left), ArrayValue::NumberArray(right)) => left == right,
+            (ArrayValue::FloatArray(left), ArrayValue::FloatArray(right)) => left == right,
+            (ArrayValue::BoolArray(left), ArrayValue::BoolArray(right)) => left == right,
+            // Individual function entries are opaque; compare by length only.
+            (ArrayValue::FunctionArray(left), ArrayValue::FunctionArray(right)) => {
+                left.len() == right.len()
+            }
+            (ArrayValue::ErrorArray(left), ArrayValue::ErrorArray(right)) => left == right,
+            (ArrayValue::TimeArray(left), ArrayValue::TimeArray(right)) => left == right,
+            (ArrayValue::BlobArray(left), ArrayValue::BlobArray(right)) => left == right,
+            _ => false,
+        }
+    }
+}
+
+/// `ArrayValue<NumType>: Eq` follows from `PartialEq` when `NumType: PartialEq`.
+impl<NumType: PartialEq> Eq for ArrayValue<NumType> {}
+
+/// A runtime value paired with its hierarchical [`TypeHierarchy`] classifier.
+///
+/// The `NumType` parameter allows callers to choose the concrete numeric representation
+/// (e.g., `i64`, `f64`, or a multi-precision type).
+///
+/// For bridging [`crate::primitives::Prim`] literals (Level 3) to this type, use
+/// `prim_to_typed_value` in `crate::monomorphized::utilities`.
+pub struct TypedValue<NumType> {
+    /// The actual runtime value.
+    pub value: Values<NumType>,
+    /// The hierarchical type classifier that describes the category of `value`.
+    pub type_tag: TypeHierarchy,
+}
+
+impl TypedValue<i64> {
+    /// Wrap a signed 64-bit integer literal as a [`TypedValue`].
+    ///
+    /// The `type_tag` is set to [`TypeHierarchy::Scalar(ScalarTypeTag::Int)`] so that
+    /// arithmetic passes can pattern-match without re-inspecting the value.
+    pub fn from_int(n: i64) -> Self {
+        TypedValue {
+            value: Values::Scalar(ScalarValue::Int(n)), // store the literal in the scalar variant
+            type_tag: TypeHierarchy::Scalar(ScalarTypeTag::Int), // classify it as Int at term level
+        }
+    }
+
+    /// Wrap a float literal as a [`TypedValue`] using bits-cast-to-i64 storage.
+    ///
+    /// Callers that need the `f64` back should use [`TypedValue::as_float`].
+    pub fn from_float(f: f64) -> Self {
+        TypedValue {
+            value: Values::Scalar(ScalarValue::Float(f.to_bits() as i64)), // store bits as i64
+            type_tag: TypeHierarchy::Scalar(ScalarTypeTag::Float),         // classify as Float
+        }
+    }
+
+    /// Returns the integer value if this `TypedValue` holds an `Int` scalar, else `None`.
+    pub fn as_int(&self) -> Option<i64> {
+        match &self.value {
+            Values::Scalar(ScalarValue::Int(n)) => Some(*n), // extract the integer literal
+            _ => None,
+        }
+    }
+
+    /// Returns the float value if this `TypedValue` holds a `Float` scalar, else `None`.
+    ///
+    /// The stored bits-as-i64 are reinterpreted back to `f64`.
+    pub fn as_float(&self) -> Option<f64> {
+        match &self.value {
+            Values::Scalar(ScalarValue::Float(bits)) => Some(f64::from_bits(*bits as u64)), // reinterpret stored bits
+            _ => None,
+        }
+    }
+
+    /// Attempt to fold a binary integer operation on two `TypedValue<i64>` operands.
+    ///
+    /// Both operands must hold [`ScalarValue::Int`]; otherwise returns `None`.
+    /// Arithmetic uses wrapping semantics (matches Ur/Web's `int` which is C `long long`).
+    pub fn fold_int_binop(left: &Self, right: &Self, op: &str) -> Option<Self> {
+        let left_n = left.as_int()?; // require both sides to be Int
+        let right_n = right.as_int()?;
+        let result = match op {
+            "+" => left_n.wrapping_add(right_n), // wrapping to match C long long overflow
+            "-" => left_n.wrapping_sub(right_n),
+            "*" => left_n.wrapping_mul(right_n),
+            "/" if right_n != 0 => left_n.wrapping_div(right_n), // guard division by zero
+            "%" if right_n != 0 => left_n.wrapping_rem(right_n),
+            _ => return None, // unrecognised or unsafe operation
+        };
+        Some(TypedValue::from_int(result)) // wrap result as a new TypedValue
+    }
+}
+
+/// `PartialEq` for [`Types`]: consistent with [`Hash`] and equality semantics.
+///
+/// `Function` variants are compared opaquely (domain/codomain kinds are not compared here;
+/// structural equality is deferred to the [`Constructor`] level).
+/// `Error` compares by its byte payload. All scalar discriminants compare by variant only —
+/// `Types::Int == Types::Int` regardless of any literal value (literals live in `Prim`).
+impl PartialEq for TypeHead {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            // Scalar / unit variants — enum discriminant alone suffices.
+            (Types::Unit, Types::Unit) => true,
+            // Function classifiers are opaque: both sides carry domain/range kinds that are
+            // checked at the Constructor level; here we only care that both are Functions.
+            (Types::Function(..), Types::Function(..)) => true,
+            // Error carries a structured byte payload; compare by content.
+            (Types::Error(left_bytes), Types::Error(right_bytes)) => left_bytes == right_bytes,
+            // Scalar classifiers are pure discriminants — any two of the same variant are equal
+            // regardless of which literal value they came from.  The kind of `42 : int` and
+            // `7 : int` is the same (`*` refined to `Int`); literal values live in `Prim`.
+            (Types::String, Types::String) => true,
+            (Types::Blob, Types::Blob) => true,
+            (Types::Int, Types::Int) => true,
+            (Types::Uint, Types::Uint) => true,
+            (Types::Number, Types::Number) => true,
+            (Types::Float, Types::Float) => true,
+            (Types::Bool, Types::Bool) => true,
+            (Types::Char, Types::Char) => true,
+            (Types::Time, Types::Time) => true,
+            // Homogeneous-array unit variants.
+            (Types::StringArray, Types::StringArray) => true,
+            (Types::IntArray, Types::IntArray) => true,
+            (Types::UintArray, Types::UintArray) => true,
+            (Types::NumberArray, Types::NumberArray) => true,
+            (Types::FloatArray, Types::FloatArray) => true,
+            (Types::BoolArray, Types::BoolArray) => true,
+            (Types::CharArray, Types::CharArray) => true,
+            (Types::TimeArray, Types::TimeArray) => true,
+            (Types::BlobArray, Types::BlobArray) => true,
+            (Types::FunctionArray, Types::FunctionArray) => true,
+            (Types::ErrorArray, Types::ErrorArray) => true,
+            _ => false,
+        }
+    }
+}
+
+/// `Types: Eq` follows from the manual `PartialEq` (which is symmetric and transitive).
+impl Eq for TypeHead {}
+
+/// Manual `Hash` for `Types`: consistent with the manual `PartialEq` above.
+/// `Error` hashes its byte payload. All other variants hash by discriminant only.
+impl std::hash::Hash for TypeHead {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        // Hash the discriminant first so different variants always produce different hashes.
+        std::mem::discriminant(self).hash(state);
+        // Error carries a structured payload — include it in the hash.
+        // All other variants are fully identified by their discriminant alone.
+        if let Types::Error(bytes) = self {
+            bytes.hash(state); // add byte payload so Error("a") ≠ Error("b")
+        }
+    }
+}
+
+/// Refinements of Ur’s kind `Type` (`*`) for non-scalar structural classifiers.
+///
+/// [`Types::Function`] and [`Types::Error`] (and their array counterparts) are “star
+/// structural refinements”: they live at kind `Type` but carry additional evidence
+/// (domain/codomain or error descriptor). Scalars are NOT refinements — they are leaves.
+///
+/// Note: the former supertrait `RuntimePrimitiveTag` and the top element `Types::Any`
+/// have both been removed. The trait is now standalone.
+pub trait StarClassifierRefinement {
+    /// Returns true for [`Types::Function`], [`Types::Error`], and their array variants.
+    fn is_star_structural_refinement(&self) -> bool;
+}
+
+impl StarClassifierRefinement for TypeHead {
+    fn is_star_structural_refinement(&self) -> bool {
+        // Function and Error are structural refinements; their array counterparts too.
         matches!(
             self,
-            Types::Function | Types::Error | Types::FunctionArray | Types::ErrorArray
+            Types::Function(..) | Types::Error(..) | Types::FunctionArray | Types::ErrorArray
         )
     }
 }
 
-/// Optional hook for tooling that groups “evidence-bearing” refinements next to
-/// [`RuntimePrimitiveTag`] (reserved for future dependent-style evidence paths).
-pub trait DependentRefinementHost: StarClassifierRefinement {}
-
-impl DependentRefinementHost for Types {}
-
-impl Types {
-    /// Returns true when this type tag is a concrete primitive (not [`Types::Any`]).
-    pub fn is_concrete(self) -> bool {
-        !self.is_any()
+impl TypeHead {
+    /// Returns true when this tag is an instance of `wider` (exact match; closed set, no top).
+    ///
+    /// Replaces the former `RuntimePrimitiveTag::runtime_primitive_instance_of`.
+    pub fn instance_of(&self, wider: &Self) -> bool {
+        // Closed set: no top element, so exact match is the only way to satisfy instance-of.
+        self == wider
     }
 
-    /// Returns true for numeric primitives.
-    pub fn is_numeric(self) -> bool {
+    /// Returns true for numeric primitive classifiers.
+    ///
+    /// Note: these are pure kind discriminants; actual numeric values live in `Prim` / `ScalarValue`.
+    pub fn is_numeric(&self) -> bool {
         matches!(
             self,
             Types::Int | Types::Uint | Types::Float | Types::Number
         )
     }
 
-    /// Returns true when this type tag is the top/unknown classifier.
-    pub fn is_any(self) -> bool {
-        self.is_compatibility_top()
-    }
-
     /// Returns true when this tag names a homogeneous array with a fixed element classifier.
-    pub fn is_homogeneous_array(self) -> bool {
+    pub fn is_homogeneous_array(&self) -> bool {
         matches!(
             self,
             Types::StringArray
@@ -210,8 +640,13 @@ impl Types {
         )
     }
 
-    /// If this tag is `*Array`, returns the element [`Types`]; otherwise returns `None`.
-    pub fn homogeneous_array_element_type(self) -> Option<Types> {
+    /// If this tag is `*Array`, returns the element [`TypeHead`] prototype; otherwise returns `None`.
+    ///
+    /// For `Function`, the returned prototype uses `Kind::Star` as domain and codomain kinds so
+    /// callers that only need the discriminant still receive a usable value.
+    pub fn homogeneous_array_element_type(&self) -> Option<Types> {
+        // Build a Kind::Star located kind for the Function prototype domain/codomain.
+        let star_kind = || Located::new(Kind::Star, Span::dummy());
         Some(match self {
             Types::StringArray => Types::String,
             Types::IntArray => Types::Int,
@@ -222,10 +657,67 @@ impl Types {
             Types::CharArray => Types::Char,
             Types::TimeArray => Types::Time,
             Types::BlobArray => Types::Blob,
-            Types::FunctionArray => Types::Function,
-            Types::ErrorArray => Types::Error,
+            // Function prototype: Star -> Star (callers compare by discriminant only).
+            Types::FunctionArray => Types::Function(Box::new(star_kind()), Box::new(star_kind())),
+            // Error prototype: empty byte payload.
+            Types::ErrorArray => Types::Error(Vec::new()),
             _ => return None,
         })
+    }
+
+    /// Maps a scalar kind classifier to the corresponding [`ScalarTypeTag`] for use at the
+    /// value / term level.  Returns `None` for non-scalar variants (`Function`, `Error`,
+    /// array variants).
+    ///
+    /// This bridges Level 1 (kinds) → Level 3 (values): given a kind classifier you get the
+    /// scalar type tag to use when building a [`TypedValue`] or [`ScalarValue`].
+    pub fn as_scalar_type_tag(&self) -> Option<ScalarTypeTag> {
+        Some(match self {
+            Types::String => ScalarTypeTag::String,
+            Types::Int => ScalarTypeTag::Int,
+            Types::Uint => ScalarTypeTag::Uint,
+            Types::Number => ScalarTypeTag::Number,
+            Types::Float => ScalarTypeTag::Float,
+            Types::Bool => ScalarTypeTag::Bool,
+            Types::Char => ScalarTypeTag::Char,
+            Types::Time => ScalarTypeTag::Time,
+            Types::Blob => ScalarTypeTag::Blob,
+            Types::Unit => ScalarTypeTag::Unit,
+            // Non-scalar variants do not map to a scalar tag.
+            _ => return None,
+        })
+    }
+
+    /// Resolve `TypeHead::Number` to the most specific concrete numeric head given a literal.
+    ///
+    /// `TypeHead::Number` is a compile-time–unresolved numeric type.  Once a concrete primitive
+    /// value is known, this method maps it to the tightest possible head:
+    ///
+    /// - `Prim::Float(_)` → `TypeHead::Float` (literal has a fractional/exponent part)
+    /// - `Prim::Int(n >= 0)` → `TypeHead::Uint` (non-negative integer; unsigned type suffices)
+    /// - `Prim::Int(n < 0)` → `TypeHead::Int` (negative integer; requires a signed type)
+    ///
+    /// If called on a head other than `TypeHead::Number`, it returns `self` unchanged — this
+    /// makes it safe to call unconditionally on any numeric head during constant folding.
+    ///
+    /// # Arguments
+    ///
+    /// * `literal` — The compile-time–known primitive value for this numeric node.
+    ///
+    /// # Returns
+    ///
+    /// The most specific concrete `TypeHead` for this numeric literal.
+    pub fn resolve_number(self, literal: &Prim) -> TypeHead {
+        // Only Number needs resolution; all other heads are already concrete.
+        if !matches!(self, TypeHead::Number) {
+            return self; // already concrete — pass through unchanged
+        }
+        // Classify the literal to determine the narrowest numeric category.
+        match classify_prim_number(literal) {
+            NumericKind::Float => TypeHead::Float, // float literal → Float
+            NumericKind::UnsignedInt => TypeHead::Uint, // non-negative integer → Uint
+            NumericKind::SignedInt => TypeHead::Int, // negative integer → Int
+        }
     }
 }
 
@@ -240,13 +732,33 @@ pub enum KUnif {
 
 #[derive(Debug, Clone)]
 pub enum Kind {
-    /// Refined runtime type tag used by gradual migration.
+    /// Refined runtime type tag: classifies one specific builtin type head.
+    ///
+    /// [`Types::Error`] stands for the error/poison classifier.
+    /// [`Types::Function`] stands for function types (as kind-level classifiers).
     Typed(Types),
+    /// The plain kind `Type` (`*`): classifies complete types without a specific head refinement.
+    ///
+    /// Replaces the former `Kind::Typed(Types::Any)` gradual-typing top.
+    /// This is the kind that corresponds to `source::Kind::Type` in the parser.
+    Star,
+    /// Explicit kind arrow: `k1 -> k2` (from `source::Kind::Arrow`).
+    ///
+    /// Represents a kind-level function type where the domain is explicit.
+    /// Used for `Type -> Type`, `Name -> Type`, etc.
     Arrow(Box<LocatedKind>, Box<LocatedKind>),
     Name,
     Record(Box<LocatedKind>),
     Unit,
     Tuple(Vec<LocatedKind>),
+
+    /// Implicit kind-level abstraction: `K --> body` (from `source::Kind::Fun`).
+    ///
+    /// Produced when elaborating implicit kind quantifiers (`K --> kind` in source).
+    /// Distinct from [`Kind::Arrow`] (explicit arrow) so that [`elab_con_head`] can
+    /// identify and peel implicit quantifiers without consuming explicit kind arrows.
+    /// Uses De Bruijn indexing: the bound kind variable is `Rel(0)` inside `body`.
+    KFun(Box<LocatedKind>),
 
     /// Unification variable for a kind.
     Unif(Span, String, KUnifRef),
@@ -259,67 +771,66 @@ pub enum Kind {
 
 impl Kind {
     /// Returns the compatibility top classifier used by existing elaboration paths.
-    pub fn any_type() -> Self {
-        Kind::Typed(Types::Any)
-    }
-
     /// Builds a refined type-kind from a concrete primitive tag.
     pub fn typed(type_tag: Types) -> Self {
+        // Wraps the given TypeHead in a Typed kind node.
         Kind::Typed(type_tag)
     }
 
     /// Returns true when this kind represents a runtime type classifier.
+    ///
+    /// Both [`Kind::Typed`] (a specific head) and [`Kind::Star`] (the plain kind `Type`)
+    /// classify runtime types.
     pub fn is_runtime_type_classifier(&self) -> bool {
-        matches!(self, Kind::Typed(_))
+        // Star and Typed are both type-classifying kinds.
+        matches!(self, Kind::Typed(_) | Kind::Star)
     }
 
-    /// Returns the optional refined primitive tag carried by this kind.
-    pub fn as_type_tag(&self) -> Option<Types> {
+    /// Returns a reference to the specific builtin type head carried by this kind, or `None`.
+    ///
+    /// Returns `None` for [`Kind::Star`] (no specific head) and all non-type kinds.
+    pub fn as_type_head(&self) -> Option<&Types> {
         match self {
-            Kind::Typed(type_tag) => Some(*type_tag),
-            _ => None,
+            Kind::Typed(type_tag) => Some(type_tag), // extract the specific head
+            _ => None,                               // Star and non-type kinds have no head
         }
-    }
-
-    /// Returns true for `Typed(Any)`.
-    pub fn is_any_typed(&self) -> bool {
-        matches!(self, Kind::Typed(Types::Any))
     }
 
     /// Checks whether two kind heads are compatible runtime type classifiers.
     ///
-    /// - non-runtime kinds are incompatible;
-    /// - `Typed(Any)` is compatible with any runtime classifier;
-    /// - concrete tags must match exactly.
+    /// - Non-runtime kinds are incompatible.
+    /// - [`Kind::Star`] is compatible with any other runtime classifier (it carries no refinement).
+    /// - Two [`Kind::Typed`] heads are compatible only when the tags match exactly.
     pub fn runtime_type_compatible_with(&self, other: &Self) -> bool {
-        match (self.as_type_tag(), other.as_type_tag()) {
-            (Some(left_type_tag), Some(right_type_tag)) => {
-                RuntimePrimitiveTag::runtime_primitive_compatible(left_type_tag, right_type_tag)
-            }
+        // Star is compatible with everything; Typed requires exact tag match.
+        match (self, other) {
+            (Kind::Star, Kind::Star)
+            | (Kind::Star, Kind::Typed(_))
+            | (Kind::Typed(_), Kind::Star) => true,
+            (Kind::Typed(left_tag), Kind::Typed(right_tag)) => left_tag == right_tag,
             _ => false,
         }
     }
 
-    /// Returns true when `self`’s runtime primitive tag refines `other`’s (instance-of preorder).
+    /// Returns true when `self`’s runtime tag refines `other`’s (instance-of preorder).
     ///
-    /// Non-[`Kind::Typed`] kinds yield `false`; otherwise delegates to
-    /// [`RuntimePrimitiveTag::runtime_primitive_instance_of`].
+    /// Non-[`Kind::Typed`] and non-[`Kind::Star`] kinds yield `false`.
+    /// [`Kind::Star`] is the widest classifier; any runtime kind is an instance of it.
     pub fn runtime_type_instance_of(&self, other: &Self) -> bool {
-        match (self.as_type_tag(), other.as_type_tag()) {
-            (Some(instance_tag), Some(wider_tag)) => {
-                RuntimePrimitiveTag::runtime_primitive_instance_of(instance_tag, wider_tag)
-            }
+        // Any runtime kind is an instance of Star (the widest classifier).
+        match (self, other) {
+            (_, Kind::Star) if self.is_runtime_type_classifier() => true,
+            (Kind::Typed(instance_tag), Kind::Typed(wider_tag)) => instance_tag == wider_tag,
             _ => false,
         }
     }
 }
 
-impl fmt::Display for Types {
+impl fmt::Display for TypeHead {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let name = match self {
-            Types::Any => "Any",
-            Types::Function => "Function",
-            Types::Error => "Error",
+            Types::Function(..) => "Function",
+            Types::Error(..) => "Error",
             Types::String => "String",
             Types::Int => "Int",
             Types::Uint => "Uint",
@@ -349,8 +860,10 @@ impl fmt::Display for Types {
 impl fmt::Display for Kind {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Kind::Typed(type_tag) => write!(formatter, "Type<{type_tag}>"),
+            Kind::Star => write!(formatter, "Type"), // plain kind Type
+            Kind::Typed(type_tag) => write!(formatter, "Type<{type_tag}>"), // refined kind
             Kind::Arrow(_, _) => write!(formatter, "<kind-arrow>"),
+            Kind::KFun(_) => write!(formatter, "<kind-fun>"),
             Kind::Name => write!(formatter, "Name"),
             Kind::Record(_) => write!(formatter, "<kind-record>"),
             Kind::Unit => write!(formatter, "Unit"),
@@ -364,31 +877,39 @@ impl fmt::Display for Kind {
 
 /// Shared trait for values that expose an elaborated runtime type classifier.
 pub trait RuntimeTypeClassifier {
-    /// Returns the optional runtime type tag.
-    fn runtime_type_tag(&self) -> Option<Types>;
+    /// Returns the specific builtin type head carried by this value, or `None`.
+    ///
+    /// Returns `None` for [`Kind::Star`] (no head refinement) and non-type kinds.
+    fn runtime_type_tag(&self) -> Option<&Types>;
 
-    /// Returns true if this value is a runtime type classifier.
+    /// Returns true if this value classifies a runtime type (either [`Kind::Star`] or [`Kind::Typed`]).
     fn is_runtime_type_classifier(&self) -> bool {
+        // Subclasses override this; the default checks for a specific head tag.
         self.runtime_type_tag().is_some()
-    }
-
-    /// Returns true if the classifier is `Any`.
-    fn is_any_runtime_type(&self) -> bool {
-        self.runtime_type_tag()
-            .map(RuntimePrimitiveTag::is_compatibility_top)
-            .unwrap_or(false)
     }
 }
 
 impl RuntimeTypeClassifier for Kind {
-    fn runtime_type_tag(&self) -> Option<Types> {
-        self.as_type_tag()
+    fn runtime_type_tag(&self) -> Option<&Types> {
+        // Delegate to the inherent method on Kind (returns None for Star).
+        self.as_type_head()
+    }
+
+    fn is_runtime_type_classifier(&self) -> bool {
+        // Both Star (unrefined) and Typed (refined) are runtime type classifiers.
+        matches!(self, Kind::Star | Kind::Typed(_))
     }
 }
 
 impl RuntimeTypeClassifier for LocatedKind {
-    fn runtime_type_tag(&self) -> Option<Types> {
-        self.node.as_type_tag()
+    fn runtime_type_tag(&self) -> Option<&Types> {
+        // Unwrap the Located wrapper and delegate.
+        self.node.as_type_head()
+    }
+
+    fn is_runtime_type_classifier(&self) -> bool {
+        // Delegate through the Located wrapper.
+        matches!(self.node, Kind::Star | Kind::Typed(_))
     }
 }
 
@@ -396,9 +917,50 @@ pub type LocatedKind = Located<Kind>;
 
 pub type CUnifRef = Arc<Mutex<CUnif>>;
 
+/// Scope snapshot attached to an unknown constructor unifier.
+///
+/// Mirrors the ML compiler's `validateCon env` predicate at a coarse structural level:
+/// relative kind / constructor de Bruijn indices are bounded by the environment depth at
+/// creation time, and named constructor / structure ids must have been allocated already.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ConstructorUnifScope {
+    pub rel_kind_depth: usize,
+    pub rel_constructor_depth: usize,
+    pub max_named_constructor_id: Option<usize>,
+    pub max_named_structure_id: Option<usize>,
+}
+
+impl ConstructorUnifScope {
+    /// Intersect two scope snapshots (the tighter scope wins in every dimension).
+    pub fn meet(self, other: Self) -> Self {
+        Self {
+            rel_kind_depth: self.rel_kind_depth.min(other.rel_kind_depth),
+            rel_constructor_depth: self.rel_constructor_depth.min(other.rel_constructor_depth),
+            max_named_constructor_id: match (
+                self.max_named_constructor_id,
+                other.max_named_constructor_id,
+            ) {
+                (Some(left), Some(right)) => Some(left.min(right)),
+                (Some(left), None) => Some(left),
+                (None, Some(right)) => Some(right),
+                (None, None) => None,
+            },
+            max_named_structure_id: match (
+                self.max_named_structure_id,
+                other.max_named_structure_id,
+            ) {
+                (Some(left), Some(right)) => Some(left.min(right)),
+                (Some(left), None) => Some(left),
+                (None, Some(right)) => Some(right),
+                (None, None) => None,
+            },
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum CUnif {
-    Unknown,
+    Unknown(ConstructorUnifScope),
     Known(Box<LocatedConstructor>),
 }
 
@@ -455,6 +1017,16 @@ pub enum Constructor {
     Error,
     /// Elaboration-time unification variable.
     Unif(usize, Span, Box<LocatedKind>, String, CUnifRef),
+
+    /// Inline anonymous sum type: tagged arms each with zero or more argument constructors.
+    ///
+    /// This is a type-level node analogous to [`Constructor::Tuple`] for products — it does not
+    /// carry a global `id` or a declaration name.  Each arm is `(tag_name, argument_constructors)`.
+    ///
+    /// Example (Ur/Web syntax): `{ Nil | Cons of 'a * list 'a }` as a type-level constructor.
+    ///
+    /// Distinct from [`crate::elaborated::Declaration::Datatype`] which introduces a globally-named type.
+    Enum(Vec<(String, Vec<LocatedConstructor>)>),
 }
 
 pub type LocatedConstructor = Located<Constructor>;
@@ -467,15 +1039,73 @@ macro_rules! elab_kind_typed {
     };
 }
 
-/// Construct `Kind::Typed(Types::Any)`.
+/// Construct [`Kind::Star`] — the plain kind `Type` (formerly `Kind::Typed(Types::Any)`).
 #[macro_export]
 macro_rules! elab_kind_any {
     () => {
-        $crate::elaborated::Kind::Typed($crate::elaborated::Types::Any)
+        $crate::elaborated::Kind::Star
     };
 }
 
-/// Canonical type display API lives under `types.rs`.
+// ---------------------------------------------------------------------------
+// Canonical post-elaboration type AST
+// ---------------------------------------------------------------------------
+
+/// Canonical structural type representation used for normalized post-elaboration types.
+///
+/// Unlike [`Constructor`], this AST carries no unification variables, module projections,
+/// or kind abstractions.  Equality and hashing are fully structural, making `Type` suitable
+/// for use as a `HashMap` key or in normalized forms.
+///
+/// The relationship to [`Constructor`]:
+/// - [`Constructor`] is the elaboration-time AST (has `Unif`, `ModProj`, `KAbs`, etc.).
+/// - `Type` is the *canonical normalized* form after all unification variables are resolved.
+///
+/// The relationship to [`TypeHead`]:
+/// - [`TypeHead`] identifies *which built-in head* a `Kind::Typed` carries.
+/// - `Type::Head(h)` is a type whose head is entirely a built-in (e.g. `Int`, `Bool`).
+#[derive(PartialEq, Eq, Hash, Clone, Debug)]
+pub enum Type {
+    /// A built-in primitive head type (e.g. `Int`, `Bool`, `String`).
+    Head(TypeHead),
+    /// Type application: `f a`.
+    App(Box<Type>, Box<Type>),
+    /// De Bruijn index for a bound type variable.
+    Var(usize),
+    /// Tuple type `(A * B * ...)`.
+    Tuple(Vec<Type>),
+    /// Record type `{ field: A, ... }` with named fields (sorted by field name for canonical order).
+    Record(Vec<(String, Type)>),
+    /// Anonymous sum (enum) type: `{ Tag of A B | Tag2 | ... }`.
+    Enum(Vec<(String, Vec<Type>)>),
+}
+
+impl Type {
+    /// Constructs a function type `domain -> codomain` as `App(App(Head(Function(..)), domain), codomain)`.
+    ///
+    /// # Arguments
+    ///
+    /// * `domain` — The input type of the function.
+    /// * `codomain` — The output type of the function.
+    ///
+    /// # Returns
+    ///
+    /// A `Type` encoding `domain -> codomain` using the `Function` head applied twice.
+    pub fn function(domain: Type, codomain: Type) -> Type {
+        // Function is a two-argument type constructor: `Function domain codomain`.
+        // Encode as nested App: App(App(Head(Function), domain), codomain).
+        let function_head = Type::Head(TypeHead::Function(
+            // Dummy kind annotations for the canonical type (not used for equality/hashing).
+            Box::new(crate::error_types::Located::dummy(Kind::Star)),
+            Box::new(crate::error_types::Located::dummy(Kind::Star)),
+        ));
+        // First application: `Function domain`.
+        let partial_application = Type::App(Box::new(function_head), Box::new(domain));
+        // Second application: `(Function domain) codomain`.
+        Type::App(Box::new(partial_application), Box::new(codomain))
+    }
+}
+
 pub mod type_display {
     //! Pretty-print elaborated [`crate::elaborated::Constructor`], [`crate::elaborated::Kind`],
     //! signatures, patterns, and expressions for LSP hovers and **catalog diagnostic placeholders**
@@ -489,7 +1119,7 @@ pub mod type_display {
     use crate::elaborated::{
         Constructor, Expression, ImportMode, Kind, LocatedConstructor, LocatedExpression,
         LocatedKind, LocatedPattern, LocatedSignature, LocatedSignatureItem, Pattern,
-        PatternConstructor, Signature, SignatureItem, Types,
+        PatternConstructor, Signature, SignatureItem,
     };
     use crate::primitives::Prim;
 
@@ -663,6 +1293,27 @@ pub mod type_display {
             }
             Constructor::Error => write!(output_buffer, "<error>"),
             Constructor::Unif(_, _, _, name, _) => write!(output_buffer, "?{}", name),
+            // Display anonymous sum type as `{ Tag args | Tag2 | ... }`.
+            Constructor::Enum(arms) => {
+                write!(output_buffer, "{{ ")?;
+                for (arm_index, (tag_name, arg_constructors)) in arms.iter().enumerate() {
+                    if arm_index > 0 {
+                        // Separate arms with a vertical bar.
+                        write!(output_buffer, " | ")?;
+                    }
+                    write!(output_buffer, "{}", tag_name)?;
+                    for arg_constructor in arg_constructors {
+                        // Each argument follows the tag with a space.
+                        write!(output_buffer, " ")?;
+                        write_constructor_into(
+                            output_buffer,
+                            arg_constructor,
+                            recursion_depth + 1,
+                        )?;
+                    }
+                }
+                write!(output_buffer, " }}")
+            }
         }
     }
 
@@ -675,17 +1326,17 @@ pub mod type_display {
             return write!(output_buffer, "…");
         }
         match &kind.node {
-            Kind::Typed(type_tag) => {
-                if *type_tag == Types::Any {
-                    write!(output_buffer, "Type")
-                } else {
-                    write!(output_buffer, "Type<{type_tag}>")
-                }
-            }
+            Kind::Star => write!(output_buffer, "Type"), // plain kind Type
+            Kind::Typed(type_tag) => write!(output_buffer, "Type<{type_tag}>"), // refined kind
             Kind::Arrow(domain, codomain) => {
                 write_kind_into(output_buffer, domain, recursion_depth + 1)?;
                 write!(output_buffer, " -> ")?;
                 write_kind_into(output_buffer, codomain, recursion_depth + 1)
+            }
+            Kind::KFun(body) => {
+                // Display as an implicit kind quantifier (anonymous binder).
+                write!(output_buffer, "_ --> ")?;
+                write_kind_into(output_buffer, body, recursion_depth + 1)
             }
             Kind::Name => write!(output_buffer, "Name"),
             Kind::Record(inner) => {
@@ -1150,7 +1801,6 @@ pub mod type_display {
         }
     }
 }
-/// Canonical type operation API lives under `types.rs`.
 pub mod type_operations {
     //! Constructor and kind substitution / normalization operations.
     //!
@@ -1165,6 +1815,7 @@ pub mod type_operations {
 
     use std::sync::Arc;
 
+    use crate::elaborated::types::ConstructorUnifScope;
     use crate::elaborated::{
         CUnif, CUnifRef, Constructor, Kind, LocatedConstructor, LocatedKind,
         StarClassifierRefinement, Types,
@@ -1201,7 +1852,11 @@ pub mod type_operations {
                         .map(|component_kind| lift_kind_in_kind_bound(by, bound, component_kind))
                         .collect(),
                 ),
-                other => other,
+                Kind::KFun(body) => {
+                    // KFun binds a kind variable; increment bound so free indices inside body are lifted correctly.
+                    Kind::KFun(Box::new(lift_kind_in_kind_bound(by, bound + 1, *body)))
+                }
+                other => other, // Kind::Typed (includes Function/Error), Kind::Name, Kind::Unit — leaf nodes, nothing to lift
             };
         Located { node, span }
     }
@@ -1238,7 +1893,11 @@ pub mod type_operations {
                         .map(|component_kind| sub_kind_in_kind_bound(by, xn, rep, component_kind))
                         .collect(),
                 ),
-                other => other,
+                Kind::KFun(body) => {
+                    // KFun binds a kind variable; increment both `by` (for the rep lifting) and `xn` (the target index shifts under the binder).
+                    Kind::KFun(Box::new(sub_kind_in_kind_bound(by + 1, xn + 1, rep, *body)))
+                }
+                other => other, // Kind::Typed (includes Function/Error), Kind::Name, Kind::Unit — no kind variables inside
             };
         Located { node, span }
     }
@@ -1316,6 +1975,19 @@ pub mod type_operations {
             Constructor::Proj(base, index) => {
                 Constructor::Proj(Box::new(lift_kind_in_con_bound(bound, *base)), index)
             }
+            // Lift kind indices in each argument constructor for every enum arm.
+            Constructor::Enum(arms) => Constructor::Enum(
+                arms.into_iter()
+                    .map(|(tag_name, arg_constructors)| {
+                        // Recurse into each argument constructor to lift kind indices.
+                        let lifted_args = arg_constructors
+                            .into_iter()
+                            .map(|arg| lift_kind_in_con_bound(bound, arg))
+                            .collect();
+                        (tag_name, lifted_args)
+                    })
+                    .collect(),
+            ),
             other => other,
         };
         Located { node, span }
@@ -1468,6 +2140,19 @@ pub mod type_operations {
             Constructor::Proj(base, index) => {
                 Constructor::Proj(Box::new(sub_kind_in_con_inner(by, xn, rep, *base)), index)
             }
+            // Substitute kind variable in each argument constructor for every enum arm.
+            Constructor::Enum(arms) => Constructor::Enum(
+                arms.into_iter()
+                    .map(|(tag_name, arg_constructors)| {
+                        // Recurse into each argument constructor to substitute the kind variable.
+                        let substituted_args = arg_constructors
+                            .into_iter()
+                            .map(|arg| sub_kind_in_con_inner(by, xn, rep, arg))
+                            .collect();
+                        (tag_name, substituted_args)
+                    })
+                    .collect(),
+            ),
             other => other,
         };
         Located { node, span }
@@ -1568,6 +2253,94 @@ pub mod type_operations {
         Located { node, span }
     }
 
+    /// Lower every free `Constructor::Rel(n)` inside a constructor by `by`, starting at `bound`.
+    ///
+    /// This models the SML elaborator's use of negative `mliftConInCon` arguments, especially the
+    /// `~1` sentinel that constructor unifiers can acquire after `subConInCon`.
+    fn lower_con_in_con_bound(
+        by: usize,
+        bound: usize,
+        constructor: LocatedConstructor,
+    ) -> LocatedConstructor {
+        let span = constructor.span.clone();
+        let node = match constructor.node {
+            Constructor::Rel(n) => {
+                if n < bound {
+                    Constructor::Rel(n)
+                } else {
+                    Constructor::Rel(n.saturating_sub(by))
+                }
+            }
+            Constructor::Unif(nl, s, k, name, r) => {
+                Constructor::Unif(nl.wrapping_sub(by), s, k, name, r)
+            }
+            Constructor::TFun(domain, codomain) => Constructor::TFun(
+                Box::new(lower_con_in_con_bound(by, bound, *domain)),
+                Box::new(lower_con_in_con_bound(by, bound, *codomain)),
+            ),
+            Constructor::TCFun(exp, x, k, body) => Constructor::TCFun(
+                exp,
+                x,
+                k,
+                Box::new(lower_con_in_con_bound(by, bound + 1, *body)),
+            ),
+            Constructor::TRecord(row) => {
+                Constructor::TRecord(Box::new(lower_con_in_con_bound(by, bound, *row)))
+            }
+            Constructor::TDisjoint(disjoint_left_row, disjoint_right_row, body_constructor) => {
+                Constructor::TDisjoint(
+                    Box::new(lower_con_in_con_bound(by, bound, *disjoint_left_row)),
+                    Box::new(lower_con_in_con_bound(by, bound, *disjoint_right_row)),
+                    Box::new(lower_con_in_con_bound(by, bound, *body_constructor)),
+                )
+            }
+            Constructor::App(functor, argument) => Constructor::App(
+                Box::new(lower_con_in_con_bound(by, bound, *functor)),
+                Box::new(lower_con_in_con_bound(by, bound, *argument)),
+            ),
+            Constructor::Abs(x, k, body) => {
+                Constructor::Abs(x, k, Box::new(lower_con_in_con_bound(by, bound + 1, *body)))
+            }
+            Constructor::KAbs(x, body) => {
+                Constructor::KAbs(x, Box::new(lower_con_in_con_bound(by, bound, *body)))
+            }
+            Constructor::KApp(functor, kind_argument) => Constructor::KApp(
+                Box::new(lower_con_in_con_bound(by, bound, *functor)),
+                kind_argument,
+            ),
+            Constructor::TKFun(x, body) => {
+                Constructor::TKFun(x, Box::new(lower_con_in_con_bound(by, bound, *body)))
+            }
+            Constructor::Record(row_kind, field_pairs) => Constructor::Record(
+                row_kind,
+                field_pairs
+                    .into_iter()
+                    .map(|(field_name, field_type)| {
+                        (
+                            lower_con_in_con_bound(by, bound, field_name),
+                            lower_con_in_con_bound(by, bound, field_type),
+                        )
+                    })
+                    .collect(),
+            ),
+            Constructor::Concat(left_row, right_row) => Constructor::Concat(
+                Box::new(lower_con_in_con_bound(by, bound, *left_row)),
+                Box::new(lower_con_in_con_bound(by, bound, *right_row)),
+            ),
+            Constructor::Tuple(elements) => Constructor::Tuple(
+                elements
+                    .into_iter()
+                    .map(|element| lower_con_in_con_bound(by, bound, element))
+                    .collect(),
+            ),
+            Constructor::Proj(base, index) => {
+                Constructor::Proj(Box::new(lower_con_in_con_bound(by, bound, *base)), index)
+            }
+            other => other,
+        };
+        Located { node, span }
+    }
+
     /// Lift every free [`Constructor::Rel`] inside `constructor` by 1 (one constructor binder).
     ///
     /// # Arguments
@@ -1608,6 +2381,9 @@ pub mod type_operations {
         by: usize,
         constructor: LocatedConstructor,
     ) -> Result<LocatedConstructor, CantSquish> {
+        if by == usize::MAX {
+            return Ok(lift_con_in_con_bound(1, 0, constructor));
+        }
         if by == 0 {
             // Identity: no binders to squish.
             return Ok(constructor);
@@ -1987,8 +2763,16 @@ pub mod type_operations {
         FUSE.store(0, Ordering::Relaxed);
     }
 
+    fn inc_identity() {
+        IDENTITY.fetch_add(1, Ordering::Relaxed);
+    }
+
     fn inc_distribute() {
         DISTRIBUTE.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn inc_fuse() {
+        FUSE.fetch_add(1, Ordering::Relaxed);
     }
 
     // ---------------------------------------------------------------------------
@@ -2002,7 +2786,7 @@ pub mod type_operations {
             "type operations CUnif cell",
         ) {
             CUnif::Known(c) => Some(*c.clone()),
-            CUnif::Unknown => None,
+            CUnif::Unknown(_) => None,
         }
     }
 
@@ -2030,7 +2814,8 @@ pub mod type_operations {
             }
         }
         let span = kind.span.clone();
-        Located::new(Kind::Typed(Types::Error), span)
+        // Error kind uses an empty byte payload as a poison/error sentinel.
+        Located::new(Kind::Typed(Types::Error(Vec::new())), span)
     }
 
     /// Lift all free [`Constructor::Rel`] indices in `constructor` by `binder_count` (multi-binder `mlift`).
@@ -2047,7 +2832,13 @@ pub mod type_operations {
         binder_count: usize,
         constructor: LocatedConstructor,
     ) -> LocatedConstructor {
-        lift_con_in_con_bound(binder_count, 0, constructor)
+        if binder_count == 0 {
+            constructor
+        } else if binder_count == usize::MAX {
+            lower_con_in_con_bound(1, 0, constructor)
+        } else {
+            lift_con_in_con_bound(binder_count, 0, constructor)
+        }
     }
 
     /// Upper bound on solved [`Constructor::Unif`] indirections peeled in one call.
@@ -2086,6 +2877,19 @@ pub mod type_operations {
             }
         }
         let span = constructor.span.clone();
+        if std::env::var("URWEB_DEBUG_HNORM_ERROR_BACKTRACE")
+            .ok()
+            .as_deref()
+            == Some("1")
+        {
+            eprintln!(
+                "hnorm_con error: solved constructor unif chain limit at {}:{} constructor={}\n{}",
+                span.file,
+                span.first.line,
+                crate::elaborated::type_display::format_constructor(&constructor),
+                std::backtrace::Backtrace::force_capture(),
+            );
+        }
         Located::new(Constructor::Error, span)
     }
 
@@ -2114,6 +2918,19 @@ pub mod type_operations {
         if d > 200 {
             HNORM_DEPTH.with(|c| c.set(0));
             let span = constructor.span.clone();
+            if std::env::var("URWEB_DEBUG_HNORM_ERROR_BACKTRACE")
+                .ok()
+                .as_deref()
+                == Some("1")
+            {
+                eprintln!(
+                    "hnorm_con error: recursion limit at {}:{} constructor={}\n{}",
+                    span.file,
+                    span.first.line,
+                    crate::elaborated::type_display::format_constructor(&constructor),
+                    std::backtrace::Backtrace::force_capture(),
+                );
+            }
             return Located::new(Constructor::Error, span);
         }
         // Collapse solved-unifier prefixes iteratively so depth-200 only limits beta/eta steps, not chain length.
@@ -2186,16 +3003,47 @@ pub mod type_operations {
                         let c2_norm = hnorm_con(*c2);
                         let c1p_norm = hnorm_con(*c1p);
                         match &c1p_norm.node {
-                            Constructor::Map(_k1, k2) => {
+                            Constructor::Map(k1, k2) => {
+                                fn strip_disjoint_constraints(
+                                    constructor: LocatedConstructor,
+                                ) -> LocatedConstructor {
+                                    let mut current = hnorm_con(constructor);
+                                    loop {
+                                        match current.node {
+                                            Constructor::TDisjoint(_, _, body) => {
+                                                current = hnorm_con(*body);
+                                            }
+                                            _ => return current,
+                                        }
+                                    }
+                                }
+
                                 let k2 = k2.clone();
+                                let default = || Located {
+                                    node: Constructor::App(
+                                        Box::new(Located {
+                                            node: Constructor::App(
+                                                Box::new(c1p_norm.clone()),
+                                                f.clone(),
+                                            ),
+                                            span: span.clone(),
+                                        }),
+                                        Box::new(c2_norm.clone()),
+                                    ),
+                                    span: span.clone(),
+                                };
                                 match &c2_norm.node {
-                                    Constructor::Record(_, fields) if fields.is_empty() => {
+                                    Constructor::Record(_input_row_kind, fields)
+                                        if fields.is_empty() =>
+                                    {
                                         Located {
                                             node: Constructor::Record(k2, vec![]),
                                             span,
                                         }
                                     }
-                                    Constructor::Record(_, fields) if !fields.is_empty() => {
+                                    Constructor::Record(input_row_kind, fields)
+                                        if !fields.is_empty() =>
+                                    {
                                         let fields = fields.clone();
                                         let (first_name, first_val) = fields[0].clone();
                                         let rest_fields = fields[1..].to_vec();
@@ -2211,7 +3059,10 @@ pub mod type_operations {
                                             span: span.clone(),
                                         };
                                         let rest_con = Located {
-                                            node: Constructor::Record(k2.clone(), rest_fields),
+                                            node: Constructor::Record(
+                                                input_row_kind.clone(),
+                                                rest_fields,
+                                            ),
                                             span: span.clone(),
                                         };
                                         let rec_app = Located {
@@ -2321,8 +3172,7 @@ pub mod type_operations {
                                         }
                                     }
                                     _ => {
-                                        // tryDistributivity on outer c2_norm
-                                        match &c2_norm.node {
+                                        let try_distributivity = || match &c2_norm.node {
                                             Constructor::Concat(cc1, cc2) => {
                                                 inc_distribute();
                                                 let map_f = Located {
@@ -2351,23 +3201,145 @@ pub mod type_operations {
                                                         Box::new(app1),
                                                         Box::new(app2),
                                                     ),
-                                                    span,
+                                                    span: span.clone(),
                                                 })
                                             }
-                                            _ => Located {
-                                                node: Constructor::App(
-                                                    Box::new(Located {
-                                                        node: Constructor::App(
-                                                            Box::new(c1p_norm),
-                                                            f,
-                                                        ),
-                                                        span: span.clone(),
-                                                    }),
-                                                    Box::new(c2_norm),
+                                            _ => default(),
+                                        };
+
+                                        let try_fusion = || match strip_disjoint_constraints(
+                                            c2_norm.clone(),
+                                        )
+                                        .node
+                                        {
+                                            Constructor::App(f_prime, row_prime) => {
+                                                match strip_disjoint_constraints(*f_prime).node {
+                                                    Constructor::App(map_head, inner_function) => {
+                                                        match strip_disjoint_constraints(*map_head)
+                                                            .node
+                                                        {
+                                                            Constructor::Map(
+                                                                inner_domain_kind,
+                                                                _,
+                                                            ) => {
+                                                                let lifted_inner_function =
+                                                                    lift_con_in_con(
+                                                                        inner_function
+                                                                            .as_ref()
+                                                                            .clone(),
+                                                                    );
+                                                                let lifted_outer_function =
+                                                                    lift_con_in_con(
+                                                                        f.as_ref().clone(),
+                                                                    );
+                                                                let composed_body = Located {
+                                                                        node: Constructor::App(
+                                                                            Box::new(
+                                                                                lifted_outer_function,
+                                                                            ),
+                                                                            Box::new(Located {
+                                                                                node:
+                                                                                    Constructor::App(
+                                                                                        Box::new(
+                                                                                            lifted_inner_function,
+                                                                                        ),
+                                                                                        Box::new(
+                                                                                            Located {
+                                                                                                node:
+                                                                                                    Constructor::Rel(
+                                                                                                        0,
+                                                                                                    ),
+                                                                                                span: span
+                                                                                                    .clone(),
+                                                                                            },
+                                                                                        ),
+                                                                                    ),
+                                                                                span: span.clone(),
+                                                                            }),
+                                                                        ),
+                                                                        span: span.clone(),
+                                                                    };
+                                                                let composed_function = Located {
+                                                                    node: Constructor::Abs(
+                                                                        "v".into(),
+                                                                        inner_domain_kind.clone(),
+                                                                        Box::new(composed_body),
+                                                                    ),
+                                                                    span: span.clone(),
+                                                                };
+                                                                let fused_map = Located {
+                                                                    node: Constructor::App(
+                                                                        Box::new(Located {
+                                                                            node: Constructor::Map(
+                                                                                inner_domain_kind,
+                                                                                k2.clone(),
+                                                                            ),
+                                                                            span: span.clone(),
+                                                                        }),
+                                                                        Box::new(composed_function),
+                                                                    ),
+                                                                    span: span.clone(),
+                                                                };
+                                                                inc_fuse();
+                                                                hnorm_con(Located {
+                                                                    node: Constructor::App(
+                                                                        Box::new(fused_map),
+                                                                        row_prime,
+                                                                    ),
+                                                                    span: span.clone(),
+                                                                })
+                                                            }
+                                                            _ => try_distributivity(),
+                                                        }
+                                                    }
+                                                    _ => try_distributivity(),
+                                                }
+                                            }
+                                            _ => try_distributivity(),
+                                        };
+
+                                        let try_identity = || {
+                                            let probe_reference = Arc::new(std::sync::Mutex::new(
+                                                CUnif::Unknown(ConstructorUnifScope {
+                                                    rel_kind_depth: 0,
+                                                    rel_constructor_depth: 0,
+                                                    max_named_constructor_id: None,
+                                                    max_named_structure_id: None,
+                                                }),
+                                            ));
+                                            let probe = Located {
+                                                node: Constructor::Unif(
+                                                    0,
+                                                    span.clone(),
+                                                    k1.clone(),
+                                                    "_".to_string(),
+                                                    probe_reference.clone(),
                                                 ),
-                                                span,
-                                            },
-                                        }
+                                                span: span.clone(),
+                                            };
+                                            let probe_application = Located {
+                                                node: Constructor::App(
+                                                    f.clone(),
+                                                    Box::new(probe.clone()),
+                                                ),
+                                                span: span.clone(),
+                                            };
+                                            match strip_disjoint_constraints(probe_application).node
+                                            {
+                                                Constructor::Unif(_, _, _, _, result_reference)
+                                                    if Arc::ptr_eq(
+                                                        &probe_reference,
+                                                        &result_reference,
+                                                    ) =>
+                                                {
+                                                    inc_identity();
+                                                    hnorm_con(c2_norm.clone())
+                                                }
+                                                _ => try_fusion(),
+                                            }
+                                        };
+
+                                        try_identity()
                                     }
                                 }
                             }
@@ -2517,13 +3489,17 @@ pub mod type_operations {
                             Constructor::Map(_k1, k2) => {
                                 let k2 = k2.clone();
                                 match &c2.node {
-                                    Constructor::Record(_, fields) if fields.is_empty() => {
+                                    Constructor::Record(_input_row_kind, fields)
+                                        if fields.is_empty() =>
+                                    {
                                         Located {
                                             node: Constructor::Record(k2, vec![]),
                                             span,
                                         }
                                     }
-                                    Constructor::Record(_, fields) if !fields.is_empty() => {
+                                    Constructor::Record(input_row_kind, fields)
+                                        if !fields.is_empty() =>
+                                    {
                                         let fields = fields.clone();
                                         let (first_name, first_val) = fields[0].clone();
                                         let rest = fields[1..].to_vec();
@@ -2551,7 +3527,10 @@ pub mod type_operations {
                                                     span: span.clone(),
                                                 }),
                                                 Box::new(Located {
-                                                    node: Constructor::Record(k2.clone(), rest),
+                                                    node: Constructor::Record(
+                                                        input_row_kind.clone(),
+                                                        rest,
+                                                    ),
                                                     span: span.clone(),
                                                 }),
                                             ),
@@ -2802,26 +3781,20 @@ pub mod type_operations {
         let right_normalized = hnorm_kind(right_kind.clone());
         match (&left_normalized.node, &right_normalized.node) {
             (Kind::Rel(left_index), Kind::Rel(right_index)) => left_index == right_index,
-            (left_kind, right_kind)
-                if left_kind.is_runtime_type_classifier()
-                    && right_kind.is_runtime_type_classifier() =>
-            {
-                match (left_kind.as_type_tag(), right_kind.as_type_tag()) {
-                    (Some(left_type_tag), Some(right_type_tag)) => {
-                        left_type_tag == right_type_tag
-                            || (left_type_tag == Types::Any
-                                && StarClassifierRefinement::is_star_structural_refinement(
-                                    right_type_tag,
-                                ))
-                            || (right_type_tag == Types::Any
-                                && StarClassifierRefinement::is_star_structural_refinement(
-                                    left_type_tag,
-                                ))
-                    }
-                    _ => true,
-                }
+            // Star unifies with Star, and Star unifies with any structural refinement.
+            (Kind::Star, Kind::Star) => true,
+            (Kind::Star, Kind::Typed(right_tag)) if right_tag.is_star_structural_refinement() => {
+                true // Star is compatible with Function/Error refinements.
+            }
+            (Kind::Typed(left_tag), Kind::Star) if left_tag.is_star_structural_refinement() => {
+                true // Symmetric: Function/Error refinements are compatible with Star.
+            }
+            (Kind::Typed(left_type_tag), Kind::Typed(right_type_tag)) => {
+                // Both sides carry a specific head: require exact match.
+                left_type_tag == right_type_tag
             }
             (Kind::Name, Kind::Name) => true,
+            (Kind::Unit, Kind::Unit) => true,
             (Kind::Record(left_row_kind), Kind::Record(right_row_kind)) => {
                 kinds_eq_simple(left_row_kind.as_ref(), right_row_kind.as_ref())
             }
@@ -2902,7 +3875,14 @@ pub mod type_operations {
             (Constructor::Concat(left_a, left_b), Constructor::Concat(right_a, right_b)) => {
                 cons_eq_simple(left_a, right_a) && cons_eq_simple(left_b, right_b)
             }
-            (Constructor::Map(_, _), Constructor::Map(_, _)) => true,
+            // Compare both kind arguments so that Map(Type, Type) ≠ Map(Name, Unit), etc.
+            (
+                Constructor::Map(left_domain_kind, left_codomain_kind),
+                Constructor::Map(right_domain_kind, right_codomain_kind),
+            ) => {
+                kinds_eq_simple(left_domain_kind, right_domain_kind)
+                    && kinds_eq_simple(left_codomain_kind, right_codomain_kind)
+            }
             (Constructor::Unit, Constructor::Unit) => true,
             (Constructor::Tuple(left_elements), Constructor::Tuple(right_elements)) => {
                 left_elements.len() == right_elements.len()
@@ -2936,6 +3916,19 @@ pub mod type_operations {
                 cons_eq_simple(left_body, right_body)
             }
             (Constructor::Error, Constructor::Error) => true,
+            // Two Enum constructors are equal iff they have the same tags, arm count, and recursive arg equality.
+            (Constructor::Enum(left_arms), Constructor::Enum(right_arms)) => {
+                left_arms.len() == right_arms.len()
+                    && left_arms.iter().zip(right_arms.iter()).all(
+                        |((left_tag, left_args), (right_tag, right_args))| {
+                            left_tag == right_tag
+                                && left_args.len() == right_args.len()
+                                && left_args.iter().zip(right_args.iter()).all(
+                                    |(left_arg, right_arg)| cons_eq_simple(left_arg, right_arg),
+                                )
+                        },
+                    )
+            }
             _ => false,
         }
     }
@@ -2947,7 +3940,7 @@ pub mod type_operations {
     #[cfg(test)]
     mod tests {
         use super::*;
-        use crate::elaborated::{Constructor, Explicitness, Kind, Types};
+        use crate::elaborated::{Constructor, Explicitness, Kind};
         use crate::error_types::Located;
         use anyhow::anyhow; // anyhow!() macro for error construction in tests
         use std::sync::{Arc, Mutex};
@@ -2977,17 +3970,17 @@ pub mod type_operations {
         #[test]
         fn sub_kind_in_kind_rel_zero_replaced() -> anyhow::Result<()> {
             // test returns Result to allow ? propagation
-            let rep = dummy(Kind::Typed(Types::Any));
+            let rep = dummy(Kind::Star); // use Star (plain kind Type) as replacement
             let k = dummy(Kind::Rel(0));
             let out = sub_kind_in_kind(0, &rep, k);
-            assert!(matches!(out.node, Kind::Typed(Types::Any)));
+            assert!(matches!(out.node, Kind::Star)); // replacement is Star
             Ok(()) // return success to the test harness
         }
 
         #[test]
         fn sub_kind_in_kind_rel_above_decremented() -> anyhow::Result<()> {
             // test returns Result to allow ? propagation
-            let rep = dummy(Kind::Typed(Types::Any));
+            let rep = dummy(Kind::Star); // use Star as replacement
             let k = dummy(Kind::Rel(2));
             let out = sub_kind_in_kind(0, &rep, k);
             assert!(matches!(out.node, Kind::Rel(1)));
@@ -3051,7 +4044,7 @@ pub mod type_operations {
             // test returns Result to allow ? propagation
             // Under Abs, bound becomes bound+1; index 0 at outer is index 1 in body.
             let body = dummy(Constructor::Rel(2));
-            let k = dummy(Kind::Typed(Types::Any));
+            let k = dummy(Kind::Star); // plain kind Type as binder kind
             let c = dummy(Constructor::Abs("x".into(), Box::new(k), Box::new(body)));
             assert!(occurs_at(0, 1, &c));
             Ok(()) // return success to the test harness
@@ -3126,7 +4119,7 @@ pub mod type_operations {
             let constructor = dummy(Constructor::Unif(
                 0,
                 crate::error_types::Span::dummy(),
-                Box::new(dummy(Kind::Typed(Types::Any))),
+                Box::new(dummy(Kind::Star)), // plain kind Type as unifier binder kind
                 "known".into(),
                 reference,
             ));
@@ -3170,7 +4163,7 @@ pub mod type_operations {
         #[test]
         fn cons_eq_simple_record_same() -> anyhow::Result<()> {
             // test returns Result to allow ? propagation
-            let k = dummy(Kind::Typed(Types::Any));
+            let k = dummy(Kind::Star); // plain kind Type as row kind
             let u = dummy(Constructor::Unit);
             let r = dummy(Constructor::Record(
                 Box::new(k),
@@ -3187,7 +4180,7 @@ pub mod type_operations {
             // TCFun is a forall/pi type (∀ x :: K. body); CApp(TCFun, c) is NOT
             // reducible in hnorm — the ECApp elaboration handles TCFun via substitution.
             // Constructor::Abs (CAbs in SML) is the constructor lambda; TCFun is the forall.
-            let k = dummy(Kind::Typed(Types::Any));
+            let k = dummy(Kind::Star); // plain kind Type as parameter kind
             let body = dummy(Constructor::Rel(0));
             let head = dummy(Constructor::TCFun(
                 Explicitness::Implicit,
@@ -3207,6 +4200,127 @@ pub mod type_operations {
                 "App(TCFun, c) should not beta-reduce in hnorm_con (only App(Abs, c) does)"
             );
             Ok(()) // return success to the test harness
+        }
+
+        #[test]
+        fn hnorm_con_recovers_map_identity_on_abstract_row() -> anyhow::Result<()> {
+            let type_kind = dummy(Kind::Star);
+            let row_kind = dummy(Kind::Record(Box::new(type_kind.clone())));
+            let identity_function = dummy(Constructor::Abs(
+                "v".into(),
+                Box::new(type_kind.clone()),
+                Box::new(dummy(Constructor::Rel(0))),
+            ));
+            let abstract_row = dummy(Constructor::Unif(
+                0,
+                crate::error_types::Span::dummy(),
+                Box::new(row_kind.clone()),
+                "row".into(),
+                Arc::new(std::sync::Mutex::new(CUnif::Unknown(
+                    ConstructorUnifScope {
+                        rel_kind_depth: 0,
+                        rel_constructor_depth: 0,
+                        max_named_constructor_id: None,
+                        max_named_structure_id: None,
+                    },
+                ))),
+            ));
+            let mapped_row = dummy(Constructor::App(
+                Box::new(dummy(Constructor::App(
+                    Box::new(dummy(Constructor::Map(
+                        Box::new(type_kind.clone()),
+                        Box::new(type_kind),
+                    ))),
+                    Box::new(identity_function),
+                ))),
+                Box::new(abstract_row.clone()),
+            ));
+
+            let normalized = hnorm_con(mapped_row);
+            assert!(
+                matches!(normalized.node, Constructor::Unif(..)),
+                "map identity should normalize away on abstract rows",
+            );
+            Ok(())
+        }
+
+        #[test]
+        fn hnorm_con_fuses_nested_maps_on_abstract_row() -> anyhow::Result<()> {
+            let scalar_kind = dummy(Kind::Star);
+            let pair_kind = dummy(Kind::Tuple(vec![scalar_kind.clone(), scalar_kind.clone()]));
+            let row_kind = dummy(Kind::Record(Box::new(pair_kind.clone())));
+            let first_projection = dummy(Constructor::Abs(
+                "pair".into(),
+                Box::new(pair_kind.clone()),
+                Box::new(dummy(Constructor::Proj(
+                    Box::new(dummy(Constructor::Rel(0))),
+                    1,
+                ))),
+            ));
+            let wrap_identity = dummy(Constructor::Abs(
+                "value".into(),
+                Box::new(scalar_kind.clone()),
+                Box::new(dummy(Constructor::Rel(0))),
+            ));
+            let abstract_row = dummy(Constructor::Unif(
+                0,
+                crate::error_types::Span::dummy(),
+                Box::new(row_kind),
+                "cols".into(),
+                Arc::new(std::sync::Mutex::new(CUnif::Unknown(
+                    ConstructorUnifScope {
+                        rel_kind_depth: 0,
+                        rel_constructor_depth: 0,
+                        max_named_constructor_id: None,
+                        max_named_structure_id: None,
+                    },
+                ))),
+            ));
+            let inner_map = dummy(Constructor::App(
+                Box::new(dummy(Constructor::App(
+                    Box::new(dummy(Constructor::Map(
+                        Box::new(pair_kind),
+                        Box::new(scalar_kind.clone()),
+                    ))),
+                    Box::new(first_projection),
+                ))),
+                Box::new(abstract_row.clone()),
+            ));
+            let nested_map = dummy(Constructor::App(
+                Box::new(dummy(Constructor::App(
+                    Box::new(dummy(Constructor::Map(
+                        Box::new(scalar_kind.clone()),
+                        Box::new(scalar_kind),
+                    ))),
+                    Box::new(wrap_identity),
+                ))),
+                Box::new(inner_map),
+            ));
+
+            let normalized = hnorm_con(nested_map);
+            assert!(
+                matches!(normalized.node, Constructor::App(_, _)),
+                "nested map fusion should keep a single outer map application",
+            );
+            let Constructor::App(fused_map, fused_row) = normalized.node else {
+                unreachable!();
+            };
+            assert!(
+                matches!(fused_row.as_ref().node, Constructor::Unif(..)),
+                "fused map should keep the original abstract row as its argument",
+            );
+            let Constructor::App(map_head, fused_function) = fused_map.as_ref().node.clone() else {
+                panic!("expected fused map head");
+            };
+            assert!(
+                matches!(map_head.as_ref().node, Constructor::Map(_, _)),
+                "nested map fusion should rebuild a single map head",
+            );
+            assert!(
+                matches!(fused_function.as_ref().node, Constructor::Abs(_, _, _)),
+                "nested map fusion should compose the two mapping functions",
+            );
+            Ok(())
         }
 
         #[test]
@@ -3306,6 +4420,8 @@ pub mod type_tree {
     pub enum KindNodeClass {
         Leaf,
         Composite,
+        /// An anonymous kind-level binder ([`Kind::KFun`]).
+        Binder,
         Rel,
     }
 
@@ -3320,12 +4436,13 @@ pub mod type_tree {
     /// Maps a [`Kind`] to a coarse [`KindNodeClass`].
     pub fn kind_node_class(kind: &Kind) -> KindNodeClass {
         match kind {
-            Kind::Typed(_) | Kind::Name | Kind::Unit | Kind::Error => KindNodeClass::Leaf,
+            // Star (plain kind Type) and Typed (refined kind Type) are both leaves.
+            Kind::Star | Kind::Typed(_) | Kind::Name | Kind::Unit => KindNodeClass::Leaf,
             Kind::Unif(..) | Kind::TupleUnif(..) => KindNodeClass::Leaf,
             Kind::Rel(_) => KindNodeClass::Rel,
-            Kind::Arrow(..) | Kind::Record(..) | Kind::Tuple(..) | Kind::Fun(..) => {
-                KindNodeClass::Composite
-            }
+            Kind::Arrow(..) | Kind::Record(..) | Kind::Tuple(..) => KindNodeClass::Composite,
+            // KFun is a binder: it introduces one kind variable into the body.
+            Kind::KFun(..) => KindNodeClass::Binder,
         }
     }
 
@@ -3348,7 +4465,9 @@ pub mod type_tree {
             | Constructor::Map(..)
             | Constructor::Tuple(..)
             | Constructor::Proj(..)
-            | Constructor::KApp(..) => ConstructorNodeClass::Composite,
+            | Constructor::KApp(..)
+            // Enum is an anonymous sum with arm payloads — composite, not a binder.
+            | Constructor::Enum(..) => ConstructorNodeClass::Composite,
             Constructor::TCFun(..)
             | Constructor::Abs(..)
             | Constructor::KAbs(..)
@@ -3428,6 +4547,14 @@ pub mod type_tree {
             Constructor::Unif(_, _, kind_placeholder, _, _) => {
                 visitor(TypeTreeEdge::Kind(kind_placeholder.as_ref()));
             }
+            // Walk all argument constructors inside each enum arm.
+            Constructor::Enum(arms) => {
+                for (_, arg_constructors) in arms {
+                    for arg_constructor in arg_constructors {
+                        visitor(TypeTreeEdge::Constructor(arg_constructor));
+                    }
+                }
+            }
         }
     }
 
@@ -3437,7 +4564,8 @@ pub mod type_tree {
         mut visitor: impl FnMut(TypeTreeEdge<'a>),
     ) {
         match &located.node {
-            Kind::Typed(_) | Kind::Name | Kind::Unit | Kind::Error => {}
+            // Star (plain kind Type) and Typed (refined kind Type) are leaves — no child edges.
+            Kind::Star | Kind::Typed(_) | Kind::Name | Kind::Unit => {}
             Kind::Arrow(domain, codomain) => {
                 visitor(TypeTreeEdge::Kind(domain.as_ref()));
                 visitor(TypeTreeEdge::Kind(codomain.as_ref()));
@@ -3451,6 +4579,10 @@ pub mod type_tree {
                 }
             }
             Kind::Unif(..) | Kind::TupleUnif(..) | Kind::Rel(_) => {}
+            // KFun has one child: the body under the anonymous kind-variable binder.
+            Kind::KFun(body) => {
+                visitor(TypeTreeEdge::Kind(body.as_ref()));
+            }
         }
     }
 
@@ -3649,12 +4781,21 @@ pub mod type_tree {
     }
 }
 
+#[macro_export]
+macro_rules! elaborated_try_fold_edges {
+    ($root:expr, $init:expr, |$acc:ident, $edge:ident| $body:block) => {{
+        let view = $crate::elaborated::type_tree::ElaboratedTypeView::from($root);
+        $crate::elaborated::type_tree::try_fold_immediate_edges(view, $init, |$acc, $edge| $body)
+    }};
+}
+
 #[cfg(test)]
 mod ur_langsec_and_array_classifier_tests {
     use super::{
         canonicalize_langsec_string_identifier, langsec_string_identifiers_equivalent, Kind,
-        RuntimePrimitiveTag, Types,
+        ScalarTypeTag, StarClassifierRefinement, Types,
     };
+    use crate::primitives::Prim;
 
     #[test]
     fn langsec_string_identifiers_treat_space_and_underscore_as_equivalent() {
@@ -3677,63 +4818,215 @@ mod ur_langsec_and_array_classifier_tests {
     #[test]
     fn homogeneous_array_tags_are_distinct_and_project_element_type() {
         assert_ne!(Types::StringArray, Types::IntArray);
+        // homogeneous_array_element_type returns the unit discriminant for scalar arrays.
         assert_eq!(
             Types::StringArray.homogeneous_array_element_type(),
             Some(Types::String)
         );
+        // Non-array variant returns None.
         assert_eq!(Types::String.homogeneous_array_element_type(), None);
         assert!(Types::BlobArray.is_homogeneous_array());
         assert!(!Types::Blob.is_homogeneous_array());
     }
 
     #[test]
-    fn runtime_primitive_compatible_defaults_to_symmetric_instance_of() {
-        assert!(RuntimePrimitiveTag::runtime_primitive_compatible(
-            Types::Int,
-            Types::Any
-        ));
-        assert!(!RuntimePrimitiveTag::runtime_primitive_compatible(
-            Types::Int,
-            Types::String
-        ));
+    fn type_head_instance_of_is_exact_match() {
+        // instance_of: no top element, only exact match succeeds.
+        assert!(Types::Int.instance_of(&Types::Int));
+        assert!(!Types::Int.instance_of(&Types::String));
     }
 
     #[test]
-    fn kind_runtime_type_instance_of_follows_primitive_preorder() {
+    fn kind_runtime_type_instance_of_star_is_widest() {
+        // Star is the widest runtime classifier: any Typed kind is an instance of Star.
         let int_kind = Kind::typed(Types::Int);
-        let any_kind = Kind::typed(Types::Any);
-        assert!(int_kind.runtime_type_instance_of(&any_kind));
-        assert!(!any_kind.runtime_type_instance_of(&int_kind));
+        let star_kind = Kind::Star;
+        assert!(int_kind.runtime_type_instance_of(&star_kind)); // Int instance-of Star
+        assert!(!star_kind.runtime_type_instance_of(&int_kind)); // Star is NOT instance-of Int
+        assert!(star_kind.runtime_type_instance_of(&star_kind)); // Star instance-of Star
     }
 
     #[test]
     fn star_structural_refinement_tags_cover_function_and_error() {
-        use super::StarClassifierRefinement;
-        assert!(Types::Function.is_star_structural_refinement());
-        assert!(Types::Error.is_star_structural_refinement());
-        assert!(!Types::Any.is_star_structural_refinement());
+        use crate::error_types::Located;
+        let span = crate::error_types::Span::dummy();
+        let star_k = || Located::new(Kind::Star, span.clone()); // use Star for payloads
+        let function_tag = Types::Function(Box::new(star_k()), Box::new(star_k()));
+        let error_tag = Types::Error(Vec::new());
+        assert!(function_tag.is_star_structural_refinement());
+        assert!(error_tag.is_star_structural_refinement());
+        // Scalar discriminants are NOT structural refinements.
         assert!(!Types::Int.is_star_structural_refinement());
     }
 
     #[test]
-    fn kinds_eq_simple_treats_any_as_compatible_with_star_refinements() {
+    fn resolve_number_float_literal_gives_float() {
+        // A float literal resolves Number to Float.
+        assert_eq!(
+            Types::Number.resolve_number(&Prim::Float(3.14)),
+            Types::Float
+        );
+    }
+
+    #[test]
+    fn resolve_number_positive_int_gives_uint() {
+        // A non-negative integer literal resolves Number to Uint.
+        assert_eq!(Types::Number.resolve_number(&Prim::Int(0)), Types::Uint);
+        assert_eq!(Types::Number.resolve_number(&Prim::Int(42)), Types::Uint);
+    }
+
+    #[test]
+    fn resolve_number_negative_int_gives_int() {
+        // A negative integer literal resolves Number to Int.
+        assert_eq!(Types::Number.resolve_number(&Prim::Int(-1)), Types::Int);
+        assert_eq!(
+            Types::Number.resolve_number(&Prim::Int(i64::MIN)),
+            Types::Int
+        );
+    }
+
+    #[test]
+    fn resolve_number_on_non_number_head_is_identity() {
+        // Calling resolve_number on a concrete head leaves it unchanged.
+        assert_eq!(Types::Int.resolve_number(&Prim::Float(1.0)), Types::Int);
+        assert_eq!(Types::Float.resolve_number(&Prim::Int(5)), Types::Float);
+        assert_eq!(Types::Uint.resolve_number(&Prim::Int(-1)), Types::Uint);
+    }
+
+    #[test]
+    fn as_scalar_type_tag_round_trips() {
+        // Scalar discriminants map to ScalarTypeTag.
+        assert_eq!(Types::Int.as_scalar_type_tag(), Some(ScalarTypeTag::Int));
+        assert_eq!(
+            Types::Float.as_scalar_type_tag(),
+            Some(ScalarTypeTag::Float)
+        );
+        assert_eq!(Types::Bool.as_scalar_type_tag(), Some(ScalarTypeTag::Bool));
+        assert_eq!(Types::Char.as_scalar_type_tag(), Some(ScalarTypeTag::Char));
+        assert_eq!(Types::Unit.as_scalar_type_tag(), Some(ScalarTypeTag::Unit));
+        // Non-scalar variants (arrays) return None.
+        assert_eq!(Types::IntArray.as_scalar_type_tag(), None);
+    }
+
+    #[test]
+    fn kinds_eq_simple_star_compatible_with_star_refinements() {
+        // Star unifies with structural refinements (Function, Error) via kinds_eq_simple.
         use crate::elaborated::type_operations::kinds_eq_simple_public;
         use crate::error_types::Located;
 
-        let any_k = Located::dummy(Kind::typed(Types::Any));
-        let fun_k = Located::dummy(Kind::typed(Types::Function));
-        let err_k = Located::dummy(Kind::typed(Types::Error));
-        assert!(kinds_eq_simple_public(&any_k, &fun_k));
-        assert!(kinds_eq_simple_public(&fun_k, &any_k));
-        assert!(kinds_eq_simple_public(&any_k, &err_k));
-        assert!(!kinds_eq_simple_public(&fun_k, &err_k));
+        let span = crate::error_types::Span::dummy();
+        let star_k = Located::dummy(Kind::Star); // plain kind Type (replaces former Any)
+                                                 // Function and Error require payloads.
+        let fun_k = Located::dummy(Kind::typed(Types::Function(
+            Box::new(Located::new(Kind::Star, span.clone())),
+            Box::new(Located::new(Kind::Star, span.clone())),
+        )));
+        let err_k = Located::dummy(Kind::typed(Types::Error(Vec::new())));
+        assert!(kinds_eq_simple_public(&star_k, &fun_k)); // Star unifies with Function
+        assert!(kinds_eq_simple_public(&fun_k, &star_k)); // symmetric
+        assert!(kinds_eq_simple_public(&star_k, &err_k)); // Star unifies with Error
+        assert!(!kinds_eq_simple_public(&fun_k, &err_k)); // Function != Error
     }
 }
 
-#[macro_export]
-macro_rules! elaborated_try_fold_edges {
-    ($root:expr, $init:expr, |$acc:ident, $edge:ident| $body:block) => {{
-        let view = $crate::elaborated::type_tree::ElaboratedTypeView::from($root);
-        $crate::elaborated::type_tree::try_fold_immediate_edges(view, $init, |$acc, $edge| $body)
-    }};
+#[cfg(test)]
+mod canonical_type_tests {
+    //! Tests for the canonical [`super::Type`] AST: structural equality, hashing, and the
+    //! `function` helper shape.
+
+    use super::{Type, TypeHead, Types};
+
+    #[test]
+    fn type_head_structural_equality() {
+        // Two `Type::Head` values are equal iff their heads are the same.
+        assert_eq!(Type::Head(Types::Int), Type::Head(Types::Int));
+        assert_ne!(Type::Head(Types::Int), Type::Head(Types::Bool));
+    }
+
+    #[test]
+    fn type_var_equality() {
+        // De Bruijn indices are compared numerically.
+        assert_eq!(Type::Var(0), Type::Var(0));
+        assert_ne!(Type::Var(0), Type::Var(1));
+    }
+
+    #[test]
+    fn type_tuple_round_trip() {
+        // A tuple type is equal to another tuple with the same fields in the same order.
+        let pair = Type::Tuple(vec![Type::Head(Types::Int), Type::Head(Types::Bool)]);
+        let pair_copy = Type::Tuple(vec![Type::Head(Types::Int), Type::Head(Types::Bool)]);
+        let swapped = Type::Tuple(vec![Type::Head(Types::Bool), Type::Head(Types::Int)]);
+        assert_eq!(pair, pair_copy);
+        assert_ne!(pair, swapped);
+    }
+
+    #[test]
+    fn type_record_round_trip() {
+        // Record types are equal when field names and types match.
+        let record_a = Type::Record(vec![
+            ("x".to_string(), Type::Head(Types::Int)),
+            ("y".to_string(), Type::Head(Types::Bool)),
+        ]);
+        let record_b = Type::Record(vec![
+            ("x".to_string(), Type::Head(Types::Int)),
+            ("y".to_string(), Type::Head(Types::Bool)),
+        ]);
+        assert_eq!(record_a, record_b);
+    }
+
+    #[test]
+    fn type_enum_round_trip() {
+        // Enum types are equal when tags and arm types match.
+        let enum_a = Type::Enum(vec![
+            ("Nil".to_string(), vec![]),
+            ("Cons".to_string(), vec![Type::Head(Types::Int)]),
+        ]);
+        let enum_b = Type::Enum(vec![
+            ("Nil".to_string(), vec![]),
+            ("Cons".to_string(), vec![Type::Head(Types::Int)]),
+        ]);
+        assert_eq!(enum_a, enum_b);
+    }
+
+    #[test]
+    fn type_function_helper_shape() {
+        // `Type::function` encodes `domain -> codomain` as App(App(Head(Function), domain), codomain).
+        let domain = Type::Head(Types::Int);
+        let codomain = Type::Head(Types::Bool);
+        let function_type = Type::function(domain, codomain);
+        // The outermost node must be App.
+        let Type::App(outer_left, outer_right) = &function_type else {
+            panic!("expected App at outermost level");
+        };
+        // The codomain is the right child.
+        assert_eq!(**outer_right, Type::Head(Types::Bool));
+        // The left child is App(Head(Function), domain).
+        let Type::App(inner_left, inner_right) = outer_left.as_ref() else {
+            panic!("expected App for function partial application");
+        };
+        // The domain is the right child of the inner App.
+        assert_eq!(**inner_right, Type::Head(Types::Int));
+        // The innermost left child must be Head(Function(..)).
+        assert!(matches!(
+            inner_left.as_ref(),
+            Type::Head(TypeHead::Function(..))
+        ));
+    }
+
+    #[test]
+    // `Type` derives Hash + Eq. The `mutable_key_type` lint fires because `TypeHead::Function`
+    // transitively contains `LocatedKind` which may hold unification cells (`Kind::Unif`).
+    // In this test we only use unit-variant heads (Int, Bool, String) that have no interior
+    // mutability; the allow is intentional and scoped to this test only.
+    #[allow(clippy::mutable_key_type)]
+    fn type_can_be_used_as_hashmap_key() {
+        // `Type` derives Hash + Eq, so it can serve as a `HashMap` key.
+        use std::collections::HashMap;
+        let mut map: HashMap<Type, &str> = HashMap::new();
+        map.insert(Type::Head(Types::Int), "int");
+        map.insert(Type::Head(Types::Bool), "bool");
+        assert_eq!(map.get(&Type::Head(Types::Int)), Some(&"int"));
+        assert_eq!(map.get(&Type::Head(Types::Bool)), Some(&"bool"));
+        assert_eq!(map.get(&Type::Head(Types::String)), None);
+    }
 }

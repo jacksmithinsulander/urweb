@@ -243,8 +243,8 @@ pub fn classify(file: File, settings: &Settings, errors: &mut ErrorReporter) -> 
         }
     }
 
-    // Protocol persistent check: "cgi" is not persistent, others typically are
-    let protocol_persistent = !settings.protocol.is_empty() && settings.protocol != "cgi";
+    // Protocol persistent check follows the effective protocol default (`http`) used by the ML compiler.
+    let protocol_persistent = settings.persistent();
 
     let all_ids: HashSet<usize> = pull_ids.union(&push_ids).cloned().collect();
     let mut found_bad = false;
@@ -259,7 +259,7 @@ pub fn classify(file: File, settings: &Settings, errors: &mut ErrorReporter) -> 
                         crate::error_types::Span::dummy(),
                         DiagnosticPayload::new(
                             DiagnosticId::ScriptPushProtocolNotPersistent,
-                            vec![settings.protocol.clone()],
+                            vec![settings.effective_protocol().to_string()],
                         ),
                         DiagnosticId::HintScriptPushProtocolNotPersistent,
                         vec![],

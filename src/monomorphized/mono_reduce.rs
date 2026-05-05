@@ -86,7 +86,7 @@ struct ReduceCtx {
 fn simple_type_impure(t: &LocTyp, timpures: &HashSet<usize>) -> bool {
     use crate::monomorphized::utilities::typ;
     typ::exists(t, &|node| match node {
-        Typ::Fun(..) => true,
+        Typ::Fun(..) | Typ::Transaction(..) => true,
         Typ::Datatype(n, _) => timpures.contains(n),
         _ => false,
     })
@@ -1084,6 +1084,13 @@ fn may_inline(
         || settings.always_inline.contains(s)
 }
 
+fn references_any_named(e: &LocExp, ids: &HashSet<usize>) -> bool {
+    crate::monomorphized::utilities::exp::exists(e, &|_| false, &|node| match node {
+        Exp::Named(n) => ids.contains(n),
+        _ => false,
+    })
+}
+
 /// Count nodes in an expression (rough size estimate).
 fn exp_size(e: &LocExp) -> usize {
     use crate::monomorphized::utilities::exp;
@@ -1095,13 +1102,38 @@ fn exp_size(e: &LocExp) -> usize {
 fn function_inside(t: &LocTyp) -> bool {
     match &t.node {
         Typ::Fun(dom, ran) => function_inside_prime(dom) || function_inside(ran),
+        Typ::Transaction(ran) => function_inside(ran),
         _ => function_inside_prime(t),
     }
 }
 
 fn function_inside_prime(t: &LocTyp) -> bool {
     use crate::monomorphized::utilities::typ;
-    typ::exists(t, &|node| matches!(node, Typ::Fun(..)))
+    typ::exists(t, &|node| {
+        matches!(node, Typ::Fun(..) | Typ::Transaction(..))
+    })
+}
+
+fn query_row_type(qm: &QueryMeta, span: &Span) -> LocTyp {
+    let mut fields = qm.exps.clone();
+    fields.extend(qm.tables.iter().map(|(table, xts)| {
+        (
+            table.clone(),
+            Located::new(Typ::Record(xts.clone()), span.clone()),
+        )
+    }));
+    Located::new(Typ::Record(fields), span.clone())
+}
+
+fn function_like_parts(t: &LocTyp) -> Option<(LocTyp, LocTyp)> {
+    match &t.node {
+        Typ::Fun(dom, ran) => Some((*dom.clone(), *ran.clone())),
+        Typ::Transaction(ran) => Some((
+            Located::new(Typ::Record(Vec::new()), t.span.clone()),
+            *ran.clone(),
+        )),
+        _ => None,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1202,11 +1234,10 @@ fn reduce_children(env: &Env, e: LocExp, ctx: &ReduceCtx, settings: &Settings) -
             Exp::Case(Box::new(disc_r), arms_r, meta)
         }
         Exp::Query(qm) => {
+            let row_t = query_row_type(&qm, &span);
             let query_r = reduce_exp(env, *qm.query, ctx, settings);
             // Query body has two extra bindings (row, accumulator)
-            let body_env = env
-                .push_rel("r", qm.state.clone())
-                .push_rel("acc", qm.state.clone());
+            let body_env = env.push_rel("r", row_t).push_rel("acc", qm.state.clone());
             let body_r = reduce_exp(&body_env, *qm.body, ctx, settings);
             let initial_r = reduce_exp(env, *qm.initial, ctx, settings);
             Exp::Query(QueryMeta {
@@ -1372,6 +1403,20 @@ fn reduce_node(env: &Env, e: Exp, span: &Span, ctx: &ReduceCtx, settings: &Setti
                 let new_app = Located::new(Exp::App(b, Box::new(lifted_arg)), span.clone());
                 let new_let = Located::new(Exp::Let(x, t, e, Box::new(new_app)), span.clone());
                 reduce_exp(env, new_let, ctx, settings).node
+            } else if let Exp::Case(disc, arms, meta) = f.node.clone() {
+                let is_unit_arg = matches!(&arg.node, Exp::Record(fields) if fields.is_empty());
+                let disc_is_thunk = matches!(&disc.node, Exp::Abs(_, _, _, _));
+                let case_result_is_not_function = function_like_parts(&meta.result).is_none();
+
+                if is_unit_arg && disc_is_thunk && case_result_is_not_function {
+                    let forced_disc =
+                        Located::new(Exp::App(disc, Box::new((*arg).clone())), span.clone());
+                    let repaired_case =
+                        Located::new(Exp::Case(Box::new(forced_disc), arms, meta), span.clone());
+                    reduce_exp(env, repaired_case, ctx, settings).node
+                } else {
+                    Exp::App(f, arg)
+                }
             } else {
                 Exp::App(f, arg)
             }
@@ -1389,6 +1434,24 @@ fn reduce_node(env: &Env, e: Exp, span: &Span, ctx: &ReduceCtx, settings: &Setti
             }
             // Try to match patterns statically
             search_arms(env, *disc, arms, meta, span, ctx, settings)
+        }
+
+        // Repair a malformed nested transaction thunk:
+        //   fn _ : {} => (fn _ : {} => e)
+        // when the outer function is supposed to return a plain value.
+        Exp::Abs(x, dom, ran, body_box) => {
+            if is_unit_record_type(&dom) && function_like_parts(&ran).is_none() {
+                if let Exp::Abs(_, inner_dom, _, inner_body) = body_box.node.clone() {
+                    if is_unit_record_type(&inner_dom) && count_free(0, &inner_body) == 0 {
+                        let unit = Located::new(Exp::Record(Vec::new()), span.clone());
+                        let collapsed = sub_exp_in_exp(0, &unit, &inner_body);
+                        let env2 = env.push_rel(&x, dom.clone());
+                        let collapsed = reduce_exp(&env2, collapsed, ctx, settings);
+                        return Exp::Abs(x, dom, ran, Box::new(collapsed));
+                    }
+                }
+            }
+            Exp::Abs(x, dom, ran, body_box)
         }
 
         // ----------------------------------------------------------------
@@ -1537,9 +1600,9 @@ fn push_case(
     _settings: &Settings,
 ) -> Exp {
     // Check if result type is a function type
-    if let Typ::Fun(dom, result_t) = &meta.result.node {
-        let dom = dom.clone();
-        let result_t = result_t.clone();
+    if let Some((dom, result_t)) = function_like_parts(&meta.result) {
+        let dom = Box::new(dom);
+        let result_t = Box::new(result_t);
 
         // Check if each arm is "safe" (pure use of its bound variable, no side effects,
         // or an explicit abort)
@@ -1563,8 +1626,8 @@ fn push_case(
                             swap_exp_vars_pat(0, n_binds, &body)
                         }
                         Exp::Error(msg, err_t) => {
-                            if let Typ::Fun(_, inner_t) = &err_t.node {
-                                Located::new(Exp::Error(msg, *inner_t.clone()), ae_span.clone())
+                            if let Some((_, inner_t)) = function_like_parts(&err_t) {
+                                Located::new(Exp::Error(msg, inner_t), ae_span.clone())
                             } else {
                                 // fallback: apply to Rel(n_binds)
                                 let rel = Located::new(Exp::Rel(n_binds), ae_span.clone());
@@ -1933,6 +1996,21 @@ fn reduce_decl(env: &mut Env, d: Decl, ctx: &ReduceCtx, settings: &Settings) -> 
         Decl::Val(x, n, t, e, s) => {
             // Reduce the body
             let e_reduced = reduce_exp(env, e, ctx, settings);
+            if matches!(
+                x.as_str(),
+                "$speak" | "wrap_main" | "queryL" | "queryI" | "queryX'"
+            ) {
+                let _ = (|| -> std::io::Result<()> {
+                    let mut file = std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open("/tmp/urweb-mono-reduce-top.log")?;
+                    std::io::Write::write_all(
+                        &mut file,
+                        format!("VAL path={s} name={x} = {e_reduced:#?}\n\n").as_bytes(),
+                    )
+                })();
+            }
             // Determine if we can inline this definition
             let cached = if may_inline(n, &e_reduced, &t, &s, ctx, settings) {
                 Some(e_reduced.clone())
@@ -1945,17 +2023,40 @@ fn reduce_decl(env: &mut Env, d: Decl, ctx: &ReduceCtx, settings: &Settings) -> 
 
         Decl::ValRec(vis) => {
             // For recursive bindings: reduce each body, then register all
-            // with no cached expression (recursive defs can't be naively inlined).
+            // with cached expressions only for members that don't actually
+            // reference any definition from the recursive group.
             let reduced_vis: Vec<(String, usize, LocTyp, LocExp, String)> = vis
                 .into_iter()
                 .map(|(x, n, t, e, s)| {
                     let e_reduced = reduce_exp(env, e, ctx, settings);
+                    if matches!(
+                        x.as_str(),
+                        "$speak" | "wrap_main" | "queryL" | "queryI" | "queryX'"
+                    ) {
+                        let _ = (|| -> std::io::Result<()> {
+                            let mut file = std::fs::OpenOptions::new()
+                                .create(true)
+                                .append(true)
+                                .open("/tmp/urweb-mono-reduce-top.log")?;
+                            std::io::Write::write_all(
+                                &mut file,
+                                format!("VALREC path={s} name={x} = {e_reduced:#?}\n\n").as_bytes(),
+                            )
+                        })();
+                    }
                     (x, n, t, e_reduced, s)
                 })
                 .collect();
-            // Register all with no inlining
-            for (x, n, t, _, s) in &reduced_vis {
-                *env = env.push_named_opt(x, *n, t.clone(), None, s);
+            let group_ids: HashSet<usize> = reduced_vis.iter().map(|(_, n, _, _, _)| *n).collect();
+            for (x, n, t, e, s) in &reduced_vis {
+                let cached = if !references_any_named(e, &group_ids)
+                    && may_inline(*n, e, t, s, ctx, settings)
+                {
+                    Some(e.clone())
+                } else {
+                    None
+                };
+                *env = env.push_named_opt(x, *n, t.clone(), cached, s);
             }
             Decl::ValRec(reduced_vis)
         }
