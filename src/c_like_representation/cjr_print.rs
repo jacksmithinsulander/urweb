@@ -754,10 +754,7 @@ pub fn p_exp(env: &CjrEnv, e: &LocExp, settings: &Settings) -> String {
                 }
             });
 
-            format!(
-                "({{\n{} disc = {};\n{}\n{};\n}})",
-                disc_t, disc_s, result_t, chain
-            )
+            format!("({{\n{} disc = {};\n\n{};\n}})", disc_t, disc_s, chain)
         }
 
         Exp::Error(msg_e, t) => {
@@ -3198,7 +3195,7 @@ pub fn cjr_print(
     let mut global_initializers: Vec<String> = Vec::new();
 
     // Print each declaration using the full_env (for forward references)
-    let mut decl_outputs: Vec<String> = Vec::new();
+    let mut printed_decls: Vec<(&LocDecl, String)> = Vec::new();
     for d in &all_ds {
         let body = p_decl(
             &full_env,
@@ -3215,7 +3212,7 @@ pub fn cjr_print(
             s.push_str(&dir);
         }
         s.push_str(&body);
-        decl_outputs.push(s);
+        printed_decls.push((d, s));
     }
 
     // Build global forward declarations (prototypes) for all named functions
@@ -3271,13 +3268,17 @@ pub fn cjr_print(
     }
 
     // Separate struct/datatype declarations from function declarations
-    let mut struct_decls: Vec<String> = Vec::new();
+    let mut struct_decls: Vec<(usize, String)> = Vec::new();
     let mut func_decls: Vec<String> = Vec::new();
 
-    for (d, s) in all_ds.iter().zip(decl_outputs.iter()) {
+    for (d, s) in &printed_decls {
         match &d.node {
             Decl::Datatype(_) | Decl::DatatypeForward(_, _, _) | Decl::Struct(_, _) => {
-                struct_decls.push(s.clone());
+                let sort_key = match &d.node {
+                    Decl::Struct(n, _) => *n,
+                    _ => usize::MAX,
+                };
+                struct_decls.push((sort_key, s.clone()));
             }
             _ => func_decls.push(s.clone()),
         }
@@ -3350,7 +3351,14 @@ pub fn cjr_print(
 
     // Struct and datatype definitions
     if !struct_decls.is_empty() {
-        out.push_str(&struct_decls.join("\n\n"));
+        struct_decls.sort_by_key(|(key, _)| *key);
+        out.push_str(
+            &struct_decls
+                .into_iter()
+                .map(|(_, body)| body)
+                .collect::<Vec<_>>()
+                .join("\n\n"),
+        );
         out.push_str("\n\n");
     }
 

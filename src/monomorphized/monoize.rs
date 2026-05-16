@@ -6,8 +6,9 @@
 //!
 //! Mirrors `monoize.sml`.
 
-use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex};
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::fs;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::core::{
     self, Constructor as CC, Declaration as CD, Expression as CE, LocatedConstructor,
@@ -20,7 +21,8 @@ use crate::error_types::{Located, Span};
 use crate::monomorphized::utilities::classify_datatype as classify_datatype_mono;
 use crate::monomorphized::{
     self as mono, BinopIntness, CaseMeta, DatatypeDecl as MonoDatatypeDecl, DatatypeDef,
-    DatatypeRef, Decl, Exp, LocDecl, LocExp, LocPat, LocTyp, Pat, PatCon, Policy, Typ,
+    DatatypeRef, Decl, Exp, JavaScriptMode, LocDecl, LocExp, LocPat, LocTyp, Pat, PatCon, Policy,
+    Typ,
 };
 use crate::primitives::Prim;
 use crate::settings::{FailureMode, Settings};
@@ -162,6 +164,69 @@ impl Env {
 
 /// A record for one generated helper function (DValRec entry).
 type FmDecl = (String, usize, LocTyp, LocExp, String);
+
+type QueryCacheKey = (String, usize);
+
+#[derive(Clone)]
+struct QueryCacheEntry {
+    query: LocExp,
+    signature: String,
+}
+
+fn query_cache_key(span: &Span) -> QueryCacheKey {
+    (span.file.clone(), span.first.line as usize)
+}
+
+fn query_row_signature(mut exps: Vec<String>, mut tables: Vec<(String, Vec<String>)>) -> String {
+    exps.sort();
+    tables.sort_by(|(left, _), (right, _)| left.cmp(right));
+    let table_sig = tables
+        .into_iter()
+        .map(|(table, mut fields)| {
+            fields.sort();
+            format!("{table}({})", fields.join(","))
+        })
+        .collect::<Vec<_>>()
+        .join(";");
+    format!("E[{}]|T[{table_sig}]", exps.join(","))
+}
+
+fn query_row_signature_from_mono(
+    exps: &[(String, LocTyp)],
+    tables: &[(String, Vec<(String, LocTyp)>)],
+) -> String {
+    query_row_signature(
+        exps.iter().map(|(name, _)| name.clone()).collect(),
+        tables
+            .iter()
+            .map(|(table, fields)| {
+                (
+                    table.clone(),
+                    fields.iter().map(|(name, _)| name.clone()).collect(),
+                )
+            })
+            .collect(),
+    )
+}
+
+fn sql_query_cache() -> &'static Mutex<HashMap<QueryCacheKey, QueryCacheEntry>> {
+    static CACHE: OnceLock<Mutex<HashMap<QueryCacheKey, QueryCacheEntry>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn queued_sql_queries() -> &'static Mutex<VecDeque<QueryCacheEntry>> {
+    static QUEUE: OnceLock<Mutex<VecDeque<QueryCacheEntry>>> = OnceLock::new();
+    QUEUE.get_or_init(|| Mutex::new(VecDeque::new()))
+}
+
+fn reset_monoize_caches() {
+    if let Ok(mut cache) = sql_query_cache().lock() {
+        cache.clear();
+    }
+    if let Ok(mut queue) = queued_sql_queries().lock() {
+        queue.clear();
+    }
+}
 
 /// Simplified version of MonoFooify.Fm.
 ///
@@ -365,9 +430,10 @@ fn mono_type(
     dtmap: &mut HashMap<usize, DatatypeRef>,
     con: &LocatedConstructor,
 ) -> LocTyp {
-    let loc = con.span.clone();
+    let normalized = normalize_constructor_for_mono(env, con);
+    let loc = normalized.span.clone();
     use CC::*;
-    match &con.node {
+    match &normalized.node {
         // TFun → Mono.TFun
         TFun(c1, c2) => Located::new(
             Typ::Fun(
@@ -382,6 +448,13 @@ fn mono_type(
 
         // TRecord: rows of kind KType → Mono.TRecord
         TRecord(row) => mono_type_row(env, dtmap, row, &loc),
+
+        // Some reduced nested record types arrive as bare Record(Type, ...),
+        // rather than TRecord(Record(...)). Preserve their fields instead of
+        // collapsing them to unit.
+        Record(kind, _) if matches!(kind.node, crate::core::Kind::Type) => {
+            mono_type_row(env, dtmap, &normalized, &loc)
+        }
 
         // Named datatype application
         Named(n) => {
@@ -419,9 +492,34 @@ fn mono_type(
         Ffi(m, x) => mono_type_ffi(m, x, &loc),
 
         // App chain: peel off all arguments, check head
-        App(_, _) => {
+        App(function, argument) => {
+            if let App(map_fn, mapper) = &function.node {
+                if let Map(domain_kind, range_kind) = &map_fn.node {
+                    if matches!(range_kind.node, crate::core::Kind::Type)
+                        && matches!(
+                            domain_kind.node,
+                            crate::core::Kind::Record(ref inner)
+                                if matches!(inner.node, crate::core::Kind::Type)
+                        )
+                        && matches!(
+                            mapper.node,
+                            Abs(_, ref mapper_kind, ref body)
+                                if matches!(
+                                    mapper_kind.node,
+                                    crate::core::Kind::Record(ref inner)
+                                        if matches!(inner.node, crate::core::Kind::Type)
+                                ) && matches!(
+                                    body.node,
+                                    TRecord(ref row) if matches!(row.node, Rel(0))
+                                )
+                        )
+                    {
+                        return mono_type(env, dtmap, argument);
+                    }
+                }
+            }
             let mut args = Vec::new();
-            let head = strip_apps(&con.node, &mut args);
+            let head = strip_apps(&normalized.node, &mut args);
             args.reverse(); // args[0] = first applied
             mono_type_app(env, dtmap, head, &args, &loc)
         }
@@ -438,18 +536,87 @@ fn mono_type_row(
     row: &LocatedConstructor,
     loc: &Span,
 ) -> LocTyp {
+    let mut xcs = mono_row_fields(env, dtmap, row).unwrap_or_default();
+    xcs.sort_by(|(a, _), (b, _)| a.cmp(b));
+    Located::new(Typ::Record(xcs), loc.clone())
+}
+
+fn mono_row_fields(
+    env: &Env,
+    dtmap: &mut HashMap<usize, DatatypeRef>,
+    row: &LocatedConstructor,
+) -> Option<Vec<(String, LocTyp)>> {
     let normalized = normalize_constructor_for_mono(env, row);
-    match &normalized.node {
-        CC::Record(_, fields) => {
-            let mut xcs: Vec<(String, LocTyp)> = fields
+    mono_row_fields_normalized(env, dtmap, &normalized)
+}
+
+fn mono_row_fields_normalized(
+    env: &Env,
+    dtmap: &mut HashMap<usize, DatatypeRef>,
+    row: &LocatedConstructor,
+) -> Option<Vec<(String, LocTyp)>> {
+    match &row.node {
+        CC::Record(_, fields) => Some(
+            fields
                 .iter()
                 .map(|(name_con, t)| (mono_name(name_con), mono_type(env, dtmap, t)))
-                .collect();
-            xcs.sort_by(|(a, _), (b, _)| a.cmp(b));
-            Located::new(Typ::Record(xcs), loc.clone())
+                .collect(),
+        ),
+        CC::Concat(left, right) => {
+            let mut fields = mono_row_fields_normalized(env, dtmap, left)?;
+            fields.extend(mono_row_fields_normalized(env, dtmap, right)?);
+            Some(fields)
         }
-        // Empty record row
-        _ => Located::new(Typ::Record(Vec::new()), loc.clone()),
+        CC::Unit => Some(Vec::new()),
+        _ => None,
+    }
+}
+
+fn mono_project_row_parts(
+    record_exp: &LocExp,
+    row_fields: &[(String, LocTyp)],
+    loc: &Span,
+) -> Vec<(String, LocExp, LocTyp)> {
+    row_fields
+        .iter()
+        .map(|(name, typ)| {
+            (
+                name.clone(),
+                Located::new(
+                    Exp::Field(Box::new(record_exp.clone()), name.clone()),
+                    loc.clone(),
+                ),
+                typ.clone(),
+            )
+        })
+        .collect()
+}
+
+fn mono_record_fields_from_type(
+    env: &Env,
+    dtmap: &mut HashMap<usize, DatatypeRef>,
+    typ: &LocatedConstructor,
+) -> Option<Vec<(String, LocTyp)>> {
+    match mono_type(env, dtmap, typ).node {
+        Typ::Record(fields) => Some(fields),
+        _ => None,
+    }
+}
+
+fn mono_record_fields_from_exp_type(
+    env: &Env,
+    dtmap: &mut HashMap<usize, DatatypeRef>,
+    exp: &LocatedExpression,
+) -> Option<Vec<(String, LocTyp)>> {
+    match &exp.node {
+        CE::Rel(n) => env
+            .rel_e
+            .get(env.rel_e.len().checked_sub(n + 1)?)
+            .and_then(|typ| mono_record_fields_from_type(env, dtmap, typ)),
+        CE::Named(n) => env
+            .lookup_e_named(*n)
+            .and_then(|(_, typ, _)| mono_record_fields_from_type(env, dtmap, typ)),
+        _ => None,
     }
 }
 
@@ -544,8 +711,6 @@ fn mono_type_app(
                 | "sql_order_by"
                 | "propagation_mode"
                 | "serialized"
-                | "sql_injectable_prim"
-                | "sql_injectable"
                 | "sql_unary"
                 | "sql_binary"
                 | "sql_aggregate"
@@ -553,8 +718,19 @@ fn mono_type_app(
                 | "sql_ufunc"
                 | "sql_bfunc"
                 | "sql_partition"
-                | "sql_window"
-                | "trigrammable" => string_t(),
+                | "sql_window" => string_t(),
+                "sql_injectable_prim" | "sql_injectable" => {
+                    let t = last
+                        .map(|t| mono_type(env, dtmap, t))
+                        .unwrap_or(dummy_typ(loc));
+                    Located::new(Typ::Fun(Box::new(t), Box::new(string_t())), loc.clone())
+                }
+                "trigrammable" => {
+                    let t = last
+                        .map(|t| mono_type(env, dtmap, t))
+                        .unwrap_or(dummy_typ(loc));
+                    Located::new(Typ::Fun(Box::new(t), Box::new(unit_t())), loc.clone())
+                }
                 // Types that map to unit record
                 "monad" | "sql_subset" | "sql_summable" | "sql_maxable" | "sql_arith"
                 | "nullify" | "fieldsOf" => unit_t(),
@@ -1103,6 +1279,39 @@ fn mono_basis_ffi(x: &str, loc: &Span) -> Option<LocExp> {
             ))
         }
 
+        "show_int" => Some(Located::new(
+            Exp::Ffi("Basis".into(), "intToString".into()),
+            loc.clone(),
+        )),
+        "show_float" => Some(Located::new(
+            Exp::Ffi("Basis".into(), "floatToString".into()),
+            loc.clone(),
+        )),
+        "show_string" | "show_queryString" | "show_url" | "show_css_class" | "show_id" => {
+            let s = string_type(loc);
+            Some(Located::new(
+                Exp::Abs(
+                    "s".into(),
+                    s.clone(),
+                    s,
+                    Box::new(Located::new(Exp::Rel(0), loc.clone())),
+                ),
+                loc.clone(),
+            ))
+        }
+        "show_char" => Some(Located::new(
+            Exp::Ffi("Basis".into(), "charToString".into()),
+            loc.clone(),
+        )),
+        "show_bool" => Some(Located::new(
+            Exp::Ffi("Basis".into(), "boolToString".into()),
+            loc.clone(),
+        )),
+        "show_time" => Some(Located::new(
+            Exp::Ffi("Basis".into(), "timeToString".into()),
+            loc.clone(),
+        )),
+
         // ---- CSS class/style constants that are empty strings in C ----
         "null" | "noStyle" => Some(Located::new(
             Exp::Prim(Prim::String(
@@ -1133,6 +1342,11 @@ fn mono_basis_ffi(x: &str, loc: &Span) -> Option<LocExp> {
         "sql_mod" => Some(str_n("%", loc)),
         "sql_concat" => Some(str_n("||", loc)),
         "sql_like" => Some(str_n("LIKE", loc)),
+        "sql_summable_int" | "sql_summable_float" | "sql_arith_int" | "sql_arith_float"
+        | "sql_maxable_int" | "sql_maxable_float" | "sql_maxable_string" => Some(unit_exp(loc)),
+        "sql_union" => Some(str_n("UNION", loc)),
+        "sql_intersect" => Some(str_n("INTERSECT", loc)),
+        "sql_except" => Some(str_n("EXCEPT", loc)),
         "sql_window_normal" | "sql_window_fancy" => Some(unit_exp(loc)),
 
         "sql_int" => {
@@ -1275,6 +1489,183 @@ fn lowercase_first(s: &str) -> String {
     }
 }
 
+fn capitalize_first(s: &str) -> String {
+    let mut chars = s.chars();
+    match chars.next() {
+        None => String::new(),
+        Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
+    }
+}
+
+fn core_unit_type(loc: &Span) -> LocatedConstructor {
+    Located::new(
+        CC::TRecord(Box::new(Located::new(
+            CC::Record(
+                Box::new(Located::new(crate::core::Kind::Type, loc.clone())),
+                Vec::new(),
+            ),
+            loc.clone(),
+        ))),
+        loc.clone(),
+    )
+}
+
+fn core_lift_exp_in_exp(depth: usize, e: LocatedExpression) -> LocatedExpression {
+    fn lift(depth: usize, e: LocatedExpression) -> LocatedExpression {
+        let span = e.span.clone();
+        match e.node {
+            CE::Rel(n) => Located::new(
+                if n < depth {
+                    CE::Rel(n)
+                } else {
+                    CE::Rel(n + 1)
+                },
+                span,
+            ),
+            CE::Prim(_) | CE::Named(_) | CE::Ffi(_, _) => e,
+            CE::Constructor(dk, pc, cs, arg) => Located::new(
+                CE::Constructor(dk, pc, cs, arg.map(|arg| Box::new(lift(depth, *arg)))),
+                span,
+            ),
+            CE::FfiApp(module, function, args) => Located::new(
+                CE::FfiApp(
+                    module,
+                    function,
+                    args.into_iter()
+                        .map(|(arg, typ)| (lift(depth, arg), typ))
+                        .collect(),
+                ),
+                span,
+            ),
+            CE::App(function, argument) => Located::new(
+                CE::App(
+                    Box::new(lift(depth, *function)),
+                    Box::new(lift(depth, *argument)),
+                ),
+                span,
+            ),
+            CE::Abs(name, dom, ran, body) => Located::new(
+                CE::Abs(name, dom, ran, Box::new(lift(depth + 1, *body))),
+                span,
+            ),
+            CE::CApp(function, constructor) => Located::new(
+                CE::CApp(Box::new(lift(depth, *function)), constructor),
+                span,
+            ),
+            CE::CAbs(name, kind, body) => {
+                Located::new(CE::CAbs(name, kind, Box::new(lift(depth, *body))), span)
+            }
+            CE::KAbs(name, body) => {
+                Located::new(CE::KAbs(name, Box::new(lift(depth, *body))), span)
+            }
+            CE::KApp(function, kind) => {
+                Located::new(CE::KApp(Box::new(lift(depth, *function)), kind), span)
+            }
+            CE::Record(fields) => Located::new(
+                CE::Record(
+                    fields
+                        .into_iter()
+                        .map(|(name, exp, typ)| (name, lift(depth, exp), typ))
+                        .collect(),
+                ),
+                span,
+            ),
+            CE::Field(exp, name, meta) => {
+                Located::new(CE::Field(Box::new(lift(depth, *exp)), name, meta), span)
+            }
+            CE::Concat(left, left_t, right, right_t) => Located::new(
+                CE::Concat(
+                    Box::new(lift(depth, *left)),
+                    left_t,
+                    Box::new(lift(depth, *right)),
+                    right_t,
+                ),
+                span,
+            ),
+            CE::Cut(exp, name, meta) => {
+                Located::new(CE::Cut(Box::new(lift(depth, *exp)), name, meta), span)
+            }
+            CE::CutMulti(exp, names, meta) => {
+                Located::new(CE::CutMulti(Box::new(lift(depth, *exp)), names, meta), span)
+            }
+            CE::Case(disc, arms, meta) => Located::new(
+                CE::Case(
+                    Box::new(lift(depth, *disc)),
+                    arms.into_iter()
+                        .map(|(pattern, body)| {
+                            let binds = crate::core::environment::pat_binds_n(&pattern);
+                            (pattern, lift(depth + binds, body))
+                        })
+                        .collect(),
+                    meta,
+                ),
+                span,
+            ),
+            CE::Write(exp) => Located::new(CE::Write(Box::new(lift(depth, *exp))), span),
+            CE::Closure(name, envs) => Located::new(
+                CE::Closure(name, envs.into_iter().map(|env| lift(depth, env)).collect()),
+                span,
+            ),
+            CE::Let(name, typ, exp1, exp2) => Located::new(
+                CE::Let(
+                    name,
+                    typ,
+                    Box::new(lift(depth, *exp1)),
+                    Box::new(lift(depth + 1, *exp2)),
+                ),
+                span,
+            ),
+            CE::ServerCall(name, args, typ, failure_mode) => Located::new(
+                CE::ServerCall(
+                    name,
+                    args.into_iter().map(|arg| lift(depth, arg)).collect(),
+                    typ,
+                    failure_mode,
+                ),
+                span,
+            ),
+        }
+    }
+
+    lift(depth, e)
+}
+
+fn maybe_transaction_core_exp(
+    typ: &LocatedConstructor,
+    exp: &LocatedExpression,
+    loc: &Span,
+) -> Option<LocatedExpression> {
+    match (&typ.node, &exp.node) {
+        (CC::App(function, _), _) if matches!(&function.node, CC::Ffi(module, name) if module == "Basis" && name == "transaction") =>
+        {
+            let lifted = core_lift_exp_in_exp(0, exp.clone());
+            let unit_t = core_unit_type(loc);
+            let unit_e = Located::new(CE::Record(Vec::new()), loc.clone());
+            Some(Located::new(
+                CE::Abs(
+                    "_".into(),
+                    unit_t.clone(),
+                    typ.clone(),
+                    Box::new(Located::new(
+                        CE::App(Box::new(lifted), Box::new(unit_e)),
+                        loc.clone(),
+                    )),
+                ),
+                loc.clone(),
+            ))
+        }
+        (CC::TFun(dom, ran), CE::Abs(name, _, _, body)) => {
+            maybe_transaction_core_exp(ran, body, loc).map(|body| {
+                Located::new(
+                    CE::Abs(name.clone(), *dom.clone(), *ran.clone(), Box::new(body)),
+                    loc.clone(),
+                )
+            })
+        }
+        _ => None,
+    }
+}
+
 fn bool_pattern(con: &str, loc: &Span) -> LocPat {
     Located::new(
         Pat::Con(
@@ -1295,7 +1686,25 @@ fn string_type(loc: &Span) -> LocTyp {
     Located::new(Typ::Ffi("Basis".into(), "string".into()), loc.clone())
 }
 
-fn ensure_sql_string_expr(e: LocExp, loc: &Span) -> LocExp {
+fn simplify_sql_expr(e: LocExp) -> LocExp {
+    match e.node {
+        Exp::App(f, arg) => {
+            let span = e.span;
+            let f = simplify_sql_expr(*f);
+            let arg = simplify_sql_expr(*arg);
+            match &f.node {
+                Exp::Abs(_, _, _, body) => simplify_sql_expr(
+                    crate::monomorphized::environment::sub_exp_in_exp(0, &arg, body),
+                ),
+                _ => Located::new(Exp::App(Box::new(f), Box::new(arg)), span),
+            }
+        }
+        other => Located::new(other, e.span),
+    }
+}
+
+fn ensure_sql_string_expr(e: LocExp, loc: &Span, settings: &Settings) -> LocExp {
+    let e = simplify_sql_expr(e);
     match &e.node {
         Exp::Prim(Prim::Int(_)) => Located::new(
             Exp::FfiApp(
@@ -1320,6 +1729,23 @@ fn ensure_sql_string_expr(e: LocExp, loc: &Span) -> LocExp {
             loc.clone(),
         ),
         Exp::Prim(Prim::String(_, _)) => e,
+        Exp::Con(
+            DatatypeKind::Enum,
+            PatCon::Ffi {
+                module,
+                datatyp,
+                con,
+                ..
+            },
+            None,
+        ) if module == "Basis" && datatyp == "bool" => str_n(
+            if con == "True" {
+                sql_true_string(settings)
+            } else {
+                sql_false_string(settings)
+            },
+            loc,
+        ),
         Exp::Prim(Prim::Char(_)) => Located::new(
             Exp::FfiApp(
                 "Basis".into(),
@@ -1333,6 +1759,242 @@ fn ensure_sql_string_expr(e: LocExp, loc: &Span) -> LocExp {
         ),
         _ => e,
     }
+}
+
+fn sql_true_string(settings: &Settings) -> &'static str {
+    if crate::db::ProjectDbCtx::new(&settings.db_backend)
+        .resolved()
+        .is_sqlite()
+    {
+        "1"
+    } else {
+        "TRUE"
+    }
+}
+
+fn sql_false_string(settings: &Settings) -> &'static str {
+    if crate::db::ProjectDbCtx::new(&settings.db_backend)
+        .resolved()
+        .is_sqlite()
+    {
+        "0"
+    } else {
+        "FALSE"
+    }
+}
+
+fn is_basis_bool_con(exp: &LocExp, con: &str) -> bool {
+    matches!(
+        &exp.node,
+        Exp::Con(
+            DatatypeKind::Enum,
+            PatCon::Ffi {
+                module,
+                datatyp,
+                con: exp_con,
+                ..
+            },
+            None,
+        ) if module == "Basis" && datatyp == "bool" && exp_con == con
+    )
+}
+
+fn core_basis_bool(exp: &LocatedExpression, con: &str) -> bool {
+    matches!(
+        &exp.node,
+        CE::Constructor(
+            DatatypeKind::Enum,
+            CPC::Ffi {
+                module,
+                datatyp,
+                con: exp_con,
+                ..
+            },
+            _,
+            None,
+        ) if module == "Basis" && datatyp == "bool" && exp_con == con
+    )
+}
+
+fn combine_nonempty_sql(left: LocExp, right: LocExp, sep: &str, loc: &Span) -> LocExp {
+    let s_t = string_type(loc);
+    Located::new(
+        Exp::Case(
+            Box::new(left),
+            vec![
+                (
+                    Located::new(
+                        Pat::Prim(Prim::String(
+                            crate::primitives::StringMode::Normal,
+                            String::new(),
+                        )),
+                        loc.clone(),
+                    ),
+                    right.clone(),
+                ),
+                (
+                    Located::new(Pat::Var("left".into(), s_t.clone()), loc.clone()),
+                    Located::new(
+                        Exp::Case(
+                            Box::new(right),
+                            vec![
+                                (
+                                    Located::new(
+                                        Pat::Prim(Prim::String(
+                                            crate::primitives::StringMode::Normal,
+                                            String::new(),
+                                        )),
+                                        loc.clone(),
+                                    ),
+                                    Located::new(Exp::Rel(0), loc.clone()),
+                                ),
+                                (
+                                    Located::new(
+                                        Pat::Var("right".into(), s_t.clone()),
+                                        loc.clone(),
+                                    ),
+                                    make_strcat_list(
+                                        vec![
+                                            Located::new(Exp::Rel(1), loc.clone()),
+                                            str_n(sep, loc),
+                                            Located::new(Exp::Rel(0), loc.clone()),
+                                        ],
+                                        loc,
+                                    ),
+                                ),
+                            ],
+                            CaseMeta {
+                                disc: s_t.clone(),
+                                result: s_t.clone(),
+                            },
+                        ),
+                        loc.clone(),
+                    ),
+                ),
+            ],
+            CaseMeta {
+                disc: s_t.clone(),
+                result: s_t,
+            },
+        ),
+        loc.clone(),
+    )
+}
+
+fn join_nonempty_sql(
+    left: LocExp,
+    right: LocExp,
+    join_word: &str,
+    on: LocExp,
+    loc: &Span,
+) -> LocExp {
+    let s_t = string_type(loc);
+    let on_lifted = lift_exp_in_exp(0, lift_exp_in_exp(0, on));
+    Located::new(
+        Exp::Case(
+            Box::new(left),
+            vec![
+                (
+                    Located::new(
+                        Pat::Prim(Prim::String(
+                            crate::primitives::StringMode::Normal,
+                            String::new(),
+                        )),
+                        loc.clone(),
+                    ),
+                    right.clone(),
+                ),
+                (
+                    Located::new(Pat::Var("left".into(), s_t.clone()), loc.clone()),
+                    Located::new(
+                        Exp::Case(
+                            Box::new(right),
+                            vec![
+                                (
+                                    Located::new(
+                                        Pat::Prim(Prim::String(
+                                            crate::primitives::StringMode::Normal,
+                                            String::new(),
+                                        )),
+                                        loc.clone(),
+                                    ),
+                                    Located::new(Exp::Rel(0), loc.clone()),
+                                ),
+                                (
+                                    Located::new(
+                                        Pat::Var("right".into(), s_t.clone()),
+                                        loc.clone(),
+                                    ),
+                                    make_strcat_list(
+                                        vec![
+                                            Located::new(Exp::Rel(1), loc.clone()),
+                                            str_n(&format!(" {join_word} "), loc),
+                                            Located::new(Exp::Rel(0), loc.clone()),
+                                            str_n(" ON ", loc),
+                                            on_lifted,
+                                        ],
+                                        loc,
+                                    ),
+                                ),
+                            ],
+                            CaseMeta {
+                                disc: s_t.clone(),
+                                result: s_t.clone(),
+                            },
+                        ),
+                        loc.clone(),
+                    ),
+                ),
+            ],
+            CaseMeta {
+                disc: s_t.clone(),
+                result: s_t,
+            },
+        ),
+        loc.clone(),
+    )
+}
+
+fn optional_sql_clause(exp: LocExp, prefix: &str, settings: &Settings, loc: &Span) -> LocExp {
+    let exp = ensure_sql_string_expr(exp, loc, settings);
+    if is_basis_bool_con(&exp, "True") {
+        return str_n("", loc);
+    }
+    if is_basis_bool_con(&exp, "False") {
+        return make_strcat(str_n(prefix, loc), str_n(sql_false_string(settings), loc));
+    }
+
+    let s_t = string_type(loc);
+    let true_string = sql_true_string(settings);
+    Located::new(
+        Exp::Case(
+            Box::new(exp),
+            vec![
+                (
+                    Located::new(
+                        Pat::Prim(Prim::String(
+                            crate::primitives::StringMode::Normal,
+                            true_string.into(),
+                        )),
+                        loc.clone(),
+                    ),
+                    str_n("", loc),
+                ),
+                (
+                    Located::new(Pat::Var("frag".into(), s_t.clone()), loc.clone()),
+                    make_strcat_list(
+                        vec![str_n(prefix, loc), Located::new(Exp::Rel(0), loc.clone())],
+                        loc,
+                    ),
+                ),
+            ],
+            CaseMeta {
+                disc: s_t.clone(),
+                result: s_t,
+            },
+        ),
+        loc.clone(),
+    )
 }
 
 /// Peel all App layers (not CApp), collecting value args (in order of application).
@@ -1439,6 +2101,7 @@ fn constructor_is_sql_query(env: &Env, con: &LocatedConstructor) -> bool {
     }
 }
 
+#[allow(dead_code)]
 fn looks_like_sql_query_arg(env: &Env, arg: &LocatedExpression) -> bool {
     let mut vargs = Vec::new();
     let mut targs = Vec::new();
@@ -1464,20 +2127,46 @@ fn looks_like_sql_query_arg(env: &Env, arg: &LocatedExpression) -> bool {
 }
 
 fn named_builtin_head(name: &str, src: &str) -> Option<String> {
-    let builtin_name = match name {
-        "join" | "cdata" | "tag" | "query" | "dml" | "tryDml" => Some(name),
-        _ => None,
-    }?;
     let is_builtin_source = src.is_empty()
         || src == "Basis"
         || src.ends_with("/lib/ur/top.ur")
         || src.ends_with("/lib/ur/basis.urs")
         || src.ends_with("/lib/ur/basis.ur");
     if is_builtin_source {
-        Some(builtin_name.to_string())
+        Some(name.to_string())
     } else {
         None
     }
+}
+
+fn nearest_sql_query_rel(env: &Env) -> Option<usize> {
+    env.rel_e
+        .iter()
+        .rev()
+        .enumerate()
+        .find_map(|(rel, con)| constructor_is_sql_query(env, con).then_some(rel))
+}
+
+fn nearest_string_like_rel(env: &Env) -> Option<usize> {
+    env.rel_e.iter().rev().enumerate().find_map(|(rel, con)| {
+        let mut dtmap = HashMap::new();
+        match mono_type(env, &mut dtmap, con).node {
+            Typ::Ffi(ref module, ref name) if module == "Basis" && name == "string" => Some(rel),
+            _ => None,
+        }
+    })
+}
+
+fn string_like_rel_at_callsite(env: &Env, loc: &Span) -> Option<usize> {
+    env.rel_e.iter().rev().enumerate().find_map(|(rel, con)| {
+        let mut dtmap = HashMap::new();
+        let is_string = matches!(
+            mono_type(env, &mut dtmap, con).node,
+            Typ::Ffi(ref module, ref name) if module == "Basis" && name == "string"
+        );
+        (is_string && con.span.file == loc.file && con.span.first.line == loc.first.line)
+            .then_some(rel)
+    })
 }
 
 /// Extract the HTML tag name from a tag-constructor expression.
@@ -1494,15 +2183,387 @@ fn extract_tag_name(e: &LocatedExpression) -> Option<String> {
     }
 }
 
-/// Desugar `Basis.tag class dynClass style dynStyle attrs tagFn xml`
-/// into a Strcat chain building `<tag class="..." style="...">xml</tag>`.
+fn mono_urlify_ffi_name(name: &str) -> Option<String> {
+    match name {
+        "unit" => Some("urlifyString".into()),
+        "int" | "float" | "string" | "char" | "bool" | "time" | "clocktime" | "calendardate"
+        | "channel" => Some(format!("urlify{}", capitalize_first(name))),
+        _ => None,
+    }
+}
+
+fn mono_attrify_ffi_name(name: &str) -> Option<String> {
+    match name {
+        "string" => Some("attrifyString".into()),
+        "int" => Some("attrifyInt".into()),
+        _ => None,
+    }
+}
+
+fn mono_urlify_exp(
+    env: &Env,
+    settings: &Settings,
+    exp: LocExp,
+    typ: &LocTyp,
+    loc: &Span,
+) -> Option<LocExp> {
+    match (&exp.node, &typ.node) {
+        (Exp::Named(n), _) => {
+            let (_, _, src) = env.lookup_e_named(*n)?;
+            Some(str_n(&format!("{}{}", settings.url_prefix, src), loc))
+        }
+        (Exp::Closure(n, args), _) => {
+            let (_, core_t, src) = env.lookup_e_named(*n)?;
+            if args.len() == 1
+                && matches!(args[0].node, Exp::Record(ref fields) if fields.is_empty())
+            {
+                return Some(str_n(&format!("{}{}", settings.url_prefix, src), loc));
+            }
+
+            let mut dtmap = HashMap::new();
+            let mut fun_t = mono_type(env, &mut dtmap, core_t);
+            let mut parts = vec![str_n(&format!("{}{}", settings.url_prefix, src), loc)];
+
+            for arg in args {
+                match &fun_t.node {
+                    Typ::Fun(dom, ran) => {
+                        let encoded = mono_urlify_exp(env, settings, arg.clone(), dom, loc)?;
+                        parts.push(str_n("/", loc));
+                        parts.push(encoded);
+                        fun_t = (**ran).clone();
+                    }
+                    _ => return None,
+                }
+            }
+
+            Some(make_strcat_list(parts, loc))
+        }
+        (_, Typ::Record(fields)) if fields.is_empty() => Some(str_n("_", loc)),
+        (_, Typ::Record(fields)) => {
+            let mut parts = Vec::with_capacity(fields.len() * 2 - 1);
+            for (idx, (field, field_t)) in fields.iter().enumerate() {
+                let field_exp = Located::new(
+                    Exp::Field(Box::new(exp.clone()), field.clone()),
+                    loc.clone(),
+                );
+                let encoded = mono_urlify_exp(env, settings, field_exp, field_t, loc)?;
+                if idx > 0 {
+                    parts.push(str_n("/", loc));
+                }
+                parts.push(encoded);
+            }
+            Some(make_strcat_list(parts, loc))
+        }
+        (_, Typ::Option(inner)) => {
+            let some_body = mono_urlify_exp(
+                env,
+                settings,
+                Located::new(Exp::Rel(0), loc.clone()),
+                inner,
+                loc,
+            )?;
+            Some(Located::new(
+                Exp::Case(
+                    Box::new(exp),
+                    vec![
+                        (
+                            Located::new(Pat::None((**inner).clone()), loc.clone()),
+                            str_n("None", loc),
+                        ),
+                        (
+                            Located::new(
+                                Pat::Some(
+                                    (**inner).clone(),
+                                    Box::new(Located::new(
+                                        Pat::Var("x".into(), (**inner).clone()),
+                                        loc.clone(),
+                                    )),
+                                ),
+                                loc.clone(),
+                            ),
+                            make_strcat(str_n("Some/", loc), some_body),
+                        ),
+                    ],
+                    CaseMeta {
+                        disc: typ.clone(),
+                        result: string_type(loc),
+                    },
+                ),
+                loc.clone(),
+            ))
+        }
+        (_, Typ::Ffi(module, name)) => {
+            if !settings.may_client_to_server(&(module.clone(), name.clone())) {
+                return None;
+            }
+            let ffi = mono_urlify_ffi_name(name)?;
+            Some(Located::new(
+                Exp::FfiApp(module.clone(), ffi, vec![(exp, typ.clone())]),
+                loc.clone(),
+            ))
+        }
+        _ => None,
+    }
+}
+
+fn mono_attrify_exp(exp: LocExp, typ: &LocTyp, loc: &Span) -> Option<LocExp> {
+    match &typ.node {
+        Typ::Record(fields) if fields.is_empty() => Some(str_n("", loc)),
+        Typ::Ffi(module, name) => {
+            let ffi = mono_attrify_ffi_name(name)?;
+            Some(Located::new(
+                Exp::FfiApp(module.clone(), ffi, vec![(exp, typ.clone())]),
+                loc.clone(),
+            ))
+        }
+        _ => None,
+    }
+}
+
+fn extract_tag_attrs<'a>(
+    attrs_raw: &'a LocatedExpression,
+) -> Vec<(String, &'a LocatedExpression, &'a LocatedConstructor)> {
+    match &attrs_raw.node {
+        CE::Record(entries) => entries
+            .iter()
+            .map(|(name, exp, typ)| (mono_name(name), exp, typ))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn find_tag_attr<'a>(
+    attrs: &'a [(String, &'a LocatedExpression, &'a LocatedConstructor)],
+    name: &str,
+) -> Option<(&'a LocatedExpression, &'a LocatedConstructor)> {
+    attrs
+        .iter()
+        .find(|(field, _, _)| field == name)
+        .map(|(_, exp, typ)| (*exp, *typ))
+}
+
+fn maybe_option_attr(name: &str, opt_exp: LocExp, loc: &Span) -> LocExp {
+    let inner = string_type(loc);
+    let option_t = Located::new(Typ::Option(Box::new(inner.clone())), loc.clone());
+    Located::new(
+        Exp::Case(
+            Box::new(opt_exp),
+            vec![
+                (
+                    Located::new(Pat::None(inner.clone()), loc.clone()),
+                    str_n("", loc),
+                ),
+                (
+                    Located::new(
+                        Pat::Some(
+                            inner.clone(),
+                            Box::new(Located::new(
+                                Pat::Var("x".into(), inner.clone()),
+                                loc.clone(),
+                            )),
+                        ),
+                        loc.clone(),
+                    ),
+                    make_strcat_list(
+                        vec![
+                            str_h(&format!(" {}=\"", name), loc),
+                            Located::new(Exp::Rel(0), loc.clone()),
+                            str_h("\"", loc),
+                        ],
+                        loc,
+                    ),
+                ),
+            ],
+            CaseMeta {
+                disc: option_t,
+                result: string_type(loc),
+            },
+        ),
+        loc.clone(),
+    )
+}
+
+fn apply_event_handler(
+    handler: LocExp,
+    handler_t: &LocTyp,
+    attr_name: &str,
+    loc: &Span,
+) -> Option<LocExp> {
+    let Typ::Fun(dom, _) = &handler_t.node else {
+        return None;
+    };
+
+    let unit = unit_exp(loc);
+    let applied = if matches!(&dom.node, Typ::Record(fields) if fields.is_empty()) {
+        Located::new(Exp::App(Box::new(handler), Box::new(unit)), loc.clone())
+    } else {
+        let event_name = if attr_name.starts_with("Onkey") {
+            "keyEvent"
+        } else {
+            "mouseEvent"
+        };
+        let event = Located::new(
+            Exp::FfiApp("Basis".into(), event_name.into(), vec![]),
+            loc.clone(),
+        );
+        let first = Located::new(Exp::App(Box::new(handler), Box::new(event)), loc.clone());
+        Located::new(Exp::App(Box::new(first), Box::new(unit)), loc.clone())
+    };
+
+    Some(Located::new(
+        Exp::JavaScript(JavaScriptMode::Attribute, Box::new(applied)),
+        loc.clone(),
+    ))
+}
+
+fn build_tag_attrs(
+    env: &Env,
+    fm: &mut Fm,
+    settings: &Settings,
+    attrs_raw: &LocatedExpression,
+    tag_name: &str,
+    loc: &Span,
+) -> LocExp {
+    let attrs = extract_tag_attrs(attrs_raw);
+    let mut out = str_n("", loc);
+
+    for (name, exp_raw, typ_raw) in attrs {
+        if name == "Source" {
+            continue;
+        }
+
+        let mut dtmap = HashMap::new();
+        let mono_t = mono_type(env, &mut dtmap, typ_raw);
+        let mono_e = mono_exp(env, fm, exp_raw, settings);
+
+        let piece = match &mono_t.node {
+            Typ::Ffi(module, bool_name) if module == "Basis" && bool_name == "bool" => {
+                Located::new(
+                    Exp::Case(
+                        Box::new(mono_e),
+                        vec![
+                            (
+                                bool_pattern("True", loc),
+                                str_h(&format!(" {}", lowercase_first(&name)), loc),
+                            ),
+                            (bool_pattern("False", loc), str_n("", loc)),
+                        ],
+                        CaseMeta {
+                            disc: mono_t.clone(),
+                            result: string_type(loc),
+                        },
+                    ),
+                    loc.clone(),
+                )
+            }
+            Typ::Fun(_, _) if name.starts_with("On") => {
+                let js = apply_event_handler(mono_e, &mono_t, &name, loc)
+                    .unwrap_or_else(|| str_n("", loc));
+                make_strcat_list(
+                    vec![
+                        str_h(
+                            &format!(" {}='uw_event=event;exec(", lowercase_first(&name)),
+                            loc,
+                        ),
+                        js,
+                        str_h(")'", loc),
+                    ],
+                    loc,
+                )
+            }
+            _ => {
+                let encoded = if name == "Link" || name == "Action" {
+                    mono_urlify_exp(env, settings, mono_e, &mono_t, loc)
+                } else {
+                    mono_attrify_exp(mono_e, &mono_t, loc)
+                };
+
+                let rewritten = match name.as_str() {
+                    "Typ" => "Type".to_string(),
+                    "Nam" => "Name".to_string(),
+                    "Link" => "Href".to_string(),
+                    _ => name.clone(),
+                }
+                .replace('_', "-");
+
+                match encoded {
+                    Some(encoded) => {
+                        let encoded = if tag_name == "coption" && rewritten == "Value" {
+                            make_strcat(str_h("x", loc), encoded)
+                        } else {
+                            encoded
+                        };
+                        make_strcat_list(
+                            vec![
+                                str_h(&format!(" {}=\"", lowercase_first(&rewritten)), loc),
+                                encoded,
+                                str_h("\"", loc),
+                            ],
+                            loc,
+                        )
+                    }
+                    None => str_n("", loc),
+                }
+            }
+        };
+
+        out = make_strcat(out, piece);
+    }
+
+    out
+}
+
+fn find_submit_action<'a>(
+    xml: &'a LocatedExpression,
+) -> Option<(&'a LocatedExpression, &'a LocatedConstructor)> {
+    let mut vargs = Vec::new();
+    let base = peel_apps_core(xml, &mut vargs);
+    let (head, _) = peel_capp(base);
+
+    match &head.node {
+        CE::Ffi(m, x) | CE::FfiApp(m, x, _) if m == "Basis" && x == "join" && vargs.len() >= 2 => {
+            let left = find_submit_action(vargs[vargs.len() - 2]);
+            let right = find_submit_action(vargs[vargs.len() - 1]);
+            match (left, right) {
+                (Some(found), None) | (None, Some(found)) => Some(found),
+                _ => None,
+            }
+        }
+        CE::Ffi(m, x) | CE::FfiApp(m, x, _) if m == "Basis" && x == "tag" && vargs.len() >= 7 => {
+            let n = vargs.len();
+            let attrs_raw = vargs[n - 3];
+            let tag_fn = vargs[n - 2];
+            let inner_xml = vargs[n - 1];
+
+            if extract_tag_name(tag_fn).as_deref() == Some("submit") {
+                if let CE::Record(entries) = &attrs_raw.node {
+                    if let Some((_, exp, typ)) = entries
+                        .iter()
+                        .find(|(name, _, _)| mono_name(name) == "Action")
+                    {
+                        return Some((exp, typ));
+                    }
+                }
+            }
+
+            find_submit_action(inner_xml)
+        }
+        _ => None,
+    }
+}
+
+/// Desugar `Basis.tag class dynClass style dynStyle attrs tagFn xml`.
 fn desugar_tag(
     env: &Env,
     fm: &mut Fm,
     settings: &Settings,
     loc: &Span,
+    targs: &[&LocatedConstructor],
     class_raw: &LocatedExpression,
+    _dyn_class_raw: &LocatedExpression,
     style_raw: &LocatedExpression,
+    _dyn_style_raw: &LocatedExpression,
+    attrs_raw: &LocatedExpression,
     tag_fn: &LocatedExpression,
     xml_raw: &LocatedExpression,
 ) -> LocExp {
@@ -1510,14 +2571,6 @@ fn desugar_tag(
     let class_e = mono_exp(env, fm, class_raw, settings);
     let style_e = mono_exp(env, fm, style_raw, settings);
     let xml_e = mono_exp(env, fm, xml_raw, settings);
-
-    // Build "<tagname" ++ class_suffix ++ style_suffix ++ ">" ++ xml ++ "</tagname>"
-    // class_suffix: if class == "" then "" else " class=\"CLASS\""
-    // style_suffix: if style == "" then "" else " style=\"STYLE\""
-    // We use Strcat-based helper that emits a C ternary via FfiApp "attrOptional",
-    // which is defined in urweb.h as an inline helper.
-    // For now, inline directly: the class/style values are empty strings for the basic demo,
-    // so strcat of "" with open-tag is a no-op.
     let string_t = Located::new(Typ::Ffi("Basis".into(), "string".into()), loc.clone());
     let class_attr = Located::new(
         Exp::FfiApp(
@@ -1541,13 +2594,167 @@ fn desugar_tag(
         ),
         loc.clone(),
     );
+    let plain_attrs = build_tag_attrs(env, fm, settings, attrs_raw, &tag_name, loc);
 
-    let open = make_strcat(
-        str_h(&format!("<{}", tag_name), loc),
-        make_strcat(class_attr, make_strcat(style_attr, str_h(">", loc))),
+    let open_tag = |name: &str, extra: Vec<LocExp>| {
+        let mut parts = vec![
+            str_h(&format!("<{}", name), loc),
+            class_attr.clone(),
+            style_attr.clone(),
+            plain_attrs.clone(),
+        ];
+        parts.extend(extra);
+        make_strcat_list(parts, loc)
+    };
+
+    match tag_name.as_str() {
+        "body" => {
+            let attrs = extract_tag_attrs(attrs_raw);
+            let onload_attr = find_tag_attr(&attrs, "Onload")
+                .and_then(|(exp_raw, typ_raw)| {
+                    let mut dtmap = HashMap::new();
+                    let mono_t = mono_type(env, &mut dtmap, typ_raw);
+                    let mono_e = mono_exp(env, fm, exp_raw, settings);
+                    let js = apply_event_handler(mono_e, &mono_t, "Onload", loc)?;
+                    Some(make_strcat_list(
+                        vec![str_h(" onload='exec(", loc), js, str_h(")'", loc)],
+                        loc,
+                    ))
+                })
+                .unwrap_or_else(|| str_n("", loc));
+
+            let open = make_strcat_list(
+                vec![
+                    str_h("<body", loc),
+                    class_attr,
+                    style_attr,
+                    onload_attr,
+                    str_h(">", loc),
+                ],
+                loc,
+            );
+            make_strcat(open, make_strcat(xml_e, str_h("</body>", loc)))
+        }
+        "dyn" => {
+            let attrs = extract_tag_attrs(attrs_raw);
+            let signal_js = find_tag_attr(&attrs, "Signal")
+                .map(|(exp_raw, _)| {
+                    let mono_e = mono_exp(env, fm, exp_raw, settings);
+                    Located::new(
+                        Exp::JavaScript(JavaScriptMode::Script, Box::new(mono_e)),
+                        loc.clone(),
+                    )
+                })
+                .unwrap_or_else(|| str_n("", loc));
+            make_strcat_list(
+                vec![
+                    str_h("<script type=\"text/javascript\">dyn(\"span\", execD(", loc),
+                    signal_js,
+                    str_h("))</script>", loc),
+                ],
+                loc,
+            )
+        }
+        "submit" => make_strcat(
+            open_tag("input type=\"submit\"", vec![str_h(" />", loc)]),
+            str_n("", loc),
+        ),
+        "textbox" => {
+            let name = targs.last().and_then(|t| match &t.node {
+                CC::Name(name) => Some(name.clone()),
+                _ => None,
+            });
+            match name {
+                Some(name) => make_strcat_list(
+                    vec![
+                        str_h("<input", loc),
+                        class_attr,
+                        style_attr,
+                        plain_attrs,
+                        str_h(&format!(" type=\"text\" name=\"{}\" />", name), loc),
+                    ],
+                    loc,
+                ),
+                None => open_tag("div", vec![str_h("></div>", loc)]),
+            }
+        }
+        "ctextbox" => {
+            let attrs = extract_tag_attrs(attrs_raw);
+            match find_tag_attr(&attrs, "Source") {
+                Some((src_raw, _)) => {
+                    let mono_src = mono_exp(env, fm, src_raw, settings);
+                    let src_js = Located::new(
+                        Exp::JavaScript(JavaScriptMode::Script, Box::new(mono_src)),
+                        loc.clone(),
+                    );
+                    make_strcat_list(
+                        vec![
+                            str_h("<script type=\"text/javascript\">inp(exec(", loc),
+                            src_js,
+                            str_h("))</script>", loc),
+                        ],
+                        loc,
+                    )
+                }
+                None => make_strcat_list(
+                    vec![
+                        str_h("<input", loc),
+                        class_attr,
+                        style_attr,
+                        plain_attrs,
+                        str_h(" type=\"text\" />", loc),
+                    ],
+                    loc,
+                ),
+            }
+        }
+        "tabl" => {
+            let open = make_strcat(open_tag("table", vec![str_h(">", loc)]), str_n("", loc));
+            make_strcat(open, make_strcat(xml_e, str_h("</table>", loc)))
+        }
+        _ => {
+            let open = make_strcat(open_tag(&tag_name, vec![str_h(">", loc)]), str_n("", loc));
+            let close = str_h(&format!("</{}>", tag_name), loc);
+            make_strcat(open, make_strcat(xml_e, close))
+        }
+    }
+}
+
+fn desugar_form(
+    env: &Env,
+    fm: &mut Fm,
+    settings: &Settings,
+    loc: &Span,
+    id_raw: &LocatedExpression,
+    class_raw: &LocatedExpression,
+    xml_raw: &LocatedExpression,
+) -> LocExp {
+    let id_e = mono_exp(env, fm, id_raw, settings);
+    let class_e = mono_exp(env, fm, class_raw, settings);
+    let xml_e = mono_exp(env, fm, xml_raw, settings);
+
+    let action_attr = find_submit_action(xml_raw)
+        .and_then(|(action_raw, action_t_raw)| {
+            let mut dtmap = HashMap::new();
+            let mono_t = mono_type(env, &mut dtmap, action_t_raw);
+            let mono_e = mono_exp(env, fm, action_raw, settings);
+            mono_urlify_exp(env, settings, mono_e, &mono_t, loc)
+        })
+        .map(|url| make_strcat_list(vec![str_h(" action=\"", loc), url, str_h("\"", loc)], loc))
+        .unwrap_or_else(|| str_n("", loc));
+
+    let open = make_strcat_list(
+        vec![
+            str_h("<form method=\"post\"", loc),
+            maybe_option_attr("id", id_e, loc),
+            action_attr,
+            maybe_option_attr("class", class_e, loc),
+            str_h(">", loc),
+        ],
+        loc,
     );
-    let close = str_h(&format!("</{}>", tag_name), loc);
-    make_strcat(open, make_strcat(xml_e, close))
+
+    make_strcat(open, make_strcat(xml_e, str_h("</form>", loc)))
 }
 
 /// Maximum `ECApp` / `CApp` layers peeled by [`peel_capp`] (matches other IR chain caps).
@@ -1751,14 +2958,227 @@ fn mono_basis_capp(
             ))
         }
 
-        "fieldsOf_table" | "fieldsOf_view" | "sql_subset" => Some(unit_exp(loc)),
+        "nullify_option" => Some(unit_exp(loc)),
+        "nullify_prim" => {
+            let un = unit_typ(loc);
+            Some(Located::new(
+                Exp::Abs(
+                    "proof".into(),
+                    un.clone(),
+                    un.clone(),
+                    Box::new(unit_exp(loc)),
+                ),
+                loc.clone(),
+            ))
+        }
+
+        "fieldsOf_table" | "fieldsOf_view" | "sql_subset" | "sql_subset_all" => Some(unit_exp(loc)),
+        "sql_subset_concat" => {
+            let un = unit_typ(loc);
+            let inner = Located::new(
+                Exp::Abs(
+                    "right".into(),
+                    un.clone(),
+                    un.clone(),
+                    Box::new(unit_exp(loc)),
+                ),
+                loc.clone(),
+            );
+            let outer_t = Located::new(
+                Typ::Fun(Box::new(un.clone()), Box::new(un.clone())),
+                loc.clone(),
+            );
+            Some(Located::new(
+                Exp::Abs("left".into(), un, outer_t, Box::new(inner)),
+                loc.clone(),
+            ))
+        }
+
+        "sql_from_nil" => Some(str_n("", loc)),
         "sql_order_by_Nil" => Some(str_n("", loc)),
+        "sql_order_by_random" => {
+            let random_fn = if crate::db::ProjectDbCtx::new(&settings.db_backend).is_mysql() {
+                "RAND()"
+            } else {
+                "RANDOM()"
+            };
+            Some(str_n(random_fn, loc))
+        }
         "sql_eq" => Some(str_n("=", loc)),
         "sql_ne" => Some(str_n("<>", loc)),
         "sql_lt" => Some(str_n("<", loc)),
         "sql_le" => Some(str_n("<=", loc)),
         "sql_gt" => Some(str_n(">", loc)),
         "sql_ge" => Some(str_n(">=", loc)),
+        "sql_plus" => {
+            let un = unit_typ(loc);
+            Some(Located::new(
+                Exp::Abs(
+                    "_".into(),
+                    un.clone(),
+                    string_type(loc),
+                    Box::new(str_n("+", loc)),
+                ),
+                loc.clone(),
+            ))
+        }
+        "sql_minus" => {
+            let un = unit_typ(loc);
+            Some(Located::new(
+                Exp::Abs(
+                    "_".into(),
+                    un.clone(),
+                    string_type(loc),
+                    Box::new(str_n("-", loc)),
+                ),
+                loc.clone(),
+            ))
+        }
+        "sql_times" => {
+            let un = unit_typ(loc);
+            Some(Located::new(
+                Exp::Abs(
+                    "_".into(),
+                    un.clone(),
+                    string_type(loc),
+                    Box::new(str_n("*", loc)),
+                ),
+                loc.clone(),
+            ))
+        }
+        "sql_div" => {
+            let un = unit_typ(loc);
+            Some(Located::new(
+                Exp::Abs(
+                    "_".into(),
+                    un.clone(),
+                    string_type(loc),
+                    Box::new(str_n("/", loc)),
+                ),
+                loc.clone(),
+            ))
+        }
+        "sql_neg" => {
+            let un = unit_typ(loc);
+            Some(Located::new(
+                Exp::Abs(
+                    "_".into(),
+                    un.clone(),
+                    string_type(loc),
+                    Box::new(str_n("-", loc)),
+                ),
+                loc.clone(),
+            ))
+        }
+        "sql_count" => Some(str_n("COUNT(*)", loc)),
+        "sql_count_col" => Some(str_n("COUNT", loc)),
+        "sql_aggregate" => {
+            let s = string_type(loc);
+            let inner = Located::new(
+                Exp::Abs(
+                    "e1".into(),
+                    s.clone(),
+                    s.clone(),
+                    Box::new(make_strcat_list(
+                        vec![
+                            Located::new(Exp::Rel(1), loc.clone()),
+                            str_n("(", loc),
+                            Located::new(Exp::Rel(0), loc.clone()),
+                            str_n(")", loc),
+                        ],
+                        loc,
+                    )),
+                ),
+                loc.clone(),
+            );
+            let inner_t = Located::new(
+                Typ::Fun(Box::new(s.clone()), Box::new(s.clone())),
+                loc.clone(),
+            );
+            Some(Located::new(
+                Exp::Abs("c".into(), s, inner_t, Box::new(inner)),
+                loc.clone(),
+            ))
+        }
+        "sql_summable_option" | "sql_arith_option" | "sql_maxable_option" => {
+            let un = unit_typ(loc);
+            Some(Located::new(
+                Exp::Abs("_".into(), un.clone(), un.clone(), Box::new(unit_exp(loc))),
+                loc.clone(),
+            ))
+        }
+        "sql_avg" => {
+            let un = unit_typ(loc);
+            Some(Located::new(
+                Exp::Abs(
+                    "_".into(),
+                    un,
+                    string_type(loc),
+                    Box::new(str_n("AVG", loc)),
+                ),
+                loc.clone(),
+            ))
+        }
+        "sql_sum" => {
+            let un = unit_typ(loc);
+            let inner = Located::new(
+                Exp::Abs(
+                    "_".into(),
+                    un.clone(),
+                    string_type(loc),
+                    Box::new(str_n("SUM", loc)),
+                ),
+                loc.clone(),
+            );
+            let inner_t = Located::new(
+                Typ::Fun(Box::new(un.clone()), Box::new(string_type(loc))),
+                loc.clone(),
+            );
+            Some(Located::new(
+                Exp::Abs("_".into(), un, inner_t, Box::new(inner)),
+                loc.clone(),
+            ))
+        }
+        "sql_max" => {
+            let un = unit_typ(loc);
+            let inner = Located::new(
+                Exp::Abs(
+                    "_".into(),
+                    un.clone(),
+                    string_type(loc),
+                    Box::new(str_n("MAX", loc)),
+                ),
+                loc.clone(),
+            );
+            let inner_t = Located::new(
+                Typ::Fun(Box::new(un.clone()), Box::new(string_type(loc))),
+                loc.clone(),
+            );
+            Some(Located::new(
+                Exp::Abs("_".into(), un, inner_t, Box::new(inner)),
+                loc.clone(),
+            ))
+        }
+        "sql_min" => {
+            let un = unit_typ(loc);
+            let inner = Located::new(
+                Exp::Abs(
+                    "_".into(),
+                    un.clone(),
+                    string_type(loc),
+                    Box::new(str_n("MIN", loc)),
+                ),
+                loc.clone(),
+            );
+            let inner_t = Located::new(
+                Typ::Fun(Box::new(un.clone()), Box::new(string_type(loc))),
+                loc.clone(),
+            );
+            Some(Located::new(
+                Exp::Abs("_".into(), un, inner_t, Box::new(inner)),
+                loc.clone(),
+            ))
+        }
 
         "sql_field" => {
             let table = match &targs.get(targs.len().checked_sub(2)?)?.node {
@@ -2106,6 +3526,19 @@ fn mono_basis_capp(
             ))
         }
 
+        "show_xml" | "show_sql_query" => {
+            let s = string_type(loc);
+            Some(Located::new(
+                Exp::Abs(
+                    "s".into(),
+                    s.clone(),
+                    s,
+                    Box::new(Located::new(Exp::Rel(0), loc.clone())),
+                ),
+                loc.clone(),
+            ))
+        }
+
         // ECApp(EFfi("Basis", "read"), t) → \f: read_t. f
         "read" => {
             let t = last_t.map(|c| {
@@ -2120,6 +3553,76 @@ fn mono_basis_capp(
                     read_t,
                     Box::new(Located::new(Exp::Rel(0), loc.clone())),
                 ),
+                loc.clone(),
+            ))
+        }
+
+        "channel" => {
+            let un = unit_typ(loc);
+            let channel_t = Located::new(Typ::Ffi("Basis".into(), "channel".into()), loc.clone());
+            Some(Located::new(
+                Exp::Abs(
+                    "_".into(),
+                    un.clone(),
+                    channel_t.clone(),
+                    Box::new(Located::new(
+                        Exp::FfiApp(
+                            "Basis".into(),
+                            "new_channel".into(),
+                            vec![(unit_exp(loc), un)],
+                        ),
+                        loc.clone(),
+                    )),
+                ),
+                loc.clone(),
+            ))
+        }
+
+        "send" => {
+            let t = last_t.map(|c| {
+                let mut dtmap = HashMap::new();
+                mono_type(env, &mut dtmap, c)
+            })?;
+            let channel_t = Located::new(Typ::Ffi("Basis".into(), "channel".into()), loc.clone());
+            let unit_t = unit_typ(loc);
+            let encoded = mono_urlify_exp(
+                env,
+                settings,
+                Located::new(Exp::Rel(1), loc.clone()),
+                &t,
+                loc,
+            )?;
+            let send_call = Located::new(
+                Exp::FfiApp(
+                    "Basis".into(),
+                    "send".into(),
+                    vec![
+                        (Located::new(Exp::Rel(2), loc.clone()), channel_t.clone()),
+                        (encoded, string_t()),
+                    ],
+                ),
+                loc.clone(),
+            );
+            let inner = Located::new(
+                Exp::Abs(
+                    "_".into(),
+                    unit_t.clone(),
+                    unit_t.clone(),
+                    Box::new(send_call),
+                ),
+                loc.clone(),
+            );
+            let inner_t = Located::new(
+                Typ::Fun(Box::new(unit_t.clone()), Box::new(unit_t.clone())),
+                loc.clone(),
+            );
+            let middle = Located::new(
+                Exp::Abs("v".into(), t.clone(), inner_t.clone(), Box::new(inner)),
+                loc.clone(),
+            );
+            let middle_t = Located::new(Typ::Fun(Box::new(t), Box::new(inner_t)), loc.clone());
+            Some(Located::new(
+                Exp::Abs("ch".into(), channel_t, middle_t, Box::new(middle)),
                 loc.clone(),
             ))
         }
@@ -2292,7 +3795,7 @@ fn mono_basis_capp(
             );
             let f_t = Located::new(
                 Typ::Fun(
-                    Box::new(row_t),
+                    Box::new(row_t.clone()),
                     Box::new(Located::new(
                         Typ::Fun(Box::new(state.clone()), Box::new(thunk_t.clone())),
                         loc.clone(),
@@ -2380,21 +3883,6 @@ fn mono_basis_full_app(
         return None;
     }
 
-    let log_builtin = |message: &str| {
-        if !matches!(x, "dml" | "tryDml") {
-            return;
-        }
-        eprintln!("monoize builtin {x}: {message}");
-        let _ = (|| -> std::io::Result<()> {
-            let mut file = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open("query-mono.log")?;
-            std::io::Write::write_all(&mut file, message.as_bytes())?;
-            std::io::Write::write_all(&mut file, b"\n")
-        })();
-    };
-
     let s_t = string_type(loc);
     let last = |n: usize| -> Option<&LocatedExpression> {
         vargs.get(vargs.len().checked_sub(n)?).copied()
@@ -2402,62 +3890,151 @@ fn mono_basis_full_app(
     let mk_rel = |n: usize| Located::new(Exp::Rel(n), loc.clone());
     let mk_field =
         |e: LocExp, name: &str| Located::new(Exp::Field(Box::new(e), name.into()), loc.clone());
+    let apply_arg = |function: LocExp, argument: LocExp| -> LocExp {
+        match &function.node {
+            Exp::Abs(_, _, _, body) => {
+                crate::monomorphized::environment::sub_exp_in_exp(0, &argument, body)
+            }
+            _ => Located::new(
+                Exp::App(Box::new(function), Box::new(argument)),
+                loc.clone(),
+            ),
+        }
+    };
+    let recover_erased_query_arg =
+        |arg: &LocatedExpression, expected_signature: Option<&str>| -> Option<LocExp> {
+            match &arg.node {
+                CE::Prim(Prim::Int(0)) => {
+                    let local_sql_rel = || {
+                        nearest_sql_query_rel(env)
+                            .map(|rel| Located::new(Exp::Rel(rel), arg.span.clone()))
+                    };
+                    let local_string_rel = || {
+                        nearest_string_like_rel(env)
+                            .map(|rel| Located::new(Exp::Rel(rel), arg.span.clone()))
+                    };
+                    let callsite_string_rel = || {
+                        string_like_rel_at_callsite(env, loc)
+                            .map(|rel| Located::new(Exp::Rel(rel), arg.span.clone()))
+                    };
+                    let cached_query = || {
+                        sql_query_cache()
+                            .lock()
+                            .ok()
+                            .and_then(|cache| cache.get(&query_cache_key(&arg.span)).cloned())
+                            .and_then(|entry| {
+                                expected_signature
+                                    .is_none_or(|signature| entry.signature == signature)
+                                    .then_some(entry.query)
+                            })
+                    };
+                    let queued_query = || {
+                        queued_sql_queries()
+                            .lock()
+                            .ok()
+                            .and_then(|queue| {
+                                queue
+                                    .iter()
+                                    .rev()
+                                    .find(|entry| {
+                                        expected_signature
+                                            .is_none_or(|signature| entry.signature == signature)
+                                    })
+                                    .cloned()
+                            })
+                            .map(|entry| entry.query)
+                    };
+                    if loc.file.ends_with("/lib/ur/top.ur")
+                        && matches!(
+                            loc.first.line,
+                            266 | 332 | 344 | 353 | 362 | 366 | 378 | 382
+                        )
+                    {
+                        return local_sql_rel().or_else(queued_query);
+                    }
+                    let chosen = cached_query()
+                        .or_else(local_sql_rel)
+                        .or_else(queued_query)
+                        .or_else(local_string_rel)
+                        .or_else(callsite_string_rel);
+                    chosen
+                }
+                _ => None,
+            }
+        };
 
     match x {
         "query" => {
             let mut mixed = Vec::new();
             let _head = peel_mixed_spine(exp, &mut mixed);
-            let (tables_con, exps_con, state_con, query_arg, body_arg, initial_arg) = match mixed
-                .as_slice()
-            {
-                [MixedSpineArg::Type(tables_con), MixedSpineArg::Type(exps_con), MixedSpineArg::Value(_proof1), MixedSpineArg::Type(state_con), MixedSpineArg::Value(_proof2)] => {
-                    (*tables_con, *exps_con, *state_con, None, None, None)
-                }
-                [MixedSpineArg::Type(tables_con), MixedSpineArg::Type(exps_con), MixedSpineArg::Value(_proof1), MixedSpineArg::Type(state_con), MixedSpineArg::Value(_proof2), MixedSpineArg::Value(query_arg)] => {
-                    (
-                        *tables_con,
-                        *exps_con,
-                        *state_con,
-                        Some(*query_arg),
-                        None,
-                        None,
-                    )
-                }
-                [MixedSpineArg::Type(tables_con), MixedSpineArg::Type(exps_con), MixedSpineArg::Value(_proof1), MixedSpineArg::Type(state_con), MixedSpineArg::Value(_proof2), MixedSpineArg::Value(query_arg), MixedSpineArg::Value(body_arg)] => {
-                    (
-                        *tables_con,
-                        *exps_con,
-                        *state_con,
-                        Some(*query_arg),
-                        Some(*body_arg),
-                        None,
-                    )
-                }
-                [MixedSpineArg::Type(tables_con), MixedSpineArg::Type(exps_con), MixedSpineArg::Value(_proof1), MixedSpineArg::Type(state_con), MixedSpineArg::Value(_proof2), MixedSpineArg::Value(query_arg), MixedSpineArg::Value(body_arg), MixedSpineArg::Value(initial_arg)] => {
-                    (
-                        *tables_con,
-                        *exps_con,
-                        *state_con,
-                        Some(*query_arg),
-                        Some(*body_arg),
-                        Some(*initial_arg),
-                    )
-                }
-                _ => return None,
-            };
-            if let Some(query_arg) = query_arg {
-                if !looks_like_sql_query_arg(env, query_arg) {
-                    return None;
-                }
-            }
-
+            let (tables_con, exps_con, state_con, query_arg, body_arg, initial_arg, trailing_args) =
+                match mixed.as_slice() {
+                    [MixedSpineArg::Type(tables_con), MixedSpineArg::Type(exps_con), MixedSpineArg::Value(_proof1), MixedSpineArg::Type(state_con)] => {
+                        (
+                            *tables_con,
+                            *exps_con,
+                            *state_con,
+                            None,
+                            None,
+                            None,
+                            Vec::new(),
+                        )
+                    }
+                    [MixedSpineArg::Type(tables_con), MixedSpineArg::Type(exps_con), MixedSpineArg::Value(_proof1), MixedSpineArg::Type(state_con), MixedSpineArg::Value(query_arg)] => {
+                        (
+                            *tables_con,
+                            *exps_con,
+                            *state_con,
+                            Some(*query_arg),
+                            None,
+                            None,
+                            Vec::new(),
+                        )
+                    }
+                    [MixedSpineArg::Type(tables_con), MixedSpineArg::Type(exps_con), MixedSpineArg::Value(_proof1), MixedSpineArg::Type(state_con), MixedSpineArg::Value(query_arg), MixedSpineArg::Value(body_arg)] => {
+                        (
+                            *tables_con,
+                            *exps_con,
+                            *state_con,
+                            Some(*query_arg),
+                            Some(*body_arg),
+                            None,
+                            Vec::new(),
+                        )
+                    }
+                    [MixedSpineArg::Type(tables_con), MixedSpineArg::Type(exps_con), MixedSpineArg::Value(_proof1), MixedSpineArg::Type(state_con), MixedSpineArg::Value(query_arg), MixedSpineArg::Value(body_arg), MixedSpineArg::Value(initial_arg), rest @ ..]
+                        if rest
+                            .iter()
+                            .all(|arg| matches!(arg, MixedSpineArg::Value(_))) =>
+                    {
+                        let trailing_args = rest
+                            .iter()
+                            .map(|arg| match arg {
+                                MixedSpineArg::Value(v) => *v,
+                                MixedSpineArg::Type(_) => unreachable!(),
+                            })
+                            .collect();
+                        (
+                            *tables_con,
+                            *exps_con,
+                            *state_con,
+                            Some(*query_arg),
+                            Some(*body_arg),
+                            Some(*initial_arg),
+                            trailing_args,
+                        )
+                    }
+                    _ => return None,
+                };
             let exps = match mono_type(env, &mut HashMap::new(), exps_con).node {
                 Typ::Record(exps) => exps,
                 _ => return None,
             };
+            let has_trailing_args = !trailing_args.is_empty();
             let tables = decode_query_tables(env, loc, tables_con)?;
             let state = mono_type(env, &mut HashMap::new(), state_con);
             let unit_t = unit_typ(loc);
+            let expected_query_signature = query_row_signature_from_mono(&exps, &tables);
 
             let mut row_fields = exps.clone();
             row_fields.extend(tables.iter().map(|(name, fields)| {
@@ -2473,7 +4050,7 @@ fn mono_basis_full_app(
             );
             let f_t = Located::new(
                 Typ::Fun(
-                    Box::new(row_t),
+                    Box::new(row_t.clone()),
                     Box::new(Located::new(
                         Typ::Fun(Box::new(state.clone()), Box::new(thunk_t.clone())),
                         loc.clone(),
@@ -2503,8 +4080,8 @@ fn mono_basis_full_app(
             );
             let query = Located::new(
                 Exp::Query(crate::monomorphized::QueryMeta {
-                    exps,
-                    tables,
+                    exps: exps.clone(),
+                    tables: tables.clone(),
                     state: state.clone(),
                     query: Box::new(Located::new(Exp::Rel(3), loc.clone())),
                     body: Box::new(body),
@@ -2543,36 +4120,92 @@ fn mono_basis_full_app(
                 ),
                 loc.clone(),
             );
-            for arg in query_arg.into_iter().chain(body_arg).chain(initial_arg) {
-                let marg = mono_exp(env, fm, arg, settings);
-                lowered = Located::new(Exp::App(Box::new(lowered), Box::new(marg)), loc.clone());
-            }
-            if loc.file.ends_with("/lib/ur/top.ur")
-                && matches!(loc.first.line, 266 | 332 | 366 | 382)
-            {
-                let _ = (|| -> std::io::Result<()> {
-                    let mut file = std::fs::OpenOptions::new()
-                        .create(true)
-                        .append(true)
-                        .open("/Users/jacksmith/prog/urweb/query-mono.log")?;
-                    let msg = format!(
-                        "query lowered full-app: loc={}:{}\n{lowered:#?}\n",
-                        loc.file, loc.first.line
+            let instantiate_body_fun = |fm: &mut Fm, body_arg: &LocatedExpression| {
+                let mut body_fun = mono_exp(env, fm, body_arg, settings);
+                for arg in trailing_args.iter().rev() {
+                    let marg = mono_exp(env, fm, arg, settings);
+                    body_fun =
+                        crate::monomorphized::environment::sub_exp_in_exp(0, &marg, &body_fun);
+                }
+                body_fun
+            };
+            let effective_body_fun =
+                |fm: &mut Fm, body_arg: &LocatedExpression| instantiate_body_fun(fm, body_arg);
+            let recovered_query = query_arg
+                .and_then(|arg| recover_erased_query_arg(arg, Some(&expected_query_signature)));
+            let mut lowered_is_partial_query_abs = false;
+            match (query_arg, body_arg, initial_arg, recovered_query.clone()) {
+                (Some(query_arg), Some(body_arg), Some(initial_arg), None)
+                    if matches!(&query_arg.node, CE::Prim(Prim::Int(0))) =>
+                {
+                    let body_exp = lift_exp_in_exp(0, effective_body_fun(fm, body_arg));
+                    let initial_exp = lift_exp_in_exp(0, mono_exp(env, fm, initial_arg, settings));
+                    let q_rel = Located::new(Exp::Rel(0), loc.clone());
+                    let partially_applied = Located::new(
+                        Exp::App(
+                            Box::new(Located::new(
+                                Exp::App(
+                                    Box::new(Located::new(
+                                        Exp::App(Box::new(lowered), Box::new(q_rel)),
+                                        loc.clone(),
+                                    )),
+                                    Box::new(body_exp),
+                                ),
+                                loc.clone(),
+                            )),
+                            Box::new(initial_exp),
+                        ),
+                        loc.clone(),
                     );
-                    std::io::Write::write_all(&mut file, msg.as_bytes())
-                })();
+                    lowered = Located::new(
+                        Exp::Abs(
+                            "q".into(),
+                            s_t.clone(),
+                            thunk_t.clone(),
+                            Box::new(partially_applied),
+                        ),
+                        loc.clone(),
+                    );
+                    lowered_is_partial_query_abs = true;
+                }
+                _ => {
+                    let mut args = Vec::new();
+                    if let Some(arg) = query_arg {
+                        args.push(
+                            recovered_query
+                                .clone()
+                                .unwrap_or_else(|| mono_exp(env, fm, arg, settings)),
+                        );
+                    }
+                    if let Some(arg) = body_arg {
+                        args.push(effective_body_fun(fm, arg));
+                    }
+                    if let Some(arg) = initial_arg {
+                        args.push(mono_exp(env, fm, arg, settings));
+                    }
+                    for marg in args {
+                        lowered = apply_arg(lowered, marg);
+                    }
+                    if has_trailing_args {
+                        for arg in &trailing_args {
+                            let marg = if matches!(arg.node, CE::Prim(Prim::Int(0))) {
+                                unit_exp(loc)
+                            } else {
+                                mono_exp(env, fm, arg, settings)
+                            };
+                            lowered = apply_arg(lowered, marg);
+                        }
+                    }
+                }
+            }
+            if lowered_is_partial_query_abs && has_trailing_args {
+                return None;
             }
 
             Some(lowered)
         }
 
         "dml" if !vargs.is_empty() => {
-            log_builtin(&format!(
-                "dml hit: targs={} vargs={} loc={}",
-                targs.len(),
-                vargs.len(),
-                loc.file
-            ));
             let e = mono_exp(env, fm, last(1)?, settings);
             let disc = string_type(loc);
             let unit_t = unit_typ(loc);
@@ -2611,12 +4244,6 @@ fn mono_basis_full_app(
         }
 
         "tryDml" if !vargs.is_empty() => {
-            log_builtin(&format!(
-                "tryDml hit: targs={} vargs={} loc={}",
-                targs.len(),
-                vargs.len(),
-                loc.file
-            ));
             let e = mono_exp(env, fm, last(1)?, settings);
             let disc = string_type(loc);
             let unit_t = unit_typ(loc);
@@ -2683,7 +4310,6 @@ fn mono_basis_full_app(
             let m = mono_exp(env, fm, last(1)?, settings);
             let m1 = mk_field(m.clone(), "1");
             let m2 = mk_field(m.clone(), "2");
-            let empty = str_n("", loc);
             let col1 = settings.mangle_sql(&nm1);
             let col2 = settings.mangle_sql(&nm2);
             let rec = |left: LocExp, right: LocExp| {
@@ -2821,11 +4447,66 @@ fn mono_basis_full_app(
             Some(make_strcat(tab, str_n(&format!(" AS T_{alias}"), loc)))
         }
 
+        "sql_from_query" => {
+            let q = mono_exp(env, fm, last(1)?, settings);
+            let alias = match targs.last().map(|t| &t.node) {
+                Some(CC::Name(name)) => name.clone(),
+                _ => "T".into(),
+            };
+            Some(make_strcat_list(
+                vec![str_n("(", loc), q, str_n(&format!(") AS T_{alias}"), loc)],
+                loc,
+            ))
+        }
+
+        "sql_from_comma" => {
+            let left = mono_exp(env, fm, last(2)?, settings);
+            let right = mono_exp(env, fm, last(1)?, settings);
+            Some(combine_nonempty_sql(left, right, ", ", loc))
+        }
+
+        "sql_inner_join" => {
+            let left = mono_exp(env, fm, last(3)?, settings);
+            let right = mono_exp(env, fm, last(2)?, settings);
+            let on = mono_exp(env, fm, last(1)?, settings);
+            Some(join_nonempty_sql(left, right, "JOIN", on, loc))
+        }
+
+        "sql_left_join" => {
+            let left = mono_exp(env, fm, last(3)?, settings);
+            let right = mono_exp(env, fm, last(2)?, settings);
+            let on = mono_exp(env, fm, last(1)?, settings);
+            Some(join_nonempty_sql(left, right, "LEFT JOIN", on, loc))
+        }
+
+        "sql_right_join" => {
+            let left = mono_exp(env, fm, last(3)?, settings);
+            let right = mono_exp(env, fm, last(2)?, settings);
+            let on = mono_exp(env, fm, last(1)?, settings);
+            Some(join_nonempty_sql(left, right, "RIGHT JOIN", on, loc))
+        }
+
+        "sql_full_join" => {
+            let left = mono_exp(env, fm, last(3)?, settings);
+            let right = mono_exp(env, fm, last(2)?, settings);
+            let on = mono_exp(env, fm, last(1)?, settings);
+            Some(join_nonempty_sql(left, right, "FULL JOIN", on, loc))
+        }
+
         "sql_window" => {
             if vargs.len() < 2 {
                 return None;
             }
             Some(mono_exp(env, fm, last(1)?, settings))
+        }
+
+        "sql_unary" => {
+            let c = mono_exp(env, fm, last(2)?, settings);
+            let e1 = ensure_sql_string_expr(mono_exp(env, fm, last(1)?, settings), loc, settings);
+            Some(make_strcat_list(
+                vec![str_n("(", loc), c, str_n(" ", loc), e1, str_n(")", loc)],
+                loc,
+            ))
         }
 
         "sql_order_by_Cons" => {
@@ -2862,8 +4543,8 @@ fn mono_basis_full_app(
 
         "sql_binary" => {
             let c = mono_exp(env, fm, last(3)?, settings);
-            let e1 = ensure_sql_string_expr(mono_exp(env, fm, last(2)?, settings), loc);
-            let e2 = ensure_sql_string_expr(mono_exp(env, fm, last(1)?, settings), loc);
+            let e1 = ensure_sql_string_expr(mono_exp(env, fm, last(2)?, settings), loc, settings);
+            let e2 = ensure_sql_string_expr(mono_exp(env, fm, last(1)?, settings), loc, settings);
             Some(make_strcat_list(
                 vec![
                     str_n("(", loc),
@@ -2937,52 +4618,19 @@ fn mono_basis_full_app(
                     .map(|(_, e, _)| e)
             };
             let distinct = mono_exp(env, fm, lookup("Distinct")?, settings);
-            let from_raw = lookup("From")?;
-            let where_e = mono_exp(env, fm, lookup("Where")?, settings);
-            let having_e = mono_exp(env, fm, lookup("Having")?, settings);
-            let group_by_raw = lookup("GroupBy");
-            let select_exps_raw = lookup("SelectExps")?;
-            let CE::Record(select_exps_fields) = &select_exps_raw.node else {
+            let from = mono_exp(env, fm, lookup("From")?, settings);
+            let where_raw = lookup("Where")?;
+            let where_e = mono_exp(env, fm, where_raw, settings);
+            let having_raw = lookup("Having")?;
+            let having_e = mono_exp(env, fm, having_raw, settings);
+            let select_exps = mono_exp(env, fm, lookup("SelectExps")?, settings);
+            let Exp::Record(select_exps_fields) = &select_exps.node else {
                 return None;
             };
-
-            let true_string = if crate::db::ProjectDbCtx::new(&settings.db_backend)
-                .resolved()
-                .is_sqlite()
-            {
-                "1"
-            } else {
-                "TRUE"
-            };
-
-            let from = {
-                let mut args = Vec::new();
-                let fun_e = peel_apps_core(from_raw, &mut args);
-                let (head, from_targs) = peel_capp(fun_e);
-                if let CE::Ffi(m, name) = &head.node {
-                    if m == "Basis" && name == "sql_from_table" && args.len() >= 2 {
-                        let tab = mono_exp(env, fm, args[args.len() - 1], settings);
-                        let alias = match from_targs.last().map(|t| &t.node) {
-                            Some(CC::Name(name)) => name.clone(),
-                            _ => match &tab.node {
-                                Exp::Prim(Prim::String(_, table_name)) => {
-                                    let stem = table_name.rsplit('_').next().unwrap_or("t");
-                                    stem.chars()
-                                        .next()
-                                        .map(|c| c.to_ascii_uppercase().to_string())
-                                        .unwrap_or_else(|| "T".into())
-                                }
-                                _ => "T".into(),
-                            },
-                        };
-                        make_strcat(tab, str_n(&format!(" AS T_{alias}"), loc))
-                    } else {
-                        mono_exp(env, fm, from_raw, settings)
-                    }
-                } else {
-                    mono_exp(env, fm, from_raw, settings)
-                }
-            };
+            let tables = decode_query_tables(env, loc, targs.get(targs.len().checked_sub(5)?)?)?;
+            let grouped = decode_query_tables(env, loc, targs.get(targs.len().checked_sub(4)?)?)?;
+            let selected_fields =
+                decode_query_tables(env, loc, targs.get(targs.len().checked_sub(3)?)?)?;
 
             let distinct_prefix = Located::new(
                 Exp::Case(
@@ -3000,33 +4648,31 @@ fn mono_basis_full_app(
             );
 
             let mut select_parts: Vec<LocExp> = Vec::new();
-            for (name_con, exp, _) in select_exps_fields {
-                let name = mono_name(name_con);
-                let mut args = Vec::new();
-                let fun_e = peel_apps_core(exp, &mut args);
-                let (head, _) = peel_capp(fun_e);
-                let value = if let CE::Ffi(m, func) = &head.node {
-                    if m == "Basis" && func == "sql_window" && !args.is_empty() {
-                        mono_exp(env, fm, args[args.len() - 1], settings)
-                    } else {
-                        mono_exp(env, fm, exp, settings)
-                    }
-                } else {
-                    mono_exp(env, fm, exp, settings)
-                };
+            for (name, exp, _) in select_exps_fields {
                 select_parts.push(make_strcat_list(
                     vec![
-                        value,
+                        ensure_sql_string_expr(exp.clone(), loc, settings),
                         str_n(
-                            &format!(" AS {}", settings.mangle_sql(&lowercase_first(&name))),
+                            &format!(" AS {}", settings.mangle_sql(&lowercase_first(name))),
                             loc,
                         ),
                     ],
                     loc,
                 ));
             }
+            for (table_name, row_fields) in &selected_fields {
+                for (field_name, _) in row_fields {
+                    select_parts.push(str_n(
+                        &format!(
+                            "T_{table_name}.{}",
+                            settings.mangle_sql(&lowercase_first(field_name))
+                        ),
+                        loc,
+                    ));
+                }
+            }
             let select_list = if select_parts.is_empty() {
-                str_n("*", loc)
+                str_n("0", loc)
             } else {
                 let mut iter = select_parts.into_iter();
                 let first = iter.next().expect("select_parts is non-empty");
@@ -3062,86 +4708,67 @@ fn mono_basis_full_app(
                 loc.clone(),
             );
 
-            let where_clause = Located::new(
-                Exp::Case(
-                    Box::new(where_e),
-                    vec![
-                        (
-                            Located::new(
-                                Pat::Prim(Prim::String(
-                                    crate::primitives::StringMode::Normal,
-                                    true_string.into(),
-                                )),
-                                loc.clone(),
-                            ),
-                            str_n("", loc),
-                        ),
-                        (
-                            Located::new(Pat::Var("w".into(), s_t.clone()), loc.clone()),
-                            make_strcat_list(vec![str_n(" WHERE ", loc), mk_rel(0)], loc),
-                        ),
-                    ],
-                    CaseMeta {
-                        disc: s_t.clone(),
-                        result: s_t.clone(),
-                    },
-                ),
-                loc.clone(),
-            );
+            let where_clause = if core_basis_bool(where_raw, "True") {
+                str_n("", loc)
+            } else if core_basis_bool(where_raw, "False") {
+                make_strcat(
+                    str_n(" WHERE ", loc),
+                    str_n(sql_false_string(settings), loc),
+                )
+            } else {
+                optional_sql_clause(where_e, " WHERE ", settings, loc)
+            };
 
-            let group_by_clause = match group_by_raw {
-                Some(e) => {
-                    let g = mono_exp(env, fm, e, settings);
-                    match g.node {
-                        Exp::Record(ref fields) if fields.is_empty() => str_n("", loc),
-                        Exp::Ffi(ref m, ref name) if m == "Basis" && name == "sql_subset_all" => {
-                            str_n("", loc)
-                        }
-                        _ => g,
+            let grouped_covers_tables = tables.iter().all(|(table_name, table_fields)| {
+                grouped
+                    .iter()
+                    .find(|(grouped_name, _)| grouped_name == table_name)
+                    .map_or(table_fields.is_empty(), |(_, grouped_fields)| {
+                        table_fields.iter().all(|(field_name, _)| {
+                            grouped_fields
+                                .iter()
+                                .any(|(grouped_field_name, _)| grouped_field_name == field_name)
+                        })
+                    })
+            });
+            let group_by_clause = if grouped_covers_tables {
+                str_n("", loc)
+            } else {
+                let mut group_parts = Vec::new();
+                for (table_name, row_fields) in &grouped {
+                    for (field_name, _) in row_fields {
+                        group_parts.push(str_n(
+                            &format!(
+                                "T_{table_name}.{}",
+                                settings.mangle_sql(&lowercase_first(field_name))
+                            ),
+                            loc,
+                        ));
                     }
                 }
-                None => str_n("", loc),
+                if group_parts.is_empty() {
+                    str_n("", loc)
+                } else {
+                    let mut iter = group_parts.into_iter();
+                    let first = iter.next().expect("group_parts is non-empty");
+                    let body = iter.fold(first, |acc, item| {
+                        make_strcat(acc, make_strcat(str_n(", ", loc), item))
+                    });
+                    make_strcat(str_n(" GROUP BY ", loc), body)
+                }
             };
-            let having_clause = match &having_e.node {
-                Exp::Con(
-                    DatatypeKind::Enum,
-                    PatCon::Ffi {
-                        module,
-                        datatyp,
-                        con,
-                        ..
-                    },
-                    None,
-                ) if module == "Basis" && datatyp == "bool" && con == "True" => str_n("", loc),
-                _ => Located::new(
-                    Exp::Case(
-                        Box::new(having_e),
-                        vec![
-                            (
-                                Located::new(
-                                    Pat::Prim(Prim::String(
-                                        crate::primitives::StringMode::Normal,
-                                        true_string.into(),
-                                    )),
-                                    loc.clone(),
-                                ),
-                                str_n("", loc),
-                            ),
-                            (
-                                Located::new(Pat::Var("h".into(), s_t.clone()), loc.clone()),
-                                make_strcat_list(vec![str_n(" HAVING ", loc), mk_rel(0)], loc),
-                            ),
-                        ],
-                        CaseMeta {
-                            disc: s_t.clone(),
-                            result: s_t.clone(),
-                        },
-                    ),
-                    loc.clone(),
-                ),
+            let having_clause = if core_basis_bool(having_raw, "True") {
+                str_n("", loc)
+            } else if core_basis_bool(having_raw, "False") {
+                make_strcat(
+                    str_n(" HAVING ", loc),
+                    str_n(sql_false_string(settings), loc),
+                )
+            } else {
+                optional_sql_clause(having_e, " HAVING ", settings, loc)
             };
 
-            Some(make_strcat_list(
+            let query1 = make_strcat_list(
                 vec![
                     str_n("SELECT ", loc),
                     distinct_prefix,
@@ -3152,7 +4779,39 @@ fn mono_basis_full_app(
                     having_clause,
                 ],
                 loc,
-            ))
+            );
+            let query_signature = query_row_signature(
+                select_exps_fields
+                    .iter()
+                    .map(|(name, _, _)| name.clone())
+                    .collect(),
+                selected_fields
+                    .iter()
+                    .map(|(table, fields)| {
+                        (
+                            table.clone(),
+                            fields.iter().map(|(name, _)| name.clone()).collect(),
+                        )
+                    })
+                    .collect(),
+            );
+            let key = query_cache_key(loc);
+            if let Ok(mut cache) = sql_query_cache().lock() {
+                cache.insert(
+                    key.clone(),
+                    QueryCacheEntry {
+                        query: query1.clone(),
+                        signature: query_signature.clone(),
+                    },
+                );
+            }
+            if let Ok(mut queue) = queued_sql_queries().lock() {
+                queue.push_back(QueryCacheEntry {
+                    query: query1.clone(),
+                    signature: query_signature,
+                });
+            }
+            Some(query1)
         }
 
         _ => None,
@@ -3165,10 +4824,7 @@ fn mono_basis_full_app(
 
 /// Lift all ERel(n >= depth) by 1 in a Mono expression.
 fn lift_exp_in_exp(depth: usize, e: LocExp) -> LocExp {
-    crate::monomorphized::utilities::exp::map(e, &|t| t, &|node| match node {
-        Exp::Rel(n) if n >= depth => Exp::Rel(n + 1),
-        other => other,
-    })
+    crate::monomorphized::environment::lift_exp_in_exp(depth, &e)
 }
 
 fn str_exp(s: impl Into<String>, loc: &Span) -> LocExp {
@@ -3189,6 +4845,302 @@ fn unit_typ(loc: &Span) -> LocTyp {
     Located::new(Typ::Record(Vec::new()), loc.clone())
 }
 
+fn source_span_excerpt(span: &Span) -> Option<String> {
+    static CACHE: OnceLock<Mutex<HashMap<String, Option<String>>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let contents = {
+        let mut guard = cache.lock().expect("source excerpt cache mutex poisoned");
+        match guard.get(&span.file) {
+            Some(cached) => cached.clone(),
+            None => {
+                let loaded = fs::read_to_string(&span.file).ok();
+                guard.insert(span.file.clone(), loaded.clone());
+                loaded
+            }
+        }
+    }?;
+
+    let start_line = span.first.line.max(1) as usize;
+    let end_line = span.last.line.max(span.first.line.max(1)) as usize;
+    let lines: Vec<&str> = contents.lines().collect();
+    if start_line > lines.len() || end_line > lines.len() {
+        return None;
+    }
+
+    let mut excerpt = String::new();
+    for line_index in start_line..=end_line {
+        let line = lines[line_index - 1];
+        let start_col = if line_index == start_line {
+            span.first.col.saturating_sub(1) as usize
+        } else {
+            0
+        };
+        let end_col = if line_index == end_line {
+            span.last.col.saturating_sub(1) as usize
+        } else {
+            line.chars().count()
+        };
+        if start_col > end_col {
+            continue;
+        }
+        let segment: String = line
+            .chars()
+            .skip(start_col)
+            .take(end_col.saturating_sub(start_col))
+            .collect();
+        if !excerpt.is_empty() {
+            excerpt.push('\n');
+        }
+        excerpt.push_str(&segment);
+    }
+
+    Some(excerpt)
+}
+
+fn span_looks_like_erased_constraint_artifact(span: &Span) -> bool {
+    let Some(excerpt) = source_span_excerpt(span) else {
+        return false;
+    };
+    let trimmed = excerpt.trim();
+    if trimmed.is_empty()
+        || trimmed == "0"
+        || trimmed.eq_ignore_ascii_case("false")
+        || trimmed.eq_ignore_ascii_case("true")
+    {
+        return false;
+    }
+    true
+}
+
+fn is_synthetic_constraint_prim0(exp: &LocatedExpression) -> bool {
+    matches!(exp.node, CE::Prim(Prim::Int(0)))
+        && span_looks_like_erased_constraint_artifact(&exp.span)
+}
+
+fn mono_exp_uses_rel_at_depth(exp: &LocExp, target: usize, depth: usize) -> bool {
+    match &exp.node {
+        Exp::Rel(n) => *n == target + depth,
+        Exp::Con(_, _, Some(inner))
+        | Exp::Some(_, inner)
+        | Exp::Write(inner)
+        | Exp::SignalReturn(inner)
+        | Exp::SignalSource(inner)
+        | Exp::Sleep(inner)
+        | Exp::Spawn(inner)
+        | Exp::JavaScript(_, inner)
+        | Exp::Unop(_, inner)
+        | Exp::Field(inner, _)
+        | Exp::Redirect(inner, _)
+        | Exp::Recv(inner, _)
+        | Exp::Nextval(inner) => mono_exp_uses_rel_at_depth(inner, target, depth),
+        Exp::Error(inner, _) => mono_exp_uses_rel_at_depth(inner, target, depth),
+        Exp::ReturnBlob {
+            blob, mime_type, ..
+        } => {
+            blob.as_ref()
+                .is_some_and(|inner| mono_exp_uses_rel_at_depth(inner, target, depth))
+                || mono_exp_uses_rel_at_depth(mime_type, target, depth)
+        }
+        Exp::App(left, right)
+        | Exp::Binop(_, _, left, right)
+        | Exp::Strcat(left, right)
+        | Exp::Seq(left, right)
+        | Exp::SignalBind(left, right)
+        | Exp::Setval(left, right) => {
+            mono_exp_uses_rel_at_depth(left, target, depth)
+                || mono_exp_uses_rel_at_depth(right, target, depth)
+        }
+        Exp::Abs(_, _, _, body) => mono_exp_uses_rel_at_depth(body, target, depth + 1),
+        Exp::FfiApp(_, _, args) => args
+            .iter()
+            .any(|(arg, _)| mono_exp_uses_rel_at_depth(arg, target, depth)),
+        Exp::Record(fields) => fields
+            .iter()
+            .any(|(_, value, _)| mono_exp_uses_rel_at_depth(value, target, depth)),
+        Exp::Case(disc, arms, _) => {
+            mono_exp_uses_rel_at_depth(disc, target, depth)
+                || arms.iter().any(|(pat, body)| {
+                    mono_exp_uses_rel_at_depth(
+                        body,
+                        target,
+                        depth + crate::monomorphized::environment::pat_binds_n(pat),
+                    )
+                })
+        }
+        Exp::Let(_, _, bound, body) => {
+            mono_exp_uses_rel_at_depth(bound, target, depth)
+                || mono_exp_uses_rel_at_depth(body, target, depth + 1)
+        }
+        Exp::Closure(_, envs) => envs
+            .iter()
+            .any(|inner| mono_exp_uses_rel_at_depth(inner, target, depth)),
+        Exp::Query(query) => {
+            mono_exp_uses_rel_at_depth(&query.query, target, depth)
+                || mono_exp_uses_rel_at_depth(&query.body, target, depth)
+                || mono_exp_uses_rel_at_depth(&query.initial, target, depth)
+        }
+        Exp::Dml(inner, _) | Exp::ServerCall(inner, _, _, _) | Exp::Uurlify(inner, _, _) => {
+            mono_exp_uses_rel_at_depth(inner, target, depth)
+        }
+        Exp::Con(_, _, None) | Exp::Prim(_) | Exp::Named(_) | Exp::None(_) | Exp::Ffi(_, _) => {
+            false
+        }
+    }
+}
+
+fn erase_synthetic_unit_abs(exp: LocExp) -> LocExp {
+    let loc = exp.span.clone();
+    let node = match exp.node {
+        Exp::Con(kind, pat_con, Some(inner)) => Exp::Con(
+            kind,
+            pat_con,
+            Some(Box::new(erase_synthetic_unit_abs(*inner))),
+        ),
+        Exp::Con(kind, pat_con, None) => Exp::Con(kind, pat_con, None),
+        Exp::Some(typ, inner) => Exp::Some(typ, Box::new(erase_synthetic_unit_abs(*inner))),
+        Exp::FfiApp(module, name, args) => Exp::FfiApp(
+            module,
+            name,
+            args.into_iter()
+                .map(|(arg, typ)| (erase_synthetic_unit_abs(arg), typ))
+                .collect(),
+        ),
+        Exp::App(left, right) => {
+            let left = erase_synthetic_unit_abs(*left);
+            let right = erase_synthetic_unit_abs(*right);
+            let synthetic_unit_arg = matches!(&right.node, Exp::Record(fields) if fields.is_empty())
+                && span_looks_like_erased_constraint_artifact(&right.span);
+            if let Exp::Abs(_, _, _, body) = &left.node {
+                return crate::monomorphized::environment::sub_exp_in_exp(0, &right, body);
+            }
+            if synthetic_unit_arg {
+                return left;
+            }
+            Exp::App(Box::new(left), Box::new(right))
+        }
+        Exp::Abs(name, dom, ran, body) => {
+            let body = erase_synthetic_unit_abs(*body);
+            let synthetic_unit_binder = name == "_"
+                && matches!(&dom.node, Typ::Record(fields) if fields.is_empty())
+                && span_looks_like_erased_constraint_artifact(&dom.span)
+                && !mono_exp_uses_rel_at_depth(&body, 0, 0);
+            if synthetic_unit_binder {
+                return crate::monomorphized::environment::sub_exp_in_exp(
+                    0,
+                    &unit_exp(&dom.span),
+                    &body,
+                );
+            }
+            Exp::Abs(name, dom, ran, Box::new(body))
+        }
+        Exp::Unop(op, inner) => Exp::Unop(op, Box::new(erase_synthetic_unit_abs(*inner))),
+        Exp::Binop(intness, op, left, right) => Exp::Binop(
+            intness,
+            op,
+            Box::new(erase_synthetic_unit_abs(*left)),
+            Box::new(erase_synthetic_unit_abs(*right)),
+        ),
+        Exp::Record(fields) => Exp::Record(
+            fields
+                .into_iter()
+                .map(|(name, value, typ)| (name, erase_synthetic_unit_abs(value), typ))
+                .collect(),
+        ),
+        Exp::Field(inner, name) => Exp::Field(Box::new(erase_synthetic_unit_abs(*inner)), name),
+        Exp::Case(disc, arms, meta) => Exp::Case(
+            Box::new(erase_synthetic_unit_abs(*disc)),
+            arms.into_iter()
+                .map(|(pat, body)| (pat, erase_synthetic_unit_abs(body)))
+                .collect(),
+            meta,
+        ),
+        Exp::Strcat(left, right) => Exp::Strcat(
+            Box::new(erase_synthetic_unit_abs(*left)),
+            Box::new(erase_synthetic_unit_abs(*right)),
+        ),
+        Exp::Error(inner, typ) => Exp::Error(Box::new(erase_synthetic_unit_abs(*inner)), typ),
+        Exp::ReturnBlob { blob, mime_type, t } => Exp::ReturnBlob {
+            blob: blob.map(|inner| Box::new(erase_synthetic_unit_abs(*inner))),
+            mime_type: Box::new(erase_synthetic_unit_abs(*mime_type)),
+            t,
+        },
+        Exp::Redirect(inner, typ) => Exp::Redirect(Box::new(erase_synthetic_unit_abs(*inner)), typ),
+        Exp::Write(inner) => Exp::Write(Box::new(erase_synthetic_unit_abs(*inner))),
+        Exp::Seq(left, right) => Exp::Seq(
+            Box::new(erase_synthetic_unit_abs(*left)),
+            Box::new(erase_synthetic_unit_abs(*right)),
+        ),
+        Exp::Let(name, typ, bound, body) => Exp::Let(
+            name,
+            typ,
+            Box::new(erase_synthetic_unit_abs(*bound)),
+            Box::new(erase_synthetic_unit_abs(*body)),
+        ),
+        Exp::Closure(id, envs) => {
+            Exp::Closure(id, envs.into_iter().map(erase_synthetic_unit_abs).collect())
+        }
+        Exp::Query(mut query) => {
+            query.query = Box::new(erase_synthetic_unit_abs(*query.query));
+            query.body = Box::new(erase_synthetic_unit_abs(*query.body));
+            query.initial = Box::new(erase_synthetic_unit_abs(*query.initial));
+            Exp::Query(query)
+        }
+        Exp::Dml(inner, mode) => Exp::Dml(Box::new(erase_synthetic_unit_abs(*inner)), mode),
+        Exp::Nextval(inner) => Exp::Nextval(Box::new(erase_synthetic_unit_abs(*inner))),
+        Exp::Setval(left, right) => Exp::Setval(
+            Box::new(erase_synthetic_unit_abs(*left)),
+            Box::new(erase_synthetic_unit_abs(*right)),
+        ),
+        Exp::Uurlify(inner, typ, flag) => {
+            Exp::Uurlify(Box::new(erase_synthetic_unit_abs(*inner)), typ, flag)
+        }
+        Exp::JavaScript(mode, inner) => {
+            Exp::JavaScript(mode, Box::new(erase_synthetic_unit_abs(*inner)))
+        }
+        Exp::SignalReturn(inner) => Exp::SignalReturn(Box::new(erase_synthetic_unit_abs(*inner))),
+        Exp::SignalBind(left, right) => Exp::SignalBind(
+            Box::new(erase_synthetic_unit_abs(*left)),
+            Box::new(erase_synthetic_unit_abs(*right)),
+        ),
+        Exp::SignalSource(inner) => Exp::SignalSource(Box::new(erase_synthetic_unit_abs(*inner))),
+        Exp::ServerCall(inner, typ, effect, mode) => Exp::ServerCall(
+            Box::new(erase_synthetic_unit_abs(*inner)),
+            typ,
+            effect,
+            mode,
+        ),
+        Exp::Recv(inner, typ) => Exp::Recv(Box::new(erase_synthetic_unit_abs(*inner)), typ),
+        Exp::Sleep(inner) => Exp::Sleep(Box::new(erase_synthetic_unit_abs(*inner))),
+        Exp::Spawn(inner) => Exp::Spawn(Box::new(erase_synthetic_unit_abs(*inner))),
+        other => other,
+    };
+    Located::new(node, loc)
+}
+
+fn zero_exp(loc: &Span, reason: &str) -> LocExp {
+    if loc.file.ends_with("/lib/ur/top.ur") || loc.file.ends_with("/demo/batchFun.ur") {
+        eprintln!(
+            "monoize zero_exp reason={reason} span={}:{}:{}-{}:{}",
+            loc.file, loc.first.line, loc.first.col, loc.last.line, loc.last.col
+        );
+    }
+    Located::new(Exp::Prim(Prim::Int(0)), loc.clone())
+}
+
+fn should_log_source_zero_once(key: &str) -> bool {
+    static SEEN: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    let seen = SEEN.get_or_init(|| Mutex::new(HashSet::new()));
+    let mut guard = seen.lock().expect("source zero log mutex poisoned");
+    guard.insert(key.to_string())
+}
+
+fn should_log_once(key: &str) -> bool {
+    static SEEN: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    let seen = SEEN.get_or_init(|| Mutex::new(HashSet::new()));
+    let mut guard = seen.lock().expect("one-shot log mutex poisoned");
+    guard.insert(key.to_string())
+}
+
 /// Translate a Core expression to a Mono expression.
 ///
 /// Returns `(mono_exp, updated_fm)`. The `Fm` accumulates helper function
@@ -3199,7 +5151,32 @@ fn mono_exp(env: &Env, fm: &mut Fm, exp: &LocatedExpression, settings: &Settings
     let loc = exp.span.clone();
     match &exp.node {
         // --------------- Primitives ---------------
-        CE::Prim(p) => Located::new(Exp::Prim(p.clone()), loc),
+        CE::Prim(p) => {
+            if matches!(p, Prim::Int(0)) && span_looks_like_erased_constraint_artifact(&loc) {
+                return unit_exp(&loc);
+            }
+            if matches!(p, Prim::Int(0))
+                && (loc.file.ends_with("/lib/ur/top.ur") || loc.file.ends_with("/demo/batchFun.ur"))
+            {
+                let key = format!(
+                    "{}:{}:{}-{}:{}",
+                    loc.file, loc.first.line, loc.first.col, loc.last.line, loc.last.col
+                );
+                if should_log_source_zero_once(&key) {
+                    let rels = env
+                        .rel_e
+                        .iter()
+                        .rev()
+                        .take(6)
+                        .enumerate()
+                        .map(|(rel, con)| format!("rel{rel}@{:?}", con.node))
+                        .collect::<Vec<_>>()
+                        .join(" | ");
+                    eprintln!("monoize saw source prim0 span={key} env={rels}");
+                }
+            }
+            Located::new(Exp::Prim(p.clone()), loc)
+        }
         CE::Rel(n) => Located::new(Exp::Rel(*n), loc),
         CE::Named(n) => Located::new(Exp::Named(*n), loc),
 
@@ -3243,7 +5220,7 @@ fn mono_exp(env: &Env, fm: &mut Fm, exp: &LocatedExpression, settings: &Settings
                 }
             } else {
                 // Polymorphic — error
-                Located::new(Exp::Prim(Prim::Int(0)), loc)
+                zero_exp(&loc, "constructor-polymorphic-arity")
             }
         }
 
@@ -3397,53 +5374,22 @@ fn mono_exp(env: &Env, fm: &mut Fm, exp: &LocatedExpression, settings: &Settings
 
         // --------------- Application / Abstraction ---------------
         CE::App(_, _) => {
+            let reduced = crate::core::local_reduction::reduce_exp(exp.clone());
+            if !matches!(reduced.node, CE::App(_, _)) {
+                return mono_exp(env, fm, &reduced, settings);
+            }
+            let exp = &reduced;
+            let loc = exp.span.clone();
+            if loc.file.ends_with("/lib/ur/top.ur")
+                && loc.first.line == 156
+                && loc.first.col == 11
+                && should_log_once("mono-top-156-app")
+            {
+                eprintln!("mono top156 reduced app = {:?}", exp.node);
+            }
             let mut vargs: Vec<&LocatedExpression> = vec![];
             let mut targs: Vec<&LocatedConstructor> = vec![];
             let head_e = peel_spine(exp, &mut vargs, &mut targs);
-            if loc.file.ends_with("/demo/batch.ur") || loc.file.ends_with("/lib/ur/top.ur") {
-                let _ = (|| -> std::io::Result<()> {
-                    let mut file = std::fs::OpenOptions::new()
-                        .create(true)
-                        .append(true)
-                        .open("/Users/jacksmith/prog/urweb/query-mono.log")?;
-                    let msg = match &head_e.node {
-                        CE::Named(n) => match env.lookup_e_named(*n) {
-                            Some((name, _, src)) => format!(
-                                "app head named: id={} name={} src={} targs={} vargs={} loc={}",
-                                n,
-                                name,
-                                src,
-                                targs.len(),
-                                vargs.len(),
-                                loc.file
-                            ),
-                            None => format!(
-                                "app head named: id={} <unbound> targs={} vargs={} loc={}",
-                                n,
-                                targs.len(),
-                                vargs.len(),
-                                loc.file
-                            ),
-                        },
-                        CE::Ffi(m, x) => format!(
-                            "app head ffi: {}.{} targs={} vargs={} loc={}",
-                            m,
-                            x,
-                            targs.len(),
-                            vargs.len(),
-                            loc.file
-                        ),
-                        other => format!(
-                            "app head other: {other:#?} targs={} vargs={} loc={}",
-                            targs.len(),
-                            vargs.len(),
-                            loc.file
-                        ),
-                    };
-                    std::io::Write::write_all(&mut file, msg.as_bytes())?;
-                    std::io::Write::write_all(&mut file, b"\n")
-                })();
-            }
             let basis_head = match &head_e.node {
                 CE::Ffi(module, name) if module == "Basis" => Some(name.clone()),
                 CE::Named(n) => env
@@ -3452,92 +5398,6 @@ fn mono_exp(env: &Env, fm: &mut Fm, exp: &LocatedExpression, settings: &Settings
                 _ => None,
             };
             if let Some(x) = basis_head {
-                if x == "query" {
-                    let summarize_query_arg = |arg: &LocatedExpression| -> String {
-                        match &arg.node {
-                            CE::Prim(Prim::Int(n)) => format!("Int({n})"),
-                            CE::Prim(Prim::String(_, s)) => format!("String({s:?})"),
-                            CE::Abs(name, _, _, _) => {
-                                format!("Abs({name})@{}:{}", arg.span.file, arg.span.first.line)
-                            }
-                            CE::Record(fields) => format!("Record({} fields)", fields.len()),
-                            CE::App(_, _) | CE::CApp(_, _) => {
-                                let mut app_vargs = Vec::new();
-                                let mut app_targs = Vec::new();
-                                let head = peel_spine(arg, &mut app_vargs, &mut app_targs);
-                                match &head.node {
-                                    CE::Ffi(m, name) => format!(
-                                        "Spine({m}.{name};targs={},vargs={})@{}:{}",
-                                        app_targs.len(),
-                                        app_vargs.len(),
-                                        arg.span.file,
-                                        arg.span.first.line
-                                    ),
-                                    CE::Named(n) => match env.lookup_e_named(*n) {
-                                        Some((name, _, src)) => format!(
-                                            "Spine(Named#{n}:{name}@{src};targs={},vargs={})@{}:{}",
-                                            app_targs.len(),
-                                            app_vargs.len(),
-                                            arg.span.file,
-                                            arg.span.first.line
-                                        ),
-                                        None => format!(
-                                            "Spine(Named#{n};targs={},vargs={})@{}:{}",
-                                            app_targs.len(),
-                                            app_vargs.len(),
-                                            arg.span.file,
-                                            arg.span.first.line
-                                        ),
-                                    },
-                                    other => format!(
-                                        "Spine({other:?};targs={},vargs={})@{}:{}",
-                                        app_targs.len(),
-                                        app_vargs.len(),
-                                        arg.span.file,
-                                        arg.span.first.line
-                                    ),
-                                }
-                            }
-                            other => format!("{other:?}@{}:{}", arg.span.file, arg.span.first.line),
-                        }
-                    };
-                    let _ = (|| -> std::io::Result<()> {
-                        let mut file = std::fs::OpenOptions::new()
-                            .create(true)
-                            .append(true)
-                            .open("/Users/jacksmith/prog/urweb/query-mono.log")?;
-                        let msg = format!(
-                            "query app spine: loc={}:{} targs={} vargs={} args={}",
-                            loc.file,
-                            loc.first.line,
-                            targs.len(),
-                            vargs.len(),
-                            vargs
-                                .iter()
-                                .map(|arg| summarize_query_arg(arg))
-                                .collect::<Vec<_>>()
-                                .join(" | ")
-                        );
-                        std::io::Write::write_all(&mut file, msg.as_bytes())?;
-                        std::io::Write::write_all(&mut file, b"\n")
-                    })();
-                    if (loc.file.ends_with("/lib/ur/top.ur")
-                        && matches!(loc.first.line, 266 | 332 | 366 | 382))
-                        || (loc.file.ends_with("/demo/chat.ur") && loc.first.line == 53)
-                    {
-                        let _ = (|| -> std::io::Result<()> {
-                            let mut file = std::fs::OpenOptions::new()
-                                .create(true)
-                                .append(true)
-                                .open("/Users/jacksmith/prog/urweb/query-mono.log")?;
-                            let msg = format!(
-                                "query full exp dump: loc={}:{}\n{exp:#?}\n",
-                                loc.file, loc.first.line
-                            );
-                            std::io::Write::write_all(&mut file, msg.as_bytes())
-                        })();
-                    }
-                }
                 match x.as_str() {
                     "join" if vargs.len() >= 4 => {
                         // join has 2 constraint proof args + 2 xml args = 4 minimum
@@ -3560,6 +5420,18 @@ fn mono_exp(env: &Env, fm: &mut Fm, exp: &LocatedExpression, settings: &Settings
                             loc,
                         );
                     }
+                    "form" if vargs.len() >= 3 => {
+                        let n = vargs.len();
+                        return desugar_form(
+                            env,
+                            fm,
+                            settings,
+                            &loc,
+                            vargs[n - 3], // id
+                            vargs[n - 2], // class
+                            vargs[n - 1], // xml
+                        );
+                    }
                     "tag" if vargs.len() >= 10 => {
                         // vargs: [proof0, proof1, proof2, class, dynClass, style,
                         //         dynStyle, attrs, tagFn, xml]
@@ -3570,8 +5442,12 @@ fn mono_exp(env: &Env, fm: &mut Fm, exp: &LocatedExpression, settings: &Settings
                             fm,
                             settings,
                             &loc,
+                            &targs,
                             vargs[n - 7], // class  (css_class)
+                            vargs[n - 6], // dynClass
                             vargs[n - 5], // style  (css_style)
+                            vargs[n - 4], // dynStyle
+                            vargs[n - 3], // attrs
                             vargs[n - 2], // tag function (e.g. head{})
                             vargs[n - 1], // xml content
                         );
@@ -3589,10 +5465,29 @@ fn mono_exp(env: &Env, fm: &mut Fm, exp: &LocatedExpression, settings: &Settings
             match &exp.node {
                 CE::App(e1, e2) => {
                     let me1 = mono_exp(env, fm, e1, settings);
-                    let me2 = mono_exp(env, fm, e2, settings);
-                    Located::new(Exp::App(Box::new(me1), Box::new(me2)), loc)
+                    let synthetic_constraint_arg = is_synthetic_constraint_prim0(e2);
+                    let me2 = if synthetic_constraint_arg {
+                        unit_exp(&e2.span)
+                    } else {
+                        mono_exp(env, fm, e2, settings)
+                    };
+                    let out = match (&me1.node, synthetic_constraint_arg) {
+                        (Exp::Abs(_, _, _, body), _) => {
+                            crate::monomorphized::environment::sub_exp_in_exp(0, &me2, body)
+                        }
+                        (_, true) => me1,
+                        _ => Located::new(Exp::App(Box::new(me1), Box::new(me2)), loc.clone()),
+                    };
+                    if loc.file.ends_with("/lib/ur/top.ur")
+                        && loc.first.line == 156
+                        && loc.first.col == 11
+                        && should_log_once("mono-top-156-out")
+                    {
+                        eprintln!("mono top156 out = {:?}", out.node);
+                    }
+                    erase_synthetic_unit_abs(out)
                 }
-                _ => Located::new(Exp::Prim(Prim::Int(0)), loc),
+                _ => zero_exp(&loc, "app-nonapp-fallback"),
             }
         }
         CE::Abs(x, dom, ran, body) => {
@@ -3601,12 +5496,20 @@ fn mono_exp(env: &Env, fm: &mut Fm, exp: &LocatedExpression, settings: &Settings
             let mran = mono_type(env, &mut dtmap, ran);
             let env2 = env.clone().push_e_rel(dom.clone());
             let mbody = mono_exp(&env2, fm, body, settings);
-            Located::new(Exp::Abs(x.clone(), mdom, mran, Box::new(mbody)), loc)
+            erase_synthetic_unit_abs(Located::new(
+                Exp::Abs(x.clone(), mdom, mran, Box::new(mbody)),
+                loc,
+            ))
         }
 
         // Type application: ECApp (e, _) — strip the type arg, or desugar type class instances.
         CE::CApp(_, _) => {
-            let (head, targs) = peel_capp(exp);
+            let reduced = crate::core::local_reduction::reduce_exp(exp.clone());
+            if !matches!(reduced.node, CE::CApp(_, _)) {
+                return mono_exp(env, fm, &reduced, settings);
+            }
+
+            let (head, targs) = peel_capp(&reduced);
             let basis_head = match &head.node {
                 CE::Ffi(module, name) if module == "Basis" => Some(name.clone()),
                 CE::Named(n) => env
@@ -3623,10 +5526,11 @@ fn mono_exp(env: &Env, fm: &mut Fm, exp: &LocatedExpression, settings: &Settings
             mono_exp(env, fm, head, settings)
         }
 
-        // Type abstraction: strip completely (unsupported after specialize)
-        CE::CAbs(_, _, _) | CE::KAbs(_, _) | CE::KApp(_, _) => {
-            Located::new(Exp::Prim(Prim::Int(0)), loc)
-        }
+        // Type/kind abstraction: erase at runtime once any remaining local beta-reduction
+        // has had a chance to fire in surrounding CApp/KApp nodes.
+        CE::CAbs(_, _, body) => mono_exp(env, fm, body, settings),
+        CE::KAbs(_, body) => mono_exp(env, fm, body, settings),
+        CE::KApp(inner, _) => mono_exp(env, fm, inner, settings),
 
         // --------------- Records ---------------
         CE::Record(xets) => {
@@ -3648,9 +5552,108 @@ fn mono_exp(env: &Env, fm: &mut Fm, exp: &LocatedExpression, settings: &Settings
             let me = mono_exp(env, fm, e, settings);
             Located::new(Exp::Field(Box::new(me), mono_name(x)), loc)
         }
-        // Record concatenation/cut: not supported at Mono level (should be gone)
-        CE::Concat(_, _, _, _) | CE::Cut(_, _, _) | CE::CutMulti(_, _, _) => {
-            Located::new(Exp::Prim(Prim::Int(0)), loc)
+        CE::Concat(left, left_row, right, right_row) => {
+            let mleft = mono_exp(env, fm, left, settings);
+            let mright = mono_exp(env, fm, right, settings);
+            match (&mleft.node, &mright.node) {
+                (Exp::Record(left_fields), Exp::Record(right_fields)) => {
+                    let mut fields = left_fields.clone();
+                    fields.extend(right_fields.clone());
+                    fields.sort_by(|(a, _, _), (b, _, _)| a.cmp(b));
+                    Located::new(Exp::Record(fields), loc)
+                }
+                _ => {
+                    let mut dtmap = HashMap::new();
+                    let left_fields = mono_row_fields(env, &mut dtmap, left_row)
+                        .or_else(|| mono_record_fields_from_exp_type(env, &mut dtmap, left));
+                    let right_fields = mono_row_fields(env, &mut dtmap, right_row)
+                        .or_else(|| mono_record_fields_from_exp_type(env, &mut dtmap, right));
+
+                    match (left_fields, right_fields) {
+                        (Some(left_fields), Some(right_fields)) => {
+                            let mut fields = mono_project_row_parts(&mleft, &left_fields, &loc);
+                            fields.extend(mono_project_row_parts(&mright, &right_fields, &loc));
+                            fields.sort_by(|(a, _, _), (b, _, _)| a.cmp(b));
+                            Located::new(Exp::Record(fields), loc)
+                        }
+                        (Some(known_fields), None) => {
+                            let mut fields = mono_project_row_parts(&mleft, &known_fields, &loc);
+                            fields.sort_by(|(a, _, _), (b, _, _)| a.cmp(b));
+                            let known_record = Located::new(Exp::Record(fields), loc.clone());
+                            Located::new(Exp::App(Box::new(known_record), Box::new(mright)), loc)
+                        }
+                        (None, Some(known_fields)) => {
+                            let mut fields = mono_project_row_parts(&mright, &known_fields, &loc);
+                            fields.sort_by(|(a, _, _), (b, _, _)| a.cmp(b));
+                            let known_record = Located::new(Exp::Record(fields), loc.clone());
+                            Located::new(Exp::App(Box::new(known_record), Box::new(mleft)), loc)
+                        }
+                        (None, None) => zero_exp(&loc, "concat-both-rows-unknown"),
+                    }
+                }
+            }
+        }
+        CE::Cut(exp, name, meta) => {
+            let me = mono_exp(env, fm, exp, settings);
+            let field_name = mono_name(name);
+            if let Exp::Record(fields) = &me.node {
+                let filtered = fields
+                    .iter()
+                    .filter(|(name, _, _)| name != &field_name)
+                    .cloned()
+                    .collect();
+                return Located::new(Exp::Record(filtered), loc);
+            }
+
+            let mut dtmap = HashMap::new();
+            let rest_fields = mono_row_fields(env, &mut dtmap, &meta.rest).or_else(|| {
+                mono_record_fields_from_exp_type(env, &mut dtmap, exp).map(|fields| {
+                    fields
+                        .into_iter()
+                        .filter(|(name, _)| name != &field_name)
+                        .collect::<Vec<_>>()
+                })
+            });
+            let Some(rest_fields) = rest_fields else {
+                return zero_exp(&loc, "cut-rest-row-unknown");
+            };
+            let mut fields = mono_project_row_parts(&me, &rest_fields, &loc);
+            fields.sort_by(|(a, _, _), (b, _, _)| a.cmp(b));
+            Located::new(Exp::Record(fields), loc)
+        }
+        CE::CutMulti(exp, names, meta) => {
+            let me = mono_exp(env, fm, exp, settings);
+            let mut dtmap = HashMap::new();
+            let cut_names = mono_row_fields(env, &mut dtmap, names)
+                .map(|fields| fields.into_iter().map(|(name, _)| name).collect::<Vec<_>>());
+
+            if let (Exp::Record(fields), Some(cut_names)) = (&me.node, cut_names.as_ref()) {
+                let filtered = fields
+                    .iter()
+                    .filter(|(name, _, _)| !cut_names.contains(name))
+                    .cloned()
+                    .collect();
+                return Located::new(Exp::Record(filtered), loc);
+            }
+
+            let rest_fields = mono_row_fields(env, &mut dtmap, &meta.rest).or_else(|| {
+                mono_record_fields_from_exp_type(env, &mut dtmap, exp).map(|fields| {
+                    fields
+                        .into_iter()
+                        .filter(|(name, _)| {
+                            !cut_names
+                                .as_ref()
+                                .is_some_and(|cut_names| cut_names.contains(name))
+                        })
+                        .collect::<Vec<_>>()
+                })
+            });
+            let Some(rest_fields) = rest_fields else {
+                return zero_exp(&loc, "cutmulti-rest-row-unknown");
+            };
+            let mut fields = mono_project_row_parts(&me, &rest_fields, &loc);
+            fields.sort_by(|(a, _, _), (b, _, _)| a.cmp(b));
+            Located::new(Exp::Record(fields), loc)
         }
 
         // --------------- Case ---------------
@@ -3821,16 +5824,6 @@ fn mono_decl(
             let mut dtmap = HashMap::new();
             let me = mono_exp(&env, fm, e, settings);
             let mt = mono_type(&env, &mut dtmap, t);
-            if s.ends_with("/lib/ur/top.ur") && matches!(x.as_str(), "queryL" | "queryX'") {
-                let _ = (|| -> std::io::Result<()> {
-                    let mut file = std::fs::OpenOptions::new()
-                        .create(true)
-                        .append(true)
-                        .open("/Users/jacksmith/prog/urweb/query-mono.log")?;
-                    let msg = format!("mono decl val {x} @ {s}\n{me:#?}\n");
-                    std::io::Write::write_all(&mut file, msg.as_bytes())
-                })();
-            }
             let env2 = env.push_e_named(x.clone(), *n, t.clone(), s.clone());
             let mut out = fm.drain_decls(&loc);
             out.push(Located::new(
@@ -3842,6 +5835,19 @@ fn mono_decl(
 
         // Mutually recursive bindings
         CD::ValRec(vis) => {
+            let vis: Vec<_> = vis
+                .iter()
+                .map(|(x, n, t, e, s)| {
+                    (
+                        x.clone(),
+                        *n,
+                        t.clone(),
+                        maybe_transaction_core_exp(t, e, &loc).unwrap_or_else(|| e.clone()),
+                        s.clone(),
+                    )
+                })
+                .collect();
+
             let env2 = vis.iter().fold(env, |env, (x, n, t, _, s)| {
                 env.push_e_named(x.clone(), *n, t.clone(), s.clone())
             });
@@ -4274,6 +6280,7 @@ pub fn monoize(
     settings: &Settings,
     _errors: &mut crate::error_types::ErrorReporter,
 ) -> Option<mono::File> {
+    reset_monoize_caches();
     let mname = max_name_in_file(&file) + 1;
     let mut env = Env::empty();
     let mut fm = Fm::empty(mname);
@@ -4363,6 +6370,7 @@ pub fn monoize(
 mod tests {
     use super::*;
     use crate::core::Constructor as CC;
+    use crate::core::Expression as CE;
     use anyhow::Context as _; // .with_context() on Result in tests
 
     fn loc() -> Span {
@@ -4423,11 +6431,457 @@ mod tests {
     }
 
     #[test]
+    fn mono_type_reduces_mapped_unit_row_to_empty_record() -> anyhow::Result<()> {
+        let env = Env::empty();
+        let row_k = Located::new(
+            crate::core::Kind::Record(Box::new(Located::new(crate::core::Kind::Type, loc()))),
+            loc(),
+        );
+        let ran_k = Located::new(crate::core::Kind::Type, loc());
+        let mapped_empty_row = Located::new(
+            CC::TRecord(Box::new(Located::new(
+                CC::App(
+                    Box::new(Located::new(
+                        CC::App(
+                            Box::new(Located::new(
+                                CC::Map(Box::new(row_k.clone()), Box::new(ran_k)),
+                                loc(),
+                            )),
+                            Box::new(Located::new(
+                                CC::Abs(
+                                    "fields".into(),
+                                    Box::new(row_k),
+                                    Box::new(Located::new(
+                                        CC::TRecord(Box::new(Located::new(CC::Rel(0), loc()))),
+                                        loc(),
+                                    )),
+                                ),
+                                loc(),
+                            )),
+                        ),
+                        loc(),
+                    )),
+                    Box::new(Located::new(CC::Unit, loc())),
+                ),
+                loc(),
+            ))),
+            loc(),
+        );
+
+        let mono = mono_type(&env, &mut HashMap::new(), &mapped_empty_row);
+        assert!(matches!(&mono.node, Typ::Record(fields) if fields.is_empty()));
+        Ok(())
+    }
+
+    #[test]
+    fn mono_type_preserves_bare_kind_type_record_fields() -> anyhow::Result<()> {
+        let env = Env::empty();
+        let bare_record = Located::new(
+            CC::Record(
+                Box::new(Located::new(crate::core::Kind::Type, loc())),
+                vec![(
+                    Located::new(CC::Name("Room".into()), loc()),
+                    Located::new(CC::Ffi("Basis".into(), "int".into()), loc()),
+                )],
+            ),
+            loc(),
+        );
+
+        let mono = mono_type(&env, &mut HashMap::new(), &bare_record);
+        assert!(matches!(
+            &mono.node,
+            Typ::Record(fields)
+                if fields.len() == 1
+                    && fields[0].0 == "Room"
+                    && matches!(fields[0].1.node, Typ::Ffi(ref module, ref name) if module == "Basis" && name == "int")
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn mono_type_normalizes_nested_row_map_in_record_field() -> anyhow::Result<()> {
+        let env = Env::empty();
+        let row_kind = Located::new(
+            crate::core::Kind::Record(Box::new(Located::new(crate::core::Kind::Type, loc()))),
+            loc(),
+        );
+        let type_kind = Located::new(crate::core::Kind::Type, loc());
+        let pack_row = Located::new(
+            CC::Abs(
+                "fields".into(),
+                Box::new(row_kind.clone()),
+                Box::new(Located::new(
+                    CC::TRecord(Box::new(Located::new(CC::Rel(0), loc()))),
+                    loc(),
+                )),
+            ),
+            loc(),
+        );
+        let inner_row = Located::new(
+            CC::Record(
+                Box::new(Located::new(crate::core::Kind::Type, loc())),
+                vec![(
+                    Located::new(CC::Name("Room".into()), loc()),
+                    Located::new(CC::Ffi("Basis".into(), "int".into()), loc()),
+                )],
+            ),
+            loc(),
+        );
+        let mapped_inner_row = Located::new(
+            CC::App(
+                Box::new(Located::new(
+                    CC::App(
+                        Box::new(Located::new(
+                            CC::Map(Box::new(row_kind), Box::new(type_kind)),
+                            loc(),
+                        )),
+                        Box::new(pack_row),
+                    ),
+                    loc(),
+                )),
+                Box::new(inner_row),
+            ),
+            loc(),
+        );
+        let outer_record = Located::new(
+            CC::TRecord(Box::new(Located::new(
+                CC::Record(
+                    Box::new(Located::new(crate::core::Kind::Type, loc())),
+                    vec![(
+                        Located::new(CC::Name("T".into()), loc()),
+                        mapped_inner_row.clone(),
+                    )],
+                ),
+                loc(),
+            ))),
+            loc(),
+        );
+
+        let _normalized_inner = normalize_constructor_for_mono(&env, &mapped_inner_row);
+        let mono = mono_type(&env, &mut HashMap::new(), &outer_record);
+        assert!(matches!(
+            &mono.node,
+            Typ::Record(fields)
+                if fields.len() == 1
+                    && fields[0].0 == "T"
+                    && matches!(
+                        fields[0].1.node,
+                        Typ::Record(ref inner_fields)
+                            if inner_fields.len() == 1
+                                && inner_fields[0].0 == "Room"
+                                && matches!(inner_fields[0].1.node, Typ::Ffi(ref module, ref name) if module == "Basis" && name == "int")
+                    )
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn mono_type_sql_injectable_is_serializer_function() -> anyhow::Result<()> {
+        let env = Env::empty();
+        let sql_injectable_int = Located::new(
+            CC::App(
+                Box::new(Located::new(
+                    CC::Ffi("Basis".into(), "sql_injectable".into()),
+                    loc(),
+                )),
+                Box::new(Located::new(CC::Ffi("Basis".into(), "int".into()), loc())),
+            ),
+            loc(),
+        );
+
+        let mono = mono_type(&env, &mut HashMap::new(), &sql_injectable_int);
+        assert!(matches!(
+            &mono.node,
+            Typ::Fun(dom, ran)
+                if matches!(dom.node, Typ::Ffi(ref module, ref name) if module == "Basis" && name == "int")
+                    && matches!(ran.node, Typ::Ffi(ref module, ref name) if module == "Basis" && name == "string")
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn mono_type_sql_injectable_prim_is_serializer_function() -> anyhow::Result<()> {
+        let env = Env::empty();
+        let sql_injectable_prim_int = Located::new(
+            CC::App(
+                Box::new(Located::new(
+                    CC::Ffi("Basis".into(), "sql_injectable_prim".into()),
+                    loc(),
+                )),
+                Box::new(Located::new(CC::Ffi("Basis".into(), "int".into()), loc())),
+            ),
+            loc(),
+        );
+
+        let mono = mono_type(&env, &mut HashMap::new(), &sql_injectable_prim_int);
+        assert!(matches!(
+            &mono.node,
+            Typ::Fun(dom, ran)
+                if matches!(dom.node, Typ::Ffi(ref module, ref name) if module == "Basis" && name == "int")
+                    && matches!(ran.node, Typ::Ffi(ref module, ref name) if module == "Basis" && name == "string")
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn mono_type_trigrammable_returns_unit_record() -> anyhow::Result<()> {
+        let env = Env::empty();
+        let trigrammable_string = Located::new(
+            CC::App(
+                Box::new(Located::new(
+                    CC::Ffi("Basis".into(), "trigrammable".into()),
+                    loc(),
+                )),
+                Box::new(Located::new(
+                    CC::Ffi("Basis".into(), "string".into()),
+                    loc(),
+                )),
+            ),
+            loc(),
+        );
+
+        let mono = mono_type(&env, &mut HashMap::new(), &trigrammable_string);
+        assert!(matches!(
+            &mono.node,
+            Typ::Fun(dom, ran)
+                if matches!(dom.node, Typ::Ffi(ref module, ref name) if module == "Basis" && name == "string")
+                    && matches!(ran.node, Typ::Record(ref fields) if fields.is_empty())
+        ));
+        Ok(())
+    }
+
+    #[test]
     fn fm_fresh_name_increments() -> anyhow::Result<()> {
         // test returns Result to allow ? propagation
         let mut fm = Fm::empty(10);
         assert_eq!(fm.fresh_name(), 10);
         assert_eq!(fm.fresh_name(), 11);
         Ok(()) // return success to the test harness
+    }
+
+    #[test]
+    fn mono_type_row_flattens_concat_rows() -> anyhow::Result<()> {
+        let env = Env::empty();
+        let row = Located::new(
+            CC::Concat(
+                Box::new(Located::new(
+                    CC::Record(
+                        Box::new(Located::new(crate::core::Kind::Type, loc())),
+                        vec![(
+                            Located::new(CC::Name("A".into()), loc()),
+                            Located::new(CC::Ffi("Basis".into(), "int".into()), loc()),
+                        )],
+                    ),
+                    loc(),
+                )),
+                Box::new(Located::new(
+                    CC::Record(
+                        Box::new(Located::new(crate::core::Kind::Type, loc())),
+                        vec![(
+                            Located::new(CC::Name("B".into()), loc()),
+                            Located::new(CC::Ffi("Basis".into(), "string".into()), loc()),
+                        )],
+                    ),
+                    loc(),
+                )),
+            ),
+            loc(),
+        );
+
+        let mono = mono_type_row(&env, &mut HashMap::new(), &row, &loc());
+        assert!(matches!(
+            &mono.node,
+            Typ::Record(fields)
+                if fields.len() == 2
+                    && fields[0].0 == "A"
+                    && fields[1].0 == "B"
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn mono_exp_concat_of_record_literals_merges_fields() -> anyhow::Result<()> {
+        let env = Env::empty();
+        let settings = Settings::default();
+        let mut fm = Fm::empty(0);
+        let int_c = Located::new(CC::Ffi("Basis".into(), "int".into()), loc());
+        let string_c = Located::new(CC::Ffi("Basis".into(), "string".into()), loc());
+        let left = Located::new(
+            CE::Record(vec![(
+                Located::new(CC::Name("A".into()), loc()),
+                Located::new(CE::Prim(Prim::Int(1)), loc()),
+                int_c.clone(),
+            )]),
+            loc(),
+        );
+        let right = Located::new(
+            CE::Record(vec![(
+                Located::new(CC::Name("B".into()), loc()),
+                Located::new(
+                    CE::Prim(Prim::String(
+                        crate::primitives::StringMode::Normal,
+                        "x".into(),
+                    )),
+                    loc(),
+                ),
+                string_c.clone(),
+            )]),
+            loc(),
+        );
+        let left_row = Located::new(
+            CC::Record(
+                Box::new(Located::new(crate::core::Kind::Type, loc())),
+                vec![(Located::new(CC::Name("A".into()), loc()), int_c)],
+            ),
+            loc(),
+        );
+        let right_row = Located::new(
+            CC::Record(
+                Box::new(Located::new(crate::core::Kind::Type, loc())),
+                vec![(Located::new(CC::Name("B".into()), loc()), string_c)],
+            ),
+            loc(),
+        );
+        let concat = Located::new(
+            CE::Concat(Box::new(left), left_row, Box::new(right), right_row),
+            loc(),
+        );
+
+        let mono = mono_exp(&env, &mut fm, &concat, &settings);
+        assert!(matches!(
+            &mono.node,
+            Exp::Record(fields)
+                if fields.len() == 2
+                    && fields[0].0 == "A"
+                    && fields[1].0 == "B"
+                    && matches!(fields[0].1.node, Exp::Prim(Prim::Int(1)))
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn mono_exp_cut_uses_rest_row_when_input_is_not_literal() -> anyhow::Result<()> {
+        let env = Env::empty();
+        let settings = Settings::default();
+        let mut fm = Fm::empty(0);
+        let int_c = Located::new(CC::Ffi("Basis".into(), "int".into()), loc());
+        let string_c = Located::new(CC::Ffi("Basis".into(), "string".into()), loc());
+        let cut = Located::new(
+            CE::Cut(
+                Box::new(Located::new(CE::Rel(0), loc())),
+                Located::new(CC::Name("A".into()), loc()),
+                crate::core::FieldMeta {
+                    field: int_c.clone(),
+                    rest: Located::new(
+                        CC::Record(
+                            Box::new(Located::new(crate::core::Kind::Type, loc())),
+                            vec![(Located::new(CC::Name("B".into()), loc()), string_c.clone())],
+                        ),
+                        loc(),
+                    ),
+                },
+            ),
+            loc(),
+        );
+
+        let mono = mono_exp(&env, &mut fm, &cut, &settings);
+        assert!(matches!(
+            &mono.node,
+            Exp::Record(fields)
+                if fields.len() == 1
+                    && fields[0].0 == "B"
+                    && matches!(fields[0].1.node, Exp::Field(_, ref name) if name == "B")
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn mono_exp_cut_multi_uses_rest_row_when_input_is_not_literal() -> anyhow::Result<()> {
+        let env = Env::empty();
+        let settings = Settings::default();
+        let mut fm = Fm::empty(0);
+        let int_c = Located::new(CC::Ffi("Basis".into(), "int".into()), loc());
+        let string_c = Located::new(CC::Ffi("Basis".into(), "string".into()), loc());
+        let cut_multi = Located::new(
+            CE::CutMulti(
+                Box::new(Located::new(CE::Rel(0), loc())),
+                Located::new(
+                    CC::Record(
+                        Box::new(Located::new(crate::core::Kind::Type, loc())),
+                        vec![(Located::new(CC::Name("A".into()), loc()), int_c.clone())],
+                    ),
+                    loc(),
+                ),
+                crate::core::RestMeta {
+                    rest: Located::new(
+                        CC::Record(
+                            Box::new(Located::new(crate::core::Kind::Type, loc())),
+                            vec![(Located::new(CC::Name("B".into()), loc()), string_c.clone())],
+                        ),
+                        loc(),
+                    ),
+                },
+            ),
+            loc(),
+        );
+
+        let mono = mono_exp(&env, &mut fm, &cut_multi, &settings);
+        assert!(matches!(
+            &mono.node,
+            Exp::Record(fields)
+                if fields.len() == 1
+                    && fields[0].0 == "B"
+                    && matches!(fields[0].1.node, Exp::Field(_, ref name) if name == "B")
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn mono_exp_reduces_local_constructor_application_before_erasure() -> anyhow::Result<()> {
+        let env = Env::empty();
+        let settings = Settings::default();
+        let mut fm = Fm::empty(0);
+        let exp = Located::new(
+            CE::CApp(
+                Box::new(Located::new(
+                    CE::CAbs(
+                        "t".into(),
+                        Box::new(Located::new(crate::core::Kind::Type, loc())),
+                        Box::new(Located::new(CE::Prim(Prim::Int(7)), loc())),
+                    ),
+                    loc(),
+                )),
+                Located::new(CC::Ffi("Basis".into(), "int".into()), loc()),
+            ),
+            loc(),
+        );
+
+        let mono = mono_exp(&env, &mut fm, &exp, &settings);
+        assert!(matches!(mono.node, Exp::Prim(Prim::Int(7))));
+        Ok(())
+    }
+
+    #[test]
+    fn mono_exp_erases_kind_application_without_dummy_prim() -> anyhow::Result<()> {
+        let env = Env::empty();
+        let settings = Settings::default();
+        let mut fm = Fm::empty(0);
+        let exp = Located::new(
+            CE::KApp(
+                Box::new(Located::new(
+                    CE::KAbs(
+                        "k".into(),
+                        Box::new(Located::new(CE::Prim(Prim::Int(9)), loc())),
+                    ),
+                    loc(),
+                )),
+                Box::new(Located::new(crate::core::Kind::Type, loc())),
+            ),
+            loc(),
+        );
+
+        let mono = mono_exp(&env, &mut fm, &exp, &settings);
+        assert!(matches!(mono.node, Exp::Prim(Prim::Int(9))));
+        Ok(())
     }
 }

@@ -805,6 +805,7 @@ fn position_of(
 }
 
 /// Remap free kind variables in `k` to use positions in `kfv`.
+#[allow(dead_code)]
 fn squish_k(kfv: &[usize], k: LocatedKind, errors: &mut ErrorReporter) -> LocatedKind {
     squish_k_bound(0, kfv, k, errors)
 }

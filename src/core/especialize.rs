@@ -18,7 +18,8 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use crate::compiler_diagnostics::report_core_recovery;
 use crate::core::dead_code_elimination::shake;
 use crate::core::environment::pat_binds_n;
-use crate::core::local_reduction::reduce_with_errors;
+use crate::core::local_reduction::{reduce_con, reduce_with_errors};
+use crate::core::unpoly::instantiate_cargs;
 use crate::core::untangling::untangle;
 use crate::core::utilities::constructor as con_util;
 use crate::core::utilities::file as file_util;
@@ -545,29 +546,48 @@ fn function_inside(known: &HashSet<usize>, c: &LocatedConstructor) -> bool {
 // get_app — unwrap EApp spine into (named_fn_id, [args])
 // ---------------------------------------------------------------------------
 
-/// Unwrap `EApp(EApp(ENamed f, x1), x2)` into `Some((f, [x1, x2]))`.
-/// Returns `None` if the head is not `ENamed`, or if there are no args.
-fn get_app_inner(e: &LocatedExpression, args: &mut Vec<LocatedExpression>) -> Option<usize> {
+struct AppSpine {
+    function_id: usize,
+    constructor_args: Vec<LocatedConstructor>,
+    value_args: Vec<LocatedExpression>,
+}
+
+/// Unwrap a mixed application spine like `((f [T1]) [T2]) x1 x2` into
+/// `Some((f, [T1, T2], [x1, x2]))`.
+/// Returns `None` if the head is not `Named`, or if there are no value args.
+fn get_app_inner(
+    e: &LocatedExpression,
+    constructor_args: &mut Vec<LocatedConstructor>,
+    value_args: &mut Vec<LocatedExpression>,
+) -> Option<usize> {
     match &e.node {
         Expression::Named(f) => Some(*f),
         Expression::App(f, a) => {
-            let id = get_app_inner(f, args)?;
-            args.push(*a.clone());
+            let id = get_app_inner(f, constructor_args, value_args)?;
+            value_args.push(*a.clone());
+            Some(id)
+        }
+        Expression::CApp(f, c) => {
+            let id = get_app_inner(f, constructor_args, value_args)?;
+            constructor_args.push(c.clone());
             Some(id)
         }
         _ => None,
     }
 }
 
-fn get_app(e: &LocatedExpression) -> Option<(usize, Vec<LocatedExpression>)> {
-    let mut args = vec![];
-    let id = get_app_inner(e, &mut args)?;
-    if args.is_empty() {
+fn get_app(e: &LocatedExpression) -> Option<AppSpine> {
+    let mut constructor_args = vec![];
+    let mut value_args = vec![];
+    let function_id = get_app_inner(e, &mut constructor_args, &mut value_args)?;
+    if value_args.is_empty() {
         return None;
     }
-    // Args are collected innermost-first; reverse to get outermost-first.
-    args.reverse();
-    Some((id, args))
+    Some(AppSpine {
+        function_id,
+        constructor_args,
+        value_args,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -607,11 +627,11 @@ fn calc_const_args(enclosing: &HashSet<usize>, e: &LocatedExpression) -> usize {
                 let def = || ca(enclosing, depth, e1).min(ca(enclosing, depth, e2));
                 match get_app(e) {
                     None => def(),
-                    Some((f, args)) => {
-                        if !enclosing.contains(&f) {
+                    Some(app) => {
+                        if !enclosing.contains(&app.function_id) {
                             def()
                         } else {
-                            visit_args(enclosing, depth, 0, &args)
+                            visit_args(enclosing, depth, 0, &app.value_args)
                         }
                     }
                 }
@@ -747,6 +767,7 @@ fn cmp_exp_node(a: &Expression, b: &Expression) -> Ordering {
 #[derive(Clone)]
 struct CacheKey {
     var_types: Vec<LocatedConstructor>,
+    constructor_args: Vec<LocatedConstructor>,
     spec_args: Vec<LocatedExpression>,
 }
 
@@ -770,6 +791,20 @@ impl Ord for CacheKey {
         n1.cmp(&n2)
             .then_with(|| {
                 for (a, b) in self.var_types.iter().zip(&other.var_types) {
+                    let o = con_util::compare(a, b);
+                    if o != Ordering::Equal {
+                        return o;
+                    }
+                }
+                Ordering::Equal
+            })
+            .then_with(|| {
+                let k1 = self.constructor_args.len();
+                let k2 = other.constructor_args.len();
+                k1.cmp(&k2)
+            })
+            .then_with(|| {
+                for (a, b) in self.constructor_args.iter().zip(&other.constructor_args) {
                     let o = con_util::compare(a, b);
                     if o != Ordering::Equal {
                         return o;
@@ -903,12 +938,19 @@ fn rewrite_exp(
 
     // Check if this is an application of a known specialized function.
     match get_app(&e) {
-        Some((f, xs)) if st.funcs.contains_key(&f) => {
+        Some(AppSpine {
+            function_id: f,
+            constructor_args,
+            value_args: xs,
+        }) if st.funcs.contains_key(&f) => {
             // Rewrite all args first.
             let xs: Vec<LocatedExpression> = xs
                 .into_iter()
                 .map(|x| rewrite_exp(env, x, known, st, errors))
                 .collect();
+
+            let constructor_args: Vec<LocatedConstructor> =
+                constructor_args.into_iter().map(reduce_con).collect();
 
             let Some(fi) = st.funcs.get(&f).cloned() else {
                 report_core_recovery(
@@ -923,7 +965,11 @@ fn rewrite_exp(
                 return rewrite_exp_default(env, e, known, st, errors);
             };
             let const_args = fi.const_args;
-            let typ = fi.typ.clone();
+            let Some((typ, body)) =
+                instantiate_cargs(fi.typ.clone(), fi.body.clone(), &constructor_args)
+            else {
+                return rewrite_exp_default(env, e, known, st, errors);
+            };
 
             let old_xs = xs.clone();
 
@@ -951,6 +997,7 @@ fn rewrite_exp(
 
             let key = CacheKey {
                 var_types: vts.clone(),
+                constructor_args: constructor_args.clone(),
                 spec_args: fxs_prime.clone(),
             };
 
@@ -995,12 +1042,10 @@ fn rewrite_exp(
             st.specialized.insert(f_prime);
 
             // Substitute fxs_prime into the body.
-            let body = fi.body.clone();
-            let typ_fi = fi.typ.clone();
             let name = fi.name.clone();
             let tag = fi.tag.clone();
 
-            let sub_result = sub_body(body, typ_fi, &fxs_prime);
+            let sub_result = sub_body(body, typ, &fxs_prime);
             let Some((mut new_body, mut new_typ)) = sub_result else {
                 return rewrite_exp_default(env, e, known, st, errors);
             };
@@ -1647,12 +1692,13 @@ mod tests {
         let result = get_app(&e);
         assert!(result.is_some());
         // Unwrap the get_app result; panic with a message if it is None.
-        let (f, args) = match result {
+        let app = match result {
             Some(v) => v,
             None => panic!("get_app returned None unexpectedly"),
         };
-        assert_eq!(f, 1);
-        assert_eq!(args.len(), 1);
+        assert_eq!(app.function_id, 1);
+        assert_eq!(app.value_args.len(), 1);
+        assert!(app.constructor_args.is_empty());
     }
 
     /// get_app returns None for bare Named (no args).
@@ -1660,6 +1706,56 @@ mod tests {
     fn test_get_app_no_args() {
         let e = dummy(Expression::Named(1));
         assert!(get_app(&e).is_none());
+    }
+
+    #[test]
+    fn test_get_app_preserves_value_application_order() {
+        let x = dummy(Expression::Named(10));
+        let y = dummy(Expression::Named(20));
+        let e = dummy(Expression::App(
+            Box::new(dummy(Expression::App(
+                Box::new(dummy(Expression::Named(1))),
+                Box::new(x),
+            ))),
+            Box::new(y),
+        ));
+
+        let app = get_app(&e).expect("expected application spine");
+        assert_eq!(app.function_id, 1);
+        assert_eq!(app.value_args.len(), 2);
+        assert!(matches!(app.value_args[0].node, Expression::Named(10)));
+        assert!(matches!(app.value_args[1].node, Expression::Named(20)));
+    }
+
+    #[test]
+    fn test_get_app_collects_constructor_args_before_value_args() {
+        let t1 = dummy(Constructor::Named(11));
+        let t2 = dummy(Constructor::Named(22));
+        let arg = dummy(Expression::Named(33));
+        let e = dummy(Expression::App(
+            Box::new(dummy(Expression::CApp(
+                Box::new(dummy(Expression::CApp(
+                    Box::new(dummy(Expression::Named(1))),
+                    t1,
+                ))),
+                t2,
+            ))),
+            Box::new(arg),
+        ));
+
+        let app = get_app(&e).expect("expected mixed application spine");
+        assert_eq!(app.function_id, 1);
+        assert_eq!(app.constructor_args.len(), 2);
+        assert!(matches!(
+            app.constructor_args[0].node,
+            Constructor::Named(11)
+        ));
+        assert!(matches!(
+            app.constructor_args[1].node,
+            Constructor::Named(22)
+        ));
+        assert_eq!(app.value_args.len(), 1);
+        assert!(matches!(app.value_args[0].node, Expression::Named(33)));
     }
 
     // --- Plan: Catch Missed Mutants - especialize ---

@@ -655,6 +655,7 @@ pub(crate) fn simplify_con(
                     if let Constructor::Map(_, ran) = &map_f.node {
                         let ran = *ran.clone();
                         match &simplified_argument.node {
+                            Constructor::Unit => mk(Constructor::Record(Box::new(ran), vec![])),
                             Constructor::Record(_, fields) if fields.is_empty() => {
                                 mk(Constructor::Record(Box::new(ran), vec![]))
                             }
@@ -1896,6 +1897,37 @@ mod tests {
             panic!("expected Record, got {:?}", out.node)
         };
         assert_eq!(fields.len(), 2);
+    }
+
+    #[test]
+    fn reduce_con_map_applied_to_unit_yields_empty_record() {
+        let row_k = Located::dummy(crate::core::Kind::Record(Box::new(Located::dummy(
+            crate::core::Kind::Type,
+        ))));
+        let ran_k = Located::dummy(crate::core::Kind::Type);
+        let mapper = Located::dummy(Constructor::Abs(
+            "fields".into(),
+            Box::new(row_k.clone()),
+            Box::new(Located::dummy(Constructor::TRecord(Box::new(
+                Located::dummy(Constructor::Rel(0)),
+            )))),
+        ));
+        let app = Located::dummy(Constructor::App(
+            Box::new(Located::dummy(Constructor::App(
+                Box::new(Located::dummy(Constructor::Map(
+                    Box::new(row_k),
+                    Box::new(ran_k.clone()),
+                ))),
+                Box::new(mapper),
+            ))),
+            Box::new(Located::dummy(Constructor::Unit)),
+        ));
+        let out = reduce_con(app);
+        let Constructor::Record(kind, fields) = out.node else {
+            panic!("expected Record, got {:?}", out)
+        };
+        assert!(fields.is_empty());
+        assert!(matches!(kind.node, crate::core::Kind::Type));
     }
 
     #[test]

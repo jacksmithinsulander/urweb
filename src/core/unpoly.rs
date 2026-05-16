@@ -484,6 +484,20 @@ fn trim_iter(
     }
 }
 
+/// Instantiate a polymorphic function body/type pair with closed constructor
+/// arguments, peeling matching outer `TCFun` / `CAbs` layers.
+pub fn instantiate_cargs(
+    typ: LocatedConstructor,
+    body: LocatedExpression,
+    cargs: &[LocatedConstructor],
+) -> Option<(LocatedConstructor, LocatedExpression)> {
+    if cargs.iter().any(is_open) {
+        return None;
+    }
+
+    trim_iter(typ, body, cargs)
+}
+
 // ---------------------------------------------------------------------------
 // Irregularity check for mutual recursion
 // ---------------------------------------------------------------------------

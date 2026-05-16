@@ -99,7 +99,7 @@ sqlite3 *sqlite;
 sqlite3_stmt *stmt;
 uw_conn *conn;
 
-if (sqlite3_open("/tmp/urweb-chat-boot.db", &sqlite) != SQLITE_OK) uw_error(ctx, FATAL, "Can't open SQLite database.");
+if (sqlite3_open("/tmp/urweb-chat-rust.db", &sqlite) != SQLITE_OK) uw_error(ctx, FATAL, "Can't open SQLite database.");
 
 if (sqlite3_exec(sqlite, "PRAGMA foreign_keys = ON", NULL, NULL, NULL) != SQLITE_OK)
 uw_error(ctx, FATAL, "Can't enable foreign_keys for SQLite database");
@@ -182,11 +182,11 @@ static inline uw_Basis_string uw_Basis_attrOptional(
 }
 
 struct __uws_2 {
-struct __uws_1 __uwf_T;
+uw_Basis_channel __uwf_Channel;
 };
 
 struct __uws_3 {
-uw_unit __uwf_T;
+struct __uws_2 __uwf_T;
 };
 
 struct __uws_4 {
@@ -210,7 +210,7 @@ static uw_unit __uwn__speak_1844(uw_context, uw_Basis_int, uw_Basis_string, uw_u
 static uw_unit __uwn_wrap_main_1851(uw_context, uw_unit, uw_unit);
 
 struct __uws_1 {
-uw_Basis_channel __uwf_Channel;
+uw_unit __uwf_T;
 };
 
 static uw_unit __uwn_initializer_1853(uw_context ctx, uw_unit __uwr___0) {
@@ -236,7 +236,7 @@ uw_unit* __uwr_r_3 = (({
 uw_unit* acc = NULL;
 int dummy = (uw_begin_region(ctx), 0);
 uw_ensure_transaction(ctx);
-char *query = 0LL;
+char *query = 0;
 uw_conn *conn = uw_get_db(ctx);
 sqlite3_stmt *stmt;
 if (sqlite3_prepare_v2(conn->conn, query, -1, &stmt, NULL) != SQLITE_OK) uw_error(ctx, FATAL, "Error preparing statement: %s<br />%s", query, sqlite3_errmsg(conn->conn));
@@ -263,26 +263,39 @@ if (r != SQLITE_DONE) uw_error(ctx, FATAL, "query: query step failed: %s<br />%s
 uw_pop_cleanup(ctx);
 acc;
 }));
-(({
-uw_unit acc = 0;
-int dummy = (uw_begin_region(ctx), 0);
-uw_ensure_transaction(ctx);
-char *query = ({
-struct __uws_3* disc = __uwr_r_3;
-struct __uws_3
+({
+uw_Basis_int __uwr_r_4 = ({
+struct __uws_1* disc = __uwr_r_3;
+
 (disc == NULL) ? ({
-struct __uws_3 tmp;
+struct __uws_1 tmp;
 uw_error(ctx, FATAL, "%s", "Query returned no rows");
 tmp;
 }) : (disc != NULL) && 1 ? ({
-struct __uws_3 __uwr_r_4 = (*disc);
+struct __uws_1 __uwr_r_4 = (*disc);
 __uwr_r_4;
 }) : ({
-struct __uws_3 tmp;
+struct __uws_1 tmp;
 uw_error(ctx, FATAL, "Ur/Web runtime: case/of exhausted — none of the patterns matched this value.");
 tmp;
 });
 })(ctx, 0).__uwf_T.__uwf_Room;
+(({
+uw_unit acc = 0;
+int dummy = (uw_begin_region(ctx), 0);
+uw_ensure_transaction(ctx);
+char *query = uw_Basis_mstrcat(ctx, "SELECT T_T.uw_channel FROM uw_Chat_Room_t AS T_T WHERE (T_T.uw_id = ", __uwr_r_4, ")", ({
+uw_Basis_string disc = "1";
+
+(!strcmp(disc, "1")) ? "" : 1 ? ({
+uw_Basis_string __uwr_frag_5 = disc;
+uw_Basis_strcat(ctx, " HAVING ", __uwr_frag_5);
+}) : ({
+uw_Basis_string tmp;
+uw_error(ctx, FATAL, "Ur/Web runtime: case/of exhausted — none of the patterns matched this value.");
+tmp;
+});
+}), NULL);
 uw_conn *conn = uw_get_db(ctx);
 sqlite3_stmt *stmt;
 if (sqlite3_prepare_v2(conn->conn, query, -1, &stmt, NULL) != SQLITE_OK) uw_error(ctx, FATAL, "Error preparing statement: %s<br />%s", query, sqlite3_errmsg(conn->conn));
@@ -291,38 +304,16 @@ int r;
 sqlite3_reset(stmt);
 uw_end_region(ctx);
 while ((r = sqlite3_step(stmt)) == SQLITE_ROW) {
-struct __uws_2 __uwr_r_4;
-uw_unit __uwr_acc_5 = acc;
+struct __uws_3 __uwr_r_5;
+uw_unit __uwr_acc_6 = acc;
 
-__uwr_r_4.__uwf_T.__uwf_Channel = (sqlite3_column_type(stmt, 0) == SQLITE_NULL ? ({ uw_Basis_channel tmp; uw_error(ctx, FATAL, "query: Unexpectedly NULL field #0"); tmp; }) : ({
+__uwr_r_5.__uwf_T.__uwf_Channel = (sqlite3_column_type(stmt, 0) == SQLITE_NULL ? ({ uw_Basis_channel tmp; uw_error(ctx, FATAL, "query: Unexpectedly NULL field #0"); tmp; }) : ({
 sqlite3_int64 n = sqlite3_column_int64(stmt, 0);
 uw_Basis_channel ch = {n >> 32, n & 0xFFFFFFFF};
 ch;
 }));
 
-acc = uw_Basis_mstrcat(ctx, "SELECT * FROM uw_Chat_Room_t AS T_T WHERE (T_T.uw_id = ", __uwr_id_0, ")", ({
-uw_Basis_string disc = uw_Basis_bool_True;
-uw_Basis_string
-(!strcmp(disc, "1")) ? "" : 1 ? ({
-uw_Basis_string __uwr_h_6 = disc;
-uw_Basis_strcat(ctx, " HAVING ", __uwr_h_6);
-}) : ({
-uw_Basis_string tmp;
-uw_error(ctx, FATAL, "Ur/Web runtime: case/of exhausted — none of the patterns matched this value.");
-tmp;
-});
-}), ({
-uw_Basis_string disc = "";
-uw_Basis_string
-(!strcmp(disc, "")) ? "" : 1 ? ({
-uw_Basis_string __uwr_orderby_6 = disc;
-uw_Basis_strcat(ctx, " ORDER BY ", __uwr_orderby_6);
-}) : ({
-uw_Basis_string tmp;
-uw_error(ctx, FATAL, "Ur/Web runtime: case/of exhausted — none of the patterns matched this value.");
-tmp;
-});
-}), NULL)(ctx, __uwr_r_4, 0);
+acc = 0(ctx, __uwr_r_5, 0);
 }
 if (r == SQLITE_BUSY) {
 sleep(1);
@@ -331,7 +322,8 @@ uw_error(ctx, UNLIMITED_RETRY, "Database is busy");
 if (r != SQLITE_DONE) uw_error(ctx, FATAL, "query: query step failed: %s<br />%s", query, sqlite3_errmsg(conn->conn));
 uw_pop_cleanup(ctx);
 acc;
-}))(ctx, 0);
+}));
+});
 }));
 }
 
@@ -341,7 +333,29 @@ uw_Basis_string __uwr_r_2 = (({
 uw_Basis_string acc = "";
 int dummy = (uw_begin_region(ctx), 0);
 uw_ensure_transaction(ctx);
-char *query = 0;
+char *query = uw_Basis_mstrcat(ctx, "SELECT T_T.uw_id, T_T.uw_title, T_T.uw_room FROM uw_Chat_t AS T_T", ({
+uw_Basis_string disc = "1";
+
+(!strcmp(disc, "1")) ? "" : 1 ? ({
+uw_Basis_string __uwr_frag_2 = disc;
+uw_Basis_strcat(ctx, " WHERE ", __uwr_frag_2);
+}) : ({
+uw_Basis_string tmp;
+uw_error(ctx, FATAL, "Ur/Web runtime: case/of exhausted — none of the patterns matched this value.");
+tmp;
+});
+}), ({
+uw_Basis_string disc = "1";
+
+(!strcmp(disc, "1")) ? "" : 1 ? ({
+uw_Basis_string __uwr_frag_2 = disc;
+uw_Basis_strcat(ctx, " HAVING ", __uwr_frag_2);
+}) : ({
+uw_Basis_string tmp;
+uw_error(ctx, FATAL, "Ur/Web runtime: case/of exhausted — none of the patterns matched this value.");
+tmp;
+});
+}), NULL);
 uw_conn *conn = uw_get_db(ctx);
 sqlite3_stmt *stmt;
 if (sqlite3_prepare_v2(conn->conn, query, -1, &stmt, NULL) != SQLITE_OK) uw_error(ctx, FATAL, "Error preparing statement: %s<br />%s", query, sqlite3_errmsg(conn->conn));
@@ -357,40 +371,7 @@ __uwr_r_2.__uwf_T.__uwf_Id = (sqlite3_column_type(stmt, 0) == SQLITE_NULL ? ({ u
 __uwr_r_2.__uwf_T.__uwf_Room = (sqlite3_column_type(stmt, 1) == SQLITE_NULL ? ({ uw_Basis_int tmp; uw_error(ctx, FATAL, "query: Unexpectedly NULL field #1"); tmp; }) : sqlite3_column_int64(stmt, 1));
 __uwr_r_2.__uwf_T.__uwf_Title = (sqlite3_column_type(stmt, 2) == SQLITE_NULL ? ({ uw_Basis_string tmp; uw_error(ctx, FATAL, "query: Unexpectedly NULL field #2"); tmp; }) : uw_strdup(ctx, (uw_Basis_string)sqlite3_column_text(stmt, 2)));
 
-acc = uw_Basis_strcat(ctx, __uwr_acc_3, uw_Basis_mstrcat(ctx, "SELECT * FROM uw_Chat_t AS T_T", ({
-uw_Basis_string disc = uw_Basis_bool_True;
-uw_Basis_string
-(!strcmp(disc, "1")) ? "" : 1 ? ({
-uw_Basis_string __uwr_w_4 = disc;
-uw_Basis_strcat(ctx, " WHERE ", __uwr_w_4);
-}) : ({
-uw_Basis_string tmp;
-uw_error(ctx, FATAL, "Ur/Web runtime: case/of exhausted — none of the patterns matched this value.");
-tmp;
-});
-}), ({
-uw_Basis_string disc = uw_Basis_bool_True;
-uw_Basis_string
-(!strcmp(disc, "1")) ? "" : 1 ? ({
-uw_Basis_string __uwr_h_4 = disc;
-uw_Basis_strcat(ctx, " HAVING ", __uwr_h_4);
-}) : ({
-uw_Basis_string tmp;
-uw_error(ctx, FATAL, "Ur/Web runtime: case/of exhausted — none of the patterns matched this value.");
-tmp;
-});
-}), ({
-uw_Basis_string disc = "";
-uw_Basis_string
-(!strcmp(disc, "")) ? "" : 1 ? ({
-uw_Basis_string __uwr_orderby_4 = disc;
-uw_Basis_strcat(ctx, " ORDER BY ", __uwr_orderby_4);
-}) : ({
-uw_Basis_string tmp;
-uw_error(ctx, FATAL, "Ur/Web runtime: case/of exhausted — none of the patterns matched this value.");
-tmp;
-});
-}), NULL)(ctx, __uwr_r_2, 0));
+acc = uw_Basis_strcat(ctx, __uwr_acc_3, 0(ctx, __uwr_r_2, 0));
 }
 if (r == SQLITE_BUSY) {
 sleep(1);
@@ -399,7 +380,7 @@ uw_error(ctx, UNLIMITED_RETRY, "Database is busy");
 if (r != SQLITE_DONE) uw_error(ctx, FATAL, "query: query step failed: %s<br />%s", query, sqlite3_errmsg(conn->conn));
 uw_pop_cleanup(ctx);
 acc;
-}))(ctx, 0);
+}));
 ((uw_write(ctx, "<body"), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "class", "")), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "style", "")), 0), ((uw_write(ctx, ">\n<h1"), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "class", "")), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "style", "")), 0), ((uw_write(ctx, ">Current Channels</h1>\n<tabl"), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "class", "")), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "style", "")), 0), ((uw_write(ctx, ">\n<tr"), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "class", "")), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "style", "")), 0), ((uw_write(ctx, "> <th"), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "class", "")), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "style", "")), 0), ((uw_write(ctx, ">ID</th> <th"), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "class", "")), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "style", "")), 0), ((uw_write(ctx, ">Title</th> <th"), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "class", "")), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "style", "")), 0), ((uw_write(ctx, ">#Subscribers</th> </tr>\n"), 0), ((uw_write(ctx, __uwr_r_2), 0), ((uw_write(ctx, "\n</tabl>\n<h1"), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "class", "")), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "style", "")), 0), ((uw_write(ctx, ">New Channel</h1>\n"), 0), ((uw_write(ctx, uw_Basis_form(ctx, 0LL, 0LL, 0LL, uw_Basis_mstrcat(ctx, "\nTitle: <div", uw_Basis_attrOptional(ctx, "class", ""), uw_Basis_attrOptional(ctx, "style", ""), "></div><br", uw_Basis_attrOptional(ctx, "class", ""), uw_Basis_attrOptional(ctx, "style", ""), "></br>\n<submit", uw_Basis_attrOptional(ctx, "class", ""), uw_Basis_attrOptional(ctx, "style", ""), "></submit>\n", NULL))), 0), (uw_write(ctx, "\n</body>"), 0)))))))))))))))))))))))))))));
 }));
 }

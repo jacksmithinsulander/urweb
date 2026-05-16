@@ -564,19 +564,21 @@ impl Reducer {
         env: &[EnvItem],
         n_orig: usize,
         n: usize,
-        nudge: usize,
+        nudge: isize,
         span: Span,
     ) -> LocatedKind {
         match env.first() {
-            None => Located::new(Kind::Type, span),
+            None => Located::new(Kind::Rel((n_orig as isize + nudge) as usize), span),
             Some(item) => match item {
                 EnvItem::UnknownC | EnvItem::KnownC(_) | EnvItem::UnknownE | EnvItem::KnownE(_) => {
                     self.find_kind(&env[1..], n_orig, n, nudge, span)
                 }
-                EnvItem::Lift(lk, _, _) => self.find_kind(&env[1..], n_orig, n, nudge + lk, span),
+                EnvItem::Lift(lk, _, _) => {
+                    self.find_kind(&env[1..], n_orig, n, nudge + *lk as isize, span)
+                }
                 EnvItem::UnknownK => {
                     if n == 0 {
-                        Located::new(Kind::Rel(n_orig + nudge), span)
+                        Located::new(Kind::Rel((n_orig as isize + nudge) as usize), span)
                     } else {
                         self.find_kind(&env[1..], n_orig, n - 1, nudge, span)
                     }
@@ -590,7 +592,7 @@ impl Reducer {
                         // For simplicity, use the tail env with no additional lift.
                         self.reduce_kind(&env[1..], k.clone())
                     } else {
-                        self.find_kind(&env[1..], n_orig, n - 1, nudge.saturating_sub(1), span)
+                        self.find_kind(&env[1..], n_orig, n - 1, nudge - 1, span)
                     }
                 }
             },
@@ -662,6 +664,13 @@ impl Reducer {
                         if let Constructor::Map(_, ref ran) = map_node.node {
                             let ran = *ran.clone();
                             match a_red.node.clone() {
+                                Constructor::Unit => {
+                                    let ran_red = self.reduce_kind(env, ran);
+                                    return Located::new(
+                                        Constructor::Record(Box::new(ran_red), vec![]),
+                                        span,
+                                    );
+                                }
                                 Constructor::Record(_, ref xcs) if xcs.is_empty() => {
                                     let ran_red = self.reduce_kind(env, ran);
                                     return Located::new(
@@ -802,13 +811,13 @@ impl Reducer {
         env: &[EnvItem],
         n_orig: usize,
         n: usize,
-        nudge: usize,
+        nudge: isize,
         lift_k: usize,
         lift_c: usize,
         span: Span,
     ) -> LocatedConstructor {
         match env.first() {
-            None => Located::new(Constructor::Unit, span),
+            None => Located::new(Constructor::Rel((n_orig as isize + nudge) as usize), span),
             Some(item) => match item {
                 EnvItem::UnknownK => {
                     self.find_con(&env[1..], n_orig, n, nudge, lift_k + 1, lift_c, span)
@@ -823,14 +832,14 @@ impl Reducer {
                     &env[1..],
                     n_orig,
                     n,
-                    nudge + lc,
+                    nudge + *lc as isize,
                     lift_k + lk,
                     lift_c + lc,
                     span,
                 ),
                 EnvItem::UnknownC => {
                     if n == 0 {
-                        Located::new(Constructor::Rel(n_orig + nudge), span)
+                        Located::new(Constructor::Rel((n_orig as isize + nudge) as usize), span)
                     } else {
                         self.find_con(&env[1..], n_orig, n - 1, nudge, lift_k, lift_c + 1, span)
                     }
@@ -841,15 +850,7 @@ impl Reducer {
                         lift_env.extend_from_slice(&env[1..]);
                         self.reduce_con(&lift_env, c.clone())
                     } else {
-                        self.find_con(
-                            &env[1..],
-                            n_orig,
-                            n - 1,
-                            nudge.saturating_sub(1),
-                            lift_k,
-                            lift_c,
-                            span,
-                        )
+                        self.find_con(&env[1..], n_orig, n - 1, nudge - 1, lift_k, lift_c, span)
                     }
                 }
             },
@@ -1418,14 +1419,14 @@ impl Reducer {
         env: &[EnvItem],
         n_orig: usize,
         n: usize,
-        nudge: usize,
+        nudge: isize,
         lift_k: usize,
         lift_c: usize,
         lift_e: usize,
         span: Span,
     ) -> LocatedExpression {
         match env.first() {
-            None => Located::new(Expression::Prim(Prim::Int(0)), span),
+            None => Located::new(Expression::Rel((n_orig as isize + nudge) as usize), span),
             Some(item) => match item {
                 EnvItem::UnknownK => self.find_exp(
                     &env[1..],
@@ -1457,7 +1458,7 @@ impl Reducer {
                     &env[1..],
                     n_orig,
                     n,
-                    nudge + le,
+                    nudge + *le as isize,
                     lift_k + lk,
                     lift_c + lc,
                     lift_e + le,
@@ -1465,7 +1466,7 @@ impl Reducer {
                 ),
                 EnvItem::UnknownE => {
                     if n == 0 {
-                        Located::new(Expression::Rel(n_orig + nudge), span)
+                        Located::new(Expression::Rel((n_orig as isize + nudge) as usize), span)
                     } else {
                         self.find_exp(
                             &env[1..],
@@ -1481,17 +1482,18 @@ impl Reducer {
                 }
                 EnvItem::KnownE(e) => {
                     if n == 0 {
-                        // Shift the known expression and re-reduce
-                        let shifted = shift_exp(e.clone(), 0, lift_e as isize, 0, lift_c as isize);
+                        // Match reduce.sml: re-run reduction under a synthetic
+                        // Lift environment instead of pre-shifting and then
+                        // lifting again.
                         let mut lift_env: Env = vec![EnvItem::Lift(lift_k, lift_c, lift_e)];
                         lift_env.extend_from_slice(&env[1..]);
-                        self.reduce_exp(&lift_env, shifted)
+                        self.reduce_exp(&lift_env, e.clone())
                     } else {
                         self.find_exp(
                             &env[1..],
                             n_orig,
                             n - 1,
-                            nudge.saturating_sub(1),
+                            nudge - 1,
                             lift_k,
                             lift_c,
                             lift_e,
@@ -2035,6 +2037,27 @@ mod tests {
             "App of Abs must beta-reduce"
         );
         Ok(()) // return success to the test harness
+    }
+
+    #[test]
+    fn missing_kind_binding_preserves_rel() {
+        let reducer = Reducer::new();
+        let found = reducer.find_kind(&[], 0, 0, 0, dummy());
+        assert!(matches!(found.node, Kind::Rel(0)));
+    }
+
+    #[test]
+    fn missing_constructor_binding_preserves_rel() {
+        let reducer = Reducer::new();
+        let found = reducer.find_con(&[], 0, 0, 0, 0, 0, dummy());
+        assert!(matches!(found.node, Constructor::Rel(0)));
+    }
+
+    #[test]
+    fn missing_expression_binding_preserves_rel() {
+        let reducer = Reducer::new();
+        let found = reducer.find_exp(&[], 0, 0, 0, 0, 0, 0, dummy());
+        assert!(matches!(found.node, Expression::Rel(0)));
     }
 
     #[test]

@@ -10827,6 +10827,7 @@ fn elab_head(
     )
 }
 
+#[allow(dead_code)]
 fn uniform_remaining_implicit_constructor_substitutions(
     constructor: &elab::LocatedConstructor,
 ) -> Option<usize> {
@@ -14675,6 +14676,7 @@ fn extend_exported_signature_items(
     }
 }
 
+#[allow(dead_code)]
 fn signature_items_from_signature(
     elaboration_environment: &Env,
     signature: &elab::LocatedSignature,
@@ -14685,6 +14687,7 @@ fn signature_items_from_signature(
         .collect()
 }
 
+#[allow(dead_code)]
 fn opened_signature_items_for_decl(
     elaboration_environment: &Env,
     disjointness_environment: &disjoint::DisjointEnv,
@@ -15190,6 +15193,7 @@ fn instantiate_rule_with_args(
     (fresh_args, inst_head, inst_hyps)
 }
 
+#[cfg(test)]
 fn instantiate_rule(
     elaboration_environment: &Env,
     quantifier_kinds: &[elab::LocatedKind],
@@ -15413,6 +15417,60 @@ fn class_goal_arguments(class: &elab::LocatedConstructor) -> Vec<&elab::LocatedC
     arguments
 }
 
+fn class_head_classifier_kind(
+    elaboration_environment: &Env,
+    class: &elab::LocatedConstructor,
+) -> Option<elab::LocatedKind> {
+    let normalized_head = hnorm_con(constructor_head_after_apps(class).clone());
+    match &normalized_head.node {
+        elab::Constructor::Named(id) => {
+            elaboration_environment
+                .lookup_c_named(*id)
+                .ok()
+                .map(|(_, stored_kind, _)| {
+                    kind_for_class_constructor_head(&normalized_head.span, stored_kind)
+                })
+        }
+        elab::Constructor::ModProj(module_id, path, name) => {
+            resolve_modproj_constructor_id(elaboration_environment, *module_id, path, name)
+                .and_then(|id| elaboration_environment.lookup_c_named(id).ok())
+                .map(|(_, stored_kind, _)| {
+                    kind_for_class_constructor_head(&normalized_head.span, stored_kind)
+                })
+        }
+        elab::Constructor::Unif(_, _, _, _, cell) => {
+            let guard = crate::compiler_diagnostics::lock_for_compile(
+                cell.as_ref(),
+                "class head classifier kind",
+            );
+            match &*guard {
+                elab::CUnif::Known(inner) => {
+                    class_head_classifier_kind(elaboration_environment, inner)
+                }
+                elab::CUnif::Unknown(_) => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+fn classifier_domain_kinds(kind: &elab::LocatedKind) -> Vec<elab::LocatedKind> {
+    let mut domains = Vec::new();
+    let mut current = hnorm_kind(kind.clone());
+    while let elab::Kind::Arrow(domain, range) = current.node {
+        domains.push((*domain).clone());
+        current = hnorm_kind(*range);
+    }
+    domains
+}
+
+fn kind_is_plain_type_argument(kind: &elab::LocatedKind) -> bool {
+    matches!(
+        hnorm_kind(kind.clone()).node,
+        elab::Kind::Star | elab::Kind::Typed(_)
+    )
+}
+
 fn class_goal_requires_unique_rule_match(
     elaboration_environment: &Env,
     class: &elab::LocatedConstructor,
@@ -15421,11 +15479,27 @@ fn class_goal_requires_unique_rule_match(
     if arguments.is_empty() {
         return false;
     }
-    arguments.iter().any(|argument| {
+    let has_unknown_arguments = arguments.iter().any(|argument| {
         let normalized_argument =
             hnorm_con_expression_head(elaboration_environment, (*argument).clone());
         constructor_contains_unif(&normalized_argument)
-    })
+    });
+    if !has_unknown_arguments {
+        return false;
+    }
+
+    let Some(classifier_kind) = class_head_classifier_kind(elaboration_environment, class) else {
+        return false;
+    };
+    let domain_kinds = classifier_domain_kinds(&classifier_kind);
+    if domain_kinds.len() < arguments.len() {
+        return false;
+    }
+
+    domain_kinds
+        .iter()
+        .take(arguments.len())
+        .all(kind_is_plain_type_argument)
 }
 
 fn canonicalize_class_rule_match_head_key(
@@ -15506,8 +15580,10 @@ fn resolve_class(
             ));
         }
     }
+    let must_resolve_uniquely =
+        class_goal_requires_unique_rule_match(elaboration_environment, &class_n);
     let class_arguments = class_goal_arguments(&class_n);
-    if class_arguments.len() == 1 {
+    if must_resolve_uniquely && class_arguments.len() == 1 {
         let only_argument = class_arguments[0];
         let normalized_argument =
             hnorm_con_expression_head(elaboration_environment, only_argument.clone());
@@ -15519,8 +15595,6 @@ fn resolve_class(
         }
     }
     let rules = elaboration_environment.class_rules_for_constructor(&class_n)?;
-    let must_resolve_uniquely =
-        class_goal_requires_unique_rule_match(elaboration_environment, &class_n);
     if must_resolve_uniquely {
         match select_unique_class_rule_match(
             elaboration_environment,
@@ -17019,8 +17093,6 @@ mod tests {
         let mut elaboration_context = ElabCtx::new();
         let mut elaboration_environment = fixture.elaboration_environment.clone();
         let mut disjointness_environment = fixture.disjointness_environment.clone();
-        let mut last_span: Option<crate::error_types::Span> = None;
-
         for declaration in top_decls {
             let (_decls, new_environment, new_disjointness_environment) = elab_decl(
                 &mut elaboration_context,
@@ -17031,7 +17103,6 @@ mod tests {
             elaboration_environment = new_environment;
             disjointness_environment = new_disjointness_environment;
             solve_constraints(&mut elaboration_context, &elaboration_environment);
-            last_span = Some(declaration.span.clone());
 
             let has_folder_constructor = !matches!(
                 elaboration_environment.lookup_c("folder"),
@@ -17044,7 +17115,7 @@ mod tests {
                     elaboration_context.errors
                 );
                 return Some(BasisOpenFixture {
-                    basis_decl_span: last_span.unwrap_or_else(|| fixture.basis_decl_span.clone()),
+                    basis_decl_span: declaration.span.clone(),
                     elaboration_environment,
                     disjointness_environment,
                 });
@@ -17060,8 +17131,6 @@ mod tests {
         let mut elaboration_context = ElabCtx::new();
         let mut elaboration_environment = fixture.elaboration_environment.clone();
         let mut disjointness_environment = fixture.disjointness_environment.clone();
-        let mut last_span: Option<crate::error_types::Span> = None;
-
         for declaration in top_decls {
             let (_decls, new_environment, new_disjointness_environment) = elab_decl(
                 &mut elaboration_context,
@@ -17072,7 +17141,6 @@ mod tests {
             elaboration_environment = new_environment;
             disjointness_environment = new_disjointness_environment;
             solve_constraints(&mut elaboration_context, &elaboration_environment);
-            last_span = Some(declaration.span.clone());
 
             let has_query_x = !matches!(
                 elaboration_environment.lookup_e("queryX"),
@@ -17089,7 +17157,7 @@ mod tests {
                     elaboration_context.errors
                 );
                 return Some(BasisOpenFixture {
-                    basis_decl_span: last_span.unwrap_or_else(|| fixture.basis_decl_span.clone()),
+                    basis_decl_span: declaration.span.clone(),
                     elaboration_environment,
                     disjointness_environment,
                 });
@@ -18226,7 +18294,7 @@ end
             elab::Kind::Record(Box::new(type_kind.clone())),
             span.clone(),
         );
-        let pair_row_kind = Located::new(
+        let _pair_row_kind = Located::new(
             elab::Kind::Record(Box::new(tuple_kind.clone())),
             span.clone(),
         );

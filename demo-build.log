@@ -1,0 +1,177 @@
+cjrize nested abs in valrec fun body: doBatch
+ERROR ur: compiler_job_diagnostic kind="error" compilation_id=044c3bed-38d8-456c-be25-ef4c5000966f compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=230 catalog_message=Anonymous function remains at code generation
+[044c3bed-38d8-456c-be25-ef4c5000966f]
+-- ERROR ----------- /Users/jacksmith/prog/urweb/lib/ur/top.ur
+
+Anonymous function remains at code generation
+
+    --> /Users/jacksmith/prog/urweb/lib/ur/top.ur:156:11-156:68
+
+
+ERROR ur: compiler_job_diagnostic kind="error" compilation_id=044c3bed-38d8-456c-be25-ef4c5000966f compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=230 catalog_message=Anonymous function remains at code generation
+[044c3bed-38d8-456c-be25-ef4c5000966f]
+-- ERROR ----------- /Users/jacksmith/prog/urweb/lib/ur/top.ur
+
+Anonymous function remains at code generation
+
+    --> /Users/jacksmith/prog/urweb/lib/ur/top.ur:156:46-156:56
+
+
+ERROR ur: compiler_job_diagnostic kind="error" compilation_id=044c3bed-38d8-456c-be25-ef4c5000966f compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=230 catalog_message=Anonymous function remains at code generation
+[044c3bed-38d8-456c-be25-ef4c5000966f]
+-- ERROR -------- /Users/jacksmith/prog/urweb/demo/batchFun.ur
+
+Anonymous function remains at code generation
+
+    --> /Users/jacksmith/prog/urweb/demo/batchFun.ur:11:51-11:67
+
+
+ERROR ur: compiler_job_diagnostic kind="error" compilation_id=044c3bed-38d8-456c-be25-ef4c5000966f compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=230 catalog_message=Anonymous function remains at code generation
+[044c3bed-38d8-456c-be25-ef4c5000966f]
+-- ERROR -------- /Users/jacksmith/prog/urweb/demo/batchFun.ur
+
+Anonymous function remains at code generation
+
+    --> /Users/jacksmith/prog/urweb/demo/batchFun.ur:19:17-19:57
+
+
+ERROR ur: compiler_job_diagnostic kind="error" compilation_id=044c3bed-38d8-456c-be25-ef4c5000966f compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=230 catalog_message=Anonymous function remains at code generation
+[044c3bed-38d8-456c-be25-ef4c5000966f]
+-- ERROR ----------- /Users/jacksmith/prog/urweb/lib/ur/top.ur
+
+Anonymous function remains at code generation
+
+    --> /Users/jacksmith/prog/urweb/lib/ur/top.ur:0:0-0:0
+
+
+ERROR ur: compiler_job_diagnostic kind="error" compilation_id=044c3bed-38d8-456c-be25-ef4c5000966f compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=230 catalog_message=Anonymous function remains at code generation
+[044c3bed-38d8-456c-be25-ef4c5000966f]
+-- ERROR -------- /Users/jacksmith/prog/urweb/demo/batchFun.ur
+
+Anonymous function remains at code generation
+
+    --> /Users/jacksmith/prog/urweb/demo/batchFun.ur:18:14-18:55
+
+
+ERROR ur: compiler_job_diagnostic kind="error" compilation_id=044c3bed-38d8-456c-be25-ef4c5000966f compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=230 catalog_message=Anonymous function remains at code generation
+[044c3bed-38d8-456c-be25-ef4c5000966f]
+-- ERROR -------- /Users/jacksmith/prog/urweb/demo/batchFun.ur
+
+Anonymous function remains at code generation
+
+    --> /Users/jacksmith/prog/urweb/demo/batchFun.ur:11:51-11:67
+
+
+ERROR ur: compiler_job_diagnostic kind="error" compilation_id=044c3bed-38d8-456c-be25-ef4c5000966f compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=230 catalog_message=Anonymous function remains at code generation
+[044c3bed-38d8-456c-be25-ef4c5000966f]
+-- ERROR -------- /Users/jacksmith/prog/urweb/demo/batchFun.ur
+
+Anonymous function remains at code generation
+
+    --> /Users/jacksmith/prog/urweb/demo/batchFun.ur:19:17-19:57
+
+
+ERROR ur: compiler_job_diagnostic kind="error" compilation_id=044c3bed-38d8-456c-be25-ef4c5000966f compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=230 catalog_message=Anonymous function remains at code generation
+[044c3bed-38d8-456c-be25-ef4c5000966f]
+-- ERROR ----------- /Users/jacksmith/prog/urweb/lib/ur/top.ur
+
+Anonymous function remains at code generation
+
+    --> /Users/jacksmith/prog/urweb/lib/ur/top.ur:0:0-0:0
+
+
+ERROR ur: compiler_job_diagnostic kind="error" compilation_id=044c3bed-38d8-456c-be25-ef4c5000966f compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=230 catalog_message=Anonymous function remains at code generation
+[044c3bed-38d8-456c-be25-ef4c5000966f]
+-- ERROR -------- /Users/jacksmith/prog/urweb/demo/batchFun.ur
+
+Anonymous function remains at code generation
+
+    --> /Users/jacksmith/prog/urweb/demo/batchFun.ur:18:14-18:55
+
+
+ERROR ur: compiler_job_diagnostic kind="error" compilation_id=044c3bed-38d8-456c-be25-ef4c5000966f compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=230 catalog_message=Anonymous function remains at code generation
+[044c3bed-38d8-456c-be25-ef4c5000966f]
+-- ERROR ----------- /Users/jacksmith/prog/urweb/lib/ur/top.ur
+
+Anonymous function remains at code generation
+
+    --> /Users/jacksmith/prog/urweb/lib/ur/top.ur:156:46-156:56
+
+
+ERROR ur: compiler_job_diagnostic kind="error" compilation_id=044c3bed-38d8-456c-be25-ef4c5000966f compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=230 catalog_message=Anonymous function remains at code generation
+[044c3bed-38d8-456c-be25-ef4c5000966f]
+-- ERROR -------- /Users/jacksmith/prog/urweb/demo/batchFun.ur
+
+Anonymous function remains at code generation
+
+    --> /Users/jacksmith/prog/urweb/demo/batchFun.ur:11:51-11:67
+
+
+ERROR ur: compiler_job_diagnostic kind="error" compilation_id=044c3bed-38d8-456c-be25-ef4c5000966f compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=230 catalog_message=Anonymous function remains at code generation
+[044c3bed-38d8-456c-be25-ef4c5000966f]
+-- ERROR -------- /Users/jacksmith/prog/urweb/demo/batchFun.ur
+
+Anonymous function remains at code generation
+
+    --> /Users/jacksmith/prog/urweb/demo/batchFun.ur:19:17-19:57
+
+
+ERROR ur: compiler_job_diagnostic kind="error" compilation_id=044c3bed-38d8-456c-be25-ef4c5000966f compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=230 catalog_message=Anonymous function remains at code generation
+[044c3bed-38d8-456c-be25-ef4c5000966f]
+-- ERROR ----------- /Users/jacksmith/prog/urweb/lib/ur/top.ur
+
+Anonymous function remains at code generation
+
+    --> /Users/jacksmith/prog/urweb/lib/ur/top.ur:0:0-0:0
+
+
+ERROR ur: compiler_job_diagnostic kind="error" compilation_id=044c3bed-38d8-456c-be25-ef4c5000966f compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=230 catalog_message=Anonymous function remains at code generation
+[044c3bed-38d8-456c-be25-ef4c5000966f]
+-- ERROR -------- /Users/jacksmith/prog/urweb/demo/batchFun.ur
+
+Anonymous function remains at code generation
+
+    --> /Users/jacksmith/prog/urweb/demo/batchFun.ur:18:14-18:55
+
+
+ERROR ur: compiler_job_diagnostic kind="error" compilation_id=044c3bed-38d8-456c-be25-ef4c5000966f compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=230 catalog_message=Anonymous function remains at code generation
+[044c3bed-38d8-456c-be25-ef4c5000966f]
+-- ERROR -------- /Users/jacksmith/prog/urweb/demo/batchFun.ur
+
+Anonymous function remains at code generation
+
+    --> /Users/jacksmith/prog/urweb/demo/batchFun.ur:11:51-11:67
+
+
+ERROR ur: compiler_job_diagnostic kind="error" compilation_id=044c3bed-38d8-456c-be25-ef4c5000966f compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=230 catalog_message=Anonymous function remains at code generation
+[044c3bed-38d8-456c-be25-ef4c5000966f]
+-- ERROR -------- /Users/jacksmith/prog/urweb/demo/batchFun.ur
+
+Anonymous function remains at code generation
+
+    --> /Users/jacksmith/prog/urweb/demo/batchFun.ur:19:17-19:57
+
+
+ERROR ur: compiler_job_diagnostic kind="error" compilation_id=044c3bed-38d8-456c-be25-ef4c5000966f compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=230 catalog_message=Anonymous function remains at code generation
+[044c3bed-38d8-456c-be25-ef4c5000966f]
+-- ERROR ----------- /Users/jacksmith/prog/urweb/lib/ur/top.ur
+
+Anonymous function remains at code generation
+
+    --> /Users/jacksmith/prog/urweb/lib/ur/top.ur:0:0-0:0
+
+
+ERROR ur: compiler_job_diagnostic kind="error" compilation_id=044c3bed-38d8-456c-be25-ef4c5000966f compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=230 catalog_message=Anonymous function remains at code generation
+[044c3bed-38d8-456c-be25-ef4c5000966f]
+-- ERROR -------- /Users/jacksmith/prog/urweb/demo/batchFun.ur
+
+Anonymous function remains at code generation
+
+    --> /Users/jacksmith/prog/urweb/demo/batchFun.ur:18:14-18:55
+
+
+-- COMPILE STOPPED -------------------------------------------
+
+I stopped after C back-end (CJR) because there were 19 hard error(s) above this line.
+
+Each one uses the same layout as the Ur/Web compiler. Fix the first error first — later lines are often knock-on effects.

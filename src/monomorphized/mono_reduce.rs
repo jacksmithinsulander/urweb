@@ -1046,17 +1046,114 @@ fn passive(e: &LocExp) -> bool {
 // which_proj — check if a variable is used only in field projections
 // ---------------------------------------------------------------------------
 
-/// Returns Some(paths) if Rel(i) in `e` is only accessed via field projections,
-/// None if it's used in any other context.
-///
-/// `i` is the de Bruijn index of the variable to check.
-///
-/// This is a conservative implementation: returns None always (disables the
-/// optimisation safely). A full implementation would track field-path usage.
-fn which_proj(_i: usize, _e: &LocExp) -> Option<Vec<Vec<String>>> {
-    // Conservative: return None to disable the record-projection inlining
-    // optimisation. This is safe (prevents some inlining, but never wrong).
-    None
+/// Returns Some(disjoint_projection_paths) if Rel(i) in `e` is only accessed
+/// via field projections, or None if it's used in any other context.
+fn which_proj(i: usize, e: &LocExp) -> Option<HashSet<Vec<String>>> {
+    match &e.node {
+        Exp::Prim(_) | Exp::Named(_) | Exp::Ffi(_, _) | Exp::Con(_, _, None) | Exp::None(_) => {
+            Some(HashSet::new())
+        }
+        Exp::Rel(i_prime) => {
+            if *i_prime == i {
+                None
+            } else {
+                Some(HashSet::new())
+            }
+        }
+        Exp::Con(_, _, Some(inner)) | Exp::Some(_, inner) => which_proj(i, inner),
+        Exp::FfiApp(_, _, args) => which_projs(i, args.iter().map(|(arg, _)| arg)),
+        Exp::App(e1, e2)
+        | Exp::Binop(_, _, e1, e2)
+        | Exp::Strcat(e1, e2)
+        | Exp::Seq(e1, e2)
+        | Exp::Setval(e1, e2)
+        | Exp::SignalBind(e1, e2) => which_projs(i, [e1.as_ref(), e2.as_ref()]),
+        Exp::Abs(_, _, _, body) => which_proj(i + 1, body),
+        Exp::Unop(_, inner)
+        | Exp::Error(inner, _)
+        | Exp::Redirect(inner, _)
+        | Exp::Write(inner)
+        | Exp::Dml(inner, _)
+        | Exp::Nextval(inner)
+        | Exp::Uurlify(inner, _, _)
+        | Exp::JavaScript(_, inner)
+        | Exp::SignalReturn(inner)
+        | Exp::SignalSource(inner)
+        | Exp::ServerCall(inner, _, _, _)
+        | Exp::Recv(inner, _)
+        | Exp::Sleep(inner)
+        | Exp::Spawn(inner) => which_proj(i, inner),
+        Exp::Record(fields) => which_projs(i, fields.iter().map(|(_, field_exp, _)| field_exp)),
+        Exp::Field(inner, field) => match prefix_from(i, inner) {
+            None => Some(HashSet::new()),
+            Some(mut path) => {
+                path.push(field.clone());
+                Some(HashSet::from([path]))
+            }
+        },
+        Exp::Case(disc, arms, _) => {
+            let mut offset_exprs = Vec::with_capacity(arms.len() + 1);
+            offset_exprs.push((0usize, disc.as_ref()));
+            offset_exprs.extend(arms.iter().map(|(pat, arm)| (pat_binds_n(pat), arm)));
+            which_projs_with_offsets(i, offset_exprs)
+        }
+        Exp::ReturnBlob {
+            blob: None,
+            mime_type,
+            ..
+        } => which_proj(i, mime_type),
+        Exp::ReturnBlob {
+            blob: Some(blob),
+            mime_type,
+            ..
+        } => which_projs(i, [blob.as_ref(), mime_type.as_ref()]),
+        Exp::Let(_, _, e1, e2) => {
+            which_projs_with_offsets(i, [(0usize, e1.as_ref()), (1usize, e2.as_ref())])
+        }
+        Exp::Closure(_, envs) => which_projs(i, envs.iter()),
+        Exp::Query(qm) => which_projs_with_offsets(
+            i,
+            [
+                (0usize, qm.query.as_ref()),
+                (2usize, qm.body.as_ref()),
+                (0usize, qm.initial.as_ref()),
+            ],
+        ),
+    }
+}
+
+fn prefix_from(i: usize, e: &LocExp) -> Option<Vec<String>> {
+    match &e.node {
+        Exp::Rel(i_prime) => (*i_prime == i).then(Vec::new),
+        Exp::Field(inner, field) => {
+            let mut path = prefix_from(i, inner)?;
+            path.push(field.clone());
+            Some(path)
+        }
+        _ => None,
+    }
+}
+
+fn which_projs<'a, I>(i: usize, exprs: I) -> Option<HashSet<Vec<String>>>
+where
+    I: IntoIterator<Item = &'a LocExp>,
+{
+    which_projs_with_offsets(i, exprs.into_iter().map(|expr| (0usize, expr)))
+}
+
+fn which_projs_with_offsets<'a, I>(i: usize, exprs: I) -> Option<HashSet<Vec<String>>>
+where
+    I: IntoIterator<Item = (usize, &'a LocExp)>,
+{
+    let mut seen = HashSet::new();
+    for (offset, expr) in exprs {
+        let paths = which_proj(i + offset, expr)?;
+        if !seen.is_disjoint(&paths) {
+            return None;
+        }
+        seen.extend(paths);
+    }
+    Some(seen)
 }
 
 // ---------------------------------------------------------------------------
@@ -1238,7 +1335,25 @@ fn reduce_children(env: &Env, e: LocExp, ctx: &ReduceCtx, settings: &Settings) -
             let query_r = reduce_exp(env, *qm.query, ctx, settings);
             // Query body has two extra bindings (row, accumulator)
             let body_env = env.push_rel("r", row_t).push_rel("acc", qm.state.clone());
-            let body_r = reduce_exp(&body_env, *qm.body, ctx, settings);
+            let mut body_r = reduce_exp(&body_env, *qm.body, ctx, settings);
+            if function_like_parts(&qm.state).is_none() {
+                if let Exp::Abs(_, dom, ran, _) = &body_r.node {
+                    if is_unit_record_type(dom)
+                        && function_like_parts(ran).is_none()
+                        && crate::monomorphized::utilities::typ::compare(ran, &qm.state)
+                            == std::cmp::Ordering::Equal
+                    {
+                        let forced = Located::new(
+                            Exp::App(
+                                Box::new(body_r),
+                                Box::new(Located::new(Exp::Record(Vec::new()), span.clone())),
+                            ),
+                            span.clone(),
+                        );
+                        body_r = reduce_exp(&body_env, forced, ctx, settings);
+                    }
+                }
+            }
             let initial_r = reduce_exp(env, *qm.initial, ctx, settings);
             Exp::Query(QueryMeta {
                 exps: qm.exps,
@@ -1417,6 +1532,29 @@ fn reduce_node(env: &Env, e: Exp, span: &Span, ctx: &ReduceCtx, settings: &Setti
                 } else {
                     Exp::App(f, arg)
                 }
+            } else if let Exp::Record(fields) = f.node.clone() {
+                if impure_ctx(env, &arg, ctx, settings) {
+                    Exp::App(f, arg)
+                } else if fields
+                    .iter()
+                    .all(|(_, _, field_t)| function_like_parts(field_t).is_some())
+                {
+                    let applied_fields = fields
+                        .into_iter()
+                        .map(|(name, field_exp, field_t)| {
+                            let (_, field_ran) = function_like_parts(&field_t)
+                                .expect("function-like fields prechecked above");
+                            let applied = Located::new(
+                                Exp::App(Box::new(field_exp), Box::new((*arg).clone())),
+                                span.clone(),
+                            );
+                            (name, reduce_exp(env, applied, ctx, settings), field_ran)
+                        })
+                        .collect();
+                    Exp::Record(applied_fields)
+                } else {
+                    Exp::App(f, arg)
+                }
             } else {
                 Exp::App(f, arg)
             }
@@ -1457,7 +1595,59 @@ fn reduce_node(env: &Env, e: Exp, span: &Span, ctx: &ReduceCtx, settings: &Setti
         // ----------------------------------------------------------------
         // Field(e1, x) → yankLets optimization
         // ----------------------------------------------------------------
-        Exp::Field(e1, x) => yank_lets(*e1, &x),
+        Exp::Field(e1, x) => {
+            let (head, args) = strip_app_spine(*e1);
+            match head.node {
+                Exp::Record(fields) => {
+                    if let Some((_, projected, _)) = fields.iter().find(|(name, _, _)| name == &x) {
+                        return reduce_exp(
+                            env,
+                            reapply_app_spine(projected.clone(), args),
+                            ctx,
+                            settings,
+                        )
+                        .node;
+                    }
+                    if let Some((tail_head, tail_args)) = args.split_first() {
+                        let projected_tail = Located::new(
+                            Exp::Field(
+                                Box::new(reapply_app_spine(tail_head.clone(), tail_args.to_vec())),
+                                x.clone(),
+                            ),
+                            span.clone(),
+                        );
+                        return reduce_exp(env, projected_tail, ctx, settings).node;
+                    }
+                    yank_lets(Located::new(Exp::Record(fields), head.span), &x)
+                }
+                Exp::Abs(ax, dom, ran, body) => {
+                    if let Some(projected_ran) = projected_field_result_typ(&ran, &x) {
+                        let projected_body =
+                            Located::new(Exp::Field(body, x.clone()), span.clone());
+                        let projected_abs = Located::new(
+                            Exp::Abs(ax, dom, projected_ran, Box::new(projected_body)),
+                            span.clone(),
+                        );
+                        return reduce_exp(
+                            env,
+                            reapply_app_spine(projected_abs, args),
+                            ctx,
+                            settings,
+                        )
+                        .node;
+                    }
+
+                    yank_lets(
+                        reapply_app_spine(
+                            Located::new(Exp::Abs(ax, dom, ran, body), head.span.clone()),
+                            args,
+                        ),
+                        &x,
+                    )
+                }
+                other => yank_lets(reapply_app_spine(Located::new(other, head.span), args), &x),
+            }
+        }
 
         // ----------------------------------------------------------------
         // Let(x1, t1, Let(x2, t2, e1, b1), b2) → commute lets
@@ -1558,6 +1748,47 @@ fn reduce_node(env: &Env, e: Exp, span: &Span, ctx: &ReduceCtx, settings: &Setti
 /// Check if a type is the unit record type `{}` (TRecord []).
 fn is_unit_record_type(t: &LocTyp) -> bool {
     matches!(&t.node, Typ::Record(fields) if fields.is_empty())
+}
+
+fn projected_field_result_typ(result_typ: &LocTyp, field: &str) -> Option<LocTyp> {
+    match &result_typ.node {
+        Typ::Record(fields) => fields
+            .iter()
+            .find(|(name, _)| name == field)
+            .map(|(_, typ)| typ.clone()),
+        Typ::Fun(dom, ran) => projected_field_result_typ(ran, field).map(|projected_ran| {
+            Located::new(
+                Typ::Fun(dom.clone(), Box::new(projected_ran)),
+                result_typ.span.clone(),
+            )
+        }),
+        _ => None,
+    }
+}
+
+fn strip_app_spine(mut e: LocExp) -> (LocExp, Vec<LocExp>) {
+    let mut rev_args = Vec::new();
+    loop {
+        let span = e.span.clone();
+        match e.node {
+            Exp::App(f, arg) => {
+                rev_args.push(*arg);
+                e = *f;
+            }
+            other => {
+                rev_args.reverse();
+                return (Located::new(other, span), rev_args);
+            }
+        }
+    }
+}
+
+fn reapply_app_spine(mut head: LocExp, args: Vec<LocExp>) -> LocExp {
+    for arg in args {
+        let span = head.span.clone();
+        head = Located::new(Exp::App(Box::new(head), Box::new(arg)), span);
+    }
+    head
 }
 
 /// The "yank lets" optimization for field projection:
@@ -1996,21 +2227,6 @@ fn reduce_decl(env: &mut Env, d: Decl, ctx: &ReduceCtx, settings: &Settings) -> 
         Decl::Val(x, n, t, e, s) => {
             // Reduce the body
             let e_reduced = reduce_exp(env, e, ctx, settings);
-            if matches!(
-                x.as_str(),
-                "$speak" | "wrap_main" | "queryL" | "queryI" | "queryX'"
-            ) {
-                let _ = (|| -> std::io::Result<()> {
-                    let mut file = std::fs::OpenOptions::new()
-                        .create(true)
-                        .append(true)
-                        .open("/tmp/urweb-mono-reduce-top.log")?;
-                    std::io::Write::write_all(
-                        &mut file,
-                        format!("VAL path={s} name={x} = {e_reduced:#?}\n\n").as_bytes(),
-                    )
-                })();
-            }
             // Determine if we can inline this definition
             let cached = if may_inline(n, &e_reduced, &t, &s, ctx, settings) {
                 Some(e_reduced.clone())
@@ -2029,21 +2245,6 @@ fn reduce_decl(env: &mut Env, d: Decl, ctx: &ReduceCtx, settings: &Settings) -> 
                 .into_iter()
                 .map(|(x, n, t, e, s)| {
                     let e_reduced = reduce_exp(env, e, ctx, settings);
-                    if matches!(
-                        x.as_str(),
-                        "$speak" | "wrap_main" | "queryL" | "queryI" | "queryX'"
-                    ) {
-                        let _ = (|| -> std::io::Result<()> {
-                            let mut file = std::fs::OpenOptions::new()
-                                .create(true)
-                                .append(true)
-                                .open("/tmp/urweb-mono-reduce-top.log")?;
-                            std::io::Write::write_all(
-                                &mut file,
-                                format!("VALREC path={s} name={x} = {e_reduced:#?}\n\n").as_bytes(),
-                            )
-                        })();
-                    }
                     (x, n, t, e_reduced, s)
                 })
                 .collect();
@@ -2360,6 +2561,229 @@ mod tests {
             "Expected Prim(1) from record projection, got {:?}",
             result.node
         );
+    }
+
+    #[test]
+    fn test_field_projection_through_curried_abs() {
+        let settings = Settings::new();
+        let ctx = ReduceCtx {
+            timpures: HashSet::new(),
+            impures: HashSet::new(),
+            uses: HashMap::new(),
+            yanked_case: Cell::new(false),
+            full_mode: false,
+        };
+        let env = Env::empty();
+        let unit_t = Located::dummy(Typ::Record(vec![]));
+        let int_t = dummy_typ();
+        let record_t = Located::dummy(Typ::Record(vec![("Inject".into(), int_t.clone())]));
+        let unit_e = Located::dummy(Exp::Record(vec![]));
+        let outer = Located::dummy(Exp::Abs(
+            "_".into(),
+            unit_t.clone(),
+            Located::dummy(Typ::Fun(
+                Box::new(unit_t.clone()),
+                Box::new(record_t.clone()),
+            )),
+            Box::new(Located::dummy(Exp::Abs(
+                "_".into(),
+                unit_t.clone(),
+                record_t,
+                Box::new(Located::dummy(Exp::Record(vec![(
+                    "Inject".into(),
+                    prim_int(13),
+                    int_t.clone(),
+                )]))),
+            ))),
+        ));
+        let field = Located::dummy(Exp::Field(Box::new(outer), "Inject".into()));
+        let applied = Located::dummy(Exp::App(
+            Box::new(Located::dummy(Exp::App(
+                Box::new(field),
+                Box::new(unit_e.clone()),
+            ))),
+            Box::new(unit_e),
+        ));
+
+        let result = reduce_exp(&env, applied, &ctx, &settings);
+        assert!(
+            matches!(&result.node, Exp::Prim(Prim::Int(13))),
+            "Expected Prim(13) after curried field projection, got {:?}",
+            result.node
+        );
+    }
+
+    #[test]
+    fn test_record_of_functions_distributes_application() {
+        let settings = Settings::new();
+        let ctx = ReduceCtx {
+            timpures: HashSet::new(),
+            impures: HashSet::new(),
+            uses: HashMap::new(),
+            yanked_case: Cell::new(false),
+            full_mode: false,
+        };
+        let env = Env::empty();
+        let int_t = dummy_typ();
+        let fn_t = Located::dummy(Typ::Fun(Box::new(int_t.clone()), Box::new(int_t.clone())));
+        let record = Located::dummy(Exp::Record(vec![(
+            "Inject".into(),
+            Located::dummy(Exp::Abs(
+                "x".into(),
+                int_t.clone(),
+                int_t.clone(),
+                Box::new(Located::dummy(Exp::Rel(0))),
+            )),
+            fn_t,
+        )]));
+        let applied = Located::dummy(Exp::App(Box::new(record), Box::new(prim_int(21))));
+
+        let result = reduce_exp(&env, applied, &ctx, &settings);
+        match result.node {
+            Exp::Record(fields) => {
+                assert!(matches!(fields[0].1.node, Exp::Prim(Prim::Int(21))));
+            }
+            other => panic!(
+                "Expected record fields to receive distributed application, got {:?}",
+                other
+            ),
+        }
+    }
+
+    #[test]
+    fn test_field_projection_falls_through_concat_like_record_tail_application() {
+        let settings = Settings::new();
+        let ctx = ReduceCtx {
+            timpures: HashSet::new(),
+            impures: HashSet::new(),
+            uses: HashMap::new(),
+            yanked_case: Cell::new(false),
+            full_mode: false,
+        };
+        let env = Env::empty();
+        let unit_t = Located::dummy(Typ::Record(vec![]));
+        let int_t = dummy_typ();
+        let tail_record_t = Located::dummy(Typ::Record(vec![("A".into(), int_t.clone())]));
+        let unit_e = Located::dummy(Exp::Record(vec![]));
+        let tail = Located::dummy(Exp::Abs(
+            "_".into(),
+            unit_t.clone(),
+            tail_record_t,
+            Box::new(Located::dummy(Exp::Record(vec![(
+                "A".into(),
+                prim_int(7),
+                int_t.clone(),
+            )]))),
+        ));
+        let combined = Located::dummy(Exp::App(
+            Box::new(Located::dummy(Exp::App(
+                Box::new(Located::dummy(Exp::Record(vec![(
+                    "B".into(),
+                    prim_int(9),
+                    int_t.clone(),
+                )]))),
+                Box::new(tail),
+            ))),
+            Box::new(unit_e),
+        ));
+        let projected = Located::dummy(Exp::Field(Box::new(combined), "A".into()));
+
+        let result = reduce_exp(&env, projected, &ctx, &settings);
+        assert!(
+            matches!(result.node, Exp::Prim(Prim::Int(7))),
+            "Expected projection to continue into concat-like tail, got {:?}",
+            result.node
+        );
+    }
+
+    #[test]
+    fn test_let_inlines_pure_record_used_only_via_field_projections() {
+        let settings = Settings::new();
+        let ctx = ReduceCtx {
+            timpures: HashSet::new(),
+            impures: HashSet::new(),
+            uses: HashMap::new(),
+            yanked_case: Cell::new(false),
+            full_mode: false,
+        };
+        let env = Env::empty();
+        let string_t = Located::dummy(Typ::Ffi("Basis".into(), "string".into()));
+        let record_t = Located::dummy(Typ::Record(vec![
+            ("Inject".into(), string_t.clone()),
+            ("Widget".into(), string_t.clone()),
+        ]));
+        let binding = Located::dummy(Exp::Record(vec![
+            (
+                "Inject".into(),
+                Located::dummy(Exp::Strcat(
+                    Box::new(Located::dummy(Exp::Prim(Prim::String(
+                        StringMode::Normal,
+                        "a".into(),
+                    )))),
+                    Box::new(Located::dummy(Exp::Prim(Prim::String(
+                        StringMode::Normal,
+                        "b".into(),
+                    )))),
+                )),
+                string_t.clone(),
+            ),
+            (
+                "Widget".into(),
+                Located::dummy(Exp::Strcat(
+                    Box::new(Located::dummy(Exp::Prim(Prim::String(
+                        StringMode::Normal,
+                        "x".into(),
+                    )))),
+                    Box::new(Located::dummy(Exp::Prim(Prim::String(
+                        StringMode::Normal,
+                        "y".into(),
+                    )))),
+                )),
+                string_t.clone(),
+            ),
+        ]));
+        let body = Located::dummy(Exp::Record(vec![
+            (
+                "Inject".into(),
+                Located::dummy(Exp::Field(
+                    Box::new(Located::dummy(Exp::Rel(0))),
+                    "Inject".into(),
+                )),
+                string_t.clone(),
+            ),
+            (
+                "Widget".into(),
+                Located::dummy(Exp::Field(
+                    Box::new(Located::dummy(Exp::Rel(0))),
+                    "Widget".into(),
+                )),
+                string_t.clone(),
+            ),
+        ]));
+        let let_exp = Located::dummy(Exp::Let(
+            "cols".into(),
+            record_t,
+            Box::new(binding),
+            Box::new(body),
+        ));
+
+        let result = reduce_exp(&env, let_exp, &ctx, &settings);
+        match result.node {
+            Exp::Record(fields) => {
+                assert!(matches!(
+                    fields[0].1.node,
+                    Exp::Prim(Prim::String(StringMode::Normal, ref s)) if s == "ab"
+                ));
+                assert!(matches!(
+                    fields[1].1.node,
+                    Exp::Prim(Prim::String(StringMode::Normal, ref s)) if s == "xy"
+                ));
+            }
+            other => panic!(
+                "Expected projected record after pure record inlining, got {:?}",
+                other
+            ),
+        }
     }
 
     #[test]
