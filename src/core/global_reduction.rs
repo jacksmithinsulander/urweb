@@ -85,6 +85,59 @@ fn not_ffi(t: &Constructor) -> bool {
     !matches!(t, Constructor::Ffi(_, _))
 }
 
+fn function_inside_type(con: &LocatedConstructor) -> bool {
+    match &con.node {
+        Constructor::TFun(_, _) | Constructor::TCFun(_, _, _) => true,
+        Constructor::Ffi(module, name)
+            if module == "Basis"
+                && matches!(
+                    name.as_str(),
+                    "transaction"
+                        | "eq"
+                        | "num"
+                        | "ord"
+                        | "show"
+                        | "read"
+                        | "sql_injectable_prim"
+                        | "sql_injectable"
+                ) =>
+        {
+            true
+        }
+        Constructor::App(function, arg) => {
+            function_inside_type(function) || function_inside_type(arg)
+        }
+        Constructor::Abs(_, _, body) | Constructor::KAbs(_, body) | Constructor::TKFun(_, body) => {
+            function_inside_type(body)
+        }
+        Constructor::TRecord(inner) => function_inside_type(inner),
+        Constructor::KApp(inner, _) => function_inside_type(inner),
+        Constructor::Record(_, fields) => fields
+            .iter()
+            .any(|(name, value)| function_inside_type(name) || function_inside_type(value)),
+        Constructor::Concat(left, right) => {
+            function_inside_type(left) || function_inside_type(right)
+        }
+        Constructor::Tuple(items) => items.iter().any(function_inside_type),
+        Constructor::Proj(inner, _) => function_inside_type(inner),
+        Constructor::Rel(_)
+        | Constructor::Named(_)
+        | Constructor::Name(_)
+        | Constructor::Unit
+        | Constructor::Map(_, _)
+        | Constructor::Ffi(_, _) => false,
+    }
+}
+
+fn is_erased_zero_witness_app(arg: &LocatedExpression, dom: &LocatedConstructor) -> bool {
+    matches!(arg.node, Expression::Prim(Prim::Int(0)))
+        && match &dom.node {
+            Constructor::Unit => false,
+            Constructor::Ffi(module, name) if module == "Basis" && name == "int" => false,
+            _ => true,
+        }
+}
+
 // ---------------------------------------------------------------------------
 // Pattern variable count
 // ---------------------------------------------------------------------------
@@ -531,6 +584,13 @@ impl Reducer {
         }
     }
 
+    fn with_knowns(
+        named_c: HashMap<usize, LocatedConstructor>,
+        named_e: HashMap<usize, LocatedExpression>,
+    ) -> Self {
+        Reducer { named_c, named_e }
+    }
+
     // -----------------------------------------------------------------------
     // Kind reduction
     // -----------------------------------------------------------------------
@@ -634,7 +694,10 @@ impl Reducer {
             Constructor::Rel(n) => self.find_con(env, n, n, 0, 0, 0, span),
             Constructor::Named(n) => match self.named_c.get(&n) {
                 None => mk(Constructor::Named(n)),
-                Some(c) => c.clone(),
+                Some(c) if matches!(c.node, Constructor::Named(m) if m == n) => {
+                    mk(Constructor::Named(n))
+                }
+                Some(c) => self.reduce_con(env, c.clone()),
             },
             // Basis.monad expands to a kind-level abstraction
             Constructor::Ffi(ref m, ref f) if m == "Basis" && f == "monad" => {
@@ -922,7 +985,10 @@ impl Reducer {
             Expression::Rel(n) => self.find_exp(env, n, n, 0, 0, 0, 0, span),
             Expression::Named(n) => match self.named_e.get(&n) {
                 None => mk(Expression::Named(n)),
-                Some(e) => e.clone(),
+                Some(e) if matches!(e.node, Expression::Named(m) if m == n) => {
+                    mk(Expression::Named(n))
+                }
+                Some(e) => self.reduce_exp(env, e.clone()),
             },
             Expression::Constructor(dk, pc, cs, eo) => mk(Expression::Constructor(
                 dk,
@@ -967,8 +1033,14 @@ impl Reducer {
                         mk(Expression::Let(x, t, e1i, Box::new(app_red)))
                     }
                     // Beta: (fn x : dom => body) arg
-                    Expression::Abs(x, dom, _ran, body) => {
-                        if count_exp(&body) <= 1 || passive(&e2_red.node) {
+                    Expression::Abs(x, dom, ran, body) => {
+                        if is_erased_zero_witness_app(&e2_red, &dom) {
+                            return Located::new(Expression::Abs(x, dom, ran, body), e1_span);
+                        }
+                        if count_exp(&body) <= 1
+                            || passive(&e2_red.node)
+                            || function_inside_type(&dom)
+                        {
                             let mut inner: Env = vec![EnvItem::KnownE(e2_red)];
                             inner.extend_from_slice(&de_env);
                             self.reduce_exp(&inner, *body)
@@ -1210,12 +1282,9 @@ impl Reducer {
                         if let (Constructor::Record(_, xcs1), Constructor::Record(_, xcs2)) =
                             (&c1_red.node, &c2_red.node)
                         {
-                            let _all_xcs: Vec<_> =
-                                xcs1.iter().chain(xcs2.iter()).cloned().collect();
-                            let fields = do_parts(&e1_red, xcs1, span.clone())
-                                .into_iter()
-                                .chain(do_parts(&e2_red, xcs2, span.clone()))
-                                .collect::<Vec<_>>();
+                            let (fields1, rest) = do_parts(&e1_red, xcs1, vec![], span.clone());
+                            let (fields2, _) = do_parts(&e2_red, xcs2, rest, span.clone());
+                            let fields = fields1.into_iter().chain(fields2).collect::<Vec<_>>();
                             if !fields.is_empty() {
                                 let de_env = de_known(env);
                                 return self.reduce_exp(&de_env, mk(Expression::Record(fields)));
@@ -1255,7 +1324,7 @@ impl Reducer {
                 // If rest type is a known record, project fields
                 if let Constructor::Record(_, xcs) = &rest_red.node {
                     let xcs = xcs.clone();
-                    let fields = do_parts(&e_red, &xcs, span.clone());
+                    let (fields, _) = do_parts(&e_red, &xcs, vec![], span.clone());
                     if !fields.is_empty() {
                         let de_env = de_known(env);
                         return self.reduce_exp(&de_env, mk(Expression::Record(fields)));
@@ -1308,7 +1377,7 @@ impl Reducer {
                 // If rest type is a known record, project fields
                 if let Constructor::Record(_, xcs) = &rest_red.node {
                     let xcs = xcs.clone();
-                    let fields = do_parts(&e_red, &xcs, span.clone());
+                    let (fields, _) = do_parts(&e_red, &xcs, vec![], span.clone());
                     if !fields.is_empty() {
                         let de_env = de_known(env);
                         return self.reduce_exp(&de_env, mk(Expression::Record(fields)));
@@ -1354,11 +1423,16 @@ impl Reducer {
                 es.into_iter().map(|e| self.reduce_exp(env, e)).collect(),
             )),
             Expression::Let(x, t, e1, e2) => {
-                let e1_red = self.reduce_exp(env, *e1);
+                let e1_original = *e1;
+                let e1_red = self.reduce_exp(env, e1_original.clone());
                 let t_red = self.reduce_con(env, t);
-                if not_ffi(&t_red.node) && (passive(&e1_red.node) || count_exp(&e2) <= 1) {
-                    // Inline: store *original* e1_red in KnownE so find_exp can re-shift
-                    let mut inner: Env = vec![EnvItem::KnownE(e1_red)];
+                if not_ffi(&t_red.node)
+                    && (passive(&e1_red.node)
+                        || count_exp(&e2) <= 1
+                        || function_inside_type(&t_red))
+                {
+                    // Match reduce.sml: re-reduce the original binding under the lifted env.
+                    let mut inner: Env = vec![EnvItem::KnownE(e1_original)];
                     inner.extend_from_slice(env);
                     self.reduce_exp(&inner, *e2)
                 } else {
@@ -1515,15 +1589,18 @@ impl Reducer {
 fn do_parts(
     e: &LocatedExpression,
     xcs: &[(LocatedConstructor, LocatedConstructor)],
+    mut rest_xcs: Vec<(LocatedConstructor, LocatedConstructor)>,
     span: Span,
-) -> Vec<(LocatedConstructor, LocatedExpression, LocatedConstructor)> {
+) -> (
+    Vec<(LocatedConstructor, LocatedExpression, LocatedConstructor)>,
+    Vec<(LocatedConstructor, LocatedConstructor)>,
+) {
     let k = Located::new(Kind::Type, span.clone());
-    xcs.iter()
-        .enumerate()
-        .map(|(i, (name, typ))| {
-            let rest_xcs = xcs[i + 1..].to_vec();
+    let fields = xcs
+        .iter()
+        .map(|(name, typ)| {
             let rest_con = Located::new(
-                Constructor::Record(Box::new(k.clone()), rest_xcs),
+                Constructor::Record(Box::new(k.clone()), rest_xcs.clone()),
                 span.clone(),
             );
             let field_exp = Located::new(
@@ -1537,9 +1614,11 @@ fn do_parts(
                 ),
                 span.clone(),
             );
+            rest_xcs.insert(0, (name.clone(), typ.clone()));
             (name.clone(), field_exp, typ.clone())
         })
-        .collect()
+        .collect();
+    (fields, rest_xcs)
 }
 
 // ---------------------------------------------------------------------------
@@ -1741,7 +1820,66 @@ fn may_inline(
         || matches!(&e.node, Expression::Record(_))
         || is_policy(&t.node)
         || is_poly_con(poly_c, t)
+        || contains_constructor_compile_time_ops(e)
         || count_exp(e) <= settings.core_inline as usize
+}
+
+fn contains_constructor_compile_time_ops(exp: &LocatedExpression) -> bool {
+    fn capp_head<'a>(exp: &'a LocatedExpression) -> &'a LocatedExpression {
+        let mut cur = exp;
+        while let Expression::CApp(inner, _) = &cur.node {
+            cur = inner;
+        }
+        cur
+    }
+
+    match &exp.node {
+        Expression::CAbs(_, _, _) => true,
+        Expression::CApp(function, _) => {
+            !matches!(capp_head(function).node, Expression::Ffi(ref m, _) if m == "Basis")
+                || contains_constructor_compile_time_ops(function)
+        }
+        Expression::Prim(_) | Expression::Rel(_) | Expression::Named(_) | Expression::Ffi(_, _) => {
+            false
+        }
+        Expression::Constructor(_, _, _, arg) => arg
+            .as_deref()
+            .is_some_and(contains_constructor_compile_time_ops),
+        Expression::FfiApp(_, _, args) => args
+            .iter()
+            .any(|(arg, _)| contains_constructor_compile_time_ops(arg)),
+        Expression::App(left, right) => {
+            contains_constructor_compile_time_ops(left)
+                || contains_constructor_compile_time_ops(right)
+        }
+        Expression::Abs(_, _, _, body)
+        | Expression::KAbs(_, body)
+        | Expression::Write(body)
+        | Expression::KApp(body, _) => contains_constructor_compile_time_ops(body),
+        Expression::Record(fields) => fields
+            .iter()
+            .any(|(_, value, _)| contains_constructor_compile_time_ops(value)),
+        Expression::Field(record, _, _)
+        | Expression::Cut(record, _, _)
+        | Expression::CutMulti(record, _, _) => contains_constructor_compile_time_ops(record),
+        Expression::Concat(left, _, right, _) => {
+            contains_constructor_compile_time_ops(left)
+                || contains_constructor_compile_time_ops(right)
+        }
+        Expression::Case(disc, arms, _) => {
+            contains_constructor_compile_time_ops(disc)
+                || arms
+                    .iter()
+                    .any(|(_, arm)| contains_constructor_compile_time_ops(arm))
+        }
+        Expression::Closure(_, envs) | Expression::ServerCall(_, envs, _, _) => {
+            envs.iter().any(contains_constructor_compile_time_ops)
+        }
+        Expression::Let(_, _, bound, body) => {
+            contains_constructor_compile_time_ops(bound)
+                || contains_constructor_compile_time_ops(body)
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1751,11 +1889,22 @@ fn may_inline(
 /// Run the global reduction pass over a Core file.
 ///
 /// Mirrors `Reduce.reduce` from `reduce.sml`.
-pub fn reduce(file: File, settings: &Settings) -> File {
+fn reduce_pass(
+    file: File,
+    settings: &Settings,
+    seed_named_c: HashMap<usize, LocatedConstructor>,
+    seed_named_e: HashMap<usize, LocatedExpression>,
+    seed_poly_c: BTreeSet<usize>,
+) -> (
+    File,
+    HashMap<usize, LocatedConstructor>,
+    HashMap<usize, LocatedExpression>,
+    BTreeSet<usize>,
+) {
     let uses = count_named_uses(&file);
-    let mut reducer = Reducer::new();
+    let mut reducer = Reducer::with_knowns(seed_named_c, seed_named_e);
     // poly_c: set of constructor ids whose types are polymorphic
-    let mut poly_c: BTreeSet<usize> = BTreeSet::new();
+    let mut poly_c = seed_poly_c;
 
     let mut out = Vec::with_capacity(file.len());
     for d in file {
@@ -1804,12 +1953,35 @@ pub fn reduce(file: File, settings: &Settings) -> File {
             Declaration::Val(x, n, t, e, s) => {
                 let t_red = reducer.reduce_con(&[], t);
                 let e_red = reducer.reduce_exp(&[], e.clone());
-                if may_inline(&poly_c, n, &t_red, &e_red, &s, &uses, settings) {
+                let inline = may_inline(&poly_c, n, &t_red, &e_red, &s, &uses, settings);
+                if std::env::var("URWEB_DEBUG_GLOBAL_INLINE").ok().as_deref() == Some("1")
+                    && matches!(
+                        s.as_str(),
+                        "foldUR" | "foldUR2" | "foldR2" | "mapUX" | "mapUX2"
+                    )
+                {
+                    eprintln!(
+                        "URWEB_DEBUG_GLOBAL_INLINE name={s}#{n} inline={inline} uses={} expr={:?}",
+                        uses.get(&n).copied().unwrap_or(0),
+                        e_red.node
+                    );
+                }
+                if inline {
                     reducer.named_e.insert(n, e_red.clone());
                 }
                 out.push(mk_decl(Declaration::Val(x, n, t_red, e_red, s)));
             }
             Declaration::ValRec(vis) => {
+                if std::env::var("URWEB_DEBUG_GLOBAL_INLINE").ok().as_deref() == Some("1") {
+                    for (x, n, _, _, _) in &vis {
+                        if matches!(
+                            x.as_str(),
+                            "foldUR" | "foldUR2" | "foldR2" | "mapUX" | "mapUX2"
+                        ) {
+                            eprintln!("URWEB_DEBUG_GLOBAL_INLINE valrec={x}#{n}");
+                        }
+                    }
+                }
                 let vis_red = vis
                     .into_iter()
                     .map(|(x, n, t, e, s)| {
@@ -1894,6 +2066,18 @@ pub fn reduce(file: File, settings: &Settings) -> File {
             }
         }
     }
+    (out, reducer.named_c, reducer.named_e, poly_c)
+}
+
+pub fn reduce(file: File, settings: &Settings) -> File {
+    let (_, named_c, named_e, poly_c) = reduce_pass(
+        file.clone(),
+        settings,
+        HashMap::new(),
+        HashMap::new(),
+        BTreeSet::new(),
+    );
+    let (out, _, _, _) = reduce_pass(file, settings, named_c, named_e, poly_c);
     out
 }
 
@@ -1918,6 +2102,33 @@ mod tests {
 
     fn prim_exp() -> LocatedExpression {
         Located::new(Expression::Prim(Prim::Int(0)), dummy())
+    }
+
+    fn record_row(names: &[&str]) -> Vec<(LocatedConstructor, LocatedConstructor)> {
+        names
+            .iter()
+            .map(|name| {
+                (
+                    Located::new(Constructor::Name((*name).into()), dummy()),
+                    unit_con(),
+                )
+            })
+            .collect()
+    }
+
+    fn rest_row_names(meta: &FieldMeta) -> Option<Vec<String>> {
+        match &meta.rest.node {
+            Constructor::Record(_, fields) => Some(
+                fields
+                    .iter()
+                    .filter_map(|(name, _)| match &name.node {
+                        Constructor::Name(name) => Some(name.clone()),
+                        _ => None,
+                    })
+                    .collect(),
+            ),
+            _ => None,
+        }
     }
 
     fn val_decl(id: usize, e: LocatedExpression) -> LocatedDeclaration {
@@ -2037,6 +2248,148 @@ mod tests {
             "App of Abs must beta-reduce"
         );
         Ok(()) // return success to the test harness
+    }
+
+    #[test]
+    fn app_inlines_non_passive_higher_order_argument() -> anyhow::Result<()> {
+        let span = dummy();
+        let field_name = Located::new(Constructor::Name("x".into()), span.clone());
+        let dom = Located::new(
+            Constructor::TFun(Box::new(unit_con()), Box::new(unit_con())),
+            span.clone(),
+        );
+        let body = Located::new(
+            Expression::Record(vec![
+                (
+                    field_name.clone(),
+                    Located::new(Expression::Rel(0), span.clone()),
+                    dom.clone(),
+                ),
+                (
+                    Located::new(Constructor::Name("y".into()), span.clone()),
+                    Located::new(Expression::Rel(0), span.clone()),
+                    dom.clone(),
+                ),
+            ]),
+            span.clone(),
+        );
+        let lam = Located::new(
+            Expression::Abs("f".into(), dom.clone(), dom.clone(), Box::new(body)),
+            span.clone(),
+        );
+        let arg = Located::new(
+            Expression::App(
+                Box::new(Located::new(
+                    Expression::Ffi("Test".into(), "mk".into()),
+                    span.clone(),
+                )),
+                Box::new(prim_exp()),
+            ),
+            span.clone(),
+        );
+        let reduced = Reducer::new().reduce_exp(
+            &[],
+            Located::new(Expression::App(Box::new(lam), Box::new(arg)), span),
+        );
+        assert!(
+            matches!(reduced.node, Expression::Record(_)),
+            "higher-order arguments should inline instead of introducing a let binder"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn named_cabs_body_inlined_even_with_multiple_uses() -> anyhow::Result<()> {
+        let cabs_body = Located::new(
+            Expression::CAbs(
+                "nm".into(),
+                Box::new(Located::new(Kind::Name, dummy())),
+                Box::new(Located::new(Expression::Prim(Prim::Int(0)), dummy())),
+            ),
+            dummy(),
+        );
+        let named_ref = Located::new(Expression::Named(1), dummy());
+        let file = vec![
+            val_decl(1, cabs_body),
+            val_decl(2, named_ref.clone()),
+            val_decl(3, named_ref),
+            export_decl(2),
+            export_decl(3),
+        ];
+
+        let result = reduce(file, &Settings::default());
+        for wanted in [2, 3] {
+            let body = result
+                .iter()
+                .find_map(|d| match &d.node {
+                    Declaration::Val(_, id, _, e, _) if *id == wanted => Some(e.clone()),
+                    _ => None,
+                })
+                .with_context(|| format!("val id={wanted} must exist"))?;
+            assert!(
+                matches!(body.node, Expression::CAbs(_, _, _)),
+                "constructor-abstracted bodies must inline into use sites before monoization"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn non_basis_capps_mark_body_for_inlining() {
+        let body = Located::new(
+            Expression::CApp(
+                Box::new(Located::new(Expression::Named(7), dummy())),
+                unit_con(),
+            ),
+            dummy(),
+        );
+        assert!(contains_constructor_compile_time_ops(&body));
+    }
+
+    #[test]
+    fn let_inlines_non_passive_higher_order_binding() -> anyhow::Result<()> {
+        let span = dummy();
+        let ty = Located::new(
+            Constructor::TFun(Box::new(unit_con()), Box::new(unit_con())),
+            span.clone(),
+        );
+        let bound = Located::new(
+            Expression::App(
+                Box::new(Located::new(
+                    Expression::Ffi("Test".into(), "mk".into()),
+                    span.clone(),
+                )),
+                Box::new(prim_exp()),
+            ),
+            span.clone(),
+        );
+        let body = Located::new(
+            Expression::Record(vec![
+                (
+                    Located::new(Constructor::Name("x".into()), span.clone()),
+                    Located::new(Expression::Rel(0), span.clone()),
+                    ty.clone(),
+                ),
+                (
+                    Located::new(Constructor::Name("y".into()), span.clone()),
+                    Located::new(Expression::Rel(0), span.clone()),
+                    ty.clone(),
+                ),
+            ]),
+            span.clone(),
+        );
+        let reduced = Reducer::new().reduce_exp(
+            &[],
+            Located::new(
+                Expression::Let("f".into(), ty, Box::new(bound), Box::new(body)),
+                span,
+            ),
+        );
+        assert!(
+            matches!(reduced.node, Expression::Record(_)),
+            "higher-order let bindings should inline instead of surviving to later passes"
+        );
+        Ok(())
     }
 
     #[test]
@@ -2210,6 +2563,49 @@ mod tests {
     }
 
     #[test]
+    fn concat_projection_preserves_sml_rest_row_order() -> anyhow::Result<()> {
+        let span = dummy();
+        let left_row = record_row(&["A", "B"]);
+        let right_row = record_row(&["C"]);
+        let left = Located::new(Expression::Rel(1), span.clone());
+        let right = Located::new(Expression::Rel(0), span.clone());
+        let left_ty = Located::new(
+            Constructor::Record(Box::new(Located::new(Kind::Type, span.clone())), left_row),
+            span.clone(),
+        );
+        let right_ty = Located::new(
+            Constructor::Record(Box::new(Located::new(Kind::Type, span.clone())), right_row),
+            span.clone(),
+        );
+        let concat = Located::new(
+            Expression::Concat(Box::new(left), left_ty, Box::new(right), right_ty),
+            span,
+        );
+
+        let reducer = Reducer::new();
+        let result = reducer.reduce_exp(&[], concat);
+        let Expression::Record(fields) = &result.node else {
+            anyhow::bail!("concat projection should reduce to a record");
+        };
+        assert_eq!(fields.len(), 3, "concat should expose all fields");
+
+        let Expression::Field(_, _, meta_a) = &fields[0].1.node else {
+            anyhow::bail!("first field should remain a projection");
+        };
+        let Expression::Field(_, _, meta_b) = &fields[1].1.node else {
+            anyhow::bail!("second field should remain a projection");
+        };
+        let Expression::Field(_, _, meta_c) = &fields[2].1.node else {
+            anyhow::bail!("third field should remain a projection");
+        };
+
+        assert_eq!(rest_row_names(meta_a), Some(vec![]));
+        assert_eq!(rest_row_names(meta_b), Some(vec!["A".into()]));
+        assert_eq!(rest_row_names(meta_c), Some(vec!["B".into(), "A".into()]));
+        Ok(())
+    }
+
+    #[test]
     fn named_inlined_when_use_count_one() -> anyhow::Result<()> {
         // test returns Result to allow ? propagation
         // Kills: may_inline, count_uses. val f=prim, val g=Named(f), export g -> g inlined.
@@ -2231,6 +2627,73 @@ mod tests {
             "Named(1) must be inlined when use_count=1"
         );
         Ok(()) // return success to the test harness
+    }
+
+    #[test]
+    fn forward_named_chain_inlined_across_later_bindings() -> anyhow::Result<()> {
+        let file = vec![
+            val_decl(1, Located::new(Expression::Named(2), dummy())),
+            val_decl(2, Located::new(Expression::Named(3), dummy())),
+            val_decl(3, prim_exp()),
+            export_decl(1),
+        ];
+        let result = reduce(file, &Settings::default());
+        let body = result
+            .iter()
+            .find_map(|d| match &d.node {
+                Declaration::Val(_, 1, _, e, _) => Some(e),
+                _ => None,
+            })
+            .with_context(|| "val 1 must exist")?;
+        assert!(
+            matches!(body.node, Expression::Prim(_)),
+            "forward Named chains should inline after seeding a second pass"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn forward_constructor_alias_reduced_in_later_pass() -> anyhow::Result<()> {
+        let kind = Located::new(Kind::Type, dummy());
+        let alias_decl = Located::new(
+            Declaration::Constructor(
+                "alias1".into(),
+                1,
+                kind.clone(),
+                Located::new(Constructor::Named(2), dummy()),
+            ),
+            dummy(),
+        );
+        let target_decl = Located::new(
+            Declaration::Constructor("alias2".into(), 2, kind, unit_con()),
+            dummy(),
+        );
+        let val = Located::new(
+            Declaration::Val(
+                "x".into(),
+                3,
+                Located::new(Constructor::Named(1), dummy()),
+                prim_exp(),
+                "x".into(),
+            ),
+            dummy(),
+        );
+        let result = reduce(
+            vec![alias_decl, target_decl, val, export_decl(3)],
+            &Settings::default(),
+        );
+        let typ = result
+            .iter()
+            .find_map(|d| match &d.node {
+                Declaration::Val(_, 3, t, _, _) => Some(t),
+                _ => None,
+            })
+            .with_context(|| "val 3 must exist")?;
+        assert!(
+            matches!(typ.node, Constructor::Unit),
+            "forward constructor aliases should resolve before final output"
+        );
+        Ok(())
     }
 
     // --- More tests to kill missed mutants ---

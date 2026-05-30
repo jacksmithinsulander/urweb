@@ -32,7 +32,7 @@ sqlite3 *sqlite;
 sqlite3_stmt *stmt;
 uw_conn *conn;
 
-if (sqlite3_open("/tmp/hello.db", &sqlite) != SQLITE_OK) uw_error(ctx, FATAL, "Can't open SQLite database.");
+if (sqlite3_open("/tmp/urweb-hello.db", &sqlite) != SQLITE_OK) uw_error(ctx, FATAL, "Can't open SQLite database.");
 
 if (sqlite3_exec(sqlite, "PRAGMA foreign_keys = ON", NULL, NULL, NULL) != SQLITE_OK)
 uw_error(ctx, FATAL, "Can't enable foreign_keys for SQLite database");
@@ -115,9 +115,11 @@ static inline uw_Basis_string uw_Basis_attrOptional(
 }
 
 /* Function prototypes */
-static uw_unit __uwn_wrap_main_1755(uw_context, uw_unit, uw_unit);
+static uw_unit __uwn_wrap_main_1701(uw_context, uw_unit, uw_unit);
 
-static uw_unit __uwn_wrap_main_1755(uw_context ctx, uw_unit __uwr_x0_0, uw_unit __uwr___1) {
+static char jslib[] = "";
+
+static uw_unit __uwn_wrap_main_1701(uw_context ctx, uw_unit __uwr_x0_0, uw_unit __uwr___1) {
 return(((uw_write(ctx, "\n<head"), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "class", "")), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "style", "")), 0), ((uw_write(ctx, ">\n<title"), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "class", "")), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "style", "")), 0), ((uw_write(ctx, ">Hello world!</title>\n</head>\n<body"), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "class", "")), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "style", "")), 0), ((uw_write(ctx, ">\n<h1"), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "class", "")), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "style", "")), 0), (uw_write(ctx, ">Hello world!</h1>\n</body>\n"), 0))))))))))))));
 }
 
@@ -178,7 +180,7 @@ uw_set_needs_sig(ctx, 0);
 uw_login(ctx);
 {
 uw_unit arg0 = uw_Basis_unurlifyUnit(ctx, &request);
-__uwn_wrap_main_1755(ctx, arg0, 0);
+__uwn_wrap_main_1701(ctx, arg0, 0);
 uw_write(ctx, "</html>");
 return;
 }

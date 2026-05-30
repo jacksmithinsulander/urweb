@@ -10,7 +10,8 @@
 //!
 //! Mirrors `Cjrize.cjrize` in `cjrize.sml`.
 
-use std::collections::HashMap;
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 #[cfg(test)]
@@ -31,6 +32,28 @@ use crate::primitives::{Prim, StringMode};
 thread_local! {
     /// Caps work during `cargo test` / mutation so runaway mutants panic instead of timing out.
     static CJRIZE_TICKS: Cell<usize> = const { Cell::new(8_000_000) };
+}
+
+thread_local! {
+    static CJRIZE_NAMED_TYPES: RefCell<HashMap<usize, mono::LocTyp>> = RefCell::new(HashMap::new());
+}
+
+thread_local! {
+    static CJRIZE_RAW_NAMED_TYPES: RefCell<HashMap<usize, mono::LocTyp>> =
+        RefCell::new(HashMap::new());
+}
+
+thread_local! {
+    static CJRIZE_REL_TYPES: RefCell<Vec<mono::LocTyp>> = const { RefCell::new(Vec::new()) };
+}
+
+thread_local! {
+    static CJRIZE_CONSTRUCTOR_KINDS: RefCell<HashMap<usize, DatatypeKind>> =
+        RefCell::new(HashMap::new());
+}
+
+thread_local! {
+    static CJRIZE_CURRENT_DECL: RefCell<Option<String>> = const { RefCell::new(None) };
 }
 
 #[cfg(test)]
@@ -54,6 +77,557 @@ fn cjrize_test_tick() {
 #[cfg(not(test))]
 #[inline]
 fn cjrize_test_tick() {}
+
+fn debug_chat_cjr_enabled() -> bool {
+    std::env::var("URWEB_DEBUG_CHAT_CJR").ok().as_deref() == Some("1")
+}
+
+fn debug_chat_cjr(span: &Span, label: &str, detail: impl FnOnce() -> String) {
+    if !debug_chat_cjr_enabled() || !span.file.ends_with("/demo/chat.ur") {
+        return;
+    }
+    eprintln!(
+        "URWEB_DEBUG_CHAT_CJR {label} {}:{} {}",
+        span.file,
+        span.first.line,
+        detail()
+    );
+}
+
+fn debug_cjr_field_enabled() -> bool {
+    std::env::var("URWEB_DEBUG_CJR_FIELD").ok().as_deref() == Some("1")
+}
+
+fn debug_cjr_field_span(span: &Span) -> bool {
+    debug_cjr_field_enabled()
+        && (span.file.ends_with("/lib/ur/top.ur")
+            || span.file.ends_with("/demo/metaform.ur")
+            || span.file.ends_with("/demo/crud.ur")
+            || span.file.ends_with("/demo/listFun.ur")
+            || span.file.ends_with("/demo/refFun.ur")
+            || span.file.ends_with("/demo/treeFun.ur"))
+}
+
+fn debug_cjr_field(span: &Span, label: &str, detail: impl FnOnce() -> String) {
+    if !debug_cjr_field_span(span) {
+        return;
+    }
+    let current_decl = CJRIZE_CURRENT_DECL.with(|slot| slot.borrow().clone());
+    eprintln!(
+        "URWEB_DEBUG_CJR_FIELD {label} decl={current_decl:?} {}:{} {}",
+        span.file,
+        span.first.line,
+        detail()
+    );
+}
+
+fn debug_cjr_lowered_enabled() -> bool {
+    std::env::var("URWEB_DEBUG_CJR_LOWERED").ok().as_deref() == Some("1")
+}
+
+fn debug_cjr_lowered(span: &Span, label: &str, detail: impl FnOnce() -> String) {
+    if !debug_cjr_lowered_enabled() {
+        return;
+    }
+    eprintln!(
+        "URWEB_DEBUG_CJR_LOWERED {label} {}:{} {}",
+        span.file,
+        span.first.line,
+        detail()
+    );
+}
+
+fn debug_cjr_top_lambda_enabled() -> bool {
+    std::env::var("URWEB_DEBUG_CJR_TOP_LAMBDA").ok().as_deref() == Some("1")
+}
+
+fn debug_cjr_top_lambda(span: &Span, label: &str, detail: impl FnOnce() -> String) {
+    if !debug_cjr_top_lambda_enabled()
+        || !span.file.ends_with("/lib/ur/top.ur")
+        || !matches!(
+            span.first.line,
+            137 | 138 | 139 | 140 | 156 | 157 | 158 | 159 | 160 | 161
+        )
+    {
+        return;
+    }
+    eprintln!(
+        "URWEB_DEBUG_CJR_TOP {label} {}:{} {}",
+        span.file,
+        span.first.line,
+        detail()
+    );
+}
+
+fn debug_cjr_pre_unravel_enabled() -> bool {
+    std::env::var("URWEB_DEBUG_CJR_PRE_UNRAVEL").ok().as_deref() == Some("1")
+}
+
+fn debug_cjr_pre_unravel(span: &Span, label: &str, detail: impl FnOnce() -> String) {
+    if !debug_cjr_pre_unravel_enabled()
+        || !span.file.ends_with("/lib/ur/top.ur")
+        || span.first.line != 156
+    {
+        return;
+    }
+    eprintln!(
+        "URWEB_DEBUG_CJR_PRE_UNRAVEL {label} {}:{} {}",
+        span.file,
+        span.first.line,
+        detail()
+    );
+}
+
+fn with_current_decl<T>(label: String, f: impl FnOnce() -> T) -> T {
+    CJRIZE_CURRENT_DECL.with(|slot| {
+        let previous = slot.replace(Some(label));
+        let out = f();
+        slot.replace(previous);
+        out
+    })
+}
+
+fn with_rel_binder<T>(typ: mono::LocTyp, f: impl FnOnce() -> T) -> T {
+    CJRIZE_REL_TYPES.with(|slot| {
+        slot.borrow_mut().insert(0, typ);
+        let out = f();
+        slot.borrow_mut().remove(0);
+        out
+    })
+}
+
+fn with_rel_types<T>(types: Vec<mono::LocTyp>, f: impl FnOnce() -> T) -> T {
+    CJRIZE_REL_TYPES.with(|slot| {
+        let previous = slot.replace(types);
+        let out = f();
+        slot.replace(previous);
+        out
+    })
+}
+
+fn debug_validate_named_enabled() -> bool {
+    std::env::var("URWEB_DEBUG_CJR_VALIDATE").ok().as_deref() == Some("1")
+}
+
+fn debug_validate_named_span(span: &Span) -> bool {
+    span.file.ends_with("/demo/listFun.ur") || span.file.ends_with("/demo/listShop.ur")
+}
+
+fn collect_cjr_bound_named_ids(decls: &[LocDecl]) -> HashSet<usize> {
+    let mut bound = HashSet::new();
+    for decl in decls {
+        match &decl.node {
+            Decl::Val(_, n, _, _) | Decl::Fun(_, n, _, _, _) => {
+                bound.insert(*n);
+            }
+            Decl::FunRec(vis) => {
+                for (_, n, _, _, _) in vis {
+                    bound.insert(*n);
+                }
+            }
+            _ => {}
+        }
+    }
+    bound
+}
+
+fn collect_mono_bound_named_ids(decls: &[mono::LocDecl]) -> HashSet<usize> {
+    let mut bound = HashSet::new();
+    for decl in decls {
+        match &decl.node {
+            mono::Decl::Val(_, n, _, _, _) => {
+                bound.insert(*n);
+            }
+            mono::Decl::ValRec(vis) => {
+                for (_, n, _, _, _) in vis {
+                    bound.insert(*n);
+                }
+            }
+            _ => {}
+        }
+    }
+    bound
+}
+
+fn debug_validate_cjr_named_refs(decls: &[LocDecl], mono_bound: &HashSet<usize>) {
+    fn visit_exp(
+        exp: &LocExp,
+        label: &str,
+        bound: &HashSet<usize>,
+        mono_bound: &HashSet<usize>,
+        seen: &mut HashSet<(String, usize, usize, usize)>,
+    ) {
+        if let Exp::Named(n) = &exp.node {
+            if !bound.contains(n) && debug_validate_named_span(&exp.span) {
+                let key = (
+                    label.to_string(),
+                    *n,
+                    exp.span.first.line as usize,
+                    exp.span.first.col as usize,
+                );
+                if seen.insert(key) {
+                    eprintln!(
+                        "URWEB_DEBUG_CJR_VALIDATE missing named id={} in_mono={} decl={} {}:{} expr={:?}",
+                        n,
+                        mono_bound.contains(n),
+                        label,
+                        exp.span.file,
+                        exp.span.first.line,
+                        exp.node
+                    );
+                }
+            }
+        }
+
+        match &exp.node {
+            Exp::Prim(_) | Exp::Rel(_) | Exp::Named(_) | Exp::Ffi(_, _) | Exp::None(_) => {}
+            Exp::Con(_, _, arg) => {
+                if let Some(arg) = arg.as_deref() {
+                    visit_exp(arg, label, bound, mono_bound, seen);
+                }
+            }
+            Exp::Some(_, inner)
+            | Exp::Unop(_, inner)
+            | Exp::Field(inner, _)
+            | Exp::Error(inner, _)
+            | Exp::Write(inner)
+            | Exp::Redirect(inner, _)
+            | Exp::Uurlify(inner, _, _) => visit_exp(inner, label, bound, mono_bound, seen),
+            Exp::FfiApp(_, _, args) => {
+                for (arg, _) in args {
+                    visit_exp(arg, label, bound, mono_bound, seen);
+                }
+            }
+            Exp::App(left, right) => {
+                visit_exp(left, label, bound, mono_bound, seen);
+                for arg in right {
+                    visit_exp(arg, label, bound, mono_bound, seen);
+                }
+            }
+            Exp::Binop(_, left, right) | Exp::Seq(left, right) | Exp::Let(_, _, left, right) => {
+                visit_exp(left, label, bound, mono_bound, seen);
+                visit_exp(right, label, bound, mono_bound, seen);
+            }
+            Exp::Record(_, fields) => {
+                for (_, inner) in fields {
+                    visit_exp(inner, label, bound, mono_bound, seen);
+                }
+            }
+            Exp::Case(disc, arms, _) => {
+                visit_exp(disc, label, bound, mono_bound, seen);
+                for (_, arm) in arms {
+                    visit_exp(arm, label, bound, mono_bound, seen);
+                }
+            }
+            Exp::Query(meta) => {
+                visit_exp(&meta.query, label, bound, mono_bound, seen);
+                visit_exp(&meta.body, label, bound, mono_bound, seen);
+                visit_exp(&meta.initial, label, bound, mono_bound, seen);
+            }
+            Exp::Dml(meta) => {
+                visit_exp(&meta.dml, label, bound, mono_bound, seen);
+            }
+            Exp::Nextval { seq, .. } => {
+                visit_exp(seq, label, bound, mono_bound, seen);
+            }
+            Exp::Setval { seq, count } => {
+                visit_exp(seq, label, bound, mono_bound, seen);
+                visit_exp(count, label, bound, mono_bound, seen);
+            }
+            Exp::ReturnBlob {
+                blob, mime_type, ..
+            } => {
+                if let Some(blob) = blob.as_deref() {
+                    visit_exp(blob, label, bound, mono_bound, seen);
+                }
+                visit_exp(mime_type, label, bound, mono_bound, seen);
+            }
+        }
+    }
+
+    let mut seen = HashSet::new();
+    let bound = collect_cjr_bound_named_ids(decls);
+    for decl in decls {
+        match &decl.node {
+            Decl::Val(x, n, _, exp) => {
+                visit_exp(exp, &format!("val:{x}:{n}"), &bound, mono_bound, &mut seen);
+            }
+            Decl::Fun(x, n, _, _, exp) => {
+                visit_exp(exp, &format!("fun:{x}:{n}"), &bound, mono_bound, &mut seen);
+            }
+            Decl::FunRec(vis) => {
+                for (x, n, _, _, exp) in vis {
+                    visit_exp(
+                        exp,
+                        &format!("funrec:{x}:{n}"),
+                        &bound,
+                        mono_bound,
+                        &mut seen,
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn contains_debug_show_option_abs(exp: &mono::LocExp) -> bool {
+    let loc = &exp.span;
+    if loc.file.ends_with("/lib/ur/top.ur")
+        && loc.first.line == 76
+        && matches!(exp.node, mono::Exp::Abs(_, _, _, _))
+    {
+        return true;
+    }
+
+    match &exp.node {
+        mono::Exp::Prim(_) | mono::Exp::Rel(_) | mono::Exp::Named(_) | mono::Exp::Ffi(_, _) => {
+            false
+        }
+        mono::Exp::Con(_, _, arg) => arg.as_deref().is_some_and(contains_debug_show_option_abs),
+        mono::Exp::None(_) => false,
+        mono::Exp::Some(_, inner)
+        | mono::Exp::Abs(_, _, _, inner)
+        | mono::Exp::Unop(_, inner)
+        | mono::Exp::Field(inner, _)
+        | mono::Exp::Error(inner, _)
+        | mono::Exp::Redirect(inner, _)
+        | mono::Exp::Write(inner)
+        | mono::Exp::Dml(inner, _)
+        | mono::Exp::Nextval(inner)
+        | mono::Exp::Uurlify(inner, _, _)
+        | mono::Exp::JavaScript(_, inner)
+        | mono::Exp::SignalReturn(inner)
+        | mono::Exp::SignalSource(inner)
+        | mono::Exp::Recv(inner, _)
+        | mono::Exp::Sleep(inner)
+        | mono::Exp::Spawn(inner) => contains_debug_show_option_abs(inner),
+        mono::Exp::FfiApp(_, _, args) => args
+            .iter()
+            .any(|(arg, _)| contains_debug_show_option_abs(arg)),
+        mono::Exp::App(left, right)
+        | mono::Exp::Binop(_, _, left, right)
+        | mono::Exp::Strcat(left, right)
+        | mono::Exp::Seq(left, right)
+        | mono::Exp::Let(_, _, left, right)
+        | mono::Exp::SignalBind(left, right) => {
+            contains_debug_show_option_abs(left) || contains_debug_show_option_abs(right)
+        }
+        mono::Exp::ServerCall(left, _, _, _) => contains_debug_show_option_abs(left),
+        mono::Exp::Record(fields) => fields
+            .iter()
+            .any(|(_, inner, _)| contains_debug_show_option_abs(inner)),
+        mono::Exp::Case(disc, arms, _) => {
+            contains_debug_show_option_abs(disc)
+                || arms
+                    .iter()
+                    .any(|(_, arm)| contains_debug_show_option_abs(arm))
+        }
+        mono::Exp::ReturnBlob {
+            blob, mime_type, ..
+        } => {
+            blob.as_deref().is_some_and(contains_debug_show_option_abs)
+                || contains_debug_show_option_abs(mime_type)
+        }
+        mono::Exp::Closure(_, envs) => envs.iter().any(contains_debug_show_option_abs),
+        mono::Exp::Query(meta) => {
+            contains_debug_show_option_abs(&meta.query)
+                || contains_debug_show_option_abs(&meta.body)
+                || contains_debug_show_option_abs(&meta.initial)
+        }
+        mono::Exp::Setval(left, right) => {
+            contains_debug_show_option_abs(left) || contains_debug_show_option_abs(right)
+        }
+    }
+}
+
+fn debug_show_option_path(exp: &mono::LocExp) -> Option<Vec<String>> {
+    let loc = &exp.span;
+    if loc.file.ends_with("/lib/ur/top.ur")
+        && loc.first.line == 76
+        && matches!(exp.node, mono::Exp::Abs(_, _, _, _))
+    {
+        return Some(vec!["Abs(top.ur:76 show_option body)".to_string()]);
+    }
+
+    match &exp.node {
+        mono::Exp::Prim(_) | mono::Exp::Rel(_) | mono::Exp::Named(_) | mono::Exp::Ffi(_, _) => None,
+        mono::Exp::Con(_, _, arg) => {
+            arg.as_deref()
+                .and_then(debug_show_option_path)
+                .map(|mut path| {
+                    path.insert(0, "Con(arg)".to_string());
+                    path
+                })
+        }
+        mono::Exp::None(_) => None,
+        mono::Exp::Some(_, inner) => debug_show_option_path(inner).map(|mut path| {
+            path.insert(0, "Some(value)".to_string());
+            path
+        }),
+        mono::Exp::Abs(_, _, _, inner)
+        | mono::Exp::Unop(_, inner)
+        | mono::Exp::Field(inner, _)
+        | mono::Exp::Error(inner, _)
+        | mono::Exp::Redirect(inner, _)
+        | mono::Exp::Write(inner)
+        | mono::Exp::Dml(inner, _)
+        | mono::Exp::Nextval(inner)
+        | mono::Exp::Uurlify(inner, _, _)
+        | mono::Exp::JavaScript(_, inner)
+        | mono::Exp::SignalReturn(inner)
+        | mono::Exp::SignalSource(inner)
+        | mono::Exp::Recv(inner, _)
+        | mono::Exp::Sleep(inner)
+        | mono::Exp::Spawn(inner) => debug_show_option_path(inner).map(|mut path| {
+            let label = match &exp.node {
+                mono::Exp::Abs(_, _, _, _) => "Abs(body)",
+                mono::Exp::Unop(_, _) => "Unop(inner)",
+                mono::Exp::Field(_, field) => {
+                    return {
+                        path.insert(0, format!("Field({field})"));
+                        path
+                    }
+                }
+                mono::Exp::Error(_, _) => "Error(inner)",
+                mono::Exp::Redirect(_, _) => "Redirect(inner)",
+                mono::Exp::Write(_) => "Write(inner)",
+                mono::Exp::Dml(_, _) => "Dml(inner)",
+                mono::Exp::Nextval(_) => "Nextval(inner)",
+                mono::Exp::Uurlify(_, _, _) => "Uurlify(inner)",
+                mono::Exp::JavaScript(_, _) => "JavaScript(inner)",
+                mono::Exp::SignalReturn(_) => "SignalReturn(inner)",
+                mono::Exp::SignalSource(_) => "SignalSource(inner)",
+                mono::Exp::Recv(_, _) => "Recv(inner)",
+                mono::Exp::Sleep(_) => "Sleep(inner)",
+                mono::Exp::Spawn(_) => "Spawn(inner)",
+                _ => unreachable!("covered above"),
+            };
+            path.insert(0, label.to_string());
+            path
+        }),
+        mono::Exp::FfiApp(module, name, args) => {
+            args.iter().enumerate().find_map(|(idx, (arg, _))| {
+                debug_show_option_path(arg).map(|mut path| {
+                    path.insert(0, format!("FfiApp({module}.{name}) arg#{idx}"));
+                    path
+                })
+            })
+        }
+        mono::Exp::App(left, right)
+        | mono::Exp::Binop(_, _, left, right)
+        | mono::Exp::Strcat(left, right)
+        | mono::Exp::Seq(left, right)
+        | mono::Exp::Let(_, _, left, right)
+        | mono::Exp::SignalBind(left, right) => debug_show_option_path(left)
+            .map(|mut path| {
+                let label = match &exp.node {
+                    mono::Exp::App(_, _) => "App(fn)",
+                    mono::Exp::Binop(_, _, _, _) => "Binop(left)",
+                    mono::Exp::Strcat(_, _) => "Strcat(left)",
+                    mono::Exp::Seq(_, _) => "Seq(first)",
+                    mono::Exp::Let(name, _, _, _) => {
+                        path.insert(0, format!("Let({name}) bound"));
+                        return path;
+                    }
+                    mono::Exp::SignalBind(_, _) => "SignalBind(left)",
+                    _ => unreachable!("covered above"),
+                };
+                path.insert(0, label.to_string());
+                path
+            })
+            .or_else(|| {
+                debug_show_option_path(right).map(|mut path| {
+                    let label = match &exp.node {
+                        mono::Exp::App(_, _) => "App(arg)",
+                        mono::Exp::Binop(_, _, _, _) => "Binop(right)",
+                        mono::Exp::Strcat(_, _) => "Strcat(right)",
+                        mono::Exp::Seq(_, _) => "Seq(second)",
+                        mono::Exp::Let(name, _, _, _) => {
+                            path.insert(0, format!("Let({name}) body"));
+                            return path;
+                        }
+                        mono::Exp::SignalBind(_, _) => "SignalBind(right)",
+                        _ => unreachable!("covered above"),
+                    };
+                    path.insert(0, label.to_string());
+                    path
+                })
+            }),
+        mono::Exp::ServerCall(left, _, _, _) => debug_show_option_path(left).map(|mut path| {
+            path.insert(0, "ServerCall(fn)".to_string());
+            path
+        }),
+        mono::Exp::Record(fields) => fields.iter().find_map(|(name, inner, _)| {
+            debug_show_option_path(inner).map(|mut path| {
+                path.insert(0, format!("Record(field {name})"));
+                path
+            })
+        }),
+        mono::Exp::Case(disc, arms, _) => debug_show_option_path(disc)
+            .map(|mut path| {
+                path.insert(0, "Case(discriminant)".to_string());
+                path
+            })
+            .or_else(|| {
+                arms.iter().enumerate().find_map(|(idx, (_, arm))| {
+                    debug_show_option_path(arm).map(|mut path| {
+                        path.insert(0, format!("Case(arm {idx})"));
+                        path
+                    })
+                })
+            }),
+        mono::Exp::ReturnBlob {
+            blob, mime_type, ..
+        } => blob
+            .as_deref()
+            .and_then(debug_show_option_path)
+            .map(|mut path| {
+                path.insert(0, "ReturnBlob(blob)".to_string());
+                path
+            })
+            .or_else(|| {
+                debug_show_option_path(mime_type).map(|mut path| {
+                    path.insert(0, "ReturnBlob(mime_type)".to_string());
+                    path
+                })
+            }),
+        mono::Exp::Closure(_, envs) => envs.iter().enumerate().find_map(|(idx, inner)| {
+            debug_show_option_path(inner).map(|mut path| {
+                path.insert(0, format!("Closure(env {idx})"));
+                path
+            })
+        }),
+        mono::Exp::Query(meta) => debug_show_option_path(&meta.query)
+            .map(|mut path| {
+                path.insert(0, "Query(sql)".to_string());
+                path
+            })
+            .or_else(|| {
+                debug_show_option_path(&meta.body).map(|mut path| {
+                    path.insert(0, "Query(body)".to_string());
+                    path
+                })
+            })
+            .or_else(|| {
+                debug_show_option_path(&meta.initial).map(|mut path| {
+                    path.insert(0, "Query(initial)".to_string());
+                    path
+                })
+            }),
+        mono::Exp::Setval(left, right) => debug_show_option_path(left)
+            .map(|mut path| {
+                path.insert(0, "Setval(left)".to_string());
+                path
+            })
+            .or_else(|| {
+                debug_show_option_path(right).map(|mut path| {
+                    path.insert(0, "Setval(right)".to_string());
+                    path
+                })
+            }),
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Structural equality on Mono types (for Sm lookup)
@@ -79,6 +653,22 @@ fn typ_eq(a: &mono::Typ, b: &mono::Typ) -> bool {
         (mono::Typ::Signal(a), mono::Typ::Signal(b)) => typ_eq(&a.node, &b.node),
         // Two Transaction types are equal when their result types are equal.
         (mono::Typ::Transaction(a), mono::Typ::Transaction(b)) => typ_eq(&a.node, &b.node),
+        _ => false,
+    }
+}
+
+fn cjr_typ_eq(a: &Typ, b: &Typ) -> bool {
+    match (a, b) {
+        (Typ::Fun(a_dom, a_ran), Typ::Fun(b_dom, b_ran)) => {
+            cjr_typ_eq(&a_dom.node, &b_dom.node) && cjr_typ_eq(&a_ran.node, &b_ran.node)
+        }
+        (Typ::Record(a_id), Typ::Record(b_id)) => a_id == b_id,
+        (Typ::Datatype(_, a_id, _), Typ::Datatype(_, b_id, _)) => a_id == b_id,
+        (Typ::Ffi(a_mod, a_name), Typ::Ffi(b_mod, b_name)) => a_mod == b_mod && a_name == b_name,
+        (Typ::Option(a_inner), Typ::Option(b_inner)) => cjr_typ_eq(&a_inner.node, &b_inner.node),
+        (Typ::List(a_inner, a_id), Typ::List(b_inner, b_id)) => {
+            a_id == b_id && cjr_typ_eq(&a_inner.node, &b_inner.node)
+        }
         _ => false,
     }
 }
@@ -200,15 +790,17 @@ fn cify_typ_dtmap(
                 .iter()
                 .map(|(x, ft)| (x.clone(), cify_typ_dtmap(ft, sm, dtmap)))
                 .collect();
+            if sorted.len() == 2 && sorted[0].0 == "1" && sorted[1].0 == "2" {
+                if let Typ::List(inner, list_id) = &cjr_fields[1].1.node {
+                    if cjr_typ_eq(&cjr_fields[0].1.node, &inner.node) {
+                        return Located::new(Typ::Record(*list_id), loc);
+                    }
+                }
+            }
             let id = sm.find(&sorted, cjr_fields);
             Located::new(Typ::Record(id), loc)
         }
         mono::Typ::Datatype(n, r) => {
-            if let Some(r_cjr) = dtmap.get(n) {
-                return Located::new(Typ::Datatype(DatatypeKind::Default, *n, r_cjr.clone()), loc);
-            }
-            let r_cjr: cjr::DatatypeRef = Arc::new(Mutex::new(vec![]));
-            dtmap.insert(*n, r_cjr.clone());
             let constrs = {
                 let guard = crate::compiler_diagnostics::lock_for_compile(
                     r.as_ref(),
@@ -216,6 +808,17 @@ fn cify_typ_dtmap(
                 );
                 guard.constrs.clone()
             };
+            if let Some(head) = mono_exact_list_element(*n, &constrs) {
+                let c_head = cify_typ_dtmap(head, sm, dtmap);
+                let id = sm.find_list(head, &c_head);
+                return Located::new(Typ::List(Box::new(c_head), id), loc);
+            }
+            if let Some(r_cjr) = dtmap.get(n) {
+                return Located::new(Typ::Datatype(DatatypeKind::Default, *n, r_cjr.clone()), loc);
+            }
+            let r_cjr: cjr::DatatypeRef = Arc::new(Mutex::new(vec![]));
+            dtmap.insert(*n, r_cjr.clone());
+            let kind = classify_constrs(*n, &constrs);
             let translated: Vec<(String, usize, Option<LocTyp>)> = constrs
                 .iter()
                 .map(|(x, cn, to)| {
@@ -223,7 +826,6 @@ fn cify_typ_dtmap(
                     (x.clone(), *cn, ct)
                 })
                 .collect();
-            let kind = classify_constrs(&translated);
             *crate::compiler_diagnostics::lock_for_compile(&*r_cjr, "cjrize CJR datatype ref") =
                 translated;
             Located::new(Typ::Datatype(kind, *n, r_cjr), loc)
@@ -254,12 +856,77 @@ fn cify_typ_dtmap(
     }
 }
 
-fn classify_constrs(constrs: &[(String, usize, Option<LocTyp>)]) -> DatatypeKind {
+fn mono_exact_list_element<'a>(
+    datatype_id: usize,
+    constrs: &'a [(String, usize, Option<mono::LocTyp>)],
+) -> Option<&'a mono::LocTyp> {
+    if constrs.len() != 2 {
+        return None;
+    }
+
+    let has_nil = constrs
+        .iter()
+        .any(|(name, _, payload)| name == "Nil" && payload.is_none());
+    let cons_payload = constrs.iter().find_map(|(name, _, payload)| {
+        if name == "Cons" {
+            payload.as_ref()
+        } else {
+            None
+        }
+    })?;
+
+    let mono::Typ::Record(fields) = &cons_payload.node else {
+        return None;
+    };
+
+    let mut head = None;
+    let mut tail = None;
+    for (name, field_t) in fields {
+        match name.as_str() {
+            "1" => head = Some(field_t),
+            "2" => tail = Some(field_t),
+            _ => {}
+        }
+    }
+
+    let head = head?;
+    let tail = tail?;
+    (has_nil && mono_typ_mentions_datatype_id(tail, datatype_id)).then_some(head)
+}
+
+fn mono_typ_mentions_datatype_id(t: &mono::LocTyp, datatype_id: usize) -> bool {
+    match &t.node {
+        mono::Typ::Fun(dom, ran) => {
+            mono_typ_mentions_datatype_id(dom, datatype_id)
+                || mono_typ_mentions_datatype_id(ran, datatype_id)
+        }
+        mono::Typ::Record(fields) => fields
+            .iter()
+            .any(|(_, field_t)| mono_typ_mentions_datatype_id(field_t, datatype_id)),
+        mono::Typ::Datatype(id, _) => *id == datatype_id,
+        mono::Typ::Ffi(..) | mono::Typ::Source => false,
+        mono::Typ::Option(inner)
+        | mono::Typ::List(inner)
+        | mono::Typ::Signal(inner)
+        | mono::Typ::Transaction(inner) => mono_typ_mentions_datatype_id(inner, datatype_id),
+    }
+}
+
+fn classify_constrs(
+    datatype_id: usize,
+    constrs: &[(String, usize, Option<mono::LocTyp>)],
+) -> DatatypeKind {
     let nullary = constrs.iter().filter(|(_, _, o)| o.is_none()).count();
     let unary = constrs.iter().filter(|(_, _, o)| o.is_some()).count();
     if unary == 0 {
         DatatypeKind::Enum
-    } else if nullary == 1 && unary == 1 {
+    } else if nullary == 1
+        && unary == 1
+        && !constrs
+            .iter()
+            .filter_map(|(_, _, arg)| arg.as_ref())
+            .any(|arg| mono_typ_mentions_datatype_id(arg, datatype_id))
+    {
         DatatypeKind::Option
     } else {
         DatatypeKind::Default
@@ -287,6 +954,14 @@ fn cify_pat_con(pc: &mono::PatCon, sm: &mut Sm) -> PatCon {
     }
 }
 
+fn normalize_datatype_kind(kind: DatatypeKind, pat_con: &mono::PatCon) -> DatatypeKind {
+    match pat_con {
+        mono::PatCon::Var(constructor_id) => CJRIZE_CONSTRUCTOR_KINDS
+            .with(|slot| slot.borrow().get(constructor_id).copied().unwrap_or(kind)),
+        mono::PatCon::Ffi { .. } => kind,
+    }
+}
+
 fn cify_pat(p: &mono::LocPat, sm: &mut Sm) -> LocPat {
     cjrize_test_tick();
     let loc = p.span.clone();
@@ -296,7 +971,7 @@ fn cify_pat(p: &mono::LocPat, sm: &mut Sm) -> LocPat {
         mono::Pat::Con(dk, pc, po) => {
             let cpc = cify_pat_con(pc, sm);
             let cp = po.as_ref().map(|p| Box::new(cify_pat(p, sm)));
-            Located::new(Pat::Con(*dk, cpc, cp), loc)
+            Located::new(Pat::Con(normalize_datatype_kind(*dk, pc), cpc, cp), loc)
         }
         mono::Pat::Record(xpts) => {
             let cxpts: Vec<_> = xpts
@@ -333,10 +1008,45 @@ fn type_has_signal(t: &mono::Typ) -> bool {
 /// Lift all Rel(n >= depth) by 1 in a Mono expression.
 fn lift_mono_exp(depth: usize, e: mono::LocExp) -> mono::LocExp {
     cjrize_test_tick();
-    crate::monomorphized::utilities::exp::map(e, &|t| t, &|node| match node {
-        mono::Exp::Rel(n) if n >= depth => mono::Exp::Rel(n + 1),
-        other => other,
-    })
+    crate::monomorphized::environment::lift_exp_in_exp(depth, &e)
+}
+
+fn mono_expr_result_typ_for_eta(e: &mono::LocExp) -> Option<mono::LocTyp> {
+    match &e.node {
+        mono::Exp::Named(n) | mono::Exp::Closure(n, _) => {
+            CJRIZE_RAW_NAMED_TYPES.with(|slot| slot.borrow().get(n).cloned())
+        }
+        mono::Exp::Abs(_, dom, ran, _) => Some(Located::new(
+            mono::Typ::Fun(Box::new(dom.clone()), Box::new(ran.clone())),
+            e.span.clone(),
+        )),
+        mono::Exp::App(_, _) => {
+            let (head, args) = strip_mono_app_spine(e.clone());
+            let head_typ = mono_expr_result_typ_for_eta(&head)?;
+            mono_drop_applied_result_typ(&head_typ, &args)
+        }
+        mono::Exp::Field(inner, field) => {
+            mono_expr_result_typ_for_eta(inner).and_then(|t| projected_field_result_typ(&t, field))
+        }
+        mono::Exp::Let(_, _, _, body) => mono_expr_result_typ_for_eta(body),
+        _ => None,
+    }
+}
+
+fn mono_exp_needs_transaction_eta(e: &mono::LocExp) -> bool {
+    if let Some(result_typ) = mono_expr_result_typ_for_eta(e) {
+        return matches!(&result_typ.node, mono::Typ::Transaction(_));
+    }
+
+    match &e.node {
+        mono::Exp::Named(_)
+        | mono::Exp::Rel(_)
+        | mono::Exp::Closure(_, _)
+        | mono::Exp::Field(_, _) => true,
+        mono::Exp::App(head, _) => mono_exp_needs_transaction_eta(head),
+        mono::Exp::Let(_, _, _, body) => mono_exp_needs_transaction_eta(body),
+        _ => false,
+    }
 }
 
 /// Unravel a (CJR type, Mono expression) pair into function arguments + body.
@@ -345,25 +1055,40 @@ fn lift_mono_exp(depth: usize, e: mono::LocExp) -> mono::LocExp {
 /// we peel the lambda. Otherwise we eta-expand.
 ///
 /// Returns `(args, return_cjr_type, mono_body_to_cify)`.
-fn unravel_fun(
+fn unravel_fun_full(
+    mono_t: mono::LocTyp,
     cjr_t: LocTyp,
     e: mono::LocExp,
     loc: &Span,
+    sm: &mut Sm,
     args: &mut Vec<(String, LocTyp)>,
-) -> (LocTyp, mono::LocExp) {
+    mono_args: &mut Vec<mono::LocTyp>,
+) -> (mono::LocTyp, LocTyp, mono::LocExp) {
     cjrize_test_tick();
+    debug_chat_cjr(loc, "unravel", || {
+        format!(
+            "mono_t={:?} cjr_t={:?} exp={:?} args_so_far={:?}",
+            mono_t.node, cjr_t.node, e.node, args
+        )
+    });
     const MAX_UNRAVEL: usize = 65_536;
     if args.len() >= MAX_UNRAVEL {
-        return (cjr_t, e);
+        return (mono_t, cjr_t, e);
     }
-    match cjr_t.node.clone() {
-        Typ::Fun(dom, ran) => match e.node {
+    match (mono_t.node.clone(), cjr_t.node.clone()) {
+        (mono::Typ::Fun(mono_dom, mono_ran), Typ::Fun(dom, ran)) => match e.node {
             mono::Exp::Abs(ax, _, _, body) => {
                 args.push((ax, *dom));
-                unravel_fun(*ran, *body, loc, args)
+                mono_args.push(*mono_dom);
+                unravel_fun_full(*mono_ran, *ran, *body, loc, sm, args, mono_args)
             }
             _ => {
-                // Eta-expand: lift e and apply to Rel(0).
+                // Eta-expand explicit function layers that are still represented
+                // as values. Even when the range eventually becomes a
+                // transaction, a non-Abs expression here still denotes a
+                // function value (for instance a named helper), so we must
+                // apply the reified binder before unraveling the remaining
+                // transaction thunk.
                 let lifted = lift_mono_exp(0, e);
                 let app = Located::new(
                     mono::Exp::App(
@@ -373,11 +1098,72 @@ fn unravel_fun(
                     loc.clone(),
                 );
                 args.push(("x".to_string(), *dom));
-                unravel_fun(*ran, app, loc, args)
+                mono_args.push(*mono_dom);
+                unravel_fun_full(*mono_ran, *ran, app, loc, sm, args, mono_args)
             }
         },
-        _ => (cjr_t, e),
+        (mono::Typ::Transaction(mono_ran), Typ::Fun(dom, ran)) => match e.node {
+            mono::Exp::Abs(ax, abs_dom, abs_ran, body)
+                if matches!(
+                    &abs_ran.node,
+                    mono::Typ::Fun(_, _) | mono::Typ::Transaction(_)
+                ) =>
+            {
+                let cdom = cify_typ(&abs_dom, sm);
+                let cjr_t = Located::new(Typ::Fun(dom.clone(), ran.clone()), loc.clone());
+                args.push((ax, cdom));
+                mono_args.push(abs_dom);
+                unravel_fun_full(abs_ran, cjr_t, *body, loc, sm, args, mono_args)
+            }
+            mono::Exp::Abs(ax, abs_dom, _, body) => {
+                args.push((ax, *dom));
+                mono_args.push(abs_dom);
+                unravel_fun_full(*mono_ran, *ran, *body, loc, sm, args, mono_args)
+            }
+            _ => {
+                // Mono transactions are implicit thunks. Direct bodies like
+                // DML/Query/Case should stay as bodies under the reified unit
+                // binder, but named/app/field expressions at this point still
+                // denote thunk values and need the unit argument applied.
+                let lifted = lift_mono_exp(0, e.clone());
+                let body = if mono_exp_needs_transaction_eta(&e) {
+                    Located::new(
+                        mono::Exp::App(
+                            Box::new(lifted),
+                            Box::new(Located::new(mono::Exp::Rel(0), loc.clone())),
+                        ),
+                        loc.clone(),
+                    )
+                } else {
+                    lifted
+                };
+                args.push(("_".to_string(), *dom));
+                mono_args.push(Located::new(mono::Typ::Record(vec![]), loc.clone()));
+                unravel_fun_full(*mono_ran, *ran, body, loc, sm, args, mono_args)
+            }
+        },
+        _ => (mono_t, cjr_t, e),
     }
+}
+
+#[cfg(test)]
+fn unravel_fun(
+    mono_t: mono::LocTyp,
+    cjr_t: LocTyp,
+    e: mono::LocExp,
+    loc: &Span,
+    sm: &mut Sm,
+    args: &mut Vec<(String, LocTyp)>,
+) -> (LocTyp, mono::LocExp) {
+    let mut mono_args = Vec::new();
+    let (_, ran, body) = unravel_fun_full(mono_t, cjr_t, e, loc, sm, args, &mut mono_args);
+    (ran, body)
+}
+
+fn mono_rebuild_fun_type(arg_tys: &[mono::LocTyp], ran: mono::LocTyp, loc: &Span) -> mono::LocTyp {
+    arg_tys.iter().rev().cloned().fold(ran, |acc, dom| {
+        Located::new(mono::Typ::Fun(Box::new(dom), Box::new(acc)), loc.clone())
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -397,12 +1183,24 @@ fn cify_exp(e: &mono::LocExp, sm: &mut Sm, errors: &mut ErrorReporter) -> LocExp
     match &e.node {
         mono::Exp::Prim(p) => Located::new(Exp::Prim(p.clone()), loc),
         mono::Exp::Rel(n) => Located::new(Exp::Rel(*n), loc),
-        mono::Exp::Named(n) => Located::new(Exp::Named(*n), loc),
+        mono::Exp::Named(n) => {
+            if debug_validate_named_enabled()
+                && debug_validate_named_span(&loc)
+                && CJRIZE_NAMED_TYPES.with(|slot| !slot.borrow().contains_key(n))
+            {
+                let current_decl = CJRIZE_CURRENT_DECL.with(|slot| slot.borrow().clone());
+                eprintln!(
+                    "URWEB_DEBUG_CJR_VALIDATE mono named id={} decl={current_decl:?} {}:{} expr={:?}",
+                    n, loc.file, loc.first.line, e.node
+                );
+            }
+            Located::new(Exp::Named(*n), loc)
+        }
 
         mono::Exp::Con(dk, pc, eo) => {
             let cpc = cify_pat_con(pc, sm);
             let ceo = eo.as_ref().map(|e| Box::new(cify_exp(e, sm, errors)));
-            Located::new(Exp::Con(*dk, cpc, ceo), loc)
+            Located::new(Exp::Con(normalize_datatype_kind(*dk, pc), cpc, ceo), loc)
         }
         mono::Exp::None(t) => Located::new(Exp::None(cify_typ(t, sm)), loc),
         mono::Exp::Some(t, e) => Located::new(
@@ -419,7 +1217,7 @@ fn cify_exp(e: &mono::LocExp, sm: &mut Sm, errors: &mut ErrorReporter) -> LocExp
             Located::new(Exp::FfiApp(m.clone(), x.clone(), cargs), loc)
         }
 
-        mono::Exp::App(e1, e2) => {
+        mono::Exp::App(_, _) => {
             // Collect all arguments by unravelling left-spine of App.
             fn collect_args<'a>(
                 e: &'a mono::LocExp,
@@ -441,29 +1239,59 @@ fn cify_exp(e: &mono::LocExp, sm: &mut Sm, errors: &mut ErrorReporter) -> LocExp
                 }
             }
             let mut spine_budget = 65_536usize;
-            let mut args = vec![*e2.clone()];
-            let f_ref = collect_args(e1, &mut args, &mut spine_budget);
-            // args is collected in order [e2_of_outermost, e2_of_next, ...]
-            // but collect_args recurses on e1 and pushes e2 last, so args is [innermost_arg, ..., e2]
-            // Actually: collect_args(App(App(f, a), b), args=[b]) recurses on App(f,a), pushes a → args=[b, a], returns f
-            // So args is in *reverse* application order. Reverse to get [a, b].
-            args.reverse();
+            let mut args = Vec::new();
+            let f_ref = collect_args(e, &mut args, &mut spine_budget);
             let cf = cify_exp(f_ref, sm, errors);
-            let cargs: Vec<LocExp> = args.iter().map(|a| cify_exp(a, sm, errors)).collect();
+            let mut cargs: Vec<LocExp> = args.iter().map(|a| cify_exp(a, sm, errors)).collect();
+            if let mono::Exp::Named(n) = &f_ref.node {
+                let forced_unit_count = CJRIZE_NAMED_TYPES.with(|named_types| {
+                    named_types
+                        .borrow()
+                        .get(n)
+                        .cloned()
+                        .and_then(|t| mono_drop_applied_result_typ(&t, &args))
+                        .and_then(|mut t| {
+                            let unit_arg = Located::new(mono::Exp::Record(vec![]), loc.clone());
+                            let mut forced = 0usize;
+                            while mono_result_needs_forced_unit_arg(&t) {
+                                t = mono_result_after_app(&t, &unit_arg)?;
+                                forced += 1;
+                            }
+                            Some(forced)
+                        })
+                        .unwrap_or(0)
+                });
+                debug_cjr_lowered(&loc, "named-app", || {
+                    format!(
+                        "decl={:?} named={n} args={:?} forced_units={forced_unit_count}",
+                        CJRIZE_CURRENT_DECL.with(|slot| slot.borrow().clone()),
+                        args.iter()
+                            .map(|arg| format!("{:?}", arg.node))
+                            .collect::<Vec<_>>()
+                    )
+                });
+                for _ in 0..forced_unit_count {
+                    cargs.push(cify_exp(
+                        &Located::new(mono::Exp::Record(vec![]), loc.clone()),
+                        sm,
+                        errors,
+                    ));
+                }
+            }
             Located::new(Exp::App(Box::new(cf), cargs), loc)
         }
 
         mono::Exp::Abs(_, _, _, _) => {
-            let _ = (|| -> std::io::Result<()> {
-                let mut file = std::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open("/tmp/urweb-cjr-abs.log")?;
-                std::io::Write::write_all(
-                    &mut file,
-                    format!("cjrize stray abs at {:?}:\n{:#?}\n\n", loc, e).as_bytes(),
-                )
-            })();
+            if let Some(forced) = force_spurious_unit_thunk(e) {
+                return cify_exp(&forced, sm, errors);
+            }
+            if std::env::var("URWEB_DEBUG_CJR_ABS").ok().as_deref() == Some("1") {
+                let current_decl = CJRIZE_CURRENT_DECL.with(|slot| slot.borrow().clone());
+                eprintln!(
+                    "URWEB_DEBUG_CJR_ABS decl={current_decl:?} {}:{:?}",
+                    loc.file, e
+                );
+            }
             errors.report_at(
                 loc.clone(),
                 DiagnosticPayload::new(DiagnosticId::CjrizeAnonymousFunctionRemains, Vec::new()),
@@ -497,7 +1325,19 @@ fn cify_exp(e: &mono::LocExp, sm: &mut Sm, errors: &mut ErrorReporter) -> LocExp
                 .iter()
                 .map(|(x, _, t)| (x.clone(), t.clone()))
                 .collect();
-            let si = sm.find(&old_xts, cjr_xts);
+            let si = if old_xts.len() == 2 && old_xts[0].0 == "1" && old_xts[1].0 == "2" {
+                if let Typ::List(inner, list_id) = &cjr_xts[1].1.node {
+                    if cjr_typ_eq(&cjr_xts[0].1.node, &inner.node) {
+                        *list_id
+                    } else {
+                        sm.find(&old_xts, cjr_xts)
+                    }
+                } else {
+                    sm.find(&old_xts, cjr_xts)
+                }
+            } else {
+                sm.find(&old_xts, cjr_xts)
+            };
             // Sort field expressions alphabetically
             let mut xes: Vec<(String, LocExp)> =
                 cjr_xets.into_iter().map(|(x, e, _)| (x, e)).collect();
@@ -1037,18 +1877,50 @@ fn stub_body(t: &mono::LocTyp, loc: &Span) -> mono::LocExp {
     }
 }
 
-fn exp_contains_abs(e: &mono::LocExp) -> bool {
-    crate::monomorphized::utilities::exp::exists(e, &|_| false, &|node| {
-        matches!(node, mono::Exp::Abs(_, _, _, _))
-    })
-}
-
 fn is_unit_record_exp(e: &mono::LocExp) -> bool {
     matches!(&e.node, mono::Exp::Record(fields) if fields.is_empty())
 }
 
+fn is_unit_record_typ(t: &mono::LocTyp) -> bool {
+    matches!(&t.node, mono::Typ::Record(fields) if fields.is_empty())
+}
+
+fn is_erased_mono_witness_app(arg: &mono::LocExp, dom: &mono::LocTyp) -> bool {
+    is_erased_mono_proof_arg(arg)
+        && match &dom.node {
+            mono::Typ::Record(fields) if fields.is_empty() => false,
+            mono::Typ::Ffi(module, name) if module == "Basis" && name == "int" => false,
+            _ => true,
+        }
+}
+
 fn is_non_function_mono_typ(t: &mono::LocTyp) -> bool {
     !matches!(&t.node, mono::Typ::Fun(_, _) | mono::Typ::Transaction(_))
+}
+
+fn force_spurious_unit_thunk(e: &mono::LocExp) -> Option<mono::LocExp> {
+    match &e.node {
+        mono::Exp::Abs(_, dom, ran, body)
+            if is_unit_record_typ(dom)
+                && !matches!(&ran.node, mono::Typ::Fun(_, _) | mono::Typ::Transaction(_)) =>
+        {
+            let unit = Located::new(mono::Exp::Record(vec![]), e.span.clone());
+            Some(reduce_head_apps_for_cjr(
+                crate::monomorphized::environment::sub_exp_in_exp(0, &unit, body),
+            ))
+        }
+        mono::Exp::Abs(_, dom, ran, body)
+            if is_unit_record_typ(dom)
+                && matches!(&ran.node, mono::Typ::Fun(inner_dom, _) if is_unit_record_typ(inner_dom))
+                && matches!(&body.node, mono::Exp::Abs(_, inner_dom, _, _) if is_unit_record_typ(inner_dom)) =>
+        {
+            let unit = Located::new(mono::Exp::Record(vec![]), e.span.clone());
+            Some(reduce_head_apps_for_cjr(
+                crate::monomorphized::environment::sub_exp_in_exp(0, &unit, body),
+            ))
+        }
+        _ => None,
+    }
 }
 
 fn record_field_typ(record_typ: &mono::LocTyp, field: &str) -> Option<mono::LocTyp> {
@@ -1070,7 +1942,156 @@ fn projected_field_result_typ(result_typ: &mono::LocTyp, field: &str) -> Option<
                 result_typ.span.clone(),
             )
         }),
+        mono::Typ::Transaction(ran) => {
+            projected_field_result_typ(ran, field).map(|projected_ran| {
+                Located::new(
+                    mono::Typ::Transaction(Box::new(projected_ran)),
+                    result_typ.span.clone(),
+                )
+            })
+        }
         _ => None,
+    }
+}
+
+fn mono_result_needs_forced_unit_arg(t: &mono::LocTyp) -> bool {
+    matches!(&t.node, mono::Typ::Transaction(_))
+        || matches!(
+            &t.node,
+            mono::Typ::Fun(dom, ran)
+                if is_unit_record_typ(dom)
+                    && (is_non_function_mono_typ(ran) || mono_result_needs_forced_unit_arg(ran))
+        )
+}
+
+fn mono_result_after_app(result_typ: &mono::LocTyp, arg: &mono::LocExp) -> Option<mono::LocTyp> {
+    match &result_typ.node {
+        mono::Typ::Fun(_, ran) => Some((**ran).clone()),
+        mono::Typ::Transaction(ran) if is_unit_record_exp(arg) => Some((**ran).clone()),
+        _ => None,
+    }
+}
+
+fn mono_drop_applied_result_typ(t: &mono::LocTyp, args: &[mono::LocExp]) -> Option<mono::LocTyp> {
+    let mut current = t.clone();
+    for arg in args {
+        current = mono_result_after_app(&current, arg)?;
+    }
+    Some(current)
+}
+
+fn mono_exp_result_typ(e: &mono::LocExp) -> Option<mono::LocTyp> {
+    match &e.node {
+        mono::Exp::Prim(prim) => Some(Located::new(
+            mono::Typ::Ffi(
+                "Basis".into(),
+                match prim {
+                    Prim::Int(_) => "int",
+                    Prim::Float(_) => "float",
+                    Prim::String(_, _) => "string",
+                    Prim::Char(_) => "char",
+                }
+                .into(),
+            ),
+            e.span.clone(),
+        )),
+        mono::Exp::Rel(n) => CJRIZE_REL_TYPES.with(|slot| slot.borrow().get(*n).cloned()),
+        mono::Exp::Record(fields) => Some(Located::new(
+            mono::Typ::Record(
+                fields
+                    .iter()
+                    .map(|(name, _, typ)| (name.clone(), typ.clone()))
+                    .collect(),
+            ),
+            e.span.clone(),
+        )),
+        mono::Exp::Abs(_, dom, ran, _) => Some(Located::new(
+            mono::Typ::Fun(Box::new(dom.clone()), Box::new(ran.clone())),
+            e.span.clone(),
+        )),
+        mono::Exp::Let(_, _, _, body) => mono_exp_result_typ(body),
+        mono::Exp::Named(n) => {
+            CJRIZE_NAMED_TYPES.with(|named_types| named_types.borrow().get(n).cloned())
+        }
+        mono::Exp::Field(inner, projected) => {
+            mono_exp_result_typ(inner).and_then(|typ| record_field_typ(&typ, projected))
+        }
+        mono::Exp::App(_, _) => {
+            let (head, args) = strip_mono_app_spine(e.clone());
+            mono_exp_result_typ(&head).and_then(|typ| mono_drop_applied_result_typ(&typ, &args))
+        }
+        _ => None,
+    }
+}
+
+fn append_forced_unit_args(
+    mut expr: mono::LocExp,
+    mut result_typ: mono::LocTyp,
+    loc: &Span,
+) -> mono::LocExp {
+    while mono_result_needs_forced_unit_arg(&result_typ) {
+        let unit = Located::new(mono::Exp::Record(vec![]), loc.clone());
+        expr = Located::new(
+            mono::Exp::App(Box::new(expr), Box::new(unit.clone())),
+            loc.clone(),
+        );
+        let Some(next) = mono_result_after_app(&result_typ, &unit) else {
+            break;
+        };
+        result_typ = next;
+    }
+    expr
+}
+
+fn force_question_slot_terminal(e: mono::LocExp) -> mono::LocExp {
+    let loc = e.span.clone();
+    let (head, args) = strip_mono_app_spine(e.clone());
+    match &head.node {
+        mono::Exp::Named(n) => {
+            let forced = CJRIZE_NAMED_TYPES.with(|named_types| {
+                named_types
+                    .borrow()
+                    .get(n)
+                    .and_then(|t| mono_drop_applied_result_typ(t, &args))
+                    .map(|t| append_forced_unit_args(e.clone(), t, &loc))
+            });
+            forced.unwrap_or(e)
+        }
+        _ => force_spurious_unit_thunk(&e).unwrap_or(e),
+    }
+}
+
+fn resolve_question_slot(base: mono::LocExp, loc: &Span) -> mono::LocExp {
+    let (head, args) = strip_mono_app_spine(base);
+    match head.node {
+        mono::Exp::Record(fields) => {
+            if let Some((_, exp, _)) = fields.iter().find(|(name, _, _)| name == "?") {
+                return reduce_head_apps_for_cjr(reapply_mono_app_spine(exp.clone(), args));
+            }
+            Located::new(
+                mono::Exp::Field(
+                    Box::new(reapply_mono_app_spine(
+                        Located::new(mono::Exp::Record(fields), head.span),
+                        args,
+                    )),
+                    "?".into(),
+                ),
+                loc.clone(),
+            )
+        }
+        other => {
+            let receiver = reapply_mono_app_spine(Located::new(other, head.span), args);
+            match receiver.node {
+                mono::Exp::Rel(_)
+                | mono::Exp::Abs(_, _, _, _)
+                | mono::Exp::Field(_, _)
+                | mono::Exp::Let(_, _, _, _) => Located::new(
+                    mono::Exp::Field(Box::new(receiver), "?".into()),
+                    loc.clone(),
+                ),
+                _ => force_question_slot_terminal(receiver),
+            }
+        }
     }
 }
 
@@ -1099,19 +2120,126 @@ fn reapply_mono_app_spine(mut head: mono::LocExp, args: Vec<mono::LocExp>) -> mo
     head
 }
 
-fn strip_spurious_unit_app(function: mono::LocExp, arg: &mono::LocExp) -> Option<mono::LocExp> {
-    if !is_unit_record_exp(arg) {
-        return None;
+fn strip_spurious_app(function: mono::LocExp, arg: &mono::LocExp) -> Option<mono::LocExp> {
+    if is_unit_record_exp(arg)
+        && mono_exp_result_typ(&function)
+            .is_some_and(|result_typ| is_non_function_mono_typ(&result_typ))
+    {
+        return Some(function);
     }
 
     match &function.node {
+        mono::Exp::Case(_, _, meta) if is_non_function_mono_typ(&meta.result) => Some(function),
+        mono::Exp::Strcat(_, _) if is_unit_record_exp(arg) => Some(function),
+        mono::Exp::FfiApp(module, name, _)
+            if is_unit_record_exp(arg)
+                && module == "Basis"
+                && matches!(name.as_str(), "mstrcat" | "strcat") =>
+        {
+            Some(function)
+        }
         mono::Exp::Query(_)
         | mono::Exp::Dml(_, _)
         | mono::Exp::Nextval(_)
-        | mono::Exp::Setval(_, _) => Some(function),
-        mono::Exp::Case(_, _, meta) if is_non_function_mono_typ(&meta.result) => Some(function),
+        | mono::Exp::Setval(_, _)
+            if is_unit_record_exp(arg) =>
+        {
+            Some(function)
+        }
         _ => None,
     }
+}
+
+fn is_erased_mono_proof_arg(e: &mono::LocExp) -> bool {
+    matches!(&e.node, mono::Exp::Record(fields) if fields.is_empty())
+        || matches!(&e.node, mono::Exp::Prim(Prim::Int(0)))
+}
+
+fn mono_exp_may_project_field(e: &mono::LocExp, field: &str) -> bool {
+    mono_exp_result_typ(e)
+        .and_then(|typ| projected_field_result_typ(&typ, field))
+        .is_some()
+}
+
+fn mono_exp_has_direct_field(e: &mono::LocExp, field: &str) -> bool {
+    mono_exp_result_typ(e)
+        .and_then(|typ| record_field_typ(&typ, field))
+        .is_some()
+}
+
+fn can_reuse_existing_mono_projection(arg: &mono::LocExp, field: &str) -> bool {
+    match &arg.node {
+        mono::Exp::Field(inner, projected) if projected == field => {
+            mono_exp_has_direct_field(inner, field) || mono_exp_may_project_field(inner, field)
+        }
+        _ => false,
+    }
+}
+
+fn project_missing_field_from_mono_args(
+    args: &[mono::LocExp],
+    field: &str,
+    loc: &Span,
+) -> Option<mono::LocExp> {
+    let idx = (0..args.len()).rev().find(|&idx| {
+        let arg = &args[idx];
+        !is_erased_mono_proof_arg(arg)
+            && (mono_exp_may_project_field(arg, field)
+                || can_reuse_existing_mono_projection(arg, field))
+    })?;
+    if let mono::Exp::Field(inner, projected) = &args[idx].node {
+        if projected == field {
+            let existing_projection = if idx + 1 < args.len() {
+                Located::new(
+                    mono::Exp::Field(
+                        Box::new(reapply_mono_app_spine(
+                            *inner.clone(),
+                            args[idx + 1..].to_vec(),
+                        )),
+                        field.to_string(),
+                    ),
+                    loc.clone(),
+                )
+            } else {
+                args[idx].clone()
+            };
+            debug_cjr_field(loc, "recover-existing", || {
+                format!(
+                    "field={field} idx={idx} arg={:?} tail={:?} reused={:?}",
+                    args[idx].node,
+                    args[idx + 1..]
+                        .iter()
+                        .map(|arg| format!("{:?}", arg.node))
+                        .collect::<Vec<_>>(),
+                    existing_projection.node
+                )
+            });
+            return Some(existing_projection);
+        }
+    }
+
+    let receiver = if mono_exp_has_direct_field(&args[idx], field) {
+        args[idx].clone()
+    } else {
+        reapply_mono_app_spine(args[idx].clone(), args[idx + 1..].to_vec())
+    };
+    debug_cjr_field(loc, "recover", || {
+        format!(
+            "field={field} idx={idx} direct={} arg={:?} receiver={:?} tail={:?}",
+            mono_exp_has_direct_field(&args[idx], field),
+            args[idx].node,
+            receiver.node,
+            args[idx + 1..]
+                .iter()
+                .map(|arg| format!("{:?}", arg.node))
+                .collect::<Vec<_>>()
+        )
+    });
+    let projected = Located::new(
+        mono::Exp::Field(Box::new(receiver), field.to_string()),
+        loc.clone(),
+    );
+    Some(projected)
 }
 
 fn reduce_head_apps_for_cjr(e: mono::LocExp) -> mono::LocExp {
@@ -1120,18 +2248,213 @@ fn reduce_head_apps_for_cjr(e: mono::LocExp) -> mono::LocExp {
         mono::Exp::App(f, arg) => {
             let f = reduce_head_apps_for_cjr(*f);
             let arg = reduce_head_apps_for_cjr(*arg);
-            if let Some(stripped) = strip_spurious_unit_app(f.clone(), &arg) {
+            if debug_cjr_field_span(&loc) {
+                debug_cjr_field(&loc, "app", || {
+                    format!("head={:?} arg={:?}", f.node, arg.node)
+                });
+            }
+            if let Some(stripped) = strip_spurious_app(f.clone(), &arg) {
                 return reduce_head_apps_for_cjr(stripped);
             }
+            if let mono::Exp::Field(inner, _) = f.node.clone() {
+                if let mono::Exp::Field(base, missing_field) = inner.node.clone() {
+                    if let mono::Exp::Abs(_, _, ran, _) = base.node.clone() {
+                        if projected_field_result_typ(&ran, &missing_field).is_none() {
+                            return Located::new(mono::Exp::App(Box::new(f), Box::new(arg)), loc);
+                        }
+                    }
+                }
+            }
+            if let mono::Exp::App(f2, arg1) = f.node.clone() {
+                if let mono::Exp::Field(base, missing_field) = f2.node.clone() {
+                    if let mono::Exp::Abs(_, _, ran, _) = base.node.clone() {
+                        if projected_field_result_typ(&ran, &missing_field).is_none()
+                            && mono_exp_has_direct_field(&arg, &missing_field)
+                        {
+                            return reduce_head_apps_for_cjr(Located::new(
+                                mono::Exp::App(
+                                    Box::new(Located::new(
+                                        mono::Exp::Field(Box::new(arg.clone()), missing_field),
+                                        f2.span.clone(),
+                                    )),
+                                    arg1,
+                                ),
+                                loc,
+                            ));
+                        }
+                        if projected_field_result_typ(&ran, &missing_field).is_none()
+                            && mono_exp_has_direct_field(&arg1, &missing_field)
+                        {
+                            return reduce_head_apps_for_cjr(Located::new(
+                                mono::Exp::Field(Box::new((*arg1).clone()), missing_field),
+                                f2.span.clone(),
+                            ));
+                        }
+                    }
+                }
+                if let mono::Exp::Field(inner, subfield) = f2.node.clone() {
+                    if let mono::Exp::Field(base, missing_field) = inner.node.clone() {
+                        if let mono::Exp::Abs(_, _, ran, _) = base.node.clone() {
+                            if projected_field_result_typ(&ran, &missing_field).is_none()
+                                && mono_exp_has_direct_field(&arg, &missing_field)
+                            {
+                                return reduce_head_apps_for_cjr(Located::new(
+                                    mono::Exp::App(
+                                        Box::new(Located::new(
+                                            mono::Exp::Field(
+                                                Box::new(Located::new(
+                                                    mono::Exp::Field(
+                                                        Box::new(arg.clone()),
+                                                        missing_field.clone(),
+                                                    ),
+                                                    inner.span.clone(),
+                                                )),
+                                                subfield.clone(),
+                                            ),
+                                            f2.span.clone(),
+                                        )),
+                                        arg1,
+                                    ),
+                                    loc,
+                                ));
+                            }
+                            if projected_field_result_typ(&ran, &missing_field).is_none()
+                                && mono_exp_has_direct_field(&arg1, &missing_field)
+                            {
+                                return reduce_head_apps_for_cjr(Located::new(
+                                    mono::Exp::Field(
+                                        Box::new(Located::new(
+                                            mono::Exp::Field(
+                                                Box::new((*arg1).clone()),
+                                                missing_field,
+                                            ),
+                                            inner.span.clone(),
+                                        )),
+                                        subfield,
+                                    ),
+                                    f2.span.clone(),
+                                ));
+                            }
+                            if projected_field_result_typ(&ran, &missing_field).is_none() {
+                                return reduce_head_apps_for_cjr(Located::new(
+                                    mono::Exp::App(
+                                        Box::new(Located::new(
+                                            mono::Exp::Field(
+                                                Box::new(Located::new(
+                                                    mono::Exp::Field(
+                                                        Box::new(arg.clone()),
+                                                        missing_field,
+                                                    ),
+                                                    inner.span.clone(),
+                                                )),
+                                                subfield,
+                                            ),
+                                            f2.span.clone(),
+                                        )),
+                                        arg1,
+                                    ),
+                                    loc,
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+            if let mono::Exp::Field(base, missing_field) = f.node.clone() {
+                if let mono::Exp::Abs(_, _, ran, _) = base.node.clone() {
+                    if projected_field_result_typ(&ran, &missing_field).is_none()
+                        && mono_exp_has_direct_field(&arg, &missing_field)
+                    {
+                        return reduce_head_apps_for_cjr(Located::new(
+                            mono::Exp::Field(Box::new(arg), missing_field),
+                            f.span.clone(),
+                        ));
+                    }
+                }
+            }
             match f.node {
-                mono::Exp::Abs(_, _, _, body) => reduce_head_apps_for_cjr(
-                    crate::monomorphized::environment::sub_exp_in_exp(0, &arg, &body),
-                ),
+                mono::Exp::Abs(_, dom, _, body) => {
+                    if is_erased_mono_witness_app(&arg, &dom) {
+                        reduce_head_apps_for_cjr(crate::monomorphized::environment::sub_exp_in_exp(
+                            0, &arg, &body,
+                        ))
+                    } else {
+                        reduce_head_apps_for_cjr(crate::monomorphized::environment::sub_exp_in_exp(
+                            0, &arg, &body,
+                        ))
+                    }
+                }
                 mono::Exp::Let(x, t, e1, body) => {
                     let lifted_arg = lift_mono_exp(0, arg);
                     let app = Located::new(mono::Exp::App(body, Box::new(lifted_arg)), loc.clone());
                     reduce_head_apps_for_cjr(Located::new(
                         mono::Exp::Let(x, t, e1, Box::new(app)),
+                        loc,
+                    ))
+                }
+                mono::Exp::Case(disc, arms, meta) => {
+                    let result = mono_result_after_app(&meta.result, &arg)
+                        .unwrap_or_else(|| meta.result.clone());
+                    reduce_head_apps_for_cjr(Located::new(
+                        mono::Exp::Case(
+                            disc,
+                            arms.into_iter()
+                                .map(|(pat, arm)| {
+                                    (
+                                        pat,
+                                        reduce_head_apps_for_cjr(Located::new(
+                                            mono::Exp::App(Box::new(arm), Box::new(arg.clone())),
+                                            loc.clone(),
+                                        )),
+                                    )
+                                })
+                                .collect(),
+                            mono::CaseMeta {
+                                disc: meta.disc,
+                                result,
+                            },
+                        ),
+                        loc,
+                    ))
+                }
+                mono::Exp::Field(inner, field)
+                    if matches!(
+                        inner.node,
+                        mono::Exp::Abs(_, _, _, _)
+                            | mono::Exp::App(_, _)
+                            | mono::Exp::Field(_, _)
+                            | mono::Exp::Record(_)
+                            | mono::Exp::Let(_, _, _, _)
+                    ) && !mono_exp_has_direct_field(&inner, &field) =>
+                {
+                    let applied_inner = Located::new(
+                        mono::Exp::App(inner.clone(), Box::new(arg.clone())),
+                        f.span.clone(),
+                    );
+                    if mono_exp_has_direct_field(&applied_inner, &field) {
+                        reduce_head_apps_for_cjr(Located::new(
+                            mono::Exp::Field(Box::new(applied_inner), field),
+                            loc,
+                        ))
+                    } else {
+                        Located::new(
+                            mono::Exp::App(
+                                Box::new(Located::new(mono::Exp::Field(inner, field), f.span)),
+                                Box::new(arg),
+                            ),
+                            loc,
+                        )
+                    }
+                }
+                mono::Exp::Record(fields) if matches!(fields.as_slice(), [(name, _, _)] if name == "?") =>
+                {
+                    debug_cjr_field(&loc, "unwrap-singleton-record-app", || {
+                        format!("record={fields:?} arg={:?}", arg.node)
+                    });
+                    let (_, field_exp, _) =
+                        fields.into_iter().next().expect("singleton prechecked");
+                    reduce_head_apps_for_cjr(Located::new(
+                        mono::Exp::App(Box::new(field_exp), Box::new(arg)),
                         loc,
                     ))
                 }
@@ -1165,10 +2488,12 @@ fn reduce_head_apps_for_cjr(e: mono::LocExp) -> mono::LocExp {
                 ),
             }
         }
-        mono::Exp::Abs(x, dom, ran, body) => Located::new(
-            mono::Exp::Abs(x, dom, ran, Box::new(reduce_head_apps_for_cjr(*body))),
-            loc,
-        ),
+        mono::Exp::Abs(x, dom, ran, body) => with_rel_binder(dom.clone(), || {
+            Located::new(
+                mono::Exp::Abs(x, dom, ran, Box::new(reduce_head_apps_for_cjr(*body))),
+                loc,
+            )
+        }),
         mono::Exp::Con(dk, pc, eo) => Located::new(
             mono::Exp::Con(
                 dk,
@@ -1216,21 +2541,77 @@ fn reduce_head_apps_for_cjr(e: mono::LocExp) -> mono::LocExp {
             let inner = reduce_head_apps_for_cjr(*inner);
             let (head, args) = strip_mono_app_spine(inner);
             let head_span = head.span.clone();
+            debug_cjr_field(&loc, "field-enter", || {
+                format!(
+                    "field={field} head={:?} args={:?}",
+                    head.node,
+                    args.iter()
+                        .map(|arg| format!("{:?}", arg.node))
+                        .collect::<Vec<_>>()
+                )
+            });
+            if !args.is_empty() && mono_exp_has_direct_field(&head, &field) {
+                let projected_head =
+                    Located::new(mono::Exp::Field(Box::new(head), field.clone()), head_span);
+                return reduce_head_apps_for_cjr(reapply_mono_app_spine(projected_head, args));
+            }
+            if !args.is_empty() && matches!(head.node, mono::Exp::Rel(_)) {
+                let projected_head =
+                    Located::new(mono::Exp::Field(Box::new(head), field.clone()), head_span);
+                return reduce_head_apps_for_cjr(reapply_mono_app_spine(projected_head, args));
+            }
+            if let mono::Exp::Field(base, passthrough) = head.node.clone() {
+                if passthrough == "?" {
+                    let current = resolve_question_slot(*base, &loc);
+                    let unresolved_question =
+                        matches!(&current.node, mono::Exp::Field(_, field) if field == "?");
+                    if field == "?" {
+                        return if unresolved_question {
+                            reapply_mono_app_spine(current, args)
+                        } else {
+                            reduce_head_apps_for_cjr(reapply_mono_app_spine(current, args))
+                        };
+                    }
+                    if unresolved_question {
+                        if let Some(projected_tail) =
+                            project_missing_field_from_mono_args(&args, &field, &loc)
+                        {
+                            return reduce_head_apps_for_cjr(projected_tail);
+                        }
+                        return Located::new(
+                            mono::Exp::Field(
+                                Box::new(reapply_mono_app_spine(current, args)),
+                                field,
+                            ),
+                            loc,
+                        );
+                    }
+                    let projected = Located::new(
+                        mono::Exp::Field(Box::new(current), field.clone()),
+                        head_span,
+                    );
+                    return reduce_head_apps_for_cjr(reapply_mono_app_spine(projected, args));
+                }
+            }
             match head.node {
                 mono::Exp::Record(fields) => {
                     if let Some((_, exp, _)) = fields.iter().find(|(name, _, _)| name == &field) {
                         reduce_head_apps_for_cjr(reapply_mono_app_spine(exp.clone(), args))
-                    } else if let Some((tail_head, tail_args)) = args.split_first() {
-                        reduce_head_apps_for_cjr(Located::new(
+                    } else if field == "?" {
+                        Located::new(
                             mono::Exp::Field(
                                 Box::new(reapply_mono_app_spine(
-                                    tail_head.clone(),
-                                    tail_args.to_vec(),
+                                    Located::new(mono::Exp::Record(fields), head_span),
+                                    args,
                                 )),
                                 field,
                             ),
                             loc,
-                        ))
+                        )
+                    } else if let Some(projected_tail) =
+                        project_missing_field_from_mono_args(&args, &field, &loc)
+                    {
+                        reduce_head_apps_for_cjr(projected_tail)
                     } else {
                         Located::new(
                             mono::Exp::Field(
@@ -1247,7 +2628,9 @@ fn reduce_head_apps_for_cjr(e: mono::LocExp) -> mono::LocExp {
                 mono::Exp::Let(x, t, e1, e2) => {
                     let projected = Located::new(
                         mono::Exp::Field(
-                            Box::new(reapply_mono_app_spine(*e2, args)),
+                            Box::new(with_rel_binder(t.clone(), || {
+                                reduce_head_apps_for_cjr(reapply_mono_app_spine(*e2, args))
+                            })),
                             field.clone(),
                         ),
                         head_span.clone(),
@@ -1273,21 +2656,11 @@ fn reduce_head_apps_for_cjr(e: mono::LocExp) -> mono::LocExp {
                             ),
                             args,
                         ))
+                    } else if let Some(projected_tail) =
+                        project_missing_field_from_mono_args(&args, &field, &loc)
+                    {
+                        reduce_head_apps_for_cjr(projected_tail)
                     } else {
-                        let _ = (|| -> std::io::Result<()> {
-                            let mut file = std::fs::OpenOptions::new()
-                                .create(true)
-                                .append(true)
-                                .open("/tmp/urweb-cjr-project.log")?;
-                            std::io::Write::write_all(
-                                &mut file,
-                                format!(
-                                    "FAILED PROJECT field={field} span={:?}\nran={ran:#?}\nbody={body:#?}\n\n",
-                                    loc
-                                )
-                                .as_bytes(),
-                            )
-                        })();
                         Located::new(
                             mono::Exp::Field(
                                 Box::new(reapply_mono_app_spine(
@@ -1300,13 +2673,35 @@ fn reduce_head_apps_for_cjr(e: mono::LocExp) -> mono::LocExp {
                         )
                     }
                 }
-                other => Located::new(
-                    mono::Exp::Field(
-                        Box::new(reapply_mono_app_spine(Located::new(other, head_span), args)),
-                        field,
-                    ),
-                    loc,
-                ),
+                other => {
+                    if field == "?" {
+                        let receiver = reapply_mono_app_spine(Located::new(other, head_span), args);
+                        match receiver.node {
+                            mono::Exp::Rel(_)
+                            | mono::Exp::Abs(_, _, _, _)
+                            | mono::Exp::Field(_, _)
+                            | mono::Exp::Let(_, _, _, _) => {
+                                Located::new(mono::Exp::Field(Box::new(receiver), field), loc)
+                            }
+                            _ => force_question_slot_terminal(receiver),
+                        }
+                    } else if let Some(projected_tail) =
+                        project_missing_field_from_mono_args(&args, &field, &loc)
+                    {
+                        reduce_head_apps_for_cjr(projected_tail)
+                    } else {
+                        Located::new(
+                            mono::Exp::Field(
+                                Box::new(reapply_mono_app_spine(
+                                    Located::new(other, head_span),
+                                    args,
+                                )),
+                                field,
+                            ),
+                            loc,
+                        )
+                    }
+                }
             }
         }
         mono::Exp::Case(disc, arms, meta) => Located::new(
@@ -1353,15 +2748,14 @@ fn reduce_head_apps_for_cjr(e: mono::LocExp) -> mono::LocExp {
             ),
             loc,
         ),
-        mono::Exp::Let(x, t, e1, e2) => Located::new(
-            mono::Exp::Let(
-                x,
-                t,
-                Box::new(reduce_head_apps_for_cjr(*e1)),
-                Box::new(reduce_head_apps_for_cjr(*e2)),
-            ),
-            loc,
-        ),
+        mono::Exp::Let(x, t, e1, e2) => {
+            let reduced_e1 = reduce_head_apps_for_cjr(*e1);
+            let reduced_e2 = with_rel_binder(t.clone(), || reduce_head_apps_for_cjr(*e2));
+            Located::new(
+                mono::Exp::Let(x, t, Box::new(reduced_e1), Box::new(reduced_e2)),
+                loc,
+            )
+        }
         mono::Exp::Closure(n, envs) => Located::new(
             mono::Exp::Closure(n, envs.into_iter().map(reduce_head_apps_for_cjr).collect()),
             loc,
@@ -1456,7 +2850,7 @@ fn cify_decl(
                         .iter()
                         .map(|(x, n, to)| (x.clone(), *n, to.as_ref().map(|t| cify_typ(t, sm))))
                         .collect();
-                    let kind = classify_constrs(&constrs);
+                    let kind = classify_constrs(dt.id, &dt.constrs);
                     DatatypeDecl {
                         kind,
                         name: dt.name.clone(),
@@ -1479,37 +2873,95 @@ fn cify_decl(
                 e.clone()
             };
 
-            let ct = cify_typ(t, sm);
+            if std::env::var("URWEB_DEBUG_CJR_ABS_DECL").ok().as_deref() == Some("1")
+                && contains_debug_show_option_abs(&effective_e)
+            {
+                let path = debug_show_option_path(&effective_e)
+                    .map(|segments| segments.join(" -> "))
+                    .unwrap_or_else(|| "<path unavailable>".to_string());
+                eprintln!(
+                    "URWEB_DEBUG_CJR_ABS_DECL val name={x} id={n} src={_s} path={path} body={:?}",
+                    effective_e
+                );
+            }
 
-            let d = match &ct.node {
+            let ct = cify_typ(t, sm);
+            debug_chat_cjr(&loc, "decl", || {
+                format!(
+                    "name={x} id={n} mono_t={:?} cjr_t={:?} exp={:?}",
+                    t.node, ct.node, e.node
+                )
+            });
+            debug_cjr_pre_unravel(&loc, "val", || {
+                format!(
+                    "name={x} id={n} mono_t={:?} cjr_t={:?} exp={:?}",
+                    t.node, ct.node, effective_e.node
+                )
+            });
+
+            let d = with_current_decl(format!("val:{x}:{n}"), || match &ct.node {
                 Typ::Fun(..) => {
                     let mut args = Vec::new();
-                    let (ran, body) = unravel_fun(ct.clone(), effective_e, &loc, &mut args);
-                    let body = reduce_head_apps_for_cjr(body);
-                    if exp_contains_abs(&body) {
-                        eprintln!("cjrize nested abs in val fun body: {}", x);
-                        let _ = (|| -> std::io::Result<()> {
-                            let mut file = std::fs::OpenOptions::new()
-                                .create(true)
-                                .append(true)
-                                .open("/tmp/urweb-cjr-bodies.log")?;
-                            std::io::Write::write_all(
-                                &mut file,
-                                format!("VAL FUN {x} @ {:?}\n{body:#?}\n\n", loc).as_bytes(),
-                            )
-                        })();
+                    let mut mono_args = Vec::new();
+                    let (mono_ran, ran, body) = unravel_fun_full(
+                        t.clone(),
+                        ct.clone(),
+                        effective_e,
+                        &loc,
+                        sm,
+                        &mut args,
+                        &mut mono_args,
+                    );
+                    let lowered_t = mono_rebuild_fun_type(&mono_args, mono_ran, &loc);
+                    debug_cjr_lowered(&loc, "val-fun", || {
+                        format!(
+                            "name={x} id={n} lowered_t={:?} args={args:?}",
+                            lowered_t.node
+                        )
+                    });
+                    CJRIZE_NAMED_TYPES.with(|slot| {
+                        slot.borrow_mut().insert(*n, lowered_t);
+                    });
+                    let rel_types = mono_args.iter().rev().cloned().collect();
+                    let raw_body = body.clone();
+                    let body = with_rel_types(rel_types, || reduce_head_apps_for_cjr(body));
+                    if std::env::var("URWEB_DEBUG_CJR_ABS_DECL").ok().as_deref() == Some("1")
+                        && contains_debug_show_option_abs(&body)
+                    {
+                        let path = debug_show_option_path(&body)
+                            .map(|segments| segments.join(" -> "))
+                            .unwrap_or_else(|| "<path unavailable>".to_string());
+                        eprintln!(
+                            "URWEB_DEBUG_CJR_ABS_DECL decl-fun name={x} id={n} args={args:?} ran={:?} path={path} body={:?}",
+                            ran.node, body
+                        );
                     }
+                    debug_chat_cjr(&loc, "decl-fun", || {
+                        format!(
+                            "name={x} id={n} args={args:?} ran={:?} body={:?}",
+                            ran.node, body.node
+                        )
+                    });
+                    debug_cjr_top_lambda(&loc, "val", || {
+                        format!(
+                            "name={x} id={n} args={args:?} ran={:?} pre={:?} body={:?}",
+                            ran.node, raw_body.node, body.node
+                        )
+                    });
                     let cbody = cify_exp(&body, sm, errors);
+                    debug_cjr_top_lambda(&loc, "val-cjr", || {
+                        format!(
+                            "name={x} id={n} args={args:?} ran={:?} cbody={:?}",
+                            ran.node, cbody.node
+                        )
+                    });
                     Decl::Fun(x.clone(), *n, args, ran, cbody)
                 }
                 _ => {
-                    if exp_contains_abs(&effective_e) {
-                        eprintln!("cjrize nested abs in val expr: {}", x);
-                    }
                     let ce = cify_exp(&effective_e, sm, errors);
                     Decl::Val(x.clone(), *n, ct, ce)
                 }
-            };
+            });
             (Some(Located::new(d, loc)), None)
         }
 
@@ -1522,57 +2974,179 @@ fn cify_decl(
             if vis.is_empty() {
                 return (None, None);
             }
-            let cfuns: Vec<(String, usize, Vec<(String, LocTyp)>, LocTyp, LocExp)> = vis
+            let any_script_member = vis.iter().any(|(_, _, _, _, s)| *s == "<script>");
+            enum PreparedFun {
+                Lowered {
+                    name: String,
+                    id: usize,
+                    label: String,
+                    args: Vec<(String, LocTyp)>,
+                    mono_args: Vec<mono::LocTyp>,
+                    mono_ran: mono::LocTyp,
+                    ran: LocTyp,
+                    body: mono::LocExp,
+                },
+                Plain {
+                    name: String,
+                    id: usize,
+                    label: String,
+                    ct: LocTyp,
+                    body: mono::LocExp,
+                },
+            }
+
+            let prepared: Vec<PreparedFun> = vis
                 .iter()
                 .map(|(x, n, t, e, s)| {
-                    let effective_e = if *s == "<script>" {
-                        stub_body(t, &loc)
-                    } else {
-                        e.clone()
-                    };
-                    let ct = cify_typ(t, sm);
-                    match &ct.node {
-                        Typ::Fun(..) => {
-                            let mut args = Vec::new();
-                            let (ran, body) = unravel_fun(ct, effective_e, &loc, &mut args);
-                            let body = reduce_head_apps_for_cjr(body);
-                            if exp_contains_abs(&body) {
-                                eprintln!("cjrize nested abs in valrec fun body: {}", x);
-                                let _ = (|| -> std::io::Result<()> {
-                                    let mut file = std::fs::OpenOptions::new()
-                                        .create(true)
-                                        .append(true)
-                                        .open("/tmp/urweb-cjr-bodies.log")?;
-                                    std::io::Write::write_all(
-                                        &mut file,
-                                        format!("VALREC FUN {x} @ {:?}\n{body:#?}\n\n", loc)
-                                            .as_bytes(),
-                                    )
-                                })();
-                            }
-                            let cbody = cify_exp(&body, sm, errors);
-                            (x.clone(), *n, args, ran, cbody)
-                        }
-                        _ => {
-                            if exp_contains_abs(&effective_e) {
-                                eprintln!("cjrize nested abs in valrec expr: {}", x);
-                            }
-                            errors.report_at(
-                                loc.clone(),
-                                DiagnosticPayload::new(
-                                    DiagnosticId::CjrizeFunctionNotExplicitAtCodegen,
-                                    Vec::new(),
-                                ),
+                    let label = format!("valrec:{x}:{n}");
+                    with_current_decl(label.clone(), || {
+                        let effective_e = if any_script_member || *s == "<script>" {
+                            stub_body(t, &loc)
+                        } else {
+                            e.clone()
+                        };
+                        if std::env::var("URWEB_DEBUG_CJR_ABS_DECL").ok().as_deref() == Some("1")
+                            && contains_debug_show_option_abs(&effective_e)
+                        {
+                            let path = debug_show_option_path(&effective_e)
+                                .map(|segments| segments.join(" -> "))
+                                .unwrap_or_else(|| "<path unavailable>".to_string());
+                            eprintln!(
+                                "URWEB_DEBUG_CJR_ABS_DECL valrec name={x} id={n} src={s} path={path} body={:?}",
+                                effective_e
                             );
-                            (
-                                x.clone(),
-                                *n,
-                                vec![],
-                                ct,
-                                cify_exp(&effective_e, sm, errors),
-                            )
                         }
-                    }
+                        let ct = cify_typ(t, sm);
+                        debug_cjr_pre_unravel(&loc, "valrec", || {
+                            format!(
+                                "name={x} id={n} mono_t={:?} cjr_t={:?} exp={:?}",
+                                t.node, ct.node, effective_e.node
+                            )
+                        });
+                        match &ct.node {
+                            Typ::Fun(..) => {
+                                let mut args = Vec::new();
+                                let mut mono_args = Vec::new();
+                                let (mono_ran, ran, body) = unravel_fun_full(
+                                    t.clone(),
+                                    ct,
+                                    effective_e,
+                                    &loc,
+                                    sm,
+                                    &mut args,
+                                    &mut mono_args,
+                                );
+                                debug_cjr_lowered(&loc, "valrec-fun", || {
+                                    format!(
+                                        "name={x} id={n} lowered_t={:?} args={args:?}",
+                                        mono_rebuild_fun_type(&mono_args, mono_ran.clone(), &loc).node
+                                    )
+                                });
+                                let raw_body = body.clone();
+                                debug_cjr_top_lambda(&loc, "valrec-pre", || {
+                                    format!(
+                                        "name={x} id={n} args={args:?} ran={:?} pre={:?}",
+                                        ran.node, raw_body.node
+                                    )
+                                });
+                                PreparedFun::Lowered {
+                                    name: x.clone(),
+                                    id: *n,
+                                    label,
+                                    args,
+                                    mono_args,
+                                    mono_ran,
+                                    ran,
+                                    body: raw_body,
+                                }
+                            }
+                            _ => PreparedFun::Plain {
+                                name: x.clone(),
+                                id: *n,
+                                label,
+                                ct,
+                                body: effective_e,
+                            },
+                        }
+                    })
+                })
+                .collect();
+
+            for prepared_fun in &prepared {
+                if let PreparedFun::Lowered {
+                    id,
+                    mono_args,
+                    mono_ran,
+                    ..
+                } = prepared_fun
+                {
+                    CJRIZE_NAMED_TYPES.with(|slot| {
+                        slot.borrow_mut().insert(
+                            *id,
+                            mono_rebuild_fun_type(mono_args, mono_ran.clone(), &loc),
+                        );
+                    });
+                }
+            }
+
+            let cfuns: Vec<(String, usize, Vec<(String, LocTyp)>, LocTyp, LocExp)> = prepared
+                .into_iter()
+                .map(|prepared_fun| match prepared_fun {
+                    PreparedFun::Lowered {
+                        name,
+                        id,
+                        label,
+                        args,
+                        mono_args,
+                        ran,
+                        body,
+                        ..
+                    } => with_current_decl(label, || {
+                        let rel_types = mono_args.iter().rev().cloned().collect();
+                        let body = with_rel_types(rel_types, || reduce_head_apps_for_cjr(body));
+                        if std::env::var("URWEB_DEBUG_CJR_ABS_DECL").ok().as_deref()
+                            == Some("1")
+                            && contains_debug_show_option_abs(&body)
+                        {
+                            let path = debug_show_option_path(&body)
+                                .map(|segments| segments.join(" -> "))
+                                .unwrap_or_else(|| "<path unavailable>".to_string());
+                            eprintln!(
+                                "URWEB_DEBUG_CJR_ABS_DECL valrec-fun name={name} id={id} args={args:?} ran={:?} path={path} body={:?}",
+                                ran.node, body
+                            );
+                        }
+                        debug_cjr_top_lambda(&loc, "valrec", || {
+                            format!(
+                                "name={name} id={id} args={args:?} ran={:?} body={:?}",
+                                ran.node, body.node
+                            )
+                        });
+                        let cbody = cify_exp(&body, sm, errors);
+                        debug_cjr_top_lambda(&loc, "valrec-cjr", || {
+                            format!(
+                                "name={name} id={id} args={args:?} ran={:?} cbody={:?}",
+                                ran.node, cbody.node
+                            )
+                        });
+                        (name, id, args, ran, cbody)
+                    }),
+                    PreparedFun::Plain {
+                        name,
+                        id,
+                        label,
+                        ct,
+                        body,
+                    } => with_current_decl(label, || {
+                        errors.report_at(
+                            loc.clone(),
+                            DiagnosticPayload::new(
+                                DiagnosticId::CjrizeFunctionNotExplicitAtCodegen,
+                                Vec::new(),
+                            ),
+                        );
+                        (name, id, vec![], ct, cify_exp(&body, sm, errors))
+                    }),
                 })
                 .collect();
             (Some(Located::new(Decl::FunRec(cfuns), loc)), None)
@@ -1789,6 +3363,7 @@ pub fn cjrize(file: mono::File, errors: &mut ErrorReporter) -> Option<cjr::File>
     #[cfg(test)]
     cjrize_test_reset_ticks();
     let (mono_decls, mono_ps) = file;
+    let mono_bound = collect_mono_bound_named_ids(&mono_decls);
     let mut sm = Sm::new();
     // dsf = "front" declarations: struct defs, type forward decls, datatypes
     let mut dsf: Vec<LocDecl> = Vec::new();
@@ -1797,12 +3372,48 @@ pub fn cjrize(file: mono::File, errors: &mut ErrorReporter) -> Option<cjr::File>
     // export entries (without sidedness — to be filled from mono_ps)
     let mut ps_raw: Vec<(ExportKind, String, usize, Vec<LocTyp>, LocTyp, bool)> = Vec::new();
     let mut named: HashMap<usize, mono::LocExp> = HashMap::new();
+    let mut named_types: HashMap<usize, mono::LocTyp> = HashMap::new();
 
     for mono_decl in &mono_decls {
-        if let mono::Decl::Val(_, n, _, e, _) = &mono_decl.node {
-            named.insert(*n, e.clone());
+        match &mono_decl.node {
+            mono::Decl::Val(_, n, t, e, _) => {
+                named.insert(*n, e.clone());
+                named_types.insert(*n, t.clone());
+            }
+            mono::Decl::ValRec(vis) => {
+                for (_, n, t, e, _) in vis {
+                    named.insert(*n, e.clone());
+                    named_types.insert(*n, t.clone());
+                }
+            }
+            _ => {}
         }
     }
+
+    CJRIZE_NAMED_TYPES.with(|slot| {
+        *slot.borrow_mut() = named_types.clone();
+    });
+    CJRIZE_RAW_NAMED_TYPES.with(|slot| {
+        *slot.borrow_mut() = named_types;
+    });
+    CJRIZE_REL_TYPES.with(|slot| slot.borrow_mut().clear());
+    CJRIZE_CONSTRUCTOR_KINDS.with(|slot| {
+        let mut kinds = slot.borrow_mut();
+        kinds.clear();
+        for mono_decl in &mono_decls {
+            if let mono::Decl::Datatype(dts) = &mono_decl.node {
+                for dt in dts {
+                    if mono_exact_list_element(dt.id, &dt.constrs).is_some() {
+                        continue;
+                    }
+                    let kind = classify_constrs(dt.id, &dt.constrs);
+                    for (_, constructor_id, _) in &dt.constrs {
+                        kinds.insert(*constructor_id, kind);
+                    }
+                }
+            }
+        }
+    });
 
     for mono_decl in &mono_decls {
         let (dop, pop) = cify_decl(mono_decl, &mut sm, errors, &named);
@@ -1838,6 +3449,11 @@ pub fn cjrize(file: mono::File, errors: &mut ErrorReporter) -> Option<cjr::File>
         }
     }
 
+    CJRIZE_NAMED_TYPES.with(|slot| slot.borrow_mut().clear());
+    CJRIZE_RAW_NAMED_TYPES.with(|slot| slot.borrow_mut().clear());
+    CJRIZE_REL_TYPES.with(|slot| slot.borrow_mut().clear());
+    CJRIZE_CONSTRUCTOR_KINDS.with(|slot| slot.borrow_mut().clear());
+
     // Build sidedness map from Mono ps.
     let side_map: HashMap<usize, (Sidedness, DbMode)> = mono_ps
         .iter()
@@ -1858,6 +3474,9 @@ pub fn cjrize(file: mono::File, errors: &mut ErrorReporter) -> Option<cjr::File>
 
     // Final output: front declarations followed by regular declarations.
     dsf.extend(ds);
+    if debug_validate_named_enabled() {
+        debug_validate_cjr_named_refs(&dsf, &mono_bound);
+    }
     Some((dsf, ps))
 }
 
@@ -1952,6 +3571,54 @@ mod tests {
         );
         let reduced = reduce_head_apps_for_cjr(projected);
         assert!(matches!(reduced.node, mono::Exp::Prim(Prim::Int(7))));
+        Ok(())
+    }
+
+    #[test]
+    fn reduce_head_apps_drop_erased_witness_binder_before_runtime_arg() -> anyhow::Result<()> {
+        let span = Span::dummy();
+        let int_t = Located::new(mono::Typ::Ffi("Basis".into(), "int".into()), span.clone());
+        let meta_t = Located::new(
+            mono::Typ::Record(vec![("NewState".into(), int_t.clone())]),
+            span.clone(),
+        );
+        let body = Located::new(
+            mono::Exp::Abs(
+                "row".into(),
+                meta_t.clone(),
+                int_t.clone(),
+                Box::new(Located::new(
+                    mono::Exp::Field(
+                        Box::new(Located::new(mono::Exp::Rel(0), span.clone())),
+                        "NewState".into(),
+                    ),
+                    span.clone(),
+                )),
+            ),
+            span.clone(),
+        );
+        let app = Located::new(
+            mono::Exp::App(
+                Box::new(Located::new(
+                    mono::Exp::Abs("m".into(), meta_t, int_t, Box::new(body)),
+                    span.clone(),
+                )),
+                Box::new(Located::new(mono::Exp::Record(vec![]), span.clone())),
+            ),
+            span,
+        );
+
+        let reduced = reduce_head_apps_for_cjr(app);
+        assert!(matches!(
+            reduced.node,
+            mono::Exp::Abs(_, _, _, ref body)
+                if matches!(
+                    body.node,
+                    mono::Exp::Field(ref inner, ref name)
+                        if name == "NewState"
+                            && matches!(inner.node, mono::Exp::Rel(0))
+                )
+        ));
         Ok(())
     }
 
@@ -2147,6 +3814,596 @@ mod tests {
     }
 
     #[test]
+    fn reduce_head_apps_unwraps_singleton_function_record_before_applying() -> anyhow::Result<()> {
+        let span = Span::dummy();
+        let int_t = Located::new(mono::Typ::Ffi("Basis".into(), "int".into()), span.clone());
+        let unit_t = Located::new(mono::Typ::Record(vec![]), span.clone());
+        let fn_t = Located::new(
+            mono::Typ::Fun(Box::new(unit_t.clone()), Box::new(int_t.clone())),
+            span.clone(),
+        );
+        let unit_exp = Located::new(mono::Exp::Record(vec![]), span.clone());
+        let wrapped = Located::new(
+            mono::Exp::Record(vec![(
+                "?".into(),
+                Located::new(
+                    mono::Exp::Abs(
+                        "_".into(),
+                        unit_t.clone(),
+                        int_t.clone(),
+                        Box::new(Located::new(mono::Exp::Prim(Prim::Int(33)), span.clone())),
+                    ),
+                    span.clone(),
+                ),
+                fn_t,
+            )]),
+            span.clone(),
+        );
+        let applied = Located::new(
+            mono::Exp::App(Box::new(wrapped), Box::new(unit_exp)),
+            span.clone(),
+        );
+
+        let reduced = reduce_head_apps_for_cjr(applied);
+        assert!(matches!(reduced.node, mono::Exp::Prim(Prim::Int(33))));
+        Ok(())
+    }
+
+    #[test]
+    fn cify_exp_preserves_three_argument_application_order() -> anyhow::Result<()> {
+        let span = Span::dummy();
+        let app = Located::new(
+            mono::Exp::App(
+                Box::new(Located::new(
+                    mono::Exp::App(
+                        Box::new(Located::new(
+                            mono::Exp::App(
+                                Box::new(Located::new(mono::Exp::Named(7), span.clone())),
+                                Box::new(Located::new(mono::Exp::Prim(Prim::Int(1)), span.clone())),
+                            ),
+                            span.clone(),
+                        )),
+                        Box::new(Located::new(mono::Exp::Prim(Prim::Int(2)), span.clone())),
+                    ),
+                    span.clone(),
+                )),
+                Box::new(Located::new(mono::Exp::Prim(Prim::Int(3)), span.clone())),
+            ),
+            span.clone(),
+        );
+
+        let mut sm = Sm::new();
+        let mut errors = ErrorReporter::new();
+        let cexp = cify_exp(&app, &mut sm, &mut errors);
+        assert!(!errors.has_errors());
+
+        let Exp::App(_, args) = cexp.node else {
+            anyhow::bail!("expected cify_exp to lower to Exp::App");
+        };
+        let ints: Vec<i64> = args
+            .into_iter()
+            .map(|arg| match arg.node {
+                Exp::Prim(Prim::Int(i)) => Ok(i),
+                other => anyhow::bail!("expected integer argument, got {other:?}"),
+            })
+            .collect::<anyhow::Result<_>>()?;
+
+        assert_eq!(ints, vec![1, 2, 3]);
+        Ok(())
+    }
+
+    #[test]
+    fn cify_exp_saturates_named_residual_unit_thunk() -> anyhow::Result<()> {
+        let span = Span::dummy();
+        let unit_t = Located::new(mono::Typ::Record(vec![]), span.clone());
+        let named_t = Located::new(
+            mono::Typ::Fun(
+                Box::new(unit_t.clone()),
+                Box::new(Located::new(
+                    mono::Typ::Fun(Box::new(unit_t.clone()), Box::new(unit_t.clone())),
+                    span.clone(),
+                )),
+            ),
+            span.clone(),
+        );
+        let previous = CJRIZE_NAMED_TYPES.with(|slot| slot.borrow().clone());
+        CJRIZE_NAMED_TYPES.with(|slot| {
+            slot.borrow_mut().insert(7, named_t);
+        });
+
+        let app = Located::new(
+            mono::Exp::App(
+                Box::new(Located::new(mono::Exp::Named(7), span.clone())),
+                Box::new(Located::new(mono::Exp::Record(vec![]), span.clone())),
+            ),
+            span.clone(),
+        );
+
+        let mut sm = Sm::new();
+        let mut errors = ErrorReporter::new();
+        let cexp = cify_exp(&app, &mut sm, &mut errors);
+        CJRIZE_NAMED_TYPES.with(|slot| *slot.borrow_mut() = previous);
+        assert!(!errors.has_errors());
+
+        let Exp::App(_, args) = cexp.node else {
+            anyhow::bail!("expected named unit-thunk app to stay an App");
+        };
+        assert_eq!(args.len(), 2);
+        assert!(matches!(args[0].node, Exp::Record(_, ref fields) if fields.is_empty()));
+        assert!(matches!(args[1].node, Exp::Record(_, ref fields) if fields.is_empty()));
+        Ok(())
+    }
+
+    #[test]
+    fn cify_exp_saturates_named_unit_then_transaction_thunk() -> anyhow::Result<()> {
+        let span = Span::dummy();
+        let unit_t = Located::new(mono::Typ::Record(vec![]), span.clone());
+        let int_t = Located::new(mono::Typ::Ffi("Basis".into(), "int".into()), span.clone());
+        let string_t = Located::new(
+            mono::Typ::Ffi("Basis".into(), "string".into()),
+            span.clone(),
+        );
+        let named_t = Located::new(
+            mono::Typ::Fun(
+                Box::new(Located::new(
+                    mono::Typ::Option(Box::new(int_t.clone())),
+                    span.clone(),
+                )),
+                Box::new(Located::new(
+                    mono::Typ::Fun(
+                        Box::new(unit_t.clone()),
+                        Box::new(Located::new(
+                            mono::Typ::Transaction(Box::new(string_t)),
+                            span.clone(),
+                        )),
+                    ),
+                    span.clone(),
+                )),
+            ),
+            span.clone(),
+        );
+        let previous = CJRIZE_NAMED_TYPES.with(|slot| slot.borrow().clone());
+        CJRIZE_NAMED_TYPES.with(|slot| {
+            slot.borrow_mut().insert(8, named_t);
+        });
+
+        let app = Located::new(
+            mono::Exp::App(
+                Box::new(Located::new(mono::Exp::Named(8), span.clone())),
+                Box::new(Located::new(mono::Exp::None(int_t), span.clone())),
+            ),
+            span.clone(),
+        );
+
+        let mut sm = Sm::new();
+        let mut errors = ErrorReporter::new();
+        let cexp = cify_exp(&app, &mut sm, &mut errors);
+        CJRIZE_NAMED_TYPES.with(|slot| *slot.borrow_mut() = previous);
+        assert!(!errors.has_errors());
+
+        let Exp::App(_, args) = cexp.node else {
+            anyhow::bail!("expected named thunk app to stay an App");
+        };
+        assert_eq!(args.len(), 3);
+        assert!(matches!(args[1].node, Exp::Record(_, ref fields) if fields.is_empty()));
+        assert!(matches!(args[2].node, Exp::Record(_, ref fields) if fields.is_empty()));
+        Ok(())
+    }
+
+    #[test]
+    fn unravel_fun_keeps_explicit_unit_argument_before_transaction_thunk() -> anyhow::Result<()> {
+        let span = Span::dummy();
+        let unit_t = Located::new(mono::Typ::Record(vec![]), span.clone());
+        let mono_t = Located::new(
+            mono::Typ::Transaction(Box::new(unit_t.clone())),
+            span.clone(),
+        );
+        let body = Located::new(
+            mono::Exp::Abs(
+                "_".into(),
+                unit_t.clone(),
+                unit_t.clone(),
+                Box::new(Located::new(mono::Exp::Record(vec![]), span.clone())),
+            ),
+            span.clone(),
+        );
+        let exp = Located::new(
+            mono::Exp::Abs("x".into(), unit_t.clone(), mono_t.clone(), Box::new(body)),
+            span.clone(),
+        );
+
+        let mut sm = Sm::new();
+        let cjr_t = cify_typ(&mono_t, &mut sm);
+        let mut args = Vec::new();
+        let (ran, lowered_body) = unravel_fun(mono_t, cjr_t, exp, &span, &mut sm, &mut args);
+
+        assert_eq!(args.len(), 2);
+        assert!(matches!(args[0].1.node, Typ::Record(0)));
+        assert!(matches!(args[1].1.node, Typ::Record(0)));
+        assert!(matches!(ran.node, Typ::Record(0)));
+        assert!(matches!(lowered_body.node, mono::Exp::Record(ref fields) if fields.is_empty()));
+        Ok(())
+    }
+
+    #[test]
+    fn unravel_fun_does_not_eta_expand_already_forced_transaction_app() -> anyhow::Result<()> {
+        let span = Span::dummy();
+        let unit_t = Located::new(mono::Typ::Record(vec![]), span.clone());
+        let string_t = Located::new(
+            mono::Typ::Ffi("Basis".into(), "string".into()),
+            span.clone(),
+        );
+        let named_t = Located::new(
+            mono::Typ::Fun(
+                Box::new(unit_t.clone()),
+                Box::new(Located::new(
+                    mono::Typ::Transaction(Box::new(string_t.clone())),
+                    span.clone(),
+                )),
+            ),
+            span.clone(),
+        );
+        let previous_raw = CJRIZE_RAW_NAMED_TYPES.with(|slot| slot.borrow().clone());
+        CJRIZE_RAW_NAMED_TYPES.with(|slot| {
+            slot.borrow_mut().insert(42, named_t);
+        });
+
+        let forced = Located::new(
+            mono::Exp::App(
+                Box::new(Located::new(
+                    mono::Exp::App(
+                        Box::new(Located::new(mono::Exp::Named(42), span.clone())),
+                        Box::new(Located::new(mono::Exp::Record(vec![]), span.clone())),
+                    ),
+                    span.clone(),
+                )),
+                Box::new(Located::new(mono::Exp::Record(vec![]), span.clone())),
+            ),
+            span.clone(),
+        );
+
+        let mono_t = Located::new(mono::Typ::Transaction(Box::new(string_t)), span.clone());
+        let mut sm = Sm::new();
+        let cjr_t = cify_typ(&mono_t, &mut sm);
+        let mut args = Vec::new();
+        let (ran, lowered_body) = unravel_fun(mono_t, cjr_t, forced, &span, &mut sm, &mut args);
+        CJRIZE_RAW_NAMED_TYPES.with(|slot| *slot.borrow_mut() = previous_raw);
+
+        assert_eq!(args.len(), 1);
+        assert!(matches!(args[0].1.node, Typ::Record(0)));
+        assert!(matches!(ran.node, Typ::Ffi(ref m, ref x) if m == "Basis" && x == "string"));
+
+        let (head, lowered_args) = strip_mono_app_spine(lowered_body);
+        assert!(matches!(head.node, mono::Exp::Named(42)));
+        assert_eq!(lowered_args.len(), 2);
+        assert!(lowered_args
+            .iter()
+            .all(|arg| matches!(arg.node, mono::Exp::Record(ref fields) if fields.is_empty())));
+        Ok(())
+    }
+
+    #[test]
+    fn force_spurious_unit_thunk_preserves_transaction_thunks() -> anyhow::Result<()> {
+        let span = Span::dummy();
+        let unit_t = Located::new(mono::Typ::Record(vec![]), span.clone());
+        let int_t = Located::new(mono::Typ::Ffi("Basis".into(), "int".into()), span.clone());
+        let thunk = Located::new(
+            mono::Exp::Abs(
+                "_".into(),
+                unit_t,
+                Located::new(
+                    mono::Typ::Transaction(Box::new(int_t.clone())),
+                    span.clone(),
+                ),
+                Box::new(Located::new(mono::Exp::Prim(Prim::Int(41)), span.clone())),
+            ),
+            span,
+        );
+
+        assert!(force_spurious_unit_thunk(&thunk).is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn force_spurious_unit_thunk_peels_nested_unit_thunks() -> anyhow::Result<()> {
+        let span = Span::dummy();
+        let unit_t = Located::new(mono::Typ::Record(vec![]), span.clone());
+        let string_t = Located::new(
+            mono::Typ::Ffi("Basis".into(), "string".into()),
+            span.clone(),
+        );
+        let nested = Located::new(
+            mono::Exp::Abs(
+                "_".into(),
+                unit_t.clone(),
+                Located::new(
+                    mono::Typ::Fun(Box::new(unit_t.clone()), Box::new(string_t.clone())),
+                    span.clone(),
+                ),
+                Box::new(Located::new(
+                    mono::Exp::Abs(
+                        "_".into(),
+                        unit_t.clone(),
+                        string_t.clone(),
+                        Box::new(Located::new(
+                            mono::Exp::Prim(Prim::String(StringMode::Normal, "ok".into())),
+                            span.clone(),
+                        )),
+                    ),
+                    span.clone(),
+                )),
+            ),
+            span.clone(),
+        );
+
+        let forced_outer = force_spurious_unit_thunk(&nested).expect("outer thunk should peel");
+        assert!(matches!(forced_outer.node, mono::Exp::Abs(_, _, _, _)));
+
+        let forced_inner =
+            force_spurious_unit_thunk(&forced_outer).expect("inner thunk should force");
+        assert!(matches!(
+            forced_inner.node,
+            mono::Exp::Prim(Prim::String(StringMode::Normal, ref value)) if value == "ok"
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn project_missing_field_prefers_arg_that_can_supply_field() -> anyhow::Result<()> {
+        let span = Span::dummy();
+        let unit_t = Located::new(mono::Typ::Record(vec![]), span.clone());
+        let source_t = Located::new(mono::Typ::Source, span.clone());
+        let meta_arg = Located::new(
+            mono::Exp::Record(vec![(
+                "NewState".into(),
+                Located::new(mono::Exp::Prim(Prim::Int(0)), span.clone()),
+                source_t.clone(),
+            )]),
+            span.clone(),
+        );
+        let acc_arg = Located::new(
+            mono::Exp::Abs(
+                "_".into(),
+                unit_t.clone(),
+                Located::new(
+                    mono::Typ::Transaction(Box::new(unit_t.clone())),
+                    span.clone(),
+                ),
+                Box::new(Located::new(mono::Exp::Record(vec![]), span.clone())),
+            ),
+            span.clone(),
+        );
+
+        let projected =
+            project_missing_field_from_mono_args(&[meta_arg.clone(), acc_arg], "NewState", &span)
+                .expect("project missing field");
+        assert!(matches!(
+            projected.node,
+            mono::Exp::Field(inner, ref field)
+                if field == "NewState"
+                    && matches!(inner.node, mono::Exp::Record(ref fields)
+                        if fields.iter().any(|(name, _, _)| name == "NewState"))
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn project_missing_field_prefers_later_arg_when_multiple_supply_field() -> anyhow::Result<()> {
+        let span = Span::dummy();
+        let int_t = Located::new(mono::Typ::Ffi("Basis".into(), "int".into()), span.clone());
+        let first = Located::new(
+            mono::Exp::Record(vec![(
+                "A".into(),
+                Located::new(mono::Exp::Prim(Prim::Int(7)), span.clone()),
+                int_t.clone(),
+            )]),
+            span.clone(),
+        );
+        let second = Located::new(
+            mono::Exp::Record(vec![(
+                "A".into(),
+                Located::new(mono::Exp::Prim(Prim::Int(9)), span.clone()),
+                int_t.clone(),
+            )]),
+            span.clone(),
+        );
+
+        let projected = project_missing_field_from_mono_args(&[first, second], "A", &span)
+            .expect("project missing field");
+        assert!(matches!(
+            projected.node,
+            mono::Exp::Field(inner, ref field)
+                if field == "A"
+                    && matches!(inner.node, mono::Exp::Record(ref fields)
+                        if fields.iter().any(|(name, exp, _)| name == "A"
+                            && matches!(exp.node, mono::Exp::Prim(Prim::Int(9)))))
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn project_missing_field_rejects_unrelated_tail_args() -> anyhow::Result<()> {
+        let span = Span::dummy();
+        let unit_t = Located::new(mono::Typ::Record(vec![]), span.clone());
+        let string_t = Located::new(
+            mono::Typ::Ffi("Basis".into(), "string".into()),
+            span.clone(),
+        );
+        let unrelated = Located::new(
+            mono::Exp::Abs(
+                "_".into(),
+                unit_t.clone(),
+                string_t,
+                Box::new(Located::new(
+                    mono::Exp::Prim(Prim::String(StringMode::Normal, String::new())),
+                    span.clone(),
+                )),
+            ),
+            span.clone(),
+        );
+        let proof = Located::new(mono::Exp::Record(vec![]), span.clone());
+
+        assert!(
+            project_missing_field_from_mono_args(&[proof, unrelated], "Name", &span).is_none(),
+            "missing-field recovery should not invent a receiver from unrelated tail args"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn project_missing_field_reuses_existing_projection_without_nesting() -> anyhow::Result<()> {
+        let span = Span::dummy();
+        let int_t = Located::new(mono::Typ::Ffi("Basis".into(), "int".into()), span.clone());
+        let arg = Located::new(
+            mono::Exp::Field(
+                Box::new(Located::new(
+                    mono::Exp::Record(vec![(
+                        "A".into(),
+                        Located::new(mono::Exp::Prim(Prim::Int(7)), span.clone()),
+                        int_t.clone(),
+                    )]),
+                    span.clone(),
+                )),
+                "A".into(),
+            ),
+            span.clone(),
+        );
+
+        let projected = project_missing_field_from_mono_args(&[arg.clone()], "A", &span)
+            .expect("project missing field");
+        assert!(matches!(
+            projected.node,
+            mono::Exp::Field(inner, ref field)
+                if field == "A"
+                    && matches!(inner.node, mono::Exp::Record(ref fields)
+                        if fields.iter().any(|(name, _, _)| name == "A"))
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn project_missing_field_skips_unstable_existing_projection() -> anyhow::Result<()> {
+        let span = Span::dummy();
+        let unit_t = Located::new(mono::Typ::Record(vec![]), span.clone());
+        let string_t = Located::new(
+            mono::Typ::Ffi("Basis".into(), "string".into()),
+            span.clone(),
+        );
+        let int_t = Located::new(mono::Typ::Ffi("Basis".into(), "int".into()), span.clone());
+        let unstable = Located::new(
+            mono::Exp::Field(
+                Box::new(Located::new(
+                    mono::Exp::Abs(
+                        "_".into(),
+                        unit_t.clone(),
+                        string_t,
+                        Box::new(Located::new(
+                            mono::Exp::Prim(Prim::String(StringMode::Normal, String::new())),
+                            span.clone(),
+                        )),
+                    ),
+                    span.clone(),
+                )),
+                "A".into(),
+            ),
+            span.clone(),
+        );
+        let stable = Located::new(
+            mono::Exp::Field(
+                Box::new(Located::new(
+                    mono::Exp::Record(vec![(
+                        "A".into(),
+                        Located::new(mono::Exp::Prim(Prim::Int(7)), span.clone()),
+                        int_t.clone(),
+                    )]),
+                    span.clone(),
+                )),
+                "A".into(),
+            ),
+            span.clone(),
+        );
+
+        let projected =
+            project_missing_field_from_mono_args(&[unstable, stable.clone()], "A", &span)
+                .expect("project missing field");
+        assert!(matches!(
+            projected.node,
+            mono::Exp::Field(inner, ref field)
+                if field == "A"
+                    && matches!(inner.node, mono::Exp::Record(ref fields)
+                        if fields.iter().any(|(name, _, _)| name == "A"))
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn project_missing_field_accepts_nested_record_from_existing_projection() -> anyhow::Result<()>
+    {
+        let span = Span::dummy();
+        let string_t = Located::new(
+            mono::Typ::Ffi("Basis".into(), "string".into()),
+            span.clone(),
+        );
+        let meta_t = Located::new(
+            mono::Typ::Record(vec![
+                ("Name".into(), string_t.clone()),
+                ("Show".into(), string_t.clone()),
+            ]),
+            span.clone(),
+        );
+        let holder = Located::new(
+            mono::Exp::Field(
+                Box::new(Located::new(
+                    mono::Exp::Record(vec![(
+                        "A".into(),
+                        Located::new(
+                            mono::Exp::Record(vec![
+                                (
+                                    "Name".into(),
+                                    Located::new(
+                                        mono::Exp::Prim(Prim::String(
+                                            StringMode::Normal,
+                                            "n".into(),
+                                        )),
+                                        span.clone(),
+                                    ),
+                                    string_t.clone(),
+                                ),
+                                (
+                                    "Show".into(),
+                                    Located::new(
+                                        mono::Exp::Prim(Prim::String(
+                                            StringMode::Normal,
+                                            "call".into(),
+                                        )),
+                                        span.clone(),
+                                    ),
+                                    string_t.clone(),
+                                ),
+                            ]),
+                            span.clone(),
+                        ),
+                        meta_t,
+                    )]),
+                    span.clone(),
+                )),
+                "A".into(),
+            ),
+            span.clone(),
+        );
+
+        let projected = project_missing_field_from_mono_args(&[holder], "Show", &span)
+            .expect("project missing nested field");
+        assert!(matches!(
+            projected.node,
+            mono::Exp::Field(inner, ref field)
+                if field == "Show"
+                    && matches!(inner.node, mono::Exp::Field(_, ref key) if key == "A")
+        ));
+        Ok(())
+    }
+
+    #[test]
     fn reduce_head_apps_projects_missing_field_from_concat_like_record_tail() -> anyhow::Result<()>
     {
         let span = Span::dummy();
@@ -2204,6 +4461,1039 @@ mod tests {
 
         let reduced = reduce_head_apps_for_cjr(projected);
         assert!(matches!(reduced.node, mono::Exp::Prim(Prim::Int(7))));
+        Ok(())
+    }
+
+    #[test]
+    fn reduce_head_apps_projects_missing_field_from_abs_tail_args() -> anyhow::Result<()> {
+        let span = Span::dummy();
+        let int_t = Located::new(mono::Typ::Ffi("Basis".into(), "int".into()), span.clone());
+        let unit_t = Located::new(mono::Typ::Record(vec![]), span.clone());
+        let b_record_t = Located::new(
+            mono::Typ::Record(vec![("B".into(), int_t.clone())]),
+            span.clone(),
+        );
+        let unit_exp = Located::new(mono::Exp::Record(vec![]), span.clone());
+        let projected = Located::new(
+            mono::Exp::Field(
+                Box::new(Located::new(
+                    mono::Exp::App(
+                        Box::new(Located::new(
+                            mono::Exp::App(
+                                Box::new(Located::new(
+                                    mono::Exp::Abs(
+                                        "_".into(),
+                                        unit_t.clone(),
+                                        b_record_t,
+                                        Box::new(Located::new(
+                                            mono::Exp::Record(vec![(
+                                                "B".into(),
+                                                Located::new(
+                                                    mono::Exp::Prim(Prim::Int(9)),
+                                                    span.clone(),
+                                                ),
+                                                int_t.clone(),
+                                            )]),
+                                            span.clone(),
+                                        )),
+                                    ),
+                                    span.clone(),
+                                )),
+                                Box::new(unit_exp.clone()),
+                            ),
+                            span.clone(),
+                        )),
+                        Box::new(Located::new(
+                            mono::Exp::Record(vec![(
+                                "A".into(),
+                                Located::new(mono::Exp::Prim(Prim::Int(7)), span.clone()),
+                                int_t.clone(),
+                            )]),
+                            span.clone(),
+                        )),
+                    ),
+                    span.clone(),
+                )),
+                "A".into(),
+            ),
+            span.clone(),
+        );
+
+        let reduced = reduce_head_apps_for_cjr(projected);
+        assert!(matches!(reduced.node, mono::Exp::Prim(Prim::Int(7))));
+        Ok(())
+    }
+
+    #[test]
+    fn reduce_head_apps_projects_missing_field_past_erased_proof_arg() -> anyhow::Result<()> {
+        let span = Span::dummy();
+        let int_t = Located::new(mono::Typ::Ffi("Basis".into(), "int".into()), span.clone());
+        let projected = Located::new(
+            mono::Exp::Field(
+                Box::new(Located::new(
+                    mono::Exp::App(
+                        Box::new(Located::new(
+                            mono::Exp::App(
+                                Box::new(Located::new(
+                                    mono::Exp::Record(vec![(
+                                        "B".into(),
+                                        Located::new(mono::Exp::Prim(Prim::Int(9)), span.clone()),
+                                        int_t.clone(),
+                                    )]),
+                                    span.clone(),
+                                )),
+                                Box::new(Located::new(mono::Exp::Prim(Prim::Int(0)), span.clone())),
+                            ),
+                            span.clone(),
+                        )),
+                        Box::new(Located::new(
+                            mono::Exp::Record(vec![(
+                                "A".into(),
+                                Located::new(mono::Exp::Prim(Prim::Int(7)), span.clone()),
+                                int_t.clone(),
+                            )]),
+                            span.clone(),
+                        )),
+                    ),
+                    span.clone(),
+                )),
+                "A".into(),
+            ),
+            span.clone(),
+        );
+
+        let reduced = reduce_head_apps_for_cjr(projected);
+        assert!(matches!(reduced.node, mono::Exp::Prim(Prim::Int(7))));
+        Ok(())
+    }
+
+    #[test]
+    fn reduce_head_apps_pushes_apps_through_missing_field_projection() -> anyhow::Result<()> {
+        let span = Span::dummy();
+        let int_t = Located::new(mono::Typ::Ffi("Basis".into(), "int".into()), span.clone());
+        let unit_t = Located::new(mono::Typ::Record(vec![]), span.clone());
+        let b_record_t = Located::new(
+            mono::Typ::Record(vec![("B".into(), int_t.clone())]),
+            span.clone(),
+        );
+        let unit_exp = Located::new(mono::Exp::Record(vec![]), span.clone());
+        let projected_app = Located::new(
+            mono::Exp::App(
+                Box::new(Located::new(
+                    mono::Exp::App(
+                        Box::new(Located::new(
+                            mono::Exp::Field(
+                                Box::new(Located::new(
+                                    mono::Exp::Abs(
+                                        "_".into(),
+                                        unit_t.clone(),
+                                        b_record_t,
+                                        Box::new(Located::new(
+                                            mono::Exp::Record(vec![(
+                                                "B".into(),
+                                                Located::new(
+                                                    mono::Exp::Prim(Prim::Int(9)),
+                                                    span.clone(),
+                                                ),
+                                                int_t.clone(),
+                                            )]),
+                                            span.clone(),
+                                        )),
+                                    ),
+                                    span.clone(),
+                                )),
+                                "A".into(),
+                            ),
+                            span.clone(),
+                        )),
+                        Box::new(unit_exp.clone()),
+                    ),
+                    span.clone(),
+                )),
+                Box::new(Located::new(
+                    mono::Exp::Record(vec![(
+                        "A".into(),
+                        Located::new(mono::Exp::Prim(Prim::Int(7)), span.clone()),
+                        int_t.clone(),
+                    )]),
+                    span.clone(),
+                )),
+            ),
+            span.clone(),
+        );
+
+        let reduced = reduce_head_apps_for_cjr(projected_app);
+        assert!(matches!(reduced.node, mono::Exp::Prim(Prim::Int(7))));
+        Ok(())
+    }
+
+    #[test]
+    fn reduce_head_apps_redirects_nested_missing_field_to_tail_arg() -> anyhow::Result<()> {
+        let span = Span::dummy();
+        let int_t = Located::new(mono::Typ::Ffi("Basis".into(), "int".into()), span.clone());
+        let unit_t = Located::new(mono::Typ::Record(vec![]), span.clone());
+        let inject_fun_t = Located::new(
+            mono::Typ::Fun(Box::new(unit_t.clone()), Box::new(int_t.clone())),
+            span.clone(),
+        );
+        let meta_t = Located::new(
+            mono::Typ::Record(vec![("Inject".into(), inject_fun_t.clone())]),
+            span.clone(),
+        );
+        let b_record_t = Located::new(
+            mono::Typ::Record(vec![("B".into(), meta_t.clone())]),
+            span.clone(),
+        );
+        let unit_exp = Located::new(mono::Exp::Record(vec![]), span.clone());
+        let projected_app = Located::new(
+            mono::Exp::App(
+                Box::new(Located::new(
+                    mono::Exp::App(
+                        Box::new(Located::new(
+                            mono::Exp::Field(
+                                Box::new(Located::new(
+                                    mono::Exp::Field(
+                                        Box::new(Located::new(
+                                            mono::Exp::Abs(
+                                                "_".into(),
+                                                unit_t.clone(),
+                                                b_record_t,
+                                                Box::new(Located::new(
+                                                    mono::Exp::Record(vec![(
+                                                        "B".into(),
+                                                        Located::new(
+                                                            mono::Exp::Record(vec![(
+                                                                "Inject".into(),
+                                                                Located::new(
+                                                                    mono::Exp::Abs(
+                                                                        "_".into(),
+                                                                        unit_t.clone(),
+                                                                        int_t.clone(),
+                                                                        Box::new(Located::new(
+                                                                            mono::Exp::Prim(
+                                                                                Prim::Int(9),
+                                                                            ),
+                                                                            span.clone(),
+                                                                        )),
+                                                                    ),
+                                                                    span.clone(),
+                                                                ),
+                                                                inject_fun_t.clone(),
+                                                            )]),
+                                                            span.clone(),
+                                                        ),
+                                                        meta_t.clone(),
+                                                    )]),
+                                                    span.clone(),
+                                                )),
+                                            ),
+                                            span.clone(),
+                                        )),
+                                        "A".into(),
+                                    ),
+                                    span.clone(),
+                                )),
+                                "Inject".into(),
+                            ),
+                            span.clone(),
+                        )),
+                        Box::new(unit_exp.clone()),
+                    ),
+                    span.clone(),
+                )),
+                Box::new(Located::new(
+                    mono::Exp::Record(vec![(
+                        "A".into(),
+                        Located::new(
+                            mono::Exp::Record(vec![(
+                                "Inject".into(),
+                                Located::new(
+                                    mono::Exp::Abs(
+                                        "_".into(),
+                                        unit_t.clone(),
+                                        int_t.clone(),
+                                        Box::new(Located::new(
+                                            mono::Exp::Prim(Prim::Int(7)),
+                                            span.clone(),
+                                        )),
+                                    ),
+                                    span.clone(),
+                                ),
+                                inject_fun_t,
+                            )]),
+                            span.clone(),
+                        ),
+                        meta_t,
+                    )]),
+                    span.clone(),
+                )),
+            ),
+            span.clone(),
+        );
+
+        let reduced = reduce_head_apps_for_cjr(projected_app);
+        assert!(matches!(reduced.node, mono::Exp::Prim(Prim::Int(7))));
+        Ok(())
+    }
+
+    #[test]
+    fn reduce_head_apps_redirects_nested_missing_field_to_earlier_arg() -> anyhow::Result<()> {
+        let span = Span::dummy();
+        let int_t = Located::new(mono::Typ::Ffi("Basis".into(), "int".into()), span.clone());
+        let unit_t = Located::new(mono::Typ::Record(vec![]), span.clone());
+        let row_t = Located::new(
+            mono::Typ::Record(vec![("A".into(), int_t.clone())]),
+            span.clone(),
+        );
+        let unit_exp = Located::new(mono::Exp::Record(vec![]), span.clone());
+        let projected_app = Located::new(
+            mono::Exp::App(
+                Box::new(Located::new(
+                    mono::Exp::App(
+                        Box::new(Located::new(
+                            mono::Exp::Field(
+                                Box::new(Located::new(
+                                    mono::Exp::Abs(
+                                        "_".into(),
+                                        row_t.clone(),
+                                        Located::new(
+                                            mono::Typ::Fun(
+                                                Box::new(unit_t.clone()),
+                                                Box::new(int_t.clone()),
+                                            ),
+                                            span.clone(),
+                                        ),
+                                        Box::new(Located::new(
+                                            mono::Exp::Abs(
+                                                "_".into(),
+                                                unit_t.clone(),
+                                                int_t.clone(),
+                                                Box::new(Located::new(
+                                                    mono::Exp::Prim(Prim::Int(0)),
+                                                    span.clone(),
+                                                )),
+                                            ),
+                                            span.clone(),
+                                        )),
+                                    ),
+                                    span.clone(),
+                                )),
+                                "A".into(),
+                            ),
+                            span.clone(),
+                        )),
+                        Box::new(Located::new(
+                            mono::Exp::Record(vec![(
+                                "A".into(),
+                                Located::new(mono::Exp::Prim(Prim::Int(7)), span.clone()),
+                                int_t.clone(),
+                            )]),
+                            span.clone(),
+                        )),
+                    ),
+                    span.clone(),
+                )),
+                Box::new(unit_exp),
+            ),
+            span.clone(),
+        );
+
+        let reduced = reduce_head_apps_for_cjr(projected_app);
+        assert!(matches!(reduced.node, mono::Exp::Prim(Prim::Int(7))));
+        Ok(())
+    }
+
+    #[test]
+    fn reduce_head_apps_redirects_simple_missing_field_to_row_arg() -> anyhow::Result<()> {
+        let span = Span::dummy();
+        let int_t = Located::new(mono::Typ::Ffi("Basis".into(), "int".into()), span.clone());
+        let unit_t = Located::new(mono::Typ::Record(vec![]), span.clone());
+        let row_t = Located::new(
+            mono::Typ::Record(vec![("A".into(), int_t.clone())]),
+            span.clone(),
+        );
+        let curried_acc = Located::new(
+            mono::Exp::Abs(
+                "r".into(),
+                row_t.clone(),
+                Located::new(
+                    mono::Typ::Fun(Box::new(unit_t.clone()), Box::new(int_t.clone())),
+                    span.clone(),
+                ),
+                Box::new(Located::new(
+                    mono::Exp::Abs(
+                        "_".into(),
+                        unit_t,
+                        int_t.clone(),
+                        Box::new(Located::new(mono::Exp::Prim(Prim::Int(0)), span.clone())),
+                    ),
+                    span.clone(),
+                )),
+            ),
+            span.clone(),
+        );
+        let projected_app = Located::new(
+            mono::Exp::App(
+                Box::new(Located::new(
+                    mono::Exp::Field(Box::new(curried_acc), "A".into()),
+                    span.clone(),
+                )),
+                Box::new(Located::new(
+                    mono::Exp::Record(vec![(
+                        "A".into(),
+                        Located::new(mono::Exp::Prim(Prim::Int(7)), span.clone()),
+                        int_t,
+                    )]),
+                    span.clone(),
+                )),
+            ),
+            span.clone(),
+        );
+
+        let reduced = reduce_head_apps_for_cjr(projected_app);
+        assert!(matches!(reduced.node, mono::Exp::Prim(Prim::Int(7))));
+        Ok(())
+    }
+
+    #[test]
+    fn reduce_head_apps_redirects_nested_missing_field_before_applying_mixed_record(
+    ) -> anyhow::Result<()> {
+        let span = Span::dummy();
+        let int_t = Located::new(mono::Typ::Ffi("Basis".into(), "int".into()), span.clone());
+        let unit_t = Located::new(mono::Typ::Record(vec![]), span.clone());
+        let string_t = Located::new(
+            mono::Typ::Ffi("Basis".into(), "string".into()),
+            span.clone(),
+        );
+        let show_fun_t = Located::new(
+            mono::Typ::Fun(Box::new(int_t.clone()), Box::new(string_t.clone())),
+            span.clone(),
+        );
+        let meta_t = Located::new(
+            mono::Typ::Record(vec![
+                ("Name".into(), string_t.clone()),
+                ("Show".into(), show_fun_t.clone()),
+            ]),
+            span.clone(),
+        );
+        let b_record_t = Located::new(
+            mono::Typ::Record(vec![("B".into(), string_t.clone())]),
+            span.clone(),
+        );
+        let projected_app = Located::new(
+            mono::Exp::App(
+                Box::new(Located::new(
+                    mono::Exp::App(
+                        Box::new(Located::new(
+                            mono::Exp::Field(
+                                Box::new(Located::new(
+                                    mono::Exp::Field(
+                                        Box::new(Located::new(
+                                            mono::Exp::Abs(
+                                                "_".into(),
+                                                unit_t.clone(),
+                                                b_record_t,
+                                                Box::new(Located::new(
+                                                    mono::Exp::Record(vec![(
+                                                        "B".into(),
+                                                        Located::new(
+                                                            mono::Exp::Prim(Prim::String(
+                                                                StringMode::Normal,
+                                                                "ignored".into(),
+                                                            )),
+                                                            span.clone(),
+                                                        ),
+                                                        string_t.clone(),
+                                                    )]),
+                                                    span.clone(),
+                                                )),
+                                            ),
+                                            span.clone(),
+                                        )),
+                                        "A".into(),
+                                    ),
+                                    span.clone(),
+                                )),
+                                "Show".into(),
+                            ),
+                            span.clone(),
+                        )),
+                        Box::new(Located::new(mono::Exp::Prim(Prim::Int(7)), span.clone())),
+                    ),
+                    span.clone(),
+                )),
+                Box::new(Located::new(
+                    mono::Exp::Record(vec![(
+                        "A".into(),
+                        Located::new(
+                            mono::Exp::Record(vec![
+                                (
+                                    "Name".into(),
+                                    Located::new(
+                                        mono::Exp::Prim(Prim::String(
+                                            StringMode::Normal,
+                                            "n".into(),
+                                        )),
+                                        span.clone(),
+                                    ),
+                                    string_t,
+                                ),
+                                (
+                                    "Show".into(),
+                                    Located::new(
+                                        mono::Exp::Abs(
+                                            "x".into(),
+                                            int_t.clone(),
+                                            Located::new(
+                                                mono::Typ::Ffi("Basis".into(), "string".into()),
+                                                span.clone(),
+                                            ),
+                                            Box::new(Located::new(
+                                                mono::Exp::Prim(Prim::String(
+                                                    StringMode::Normal,
+                                                    "ok".into(),
+                                                )),
+                                                span.clone(),
+                                            )),
+                                        ),
+                                        span.clone(),
+                                    ),
+                                    show_fun_t,
+                                ),
+                            ]),
+                            span.clone(),
+                        ),
+                        meta_t,
+                    )]),
+                    span.clone(),
+                )),
+            ),
+            span.clone(),
+        );
+
+        let reduced = reduce_head_apps_for_cjr(projected_app);
+        assert!(matches!(
+            reduced.node,
+            mono::Exp::Prim(Prim::String(StringMode::Normal, ref value)) if value == "ok"
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn reduce_head_apps_preserves_direct_field_projection_on_projected_record() -> anyhow::Result<()>
+    {
+        let span = Span::dummy();
+        let int_t = Located::new(mono::Typ::Ffi("Basis".into(), "int".into()), span.clone());
+        let string_t = Located::new(
+            mono::Typ::Ffi("Basis".into(), "string".into()),
+            span.clone(),
+        );
+        let show_fun_t = Located::new(
+            mono::Typ::Fun(Box::new(int_t.clone()), Box::new(string_t.clone())),
+            span.clone(),
+        );
+        let meta_t = Located::new(
+            mono::Typ::Record(vec![("Show".into(), show_fun_t.clone())]),
+            span.clone(),
+        );
+        let holder = Located::new(
+            mono::Exp::Record(vec![(
+                "A".into(),
+                Located::new(
+                    mono::Exp::Record(vec![(
+                        "Show".into(),
+                        Located::new(
+                            mono::Exp::Abs(
+                                "x".into(),
+                                int_t.clone(),
+                                string_t.clone(),
+                                Box::new(Located::new(
+                                    mono::Exp::Prim(Prim::String(StringMode::Normal, "ok".into())),
+                                    span.clone(),
+                                )),
+                            ),
+                            span.clone(),
+                        ),
+                        show_fun_t,
+                    )]),
+                    span.clone(),
+                ),
+                meta_t,
+            )]),
+            span.clone(),
+        );
+        let applied = Located::new(
+            mono::Exp::App(
+                Box::new(Located::new(
+                    mono::Exp::Field(
+                        Box::new(Located::new(
+                            mono::Exp::Field(Box::new(holder), "A".into()),
+                            span.clone(),
+                        )),
+                        "Show".into(),
+                    ),
+                    span.clone(),
+                )),
+                Box::new(Located::new(mono::Exp::Prim(Prim::Int(7)), span.clone())),
+            ),
+            span.clone(),
+        );
+
+        let reduced = reduce_head_apps_for_cjr(applied);
+        assert!(matches!(
+            reduced.node,
+            mono::Exp::Prim(Prim::String(StringMode::Normal, ref value)) if value == "ok"
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn reduce_head_apps_projects_direct_field_from_head_before_applying_arg() -> anyhow::Result<()>
+    {
+        let span = Span::dummy();
+        let int_t = Located::new(mono::Typ::Ffi("Basis".into(), "int".into()), span.clone());
+        let string_t = Located::new(
+            mono::Typ::Ffi("Basis".into(), "string".into()),
+            span.clone(),
+        );
+        let show_fun_t = Located::new(
+            mono::Typ::Fun(Box::new(int_t.clone()), Box::new(string_t.clone())),
+            span.clone(),
+        );
+        let meta_t = Located::new(
+            mono::Typ::Record(vec![("Show".into(), show_fun_t.clone())]),
+            span.clone(),
+        );
+        let holder = Located::new(
+            mono::Exp::Record(vec![(
+                "A".into(),
+                Located::new(
+                    mono::Exp::Record(vec![(
+                        "Show".into(),
+                        Located::new(
+                            mono::Exp::Abs(
+                                "x".into(),
+                                int_t.clone(),
+                                string_t.clone(),
+                                Box::new(Located::new(
+                                    mono::Exp::Prim(Prim::String(StringMode::Normal, "ok".into())),
+                                    span.clone(),
+                                )),
+                            ),
+                            span.clone(),
+                        ),
+                        show_fun_t,
+                    )]),
+                    span.clone(),
+                ),
+                meta_t,
+            )]),
+            span.clone(),
+        );
+        let malformed = Located::new(
+            mono::Exp::Field(
+                Box::new(Located::new(
+                    mono::Exp::App(
+                        Box::new(Located::new(
+                            mono::Exp::Field(Box::new(holder), "A".into()),
+                            span.clone(),
+                        )),
+                        Box::new(Located::new(mono::Exp::Prim(Prim::Int(7)), span.clone())),
+                    ),
+                    span.clone(),
+                )),
+                "Show".into(),
+            ),
+            span.clone(),
+        );
+
+        let reduced = reduce_head_apps_for_cjr(malformed);
+        assert!(matches!(
+            reduced.node,
+            mono::Exp::Prim(Prim::String(StringMode::Normal, ref value)) if value == "ok"
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn reduce_head_apps_projects_missing_field_from_projected_record_arg() -> anyhow::Result<()> {
+        let span = Span::dummy();
+        let int_t = Located::new(mono::Typ::Ffi("Basis".into(), "int".into()), span.clone());
+        let string_t = Located::new(
+            mono::Typ::Ffi("Basis".into(), "string".into()),
+            span.clone(),
+        );
+        let show_fun_t = Located::new(
+            mono::Typ::Fun(Box::new(int_t.clone()), Box::new(string_t.clone())),
+            span.clone(),
+        );
+        let meta_t = Located::new(
+            mono::Typ::Record(vec![("Show".into(), show_fun_t.clone())]),
+            span.clone(),
+        );
+        let meta_arg = Located::new(
+            mono::Exp::Field(
+                Box::new(Located::new(
+                    mono::Exp::Record(vec![(
+                        "A".into(),
+                        Located::new(
+                            mono::Exp::Record(vec![(
+                                "Show".into(),
+                                Located::new(
+                                    mono::Exp::Abs(
+                                        "x".into(),
+                                        int_t.clone(),
+                                        string_t.clone(),
+                                        Box::new(Located::new(
+                                            mono::Exp::Prim(Prim::String(
+                                                StringMode::Normal,
+                                                "ok".into(),
+                                            )),
+                                            span.clone(),
+                                        )),
+                                    ),
+                                    span.clone(),
+                                ),
+                                show_fun_t.clone(),
+                            )]),
+                            span.clone(),
+                        ),
+                        meta_t.clone(),
+                    )]),
+                    span.clone(),
+                )),
+                "A".into(),
+            ),
+            span.clone(),
+        );
+        let projected_app = Located::new(
+            mono::Exp::App(
+                Box::new(Located::new(
+                    mono::Exp::Field(
+                        Box::new(Located::new(
+                            mono::Exp::App(
+                                Box::new(Located::new(
+                                    mono::Exp::Field(
+                                        Box::new(Located::new(
+                                            mono::Exp::Record(vec![(
+                                                "A".into(),
+                                                Located::new(
+                                                    mono::Exp::Abs(
+                                                        "m".into(),
+                                                        meta_t.clone(),
+                                                        meta_t.clone(),
+                                                        Box::new(Located::new(
+                                                            mono::Exp::Rel(0),
+                                                            span.clone(),
+                                                        )),
+                                                    ),
+                                                    span.clone(),
+                                                ),
+                                                Located::new(
+                                                    mono::Typ::Fun(
+                                                        Box::new(meta_t.clone()),
+                                                        Box::new(meta_t.clone()),
+                                                    ),
+                                                    span.clone(),
+                                                ),
+                                            )]),
+                                            span.clone(),
+                                        )),
+                                        "A".into(),
+                                    ),
+                                    span.clone(),
+                                )),
+                                Box::new(meta_arg),
+                            ),
+                            span.clone(),
+                        )),
+                        "Show".into(),
+                    ),
+                    span.clone(),
+                )),
+                Box::new(Located::new(mono::Exp::Prim(Prim::Int(7)), span.clone())),
+            ),
+            span.clone(),
+        );
+
+        let reduced = reduce_head_apps_for_cjr(projected_app);
+        assert!(matches!(
+            reduced.node,
+            mono::Exp::Prim(Prim::String(StringMode::Normal, ref value)) if value == "ok"
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn reduce_head_apps_projects_rel_field_before_applying_args() -> anyhow::Result<()> {
+        let span = Span::dummy();
+        let projected = Located::new(
+            mono::Exp::Field(
+                Box::new(Located::new(
+                    mono::Exp::App(
+                        Box::new(Located::new(mono::Exp::Rel(0), span.clone())),
+                        Box::new(Located::new(mono::Exp::Prim(Prim::Int(7)), span.clone())),
+                    ),
+                    span.clone(),
+                )),
+                "Show".into(),
+            ),
+            span.clone(),
+        );
+
+        let reduced = reduce_head_apps_for_cjr(projected);
+        assert!(matches!(
+            reduced.node,
+            mono::Exp::App(fun, arg)
+                if matches!(&fun.node, mono::Exp::Field(inner, field)
+                    if field == "Show" && matches!(inner.node, mono::Exp::Rel(0)))
+                    && matches!(arg.node, mono::Exp::Prim(Prim::Int(7)))
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn reduce_head_apps_keeps_projected_function_field_on_rel_projected_record(
+    ) -> anyhow::Result<()> {
+        let span = Span::dummy();
+        let int_t = Located::new(mono::Typ::Ffi("Basis".into(), "int".into()), span.clone());
+        let string_t = Located::new(
+            mono::Typ::Ffi("Basis".into(), "string".into()),
+            span.clone(),
+        );
+        let show_fun_t = Located::new(
+            mono::Typ::Fun(Box::new(int_t.clone()), Box::new(string_t.clone())),
+            span.clone(),
+        );
+        let meta_t = Located::new(
+            mono::Typ::Record(vec![("Show".into(), show_fun_t.clone())]),
+            span.clone(),
+        );
+        let cols_t = Located::new(mono::Typ::Record(vec![("A".into(), meta_t)]), span.clone());
+        let projected_app = Located::new(
+            mono::Exp::App(
+                Box::new(Located::new(
+                    mono::Exp::Field(
+                        Box::new(Located::new(
+                            mono::Exp::Field(
+                                Box::new(Located::new(mono::Exp::Rel(0), span.clone())),
+                                "A".into(),
+                            ),
+                            span.clone(),
+                        )),
+                        "Show".into(),
+                    ),
+                    span.clone(),
+                )),
+                Box::new(Located::new(
+                    mono::Exp::Field(
+                        Box::new(Located::new(
+                            mono::Exp::Record(vec![(
+                                "A".into(),
+                                Located::new(mono::Exp::Prim(Prim::Int(7)), span.clone()),
+                                int_t,
+                            )]),
+                            span.clone(),
+                        )),
+                        "A".into(),
+                    ),
+                    span.clone(),
+                )),
+            ),
+            span.clone(),
+        );
+
+        let reduced = with_rel_types(vec![cols_t], || reduce_head_apps_for_cjr(projected_app));
+        assert!(matches!(
+            reduced.node,
+            mono::Exp::App(fun, arg)
+                if matches!(&fun.node, mono::Exp::Field(inner, field)
+                    if field == "Show"
+                        && matches!(&inner.node, mono::Exp::Field(base, projected)
+                            if projected == "A" && matches!(base.node, mono::Exp::Rel(0))))
+                    && matches!(arg.node, mono::Exp::Prim(Prim::Int(7)))
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn reduce_head_apps_keeps_projected_function_field_on_applied_record_builder(
+    ) -> anyhow::Result<()> {
+        let span = Span::dummy();
+        let unit_t = Located::new(mono::Typ::Record(vec![]), span.clone());
+        let int_t = Located::new(mono::Typ::Ffi("Basis".into(), "int".into()), span.clone());
+        let string_t = Located::new(
+            mono::Typ::Ffi("Basis".into(), "string".into()),
+            span.clone(),
+        );
+        let show_fun_t = Located::new(
+            mono::Typ::Fun(Box::new(int_t.clone()), Box::new(string_t.clone())),
+            span.clone(),
+        );
+        let show_fun = Located::new(
+            mono::Exp::Abs(
+                "x".into(),
+                int_t.clone(),
+                string_t.clone(),
+                Box::new(Located::new(
+                    mono::Exp::Prim(Prim::String(StringMode::Normal, "ok".into())),
+                    span.clone(),
+                )),
+            ),
+            span.clone(),
+        );
+        let record_t = Located::new(
+            mono::Typ::Record(vec![("Show".into(), show_fun_t.clone())]),
+            span.clone(),
+        );
+        let builder = Located::new(
+            mono::Exp::Abs(
+                "_meta".into(),
+                unit_t.clone(),
+                record_t,
+                Box::new(Located::new(
+                    mono::Exp::Record(vec![("Show".into(), show_fun, show_fun_t)]),
+                    span.clone(),
+                )),
+            ),
+            span.clone(),
+        );
+        let projected = Located::new(
+            mono::Exp::App(
+                Box::new(Located::new(
+                    mono::Exp::Field(
+                        Box::new(Located::new(
+                            mono::Exp::App(
+                                Box::new(builder),
+                                Box::new(Located::new(mono::Exp::Record(vec![]), span.clone())),
+                            ),
+                            span.clone(),
+                        )),
+                        "Show".into(),
+                    ),
+                    span.clone(),
+                )),
+                Box::new(Located::new(mono::Exp::Prim(Prim::Int(7)), span.clone())),
+            ),
+            span.clone(),
+        );
+
+        let reduced = reduce_head_apps_for_cjr(projected);
+        assert!(matches!(
+            reduced.node,
+            mono::Exp::Prim(Prim::String(StringMode::Normal, ref value)) if value == "ok"
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn reduce_head_apps_keeps_unresolved_question_record_intact() -> anyhow::Result<()> {
+        let span = Span::dummy();
+        let int_t = Located::new(mono::Typ::Ffi("Basis".into(), "int".into()), span.clone());
+        let projected = Located::new(
+            mono::Exp::Field(
+                Box::new(Located::new(
+                    mono::Exp::Record(vec![
+                        (
+                            "A".into(),
+                            Located::new(mono::Exp::Prim(Prim::Int(1)), span.clone()),
+                            int_t.clone(),
+                        ),
+                        (
+                            "B".into(),
+                            Located::new(mono::Exp::Prim(Prim::Int(2)), span.clone()),
+                            int_t,
+                        ),
+                    ]),
+                    span.clone(),
+                )),
+                "?".into(),
+            ),
+            span.clone(),
+        );
+
+        let reduced = reduce_head_apps_for_cjr(projected);
+        assert!(matches!(
+            reduced.node,
+            mono::Exp::Field(inner, ref field)
+                if field == "?"
+                    && matches!(inner.node, mono::Exp::Record(ref fields) if fields.len() == 2)
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn resolve_question_slot_keeps_abs_placeholder_when_unresolved() -> anyhow::Result<()> {
+        let span = Span::dummy();
+        let unit_t = Located::new(mono::Typ::Record(vec![]), span.clone());
+        let string_t = Located::new(
+            mono::Typ::Ffi("Basis".into(), "string".into()),
+            span.clone(),
+        );
+        let abs = Located::new(
+            mono::Exp::Abs(
+                "_".into(),
+                unit_t,
+                string_t,
+                Box::new(Located::new(
+                    mono::Exp::Prim(Prim::String(StringMode::Html, String::new())),
+                    span.clone(),
+                )),
+            ),
+            span.clone(),
+        );
+
+        let resolved = resolve_question_slot(abs, &span);
+        assert!(matches!(
+            resolved.node,
+            mono::Exp::Field(inner, ref field)
+                if field == "?"
+                    && matches!(inner.node, mono::Exp::Abs(_, _, _, _))
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn reduce_head_apps_does_not_recurse_forever_on_unresolved_question_field() -> anyhow::Result<()>
+    {
+        let span = Span::dummy();
+        let unit_t = Located::new(mono::Typ::Record(vec![]), span.clone());
+        let string_t = Located::new(
+            mono::Typ::Ffi("Basis".into(), "string".into()),
+            span.clone(),
+        );
+        let projected = Located::new(
+            mono::Exp::Field(
+                Box::new(Located::new(
+                    mono::Exp::Field(
+                        Box::new(Located::new(
+                            mono::Exp::Abs(
+                                "_".into(),
+                                unit_t,
+                                string_t,
+                                Box::new(Located::new(
+                                    mono::Exp::Prim(Prim::String(StringMode::Html, String::new())),
+                                    span.clone(),
+                                )),
+                            ),
+                            span.clone(),
+                        )),
+                        "?".into(),
+                    ),
+                    span.clone(),
+                )),
+                "Name".into(),
+            ),
+            span.clone(),
+        );
+
+        let reduced = reduce_head_apps_for_cjr(projected);
+        assert!(matches!(
+            reduced.node,
+            mono::Exp::Field(inner, ref field)
+                if field == "Name"
+                    && matches!(inner.node, mono::Exp::Field(_, ref question) if question == "?")
+        ));
         Ok(())
     }
 
@@ -2421,10 +5711,10 @@ mod tests {
     #[test]
     fn classify_constrs_enum() -> anyhow::Result<()> {
         // test returns Result to allow ? propagation
-        let c: Vec<(String, usize, Option<LocTyp>)> =
+        let c: Vec<(String, usize, Option<mono::LocTyp>)> =
             vec![("A".into(), 0, None), ("B".into(), 1, None)];
         assert_eq!(
-            classify_constrs(&c),
+            classify_constrs(1, &c),
             DatatypeKind::Enum,
             "all nullary => Enum (catches unary==0 check)"
         );
@@ -2434,11 +5724,11 @@ mod tests {
     #[test]
     fn classify_constrs_option() -> anyhow::Result<()> {
         // test returns Result to allow ? propagation
-        let unit = Located::dummy(Typ::Ffi("Basis".into(), "unit".into()));
-        let c: Vec<(String, usize, Option<LocTyp>)> =
+        let unit = Located::dummy(mono::Typ::Ffi("Basis".into(), "unit".into()));
+        let c: Vec<(String, usize, Option<mono::LocTyp>)> =
             vec![("None".into(), 0, None), ("Some".into(), 1, Some(unit))];
         assert_eq!(
-            classify_constrs(&c),
+            classify_constrs(1, &c),
             DatatypeKind::Option,
             "1 nullary && 1 unary => Option"
         );
@@ -2448,18 +5738,41 @@ mod tests {
     #[test]
     fn classify_constrs_default() -> anyhow::Result<()> {
         // test returns Result to allow ? propagation
-        let unit = Located::dummy(Typ::Ffi("Basis".into(), "unit".into()));
-        let c: Vec<(String, usize, Option<LocTyp>)> = vec![
+        let unit = Located::dummy(mono::Typ::Ffi("Basis".into(), "unit".into()));
+        let c: Vec<(String, usize, Option<mono::LocTyp>)> = vec![
             ("A".into(), 0, None),
             ("B".into(), 0, None),
             ("C".into(), 1, Some(unit)),
         ];
         assert_eq!(
-            classify_constrs(&c),
+            classify_constrs(1, &c),
             DatatypeKind::Default,
             "2 nullary 1 unary => Default (catches nullary==1 && unary==1)"
         );
         Ok(()) // return success to the test harness
+    }
+
+    #[test]
+    fn classify_constrs_recursive_unary_defaults() -> anyhow::Result<()> {
+        let datatype_id = 7;
+        let recursive_ref = Arc::new(Mutex::new(mono::DatatypeDef {
+            kind: DatatypeKind::Default,
+            constrs: vec![],
+        }));
+        let unit = Located::dummy(mono::Typ::Ffi("Basis".into(), "unit".into()));
+        let recursive = Located::dummy(mono::Typ::Datatype(datatype_id, recursive_ref));
+        let payload = Located::dummy(mono::Typ::Record(vec![
+            ("_1".into(), unit),
+            ("_2".into(), recursive),
+        ]));
+        let c: Vec<(String, usize, Option<mono::LocTyp>)> =
+            vec![("Nil".into(), 0, None), ("Cons".into(), 1, Some(payload))];
+        assert_eq!(
+            classify_constrs(datatype_id, &c),
+            DatatypeKind::Default,
+            "recursive unary payloads must not be lowered as Option"
+        );
+        Ok(())
     }
 
     #[test]

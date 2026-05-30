@@ -23,11 +23,12 @@ use crate::error_types::{Located, Span};
 // Substitution helpers
 // ---------------------------------------------------------------------------
 
-/// Replace every occurrence of `Constructor::Rel(depth)` in `body` with `sub`,
-/// without adjusting depth when entering binders.
+/// Replace every occurrence of `Constructor::Rel(depth)` in `body` with `sub`.
 ///
-/// This is correct because `sub` is always a *closed* constructor (checked by
-/// `is_open`), so no capture can occur even when we pass under binders.
+/// `sub` is always a *closed* constructor (checked by `is_open`), so we do not
+/// need to lift it under binders for capture avoidance. We still must adjust
+/// the target de Bruijn depth when descending under constructor binders so we
+/// keep referring to the same outer constructor variable.
 pub fn sub_con_in_con(
     depth: usize,
     sub: &LocatedConstructor,
@@ -50,7 +51,7 @@ pub fn sub_con_in_con(
             span,
         ),
         Constructor::TCFun(x, k, b) => Located::new(
-            Constructor::TCFun(x, k, Box::new(sub_con_in_con(depth, sub, *b))),
+            Constructor::TCFun(x, k, Box::new(sub_con_in_con(depth + 1, sub, *b))),
             span,
         ),
         Constructor::TRecord(inner) => Located::new(
@@ -65,7 +66,7 @@ pub fn sub_con_in_con(
             span,
         ),
         Constructor::Abs(x, k, b) => Located::new(
-            Constructor::Abs(x, k, Box::new(sub_con_in_con(depth, sub, *b))),
+            Constructor::Abs(x, k, Box::new(sub_con_in_con(depth + 1, sub, *b))),
             span,
         ),
         Constructor::KAbs(x, b) => Located::new(
@@ -111,8 +112,8 @@ pub fn sub_con_in_con(
 }
 
 /// Replace every occurrence of `Constructor::Rel(depth)` inside an expression
-/// with `sub`. As with `sub_con_in_con`, `sub` must be closed so no capture
-/// adjustment is needed.
+/// with `sub`. As with `sub_con_in_con`, `sub` is closed so it does not need
+/// to be lifted, but we still track depth through constructor binders.
 fn sub_con_in_exp(
     depth: usize,
     sub: &LocatedConstructor,
@@ -162,7 +163,7 @@ fn sub_con_in_exp(
             span,
         ),
         Expression::CAbs(x, k, body) => Located::new(
-            Expression::CAbs(x, k, Box::new(sub_con_in_exp(depth, sub, *body))),
+            Expression::CAbs(x, k, Box::new(sub_con_in_exp(depth + 1, sub, *body))),
             span,
         ),
         Expression::KAbs(x, body) => Located::new(
@@ -438,8 +439,11 @@ struct State {
 // ---------------------------------------------------------------------------
 
 /// Correct implementation: peel and substitute one binder at a time.
-/// At each step the depth equals the number of remaining cargs *after* this one
-/// (i.e. `remaining.len() - 1`).
+///
+/// After peeling one outer `TCFun`/`CAbs` pair, the constructor being
+/// instantiated is the outermost free constructor in the peeled body, so the
+/// substitution always starts at depth `0`. Nested constructor binders inside
+/// that body bump the target depth as the substitution walk descends.
 fn trim_iter(
     t: LocatedConstructor,
     e: LocatedExpression,
@@ -453,28 +457,8 @@ fn trim_iter(
     let remaining = &cargs[1..];
     match (t.node.clone(), e.node.clone()) {
         (Constructor::TCFun(_, _, t_body), Expression::CAbs(_, _, e_body)) => {
-            // Substitute at depth = remaining.len() (the number of still-outer binders
-            // after this substitution — which equals how many CRel indices from 0
-            // upward are still bound by the CAbs binders we haven't peeled yet).
-            //
-            // SML: `subConInCon (length cargs (* == remaining.len()+1 before peel *), carg) t`
-            // where `length cargs` at that call site is the length of the *remaining*
-            // cargs *including* the current one, so = remaining.len() + 1.
-            // But wait — SML passes `length cargs` where `cargs` is the tail after
-            // taking `carg :: cargs`. Let's re-read:
-            //
-            //   fun trim (t, e, cargs) =
-            //     case (t, e, cargs) of
-            //       ((TCFun..., _), (ECAbs..., _), carg :: cargs) =>
-            //         let val t = subConInCon (length cargs, carg) t
-            //             val e = subConInExp (length cargs, carg) e
-            //         in trim (t, e, cargs) end
-            //
-            // So after destructuring `carg :: cargs`, `length cargs` is the length
-            // of the *tail*. In Rust that's `remaining.len()`.
-            let depth = remaining.len();
-            let t_new = sub_con_in_con(depth, carg, *t_body);
-            let e_new = sub_con_in_exp(depth, carg, *e_body);
+            let t_new = sub_con_in_con(0, carg, *t_body);
+            let e_new = sub_con_in_exp(0, carg, *e_body);
             trim_iter(t_new, e_new, remaining)
         }
         _ => match cargs.is_empty() {
@@ -1213,6 +1197,57 @@ mod tests {
         Ok(()) // return success to the test harness
     }
 
+    #[test]
+    fn sub_con_tracks_depth_under_constructor_abs() -> anyhow::Result<()> {
+        let sub = mk_con(Constructor::Named(99));
+        let kind = mk_kind(Kind::Type);
+        let body = mk_con(Constructor::Abs(
+            "inner".into(),
+            Box::new(kind),
+            Box::new(mk_con(Constructor::Rel(1))),
+        ));
+
+        let result = sub_con_in_con(0, &sub, body);
+        match result.node {
+            Constructor::Abs(_, _, inner) => {
+                assert!(matches!(inner.node, Constructor::Named(99)));
+            }
+            _ => panic!("Expected constructor abstraction"),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn sub_con_in_exp_tracks_depth_under_cabs() -> anyhow::Result<()> {
+        let sub = mk_con(Constructor::Name("Nm".into()));
+        let kind = mk_kind(Kind::Name);
+        let field_meta = FieldMeta {
+            field: mk_con(Constructor::Ffi("Basis".into(), "string".into())),
+            rest: mk_con(Constructor::Unit),
+        };
+        let body = mk_exp(Expression::CAbs(
+            "inner".into(),
+            Box::new(kind),
+            Box::new(mk_exp(Expression::Field(
+                Box::new(mk_exp(Expression::Rel(0))),
+                mk_con(Constructor::Rel(1)),
+                field_meta,
+            ))),
+        ));
+
+        let result = sub_con_in_exp(0, &sub, body);
+        match result.node {
+            Expression::CAbs(_, _, inner) => match inner.node {
+                Expression::Field(_, field_c, _) => {
+                    assert!(matches!(field_c.node, Constructor::Name(ref s) if s == "Nm"));
+                }
+                _ => panic!("Expected field projection inside constructor abstraction"),
+            },
+            _ => panic!("Expected constructor abstraction"),
+        }
+        Ok(())
+    }
+
     // -----------------------------------------------------------------------
     // unravel_capp tests
     // -----------------------------------------------------------------------
@@ -1346,6 +1381,62 @@ mod tests {
         let (rt, _re) = result.context("expected trim_iter to substitute the bound constructor")?;
         assert!(matches!(rt.node, Constructor::Named(42)));
         Ok(()) // return success to the test harness
+    }
+
+    #[test]
+    fn instantiate_cargs_substitutes_under_nested_constructor_binders() -> anyhow::Result<()> {
+        let name_kind = mk_kind(Kind::Name);
+        let type_kind = mk_kind(Kind::Type);
+        let typ = mk_con(Constructor::TCFun(
+            "outer_name".into(),
+            Box::new(name_kind.clone()),
+            Box::new(mk_con(Constructor::TCFun(
+                "inner_type".into(),
+                Box::new(type_kind.clone()),
+                Box::new(mk_con(Constructor::Record(
+                    Box::new(type_kind.clone()),
+                    vec![(
+                        mk_con(Constructor::Rel(1)),
+                        mk_con(Constructor::Ffi("Basis".into(), "string".into())),
+                    )],
+                ))),
+            ))),
+        ));
+        let field_meta = FieldMeta {
+            field: mk_con(Constructor::Ffi("Basis".into(), "string".into())),
+            rest: mk_con(Constructor::Unit),
+        };
+        let body = mk_exp(Expression::CAbs(
+            "outer_name".into(),
+            Box::new(name_kind),
+            Box::new(mk_exp(Expression::CAbs(
+                "inner_type".into(),
+                Box::new(type_kind),
+                Box::new(mk_exp(Expression::Field(
+                    Box::new(mk_exp(Expression::Rel(0))),
+                    mk_con(Constructor::Rel(1)),
+                    field_meta,
+                ))),
+            ))),
+        ));
+
+        let instantiated = instantiate_cargs(
+            typ,
+            body,
+            &[
+                mk_con(Constructor::Name("Field".into())),
+                mk_con(Constructor::Record(Box::new(mk_kind(Kind::Type)), vec![])),
+            ],
+        )
+        .context("expected instantiate_cargs to specialize nested constructor binders")?;
+
+        match instantiated.1.node {
+            Expression::Field(_, field_c, _) => {
+                assert!(matches!(field_c.node, Constructor::Name(ref s) if s == "Field"));
+            }
+            _ => panic!("Expected instantiated field projection"),
+        }
+        Ok(())
     }
 
     #[test]

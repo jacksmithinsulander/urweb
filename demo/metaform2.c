@@ -32,7 +32,7 @@ sqlite3 *sqlite;
 sqlite3_stmt *stmt;
 uw_conn *conn;
 
-if (sqlite3_open("/tmp/metaform2.db", &sqlite) != SQLITE_OK) uw_error(ctx, FATAL, "Can't open SQLite database.");
+if (sqlite3_open("/tmp/urweb-metaform2.db", &sqlite) != SQLITE_OK) uw_error(ctx, FATAL, "Can't open SQLite database.");
 
 if (sqlite3_exec(sqlite, "PRAGMA foreign_keys = ON", NULL, NULL, NULL) != SQLITE_OK)
 uw_error(ctx, FATAL, "Can't enable foreign_keys for SQLite database");
@@ -114,6 +114,58 @@ static inline uw_Basis_string uw_Basis_attrOptional(
     return uw_Basis_mstrcat(ctx, " ", name, "=\"", val, "\"", NULL);
 }
 
+struct __uws_1 {
+uw_unit __uwf_X;
+uw_unit __uwf_Y;
+};
+
+/* Function prototypes */
+static uw_Basis_string __uwn_lam_1734_1734(uw_context, uw_unit, uw_unit);
+static uw_unit __uwn_lam_1735_1735(uw_context, struct __uws_1, uw_unit);
+static uw_unit __uwn_wrap_handler_1732(uw_context, struct __uws_1, uw_unit);
+static uw_unit __uwn_lam_1736_1736(uw_context, uw_unit, uw_unit);
+static uw_unit __uwn_wrap_diversion_1733(uw_context, uw_unit, uw_unit);
+static uw_unit __uwn_wrap_main_1731(uw_context, uw_unit, uw_unit);
+
+static char jslib[] = "";
+
+#line 137 "/Users/jacksmith/prog/urweb/lib/ur/top.ur"
+static uw_Basis_string __uwn_lam_1734_1734(uw_context ctx, uw_unit __uwr___0, uw_unit __uwr___1) {
+return("");
+}
+
+#line 15 "/Users/jacksmith/prog/urweb/demo/metaform.ur"
+static uw_unit __uwn_lam_1735_1735(uw_context ctx, struct __uws_1 __uwr_x0_0, uw_unit __uwr___1) {
+return(((uw_write(ctx, "<body"), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "class", "")), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "style", "")), 0), ((uw_write(ctx, ">\n"), 0), ((uw_write(ctx, uw_Basis_mstrcat(ctx, "\n<li", uw_Basis_attrOptional(ctx, "class", ""), uw_Basis_attrOptional(ctx, "style", ""), "> ", uw_Basis_htmlifyString(ctx, uw_Basis_mstrcat(ctx, "\n<li", uw_Basis_attrOptional(ctx, "class", ""), uw_Basis_attrOptional(ctx, "style", ""), "> ", uw_Basis_htmlifyString(ctx, __uwn_lam_1734_1734.__uwf_X), " = ", uw_Basis_htmlifyString(ctx, 0.__uwf_X), "</li>\n", 0, NULL).__uwf_X), " = x</li>\n", 0, NULL)(ctx, __uwr_x0_0)), 0), (uw_write(ctx, "\n</body>"), 0)))))));
+}
+
+#line 15 "/Users/jacksmith/prog/urweb/demo/metaform.ur"
+static uw_unit __uwn_wrap_handler_1732(uw_context ctx, struct __uws_1 __uwr_x_0, uw_unit __uwr_x_1) {
+return(({
+struct __uws_1 arg0 = __uwr_x_0;
+uw_unit arg1 = __uwr_x_1;
+__uwn_lam_1735_1735(ctx, arg0, arg1);
+}));
+}
+
+#line 9 "/Users/jacksmith/prog/urweb/demo/metaform2.ur"
+static uw_unit __uwn_lam_1736_1736(uw_context ctx, uw_unit __uwr_x0_0, uw_unit __uwr___1) {
+return(((uw_write(ctx, "<body"), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "class", "")), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "style", "")), 0), (uw_write(ctx, ">\nWelcome to the diversion.\n</body>"), 0)))));
+}
+
+#line 9 "/Users/jacksmith/prog/urweb/demo/metaform2.ur"
+static uw_unit __uwn_wrap_diversion_1733(uw_context ctx, uw_unit __uwr_x_0, uw_unit __uwr_x_1) {
+return(({
+uw_unit arg0 = __uwr_x_0;
+uw_unit arg1 = __uwr_x_1;
+__uwn_lam_1736_1736(ctx, arg0, arg1);
+}));
+}
+
+static uw_unit __uwn_wrap_main_1731(uw_context ctx, uw_unit __uwr_x0_0, uw_unit __uwr___1) {
+return(((uw_write(ctx, "<body"), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "class", "")), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "style", "")), 0), ((uw_write(ctx, ">\n<li"), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "class", "")), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "style", "")), 0), ((uw_write(ctx, "> <a"), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "class", "")), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "style", "")), 0), ((uw_write(ctx, " href=\"/Metaform2/diversion\">See something shiny!</a></li>\n<li"), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "class", "")), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "style", "")), 0), ((uw_write(ctx, "> <a"), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "class", "")), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "style", "")), 0), (uw_write(ctx, ">Fill out a form!</a></li>\n</body>"), 0)))))))))))))))));
+}
+
 static void uw_setup_limits(void) {
 }
 
@@ -158,6 +210,65 @@ static int uw_check_meta(const char *m) {
 }
 
 static void uw_handle(uw_context ctx, char *request) {
+if (!strncmp(request, "/Metaform2/MM/handler", 21) && (request[21] == 0 || request[21] == '/')) {
+request += 21;
+if (*request == '/') ++request;
+uw_write_header(ctx, "Content-type: text/html; charset=utf-8\r\n");
+uw_write(ctx, uw_begin_html5);
+uw_mayReturnIndirectly(ctx);
+uw_set_could_write_db(ctx, 0);
+uw_set_at_most_one_query(ctx, 0);
+uw_set_needs_push(ctx, 0);
+uw_set_needs_sig(ctx, 0);
+uw_login(ctx);
+{
+struct __uws_1 arg0 = ({
+uw_unit uwr_X = uw_Basis_unurlifyUnit(ctx, &request);
+uw_unit uwr_Y = uw_Basis_unurlifyUnit(ctx, &request);
+struct __uws_1 tmp = { uwr_X, uwr_Y };
+tmp;
+});
+__uwn_wrap_handler_1732(ctx, arg0, 0);
+uw_write(ctx, "</html>");
+return;
+}
+}
+if (!strncmp(request, "/Metaform2/diversion", 20) && (request[20] == 0 || request[20] == '/')) {
+request += 20;
+if (*request == '/') ++request;
+uw_write_header(ctx, "Content-type: text/html; charset=utf-8\r\n");
+uw_write(ctx, uw_begin_html5);
+uw_mayReturnIndirectly(ctx);
+uw_set_could_write_db(ctx, 0);
+uw_set_at_most_one_query(ctx, 0);
+uw_set_needs_push(ctx, 0);
+uw_set_needs_sig(ctx, 0);
+uw_login(ctx);
+{
+uw_unit arg0 = uw_Basis_unurlifyUnit(ctx, &request);
+__uwn_wrap_diversion_1733(ctx, arg0, 0);
+uw_write(ctx, "</html>");
+return;
+}
+}
+if (!strncmp(request, "/Metaform2/main", 15) && (request[15] == 0 || request[15] == '/')) {
+request += 15;
+if (*request == '/') ++request;
+uw_write_header(ctx, "Content-type: text/html; charset=utf-8\r\n");
+uw_write(ctx, uw_begin_html5);
+uw_mayReturnIndirectly(ctx);
+uw_set_could_write_db(ctx, 0);
+uw_set_at_most_one_query(ctx, 0);
+uw_set_needs_push(ctx, 0);
+uw_set_needs_sig(ctx, 0);
+uw_login(ctx);
+{
+uw_unit arg0 = uw_Basis_unurlifyUnit(ctx, &request);
+__uwn_wrap_main_1731(ctx, arg0, 0);
+uw_write(ctx, "</html>");
+return;
+}
+}
 uw_clear_headers(ctx);
 uw_write_header(ctx, uw_supports_direct_status ? "HTTP/1.1 404 Not Found\r\n" : "Status: 404 Not Found\r\n");
 uw_write_header(ctx, "Content-type: text/plain\r\n");

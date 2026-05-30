@@ -2358,9 +2358,9 @@ fn process(
                 }
             }
             Decl::Datatype(dts) => {
-                for DatatypeDecl { constrs, .. } in dts {
+                for DatatypeDecl { id, constrs, .. } in dts {
                     // Classify: if Option kind, record the SOME constructor's type
-                    let kind = crate::monomorphized::utilities::classify_datatype(constrs);
+                    let kind = crate::monomorphized::utilities::classify_datatype(*id, constrs);
                     if kind == DatatypeKind::Option {
                         for (_, n, opt_t) in constrs {
                             if let Some(t) = opt_t {
@@ -2502,18 +2502,26 @@ fn process(
 ///
 /// Returns `Some(script)` where `script` is the concatenated JavaScript to
 /// embed in the compiled application.  Returns `None` only on fatal error.
+pub fn js_compile_file(
+    file: &crate::monomorphized::File,
+    settings: &Settings,
+    errors: &mut crate::error_types::ErrorReporter,
+) -> (crate::monomorphized::File, Option<String>) {
+    if !settings
+        .language_compilation_profile
+        .runs_javascript_compilation()
+    {
+        return (file.clone(), None);
+    }
+    process(file, settings, errors)
+}
+
 pub fn js_compile(
     file: &crate::monomorphized::File,
     settings: &Settings,
     errors: &mut crate::error_types::ErrorReporter,
 ) -> Option<String> {
-    if !settings
-        .language_compilation_profile
-        .runs_javascript_compilation()
-    {
-        return None;
-    }
-    let (_new_file, script) = process(file, settings, errors);
+    let (_new_file, script) = js_compile_file(file, settings, errors);
     script
 }
 

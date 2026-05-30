@@ -61,9 +61,10 @@ impl PrepareState {
 /// Return the SQL parameter placeholder for parameter `n` (1-based) of SQL type `t`.
 ///
 /// - Postgres: `$N::sql_type`  (typed cast)
-/// - MySQL / other: `?`
+/// - MySQL / SQLite: `?`
 fn p_blank(n: usize, t: &SqlType, settings: &Settings) -> String {
-    if ProjectDbCtx::new(&settings.db_backend).is_mysql() {
+    let db = ProjectDbCtx::new(&settings.db_backend);
+    if db.is_mysql() || db.is_sqlite() {
         "?".to_string()
     } else {
         // Postgres (default): $N::cast
@@ -324,7 +325,8 @@ fn prep_exp(e: LocExp, st: &mut PrepareState, settings: &Settings) -> LocExp {
 
         Exp::Nextval { seq, prepared: _ } => {
             // If the DBMS supports NEXTVAL, wrap as SELECT NEXTVAL(...)
-            if !ProjectDbCtx::new(&settings.db_backend).is_mysql() {
+            let db = ProjectDbCtx::new(&settings.db_backend);
+            if !db.is_mysql() && !db.is_sqlite() {
                 // Build SELECT NEXTVAL('seq')
                 let select_nextval = build_nextval_query(&seq, &loc);
                 let prepared = try_prepare(&select_nextval, st, settings)
@@ -837,6 +839,31 @@ mod tests {
     }
 
     #[test]
+    fn prep_string_sqlify_int_sqlite() -> anyhow::Result<()> {
+        let mut st = PrepareState::new();
+        let settings = Settings {
+            db_backend: Some(crate::db::ProjectDb::sqlite()),
+            ..Default::default()
+        };
+
+        let arg = Located::dummy(Exp::Rel(0));
+        let t = Located::dummy(crate::c_like_representation::Typ::Ffi(
+            "Basis".into(),
+            "int".into(),
+        ));
+        let e = Located::dummy(Exp::FfiApp(
+            "Basis".into(),
+            "sqlifyInt".into(),
+            vec![(arg, t)],
+        ));
+        let result = try_prepare(&e, &mut st, &settings);
+        assert!(result.is_some());
+        let (_, tmpl) = result.ok_or_else(|| anyhow::anyhow!("expected Some from result"))?;
+        assert_eq!(tmpl, "?");
+        Ok(())
+    }
+
+    #[test]
     fn prep_string_sqlify_float_postgres() -> anyhow::Result<()> {
         // test returns Result to allow ? propagation
         let mut st = PrepareState::new();
@@ -935,6 +962,30 @@ mod tests {
         let result = try_prepare(&e, &mut st, &settings);
         assert!(result.is_none());
         Ok(()) // return success to the test harness
+    }
+
+    #[test]
+    fn prep_exp_nextval_sqlite_does_not_prepare_postgres_nextval_query() {
+        let mut st = PrepareState::new();
+        let settings = Settings {
+            db_backend: Some(crate::db::ProjectDb::sqlite()),
+            ..Default::default()
+        };
+        let seq = Located::dummy(Exp::Prim(Prim::String(StringMode::Normal, "uw_seq".into())));
+        let exp = Located::dummy(Exp::Nextval {
+            seq: Box::new(seq),
+            prepared: None,
+        });
+
+        let prepared = prep_exp(exp, &mut st, &settings);
+        let Exp::Nextval { prepared, .. } = prepared.node else {
+            panic!("expected nextval expression");
+        };
+        assert!(prepared.is_none(), "sqlite nextval must stay unprepared");
+        assert!(
+            st.list.is_empty(),
+            "sqlite nextval must not register a prepared SELECT NEXTVAL query"
+        );
     }
 
     #[test]

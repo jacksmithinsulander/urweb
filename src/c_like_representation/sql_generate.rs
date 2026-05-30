@@ -89,6 +89,18 @@ impl<'a> DbmsInfo<'a> {
             None
         }
     }
+
+    fn normalize_ddl_sql(&self, sql: &str) -> String {
+        if !self.db().is_sqlite() {
+            return sql.to_string();
+        }
+        sql.replace("::int8", "")
+            .replace("::float8", "")
+            .replace("::text", "")
+            .replace("::char", "")
+            .replace("::bytea", "")
+            .replace("::int4", "")
+    }
 }
 
 fn postgres_sql_type(t: &SqlType) -> String {
@@ -274,7 +286,12 @@ fn p_ddl_table(
 
     // Other constraints
     for (x, c) in csts {
-        elts.push(format!("CONSTRAINT {}_{} {}", table, x, c));
+        elts.push(format!(
+            "CONSTRAINT {}_{} {}",
+            table,
+            x,
+            db.normalize_ddl_sql(c)
+        ));
     }
 
     out.push_str(&elts.join(",\n    "));
@@ -402,7 +419,11 @@ pub fn sql_generate(file: &File, settings: &Settings) -> String {
                 out.push_str(";\n\n");
             }
             Decl::View(s, _xts, q) => {
-                out.push_str(&format!("CREATE VIEW {} AS {};\n\n", s, q));
+                out.push_str(&format!(
+                    "CREATE VIEW {} AS {};\n\n",
+                    s,
+                    db.normalize_ddl_sql(q)
+                ));
             }
             Decl::Index(tab, cols) => {
                 // Build index name: tab_col1_col2...
@@ -540,6 +561,34 @@ mod tests {
     }
 
     #[test]
+    fn sqlite_view_strips_postgres_type_casts() {
+        let settings = Settings {
+            db_backend: Some(crate::db::ProjectDb::sqlite()),
+            ..Default::default()
+        };
+        let xts = vec![("x".to_string(), ffi_typ("Basis", "int"))];
+        let decls = vec![Located::new(
+            Decl::View(
+                "myview".to_string(),
+                xts,
+                "SELECT 7::int8, 'x'::text".to_string(),
+            ),
+            Span::dummy(),
+        )];
+        let result = sql_generate(&(decls, vec![]), &settings);
+        assert!(
+            result.contains("CREATE VIEW myview AS SELECT 7, 'x'"),
+            "sqlite DDL should strip postgres casts, got: {}",
+            result
+        );
+        assert!(
+            !result.contains("::"),
+            "sqlite view DDL must not contain postgres casts: {}",
+            result
+        );
+    }
+
+    #[test]
     fn sqlite_prefix() {
         let settings = Settings {
             db_backend: Some(crate::db::ProjectDb::sqlite()),
@@ -621,6 +670,35 @@ mod tests {
             result
         );
         assert!(result.contains("text"), "sqlite uses text, got: {}", result);
+    }
+
+    #[test]
+    fn sqlite_table_constraints_strip_postgres_type_casts() {
+        let settings = Settings {
+            db_backend: Some(crate::db::ProjectDb::sqlite()),
+            ..Default::default()
+        };
+        let xts = vec![("Id".to_string(), ffi_typ("Basis", "int"))];
+        let decls = vec![Located::new(
+            Decl::Table(
+                "uw_users".to_string(),
+                xts,
+                "".to_string(),
+                vec![("Check".to_string(), "CHECK (uw_id >= 0::int8)".to_string())],
+            ),
+            Span::dummy(),
+        )];
+        let result = sql_generate(&(decls, vec![]), &settings);
+        assert!(
+            result.contains("CHECK (uw_id >= 0)"),
+            "sqlite constraints should strip postgres casts, got: {}",
+            result
+        );
+        assert!(
+            !result.contains("::"),
+            "sqlite table DDL must not contain postgres casts: {}",
+            result
+        );
     }
 
     #[test]

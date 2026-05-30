@@ -512,6 +512,8 @@ impl Env {
                         .iter()
                         .map(|(cx, cn, ct)| (cx.clone(), *cn, ct.clone()))
                         .collect();
+                    let datatype_kind =
+                        crate::monomorphized::utilities::classify_datatype(*id, &constrs_for_env);
                     env = env.push_datatype(name, *id, constrs_for_env.clone());
                     // Register each constructor as a named binding
                     let dt_typ = crate::error_types::Located::new(
@@ -519,7 +521,7 @@ impl Env {
                             *id,
                             std::sync::Arc::new(std::sync::Mutex::new(
                                 crate::monomorphized::DatatypeDef {
-                                    kind: crate::datatype_kind::DatatypeKind::Option,
+                                    kind: datatype_kind,
                                     constrs: constrs_for_env.clone(),
                                 },
                             )),

@@ -238,7 +238,16 @@ impl Default for CjrEnv {
 // ---------------------------------------------------------------------------
 
 fn ident(s: &str) -> String {
-    s.replace('\'', "PRIME").replace('$', "_")
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        match ch {
+            '\'' => out.push_str("PRIME"),
+            '$' => out.push('_'),
+            ch if ch.is_ascii_alphanumeric() || ch == '_' => out.push(ch),
+            _ => out.push('_'),
+        }
+    }
+    out
 }
 
 fn p_rel_name(env: &CjrEnv, n: usize) -> String {
@@ -273,10 +282,22 @@ fn is_unboxable(t: &LocTyp) -> bool {
 // Type printing
 // ---------------------------------------------------------------------------
 
-pub fn p_typ(env: &CjrEnv, t: &LocTyp) -> String {
-    cjr_test_tick();
+fn flatten_fun_typ(t: &LocTyp) -> (Vec<LocTyp>, LocTyp) {
+    let mut args = Vec::new();
+    let mut cur = t.clone();
+    loop {
+        match cur.node {
+            Typ::Fun(dom, ran) => {
+                args.push(*dom);
+                cur = *ran;
+            }
+            _ => return (args, cur),
+        }
+    }
+}
+
+fn p_typ_base(env: &CjrEnv, t: &LocTyp) -> String {
     match &t.node {
-        Typ::Fun(_, _) => "<FUNCTION>".to_string(),
         Typ::Record(0) => "uw_unit".to_string(),
         Typ::Record(i) => format!("struct __uws_{}", i),
         Typ::Datatype(DatatypeKind::Enum, n, _) => match env.lookup_datatype(*n) {
@@ -311,6 +332,43 @@ pub fn p_typ(env: &CjrEnv, t: &LocTyp) -> String {
             }
         }
         Typ::List(_, i) => format!("struct __uws_{}*", i),
+        Typ::Fun(_, _) => unreachable!("function types are handled by p_decl"),
+    }
+}
+
+fn p_typed_decl(env: &CjrEnv, t: &LocTyp, name: &str) -> String {
+    cjr_test_tick();
+    match &t.node {
+        Typ::Fun(_, _) => {
+            let (args, ran) = flatten_fun_typ(t);
+            let ran_s = p_typ_base(env, &ran);
+            let params: Vec<String> = args.iter().map(|arg| p_typ(env, arg)).collect();
+            let params = if params.is_empty() {
+                "uw_context".to_string()
+            } else {
+                format!("uw_context, {}", params.join(", "))
+            };
+            format!("{ran_s} (*{name})({params})")
+        }
+        _ => format!("{} {}", p_typ_base(env, t), name),
+    }
+}
+
+pub fn p_typ(env: &CjrEnv, t: &LocTyp) -> String {
+    cjr_test_tick();
+    match &t.node {
+        Typ::Fun(_, _) => {
+            let (args, ran) = flatten_fun_typ(t);
+            let ran_s = p_typ_base(env, &ran);
+            let params: Vec<String> = args.iter().map(|arg| p_typ(env, arg)).collect();
+            let params = if params.is_empty() {
+                "uw_context".to_string()
+            } else {
+                format!("uw_context, {}", params.join(", "))
+            };
+            format!("{ran_s} (*)({params})")
+        }
+        _ => p_typ_base(env, t),
     }
 }
 
@@ -325,6 +383,14 @@ fn p_pat_con(env: &CjrEnv, pc: &PatCon) -> String {
             Some((x, _, _)) => format!("__uwc_{}_{}", ident(x), n),
             None => format!("__uwc_UNBOUND_{}", n),
         },
+        PatCon::Ffi {
+            module,
+            datatyp,
+            con,
+            ..
+        } if module == "Basis" && datatyp == "bool" => {
+            format!("uw_Basis_{}", ident(con))
+        }
         PatCon::Ffi {
             module,
             datatyp,
@@ -477,7 +543,7 @@ fn p_pat_bind(env: &mut CjrEnv, disc: &str, pat: &LocPat) -> String {
         Pat::Var(x, t) => {
             let idx = env.count_e_rels();
             let var_name = format!("__uwr_{}_{}", ident(x), idx);
-            let decl = format!("{} {} = {};\n", p_typ(env, t), var_name, disc);
+            let decl = format!("{} = {};\n", p_typed_decl(env, t, &var_name), disc);
             env.push_e_rel(x, t.clone());
             decl
         }
@@ -666,8 +732,12 @@ pub fn p_exp(env: &CjrEnv, e: &LocExp, settings: &Settings) -> String {
                             let mut out = String::from("({\n");
                             for (i, (e, t)) in args.iter().zip(arg_types.iter()).enumerate() {
                                 let ae = p_exp(env, e, settings);
-                                let at = p_typ(env, t);
-                                out.push_str(&format!("{} arg{} = {};\n", at, i, ae));
+                                let arg_name = format!("arg{}", i);
+                                out.push_str(&format!(
+                                    "{} = {};\n",
+                                    p_typed_decl(env, t, &arg_name),
+                                    ae
+                                ));
                             }
                             let arg_list: Vec<String> =
                                 (0..args.len()).map(|i| format!("arg{}", i)).collect();
@@ -730,14 +800,14 @@ pub fn p_exp(env: &CjrEnv, e: &LocExp, settings: &Settings) -> String {
         }
 
         Exp::Case(disc_e, arms, meta) => {
-            let disc_t = p_typ(env, &meta.disc);
-            let result_t = p_typ(env, &meta.result);
+            let disc_decl = p_typed_decl(env, &meta.disc, "disc");
+            let result_tmp_decl = p_typed_decl(env, &meta.result, "tmp");
             let disc_s = p_exp(env, disc_e, settings);
 
             // Build ternary chain (like SML: cond ? ({binds; body}) : (next_cond ? ... : error))
             let error_fallback = format!(
-                "({{\n{} tmp;\nuw_error(ctx, FATAL, \"Ur/Web runtime: case/of exhausted — none of the patterns matched this value.\");\ntmp;\n}})",
-                result_t
+                "({{\n{};\nuw_error(ctx, FATAL, \"Ur/Web runtime: case/of exhausted — none of the patterns matched this value.\");\ntmp;\n}})",
+                result_tmp_decl
             );
 
             let chain = arms.iter().rev().fold(error_fallback, |acc, (pat, body)| {
@@ -754,15 +824,15 @@ pub fn p_exp(env: &CjrEnv, e: &LocExp, settings: &Settings) -> String {
                 }
             });
 
-            format!("({{\n{} disc = {};\n\n{};\n}})", disc_t, disc_s, chain)
+            format!("({{\n{} = {};\n\n{};\n}})", disc_decl, disc_s, chain)
         }
 
         Exp::Error(msg_e, t) => {
-            let t_s = p_typ(env, t);
             let msg_s = p_exp(env, msg_e, settings);
             format!(
-                "({{\n{} tmp;\nuw_error(ctx, FATAL, \"%s\", {});\ntmp;\n}})",
-                t_s, msg_s
+                "({{\n{};\nuw_error(ctx, FATAL, \"%s\", {});\ntmp;\n}})",
+                p_typed_decl(env, t, "tmp"),
+                msg_s
             )
         }
 
@@ -771,12 +841,13 @@ pub fn p_exp(env: &CjrEnv, e: &LocExp, settings: &Settings) -> String {
             mime_type,
             t,
         } => {
-            let t_s = p_typ(env, t);
             let blob_s = p_exp(env, blob_e, settings);
             let mime_s = p_exp(env, mime_type, settings);
             format!(
-                "({{\nuw_Basis_blob blob = {};\nuw_Basis_string mimeType = {};\n{} tmp;\nuw_return_blob(ctx, blob, mimeType);\ntmp;\n}})",
-                blob_s, mime_s, t_s
+                "({{\nuw_Basis_blob blob = {};\nuw_Basis_string mimeType = {};\n{};\nuw_return_blob(ctx, blob, mimeType);\ntmp;\n}})",
+                blob_s,
+                mime_s,
+                p_typed_decl(env, t, "tmp")
             )
         }
 
@@ -785,18 +856,21 @@ pub fn p_exp(env: &CjrEnv, e: &LocExp, settings: &Settings) -> String {
             mime_type,
             t,
         } => {
-            let t_s = p_typ(env, t);
             let mime_s = p_exp(env, mime_type, settings);
             format!(
-                "({{\nuw_Basis_string mimeType = {};\n{} tmp;\nuw_return_blob_from_page(ctx, mimeType);\ntmp;\n}})",
-                mime_s, t_s
+                "({{\nuw_Basis_string mimeType = {};\n{};\nuw_return_blob_from_page(ctx, mimeType);\ntmp;\n}})",
+                mime_s,
+                p_typed_decl(env, t, "tmp")
             )
         }
 
         Exp::Redirect(url_e, t) => {
-            let t_s = p_typ(env, t);
             let url_s = p_exp(env, url_e, settings);
-            format!("({{\n{} tmp;\nuw_redirect(ctx, {});\ntmp;\n}})", t_s, url_s)
+            format!(
+                "({{\n{};\nuw_redirect(ctx, {});\ntmp;\n}})",
+                p_typed_decl(env, t, "tmp"),
+                url_s
+            )
         }
 
         Exp::Write(e1) => {
@@ -813,12 +887,16 @@ pub fn p_exp(env: &CjrEnv, e: &LocExp, settings: &Settings) -> String {
         Exp::Let(x, t, e1, e2) => {
             let idx = env.count_e_rels();
             let var_name = format!("__uwr_{}_{}", ident(x), idx);
-            let t_s = p_typ(env, t);
             let e1_s = p_exp(env, e1, settings);
             let mut env2 = env.clone();
             env2.push_e_rel(x, t.clone());
             let e2_s = p_exp(&env2, e2, settings);
-            format!("({{\n{} {} = {};\n{};\n}})", t_s, var_name, e1_s, e2_s)
+            format!(
+                "({{\n{} = {};\n{};\n}})",
+                p_typed_decl(env, t, &var_name),
+                e1_s,
+                e2_s
+            )
         }
 
         Exp::Query(qm) => p_exp_query(env, qm, settings),
@@ -1964,7 +2042,7 @@ fn p_fun(
         .enumerate()
         .map(|(i, (arg_name, arg_t))| {
             let rel_name = format!("__uwr_{}_{}", ident(arg_name), i);
-            format!("{} {}", p_typ(env, arg_t), rel_name)
+            p_typed_decl(env, arg_t, &rel_name)
         })
         .collect();
 
@@ -2040,7 +2118,10 @@ fn p_decl(
             }
             let mut s = format!("struct __uws_{} {{\n", n);
             for (x, t) in xts {
-                s.push_str(&format!("{} __uwf_{};\n", p_typ(env, t), ident(x)));
+                s.push_str(&format!(
+                    "{};\n",
+                    p_typed_decl(env, t, &format!("__uwf_{}", ident(x)))
+                ));
             }
             s.push_str("};");
             s
@@ -2062,14 +2143,13 @@ fn p_decl(
         Decl::Val(x, n, t, e) => {
             // Use the narrowed C type when static analysis proved the value fits in
             // a smaller type (e.g., `uint8_t` for literal 42 vs `uw_Basis_int`).
-            let t_s = narrowing_table
-                .lookup_named(*n)
-                .map(|narrowed| narrowed.c_type_name().to_string()) // narrowed width type
-                .unwrap_or_else(|| p_typ(env, t)); // fallback: declared type
             let name = p_named_name(*n, x);
             let val_s = p_exp(env, e, settings);
             global_initializers.push(format!("{} = {};", name, val_s));
-            format!("{} {};", t_s, name)
+            match narrowing_table.lookup_named(*n) {
+                Some(narrowed) => format!("{} {};", narrowed.c_type_name(), name),
+                None => format!("{};", p_typed_decl(env, t, &name)),
+            }
         }
 
         Decl::Fun(fx, n, args, ran, e) => p_fun(false, env, fx, *n, args, ran, e, settings),
@@ -2172,7 +2252,10 @@ fn p_datatype_decl(env: &CjrEnv, dt: &DatatypeDecl) -> String {
                 struct_decl.push_str("union {\n");
                 for (x, _n, t) in &args_constrs {
                     if let Some(t) = t {
-                        struct_decl.push_str(&format!("{} uw_{};\n", p_typ(env, t), ident(x)));
+                        struct_decl.push_str(&format!(
+                            "{};\n",
+                            p_typed_decl(env, t, &format!("uw_{}", ident(x)))
+                        ));
                     }
                 }
                 struct_decl.push_str("} data;\n");
@@ -2617,7 +2700,6 @@ fn urlify_stmts(level: usize, t: &LocTyp, env: &CjrEnv) -> String {
                      uw_write(ctx, \"Cons/\");\n\
                      struct __uws_{i} it1 = *it0;\n\
                      {inner_body}\
-                     urlifyl_{i}(ctx, it0->next);\n\
                      }} else {{\nuw_write(ctx, \"Nil\");\n}}\n}}\n\n"
                 );
                 add_url_handler(proto, def);
@@ -3964,6 +4046,26 @@ mod tests {
     }
 
     #[test]
+    fn basis_bool_constructor_uses_runtime_enum_name() -> anyhow::Result<()> {
+        let env = CjrEnv::new();
+        let settings = Settings::default();
+        let e = dummy(Exp::Con(
+            DatatypeKind::Enum,
+            PatCon::Ffi {
+                module: "Basis".into(),
+                datatyp: "bool".into(),
+                con: "True".into(),
+                arg: None,
+            },
+            None,
+        ));
+
+        let printed = p_exp(&env, &e, &settings);
+        assert_eq!(printed, "uw_Basis_True");
+        Ok(())
+    }
+
+    #[test]
     fn field_access_uses_uwf_prefix() -> anyhow::Result<()> {
         // test returns Result to allow ? propagation
         let env = CjrEnv::new();
@@ -4240,6 +4342,29 @@ mod tests {
         let s = p_typ(&env, &t);
         assert!(!s.is_empty(), "List type must print");
         Ok(()) // return success to the test harness
+    }
+
+    #[test]
+    fn list_urlify_helper_uses_payload_tail_not_next_field() -> anyhow::Result<()> {
+        let mut env = CjrEnv::new();
+        let inner = dummy(Typ::Ffi("Basis".into(), "int".into()));
+        let list_t = dummy(Typ::List(Box::new(inner), 9));
+        env.push_struct(
+            9,
+            vec![
+                ("1".into(), dummy(Typ::Ffi("Basis".into(), "int".into()))),
+                ("2".into(), list_t.clone()),
+            ],
+        );
+
+        reset_url_handlers();
+        let _ = urlify_stmts(0, &list_t, &env);
+        let defs = collect_url_handler_defs().join("\n");
+
+        assert!(defs.contains("it1.__uwf_2"));
+        assert!(defs.contains("urlifyl_9(ctx, it2);"));
+        assert!(!defs.contains("it0->next"));
+        Ok(())
     }
 
     #[test]

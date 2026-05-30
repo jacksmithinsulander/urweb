@@ -14,6 +14,64 @@ use crate::export::{Effect, ExportKind};
 use crate::settings::{PathKind, Settings};
 use crate::{core as core_ir, explicit as expl};
 
+fn debug_corify_target_id() -> Option<usize> {
+    std::env::var("URWEB_DEBUG_CORIFY_ID")
+        .ok()
+        .and_then(|raw| raw.parse::<usize>().ok())
+}
+
+fn debug_corify_progress_enabled_for_file(file: &str) -> bool {
+    match std::env::var("URWEB_DEBUG_CORIFY_PROGRESS").ok().as_deref() {
+        Some("1") => true,
+        Some("demo") => file.contains("/demo/"),
+        _ => false,
+    }
+}
+
+fn debug_corify_exp_repeat_limit() -> Option<usize> {
+    std::env::var("URWEB_DEBUG_CORIFY_EXP_LINE_REPEAT")
+        .ok()
+        .and_then(|raw| raw.parse::<usize>().ok())
+}
+
+fn debug_corify_exp_depth_limit() -> Option<usize> {
+    std::env::var("URWEB_DEBUG_CORIFY_EXP_DEPTH")
+        .ok()
+        .and_then(|raw| raw.parse::<usize>().ok())
+}
+
+fn debug_corify_exp_file_matches(span: &Span) -> bool {
+    std::env::var("URWEB_DEBUG_CORIFY_EXP_FILE")
+        .ok()
+        .map(|needle| span.file.contains(&needle))
+        .unwrap_or(true)
+}
+
+fn explicit_decl_progress_label(decl: &expl::Declaration) -> &'static str {
+    match decl {
+        expl::Declaration::Constructor(_, _, _, _) => "con",
+        expl::Declaration::Datatype(_) => "datatype",
+        expl::Declaration::DatatypeImp { .. } => "datatype imp",
+        expl::Declaration::Val(_, _, _, _) => "val",
+        expl::Declaration::ValRec(_) => "val rec",
+        expl::Declaration::Signature(_, _, _) => "signature",
+        expl::Declaration::Structure(_, _, _, _) => "structure",
+        expl::Declaration::FfiStr(_, _, _) => "ffi structure",
+        expl::Declaration::Export(_, _, _) => "export",
+        expl::Declaration::Table { .. } => "table",
+        expl::Declaration::Sequence(_, _, _) => "sequence",
+        expl::Declaration::View(_, _, _, _, _) => "view",
+        expl::Declaration::Index(_, _) => "index",
+        expl::Declaration::Database(_) => "database",
+        expl::Declaration::Cookie(_, _, _, _) => "cookie",
+        expl::Declaration::Style(_, _, _) => "style",
+        expl::Declaration::Task(_, _) => "task",
+        expl::Declaration::Policy(_) => "policy",
+        expl::Declaration::OnError(_, _, _) => "onError",
+        expl::Declaration::Ffi(_, _, _, _) => "ffi",
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -105,6 +163,18 @@ impl Flattening {
     }
 }
 
+#[derive(Clone)]
+struct ScopeFrame {
+    current: Flattening,
+    cons: HashMap<usize, usize>,
+    con_ffi_map: HashMap<usize, (String, String)>,
+    val_ffi_map: HashMap<usize, (String, String)>,
+    constructors: HashMap<usize, CorePatCon>,
+    vals: HashMap<usize, usize>,
+    strs: HashMap<usize, Flattening>,
+    funs: HashMap<usize, (String, usize, expl::LocatedStructure)>,
+}
+
 #[derive(Debug, Clone)]
 enum CoreCon {
     Normal(usize),
@@ -132,7 +202,7 @@ struct St {
     strs: HashMap<usize, Flattening>,
     funs: HashMap<usize, (String, usize, expl::LocatedStructure)>,
     current: Flattening,
-    nested: Vec<Flattening>,
+    nested: Vec<ScopeFrame>,
 }
 
 impl St {
@@ -218,7 +288,10 @@ impl St {
     // --- Val bindings ---
 
     fn bind_val(&mut self, x: &str, n: usize, cx: &mut CorifyCx<'_>, report: &Span) -> usize {
-        let n_new = alloc(cx.counter);
+        let n_new = self.reserve_val_id(n, cx);
+        if debug_corify_target_id() == Some(n) {
+            eprintln!("URWEB_DEBUG_CORIFY_BIND kind=val name={x} explicit_id={n} core_id={n_new}");
+        }
         match &mut self.current {
             Flattening::Normal { vals, .. } => {
                 vals.insert(x.to_string(), n_new);
@@ -233,6 +306,14 @@ impl St {
                 );
             }
         }
+        n_new
+    }
+
+    fn reserve_val_id(&mut self, n: usize, cx: &mut CorifyCx<'_>) -> usize {
+        if let Some(existing) = self.vals.get(&n).copied() {
+            return existing;
+        }
+        let n_new = alloc(cx.counter);
         self.vals.insert(n, n_new);
         n_new
     }
@@ -340,13 +421,33 @@ impl St {
     // --- Enter/leave ---
 
     fn enter(&mut self, name: Vec<String>) {
-        let old = std::mem::replace(&mut self.current, Flattening::new_normal(name));
-        self.nested.push(old);
+        self.nested.push(ScopeFrame {
+            current: self.current.clone(),
+            cons: self.cons.clone(),
+            con_ffi_map: self.con_ffi_map.clone(),
+            val_ffi_map: self.val_ffi_map.clone(),
+            constructors: self.constructors.clone(),
+            vals: self.vals.clone(),
+            strs: self.strs.clone(),
+            funs: self.funs.clone(),
+        });
+        self.current = Flattening::new_normal(name);
     }
 
-    fn leave(&mut self, cx: &mut CorifyCx<'_>, report: &Span) -> Flattening {
+    fn leave(&mut self, cx: &mut CorifyCx<'_>, report: &Span) -> St {
         match self.nested.pop() {
-            Some(old) => std::mem::replace(&mut self.current, old),
+            Some(old) => {
+                let inner = self.clone();
+                self.current = old.current;
+                self.cons = old.cons;
+                self.con_ffi_map = old.con_ffi_map;
+                self.val_ffi_map = old.val_ffi_map;
+                self.constructors = old.constructors;
+                self.vals = old.vals;
+                self.strs = old.strs;
+                self.funs = old.funs;
+                inner
+            }
             None => {
                 cx.report_at(
                     report.clone(),
@@ -355,7 +456,7 @@ impl St {
                         vec![],
                     ),
                 );
-                Flattening::new_normal(vec![])
+                St::dummy(self.basis, Flattening::new_normal(vec![]))
             }
         }
     }
@@ -1057,13 +1158,69 @@ fn corify_exp(
     e: expl::LocatedExpression,
     cx: &mut CorifyCx<'_>,
 ) -> core_ir::LocatedExpression {
+    use std::cell::RefCell;
+    struct CorifyExpDepthGuard;
+    impl Drop for CorifyExpDepthGuard {
+        fn drop(&mut self) {
+            CORIFY_EXP_DEPTH.with(|depth| {
+                let mut depth = depth.borrow_mut();
+                *depth = depth.saturating_sub(1);
+            });
+        }
+    }
+    thread_local! {
+        static CORIFY_EXP_LINE_REPEAT_COUNTS: RefCell<HashMap<String, usize>> =
+            RefCell::new(HashMap::new());
+        static CORIFY_EXP_DEPTH: RefCell<usize> = const { RefCell::new(0) };
+    }
     let span = e.span.clone();
+    let depth = CORIFY_EXP_DEPTH.with(|depth| {
+        let mut depth = depth.borrow_mut();
+        *depth += 1;
+        *depth
+    });
+    let _depth_guard = CorifyExpDepthGuard;
+
+    if debug_corify_exp_file_matches(&span) {
+        if let Some(limit) = debug_corify_exp_depth_limit() {
+            if depth >= limit {
+                panic!(
+                    "corify_exp depth limit {} hit at depth {} {}:{} expr={:?}",
+                    limit, depth, span.file, span.first.line, e.node
+                );
+            }
+        }
+    }
+
+    if debug_corify_exp_file_matches(&span) {
+        if let Some(limit) = debug_corify_exp_repeat_limit() {
+            let repeat_key = format!("{}:{}", span.file, span.first.line);
+            let hit_count = CORIFY_EXP_LINE_REPEAT_COUNTS.with(|counts| {
+                let mut counts = counts.borrow_mut();
+                let entry = counts.entry(repeat_key).or_insert(0);
+                *entry += 1;
+                *entry
+            });
+            if hit_count >= limit {
+                panic!(
+                    "corify_exp line repeat limit {} hit at {}:{} expr={:?}",
+                    limit, span.file, span.first.line, e.node
+                );
+            }
+        }
+    }
     let node = match e.node {
         expl::Expression::Prim(p) => core_ir::Expression::Prim(p),
         expl::Expression::Rel(n) => core_ir::Expression::Rel(n),
         expl::Expression::Named(n) => {
             // First check if n is a remapped normal val
             if let Some(n2) = st.lookup_val_by_id(n) {
+                if debug_corify_target_id() == Some(n) {
+                    eprintln!(
+                        "URWEB_DEBUG_CORIFY_NAMED explicit_id={n} resolved=val core_id={n2} {}:{}",
+                        span.file, span.first.line
+                    );
+                }
                 return Located {
                     node: core_ir::Expression::Named(n2),
                     span,
@@ -1071,10 +1228,22 @@ fn corify_exp(
             }
             // Check if n is an FFI val (e.g. Basis.transaction_return)
             if let Some((module, name)) = st.lookup_val_ffi(n) {
+                if debug_corify_target_id() == Some(n) {
+                    eprintln!(
+                        "URWEB_DEBUG_CORIFY_NAMED explicit_id={n} resolved=ffi module={module} name={name} {}:{}",
+                        span.file, span.first.line
+                    );
+                }
                 return Located {
                     node: core_ir::Expression::Ffi(module.clone(), name.clone()),
                     span,
                 };
+            }
+            if debug_corify_target_id() == Some(n) {
+                eprintln!(
+                    "URWEB_DEBUG_CORIFY_NAMED explicit_id={n} resolved=missing {}:{}",
+                    span.file, span.first.line
+                );
             }
             core_ir::Expression::Named(n)
         }
@@ -1161,6 +1330,13 @@ fn corify_exp(
             match sub_st.lookup_val_by_name_opt(&x) {
                 Some(CoreVal::Normal(n)) => core_ir::Expression::Named(n),
                 Some(CoreVal::Ffi(m_name, t)) => {
+                    if m_name == "Basis" && matches!(x.as_str(), "subform" | "subforms") {
+                        return Located {
+                            node: core_ir::Expression::Ffi(m_name, x),
+                            span,
+                        };
+                    }
+
                     // Check if it's a transaction wrapper
                     match &t.node {
                         core_ir::Constructor::App(f, dom) if matches!(&f.node, core_ir::Constructor::Ffi(bm, bt) if bm == "Basis" && bt == "transaction") =>
@@ -1494,6 +1670,14 @@ fn corify_decl(
     settings: &mut Settings,
 ) -> Vec<core_ir::LocatedDeclaration> {
     let span = d.span.clone();
+    if debug_corify_progress_enabled_for_file(span.file.as_str()) {
+        eprintln!(
+            "corify decl progress file={} line={} decl={}",
+            span.file,
+            span.first.line,
+            explicit_decl_progress_label(&d.node),
+        );
+    }
 
     match d.node {
         // DCon
@@ -2967,6 +3151,26 @@ fn is_xml_html(
     }
 }
 
+fn reserve_value_ids_in_decls(
+    declarations: &[expl::LocatedDeclaration],
+    st: &mut St,
+    cfx: &mut CorifyCx<'_>,
+) {
+    for declaration in declarations {
+        match &declaration.node {
+            expl::Declaration::Val(_, n, _, _) => {
+                st.reserve_val_id(*n, cfx);
+            }
+            expl::Declaration::ValRec(bindings) => {
+                for (_, n, _, _) in bindings {
+                    st.reserve_val_id(*n, cfx);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // corify_str
 // ---------------------------------------------------------------------------
@@ -2983,13 +3187,13 @@ fn corify_str(
     match str.node {
         expl::Structure::Const(ds) => {
             st.enter(mods.to_vec());
+            reserve_value_ids_in_decls(&ds, st, cfx);
             let mut out_ds: Vec<core_ir::LocatedDeclaration> = Vec::new();
             for d in ds {
                 let new_ds = corify_decl(mods, d, st, cfx, settings);
                 out_ds.extend(new_ds);
             }
-            let inner_flat = st.leave(cfx, &str_span);
-            let inner_st = St::dummy(st.basis, inner_flat);
+            let inner_st = st.leave(cfx, &str_span);
             (out_ds, inner_st)
         }
         expl::Structure::Var(n) => {
@@ -3085,9 +3289,12 @@ fn corify_str(
 
             let (ds1, inner_prime) = corify_str(mods, *str2, st, cfx, settings);
 
-            // Bind the argument
-            st.bind_str(&xa, na, &inner_prime, cfx, &str_span);
-            let (ds2, inner) = corify_str(mods, body, st, cfx, settings);
+            // Mirror the SML corify: extend the environment only while corifying
+            // the functor body, rather than leaking the formal binding into the
+            // caller's outer flattening.
+            let mut body_st = st.clone();
+            body_st.bind_str(&xa, na, &inner_prime, cfx, &str_span);
+            let (ds2, inner) = corify_str(mods, body, &mut body_st, cfx, settings);
 
             // Bind the argument in inner too
             // (in SML: inner = St.bindStr inner xa na inner')

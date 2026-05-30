@@ -1,177 +1,688 @@
-cjrize nested abs in valrec fun body: doBatch
-ERROR ur: compiler_job_diagnostic kind="error" compilation_id=044c3bed-38d8-456c-be25-ef4c5000966f compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=230 catalog_message=Anonymous function remains at code generation
-[044c3bed-38d8-456c-be25-ef4c5000966f]
--- ERROR ----------- /Users/jacksmith/prog/urweb/lib/ur/top.ur
+ WARN ur: compiler_job_diagnostic kind="warning" compilation_id=395a373d-21a6-43cf-8078-61acfed4af51 compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=319 catalog_message=This construct (write effect (EWrite)) cannot run on the client as compiled JavaScript — keep database, RPC, or server-only effects on the server.
+[395a373d-21a6-43cf-8078-61acfed4af51]
+-- WARNING --------- /Users/jacksmith/prog/urweb/demo/batch.ur
 
-Anonymous function remains at code generation
+This construct (write effect (EWrite)) cannot run on the client as compiled JavaScript — keep database, RPC, or server-only effects on the server.
 
-    --> /Users/jacksmith/prog/urweb/lib/ur/top.ur:156:11-156:68
+    --> /Users/jacksmith/prog/urweb/demo/batch.ur:21:0-39:0
 
 
-ERROR ur: compiler_job_diagnostic kind="error" compilation_id=044c3bed-38d8-456c-be25-ef4c5000966f compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=230 catalog_message=Anonymous function remains at code generation
-[044c3bed-38d8-456c-be25-ef4c5000966f]
--- ERROR ----------- /Users/jacksmith/prog/urweb/lib/ur/top.ur
+ WARN ur: compiler_job_diagnostic kind="warning" compilation_id=395a373d-21a6-43cf-8078-61acfed4af51 compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=316 catalog_message=Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/listEdit.ur:18:8-18:0 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+[395a373d-21a6-43cf-8078-61acfed4af51]
+-- WARNING -------- /Users/jacksmith/prog/urweb/demo/listEdit.ur
 
-Anonymous function remains at code generation
+Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/listEdit.ur:18:8-18:0 is not mapped for client JavaScript (needs `jsFunc` in the project file).
 
-    --> /Users/jacksmith/prog/urweb/lib/ur/top.ur:156:46-156:56
+    --> /Users/jacksmith/prog/urweb/demo/listEdit.ur:18:8-18:0
 
 
-ERROR ur: compiler_job_diagnostic kind="error" compilation_id=044c3bed-38d8-456c-be25-ef4c5000966f compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=230 catalog_message=Anonymous function remains at code generation
-[044c3bed-38d8-456c-be25-ef4c5000966f]
--- ERROR -------- /Users/jacksmith/prog/urweb/demo/batchFun.ur
+ WARN ur: compiler_job_diagnostic kind="warning" compilation_id=395a373d-21a6-43cf-8078-61acfed4af51 compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=316 catalog_message=Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/listEdit.ur:18:8-18:0 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+[395a373d-21a6-43cf-8078-61acfed4af51]
+-- WARNING -------- /Users/jacksmith/prog/urweb/demo/listEdit.ur
 
-Anonymous function remains at code generation
+Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/listEdit.ur:18:8-18:0 is not mapped for client JavaScript (needs `jsFunc` in the project file).
 
-    --> /Users/jacksmith/prog/urweb/demo/batchFun.ur:11:51-11:67
+    --> /Users/jacksmith/prog/urweb/demo/listEdit.ur:18:8-18:0
 
 
-ERROR ur: compiler_job_diagnostic kind="error" compilation_id=044c3bed-38d8-456c-be25-ef4c5000966f compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=230 catalog_message=Anonymous function remains at code generation
-[044c3bed-38d8-456c-be25-ef4c5000966f]
--- ERROR -------- /Users/jacksmith/prog/urweb/demo/batchFun.ur
+ WARN ur: compiler_job_diagnostic kind="warning" compilation_id=395a373d-21a6-43cf-8078-61acfed4af51 compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=316 catalog_message=Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/listEdit.ur:19:32-19:0 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+[395a373d-21a6-43cf-8078-61acfed4af51]
+-- WARNING -------- /Users/jacksmith/prog/urweb/demo/listEdit.ur
 
-Anonymous function remains at code generation
+Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/listEdit.ur:19:32-19:0 is not mapped for client JavaScript (needs `jsFunc` in the project file).
 
-    --> /Users/jacksmith/prog/urweb/demo/batchFun.ur:19:17-19:57
+    --> /Users/jacksmith/prog/urweb/demo/listEdit.ur:19:32-19:0
 
 
-ERROR ur: compiler_job_diagnostic kind="error" compilation_id=044c3bed-38d8-456c-be25-ef4c5000966f compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=230 catalog_message=Anonymous function remains at code generation
-[044c3bed-38d8-456c-be25-ef4c5000966f]
--- ERROR ----------- /Users/jacksmith/prog/urweb/lib/ur/top.ur
+ WARN ur: compiler_job_diagnostic kind="warning" compilation_id=395a373d-21a6-43cf-8078-61acfed4af51 compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=316 catalog_message=Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/listEdit.ur:19:32-19:0 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+[395a373d-21a6-43cf-8078-61acfed4af51]
+-- WARNING -------- /Users/jacksmith/prog/urweb/demo/listEdit.ur
 
-Anonymous function remains at code generation
+Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/listEdit.ur:19:32-19:0 is not mapped for client JavaScript (needs `jsFunc` in the project file).
 
-    --> /Users/jacksmith/prog/urweb/lib/ur/top.ur:0:0-0:0
+    --> /Users/jacksmith/prog/urweb/demo/listEdit.ur:19:32-19:0
 
 
-ERROR ur: compiler_job_diagnostic kind="error" compilation_id=044c3bed-38d8-456c-be25-ef4c5000966f compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=230 catalog_message=Anonymous function remains at code generation
-[044c3bed-38d8-456c-be25-ef4c5000966f]
--- ERROR -------- /Users/jacksmith/prog/urweb/demo/batchFun.ur
+ WARN ur: compiler_job_diagnostic kind="warning" compilation_id=395a373d-21a6-43cf-8078-61acfed4af51 compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=319 catalog_message=This construct (write effect (EWrite)) cannot run on the client as compiled JavaScript — keep database, RPC, or server-only effects on the server.
+[395a373d-21a6-43cf-8078-61acfed4af51]
+-- WARNING -------- /Users/jacksmith/prog/urweb/demo/buffer.ur
 
-Anonymous function remains at code generation
+This construct (write effect (EWrite)) cannot run on the client as compiled JavaScript — keep database, RPC, or server-only effects on the server.
 
-    --> /Users/jacksmith/prog/urweb/demo/batchFun.ur:18:14-18:55
+    --> /Users/jacksmith/prog/urweb/demo/buffer.ur:10:0-17:0
 
 
-ERROR ur: compiler_job_diagnostic kind="error" compilation_id=044c3bed-38d8-456c-be25-ef4c5000966f compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=230 catalog_message=Anonymous function remains at code generation
-[044c3bed-38d8-456c-be25-ef4c5000966f]
--- ERROR -------- /Users/jacksmith/prog/urweb/demo/batchFun.ur
+ WARN ur: compiler_job_diagnostic kind="warning" compilation_id=395a373d-21a6-43cf-8078-61acfed4af51 compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=319 catalog_message=This construct (write effect (EWrite)) cannot run on the client as compiled JavaScript — keep database, RPC, or server-only effects on the server.
+[395a373d-21a6-43cf-8078-61acfed4af51]
+-- WARNING -------- /Users/jacksmith/prog/urweb/demo/batchFun.ur
 
-Anonymous function remains at code generation
+This construct (write effect (EWrite)) cannot run on the client as compiled JavaScript — keep database, RPC, or server-only effects on the server.
 
-    --> /Users/jacksmith/prog/urweb/demo/batchFun.ur:11:51-11:67
+    --> /Users/jacksmith/prog/urweb/demo/batchFun.ur:65:4-95:0
 
 
-ERROR ur: compiler_job_diagnostic kind="error" compilation_id=044c3bed-38d8-456c-be25-ef4c5000966f compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=230 catalog_message=Anonymous function remains at code generation
-[044c3bed-38d8-456c-be25-ef4c5000966f]
--- ERROR -------- /Users/jacksmith/prog/urweb/demo/batchFun.ur
+ WARN ur: compiler_job_diagnostic kind="warning" compilation_id=395a373d-21a6-43cf-8078-61acfed4af51 compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=316 catalog_message=Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/buffer.ur:13:52-13:57 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+[395a373d-21a6-43cf-8078-61acfed4af51]
+-- WARNING -------- /Users/jacksmith/prog/urweb/demo/buffer.ur
 
-Anonymous function remains at code generation
+Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/buffer.ur:13:52-13:57 is not mapped for client JavaScript (needs `jsFunc` in the project file).
 
-    --> /Users/jacksmith/prog/urweb/demo/batchFun.ur:19:17-19:57
+    --> /Users/jacksmith/prog/urweb/demo/buffer.ur:13:52-13:57
 
 
-ERROR ur: compiler_job_diagnostic kind="error" compilation_id=044c3bed-38d8-456c-be25-ef4c5000966f compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=230 catalog_message=Anonymous function remains at code generation
-[044c3bed-38d8-456c-be25-ef4c5000966f]
--- ERROR ----------- /Users/jacksmith/prog/urweb/lib/ur/top.ur
+ WARN ur: compiler_job_diagnostic kind="warning" compilation_id=395a373d-21a6-43cf-8078-61acfed4af51 compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=316 catalog_message=Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/buffer.ur:13:52-13:57 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+[395a373d-21a6-43cf-8078-61acfed4af51]
+-- WARNING -------- /Users/jacksmith/prog/urweb/demo/buffer.ur
 
-Anonymous function remains at code generation
+Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/buffer.ur:13:52-13:57 is not mapped for client JavaScript (needs `jsFunc` in the project file).
 
-    --> /Users/jacksmith/prog/urweb/lib/ur/top.ur:0:0-0:0
+    --> /Users/jacksmith/prog/urweb/demo/buffer.ur:13:52-13:57
 
 
-ERROR ur: compiler_job_diagnostic kind="error" compilation_id=044c3bed-38d8-456c-be25-ef4c5000966f compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=230 catalog_message=Anonymous function remains at code generation
-[044c3bed-38d8-456c-be25-ef4c5000966f]
--- ERROR -------- /Users/jacksmith/prog/urweb/demo/batchFun.ur
+ WARN ur: compiler_job_diagnostic kind="warning" compilation_id=395a373d-21a6-43cf-8078-61acfed4af51 compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=316 catalog_message=Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batch.ur:35:51-38:22 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+[395a373d-21a6-43cf-8078-61acfed4af51]
+-- WARNING --------- /Users/jacksmith/prog/urweb/demo/batch.ur
 
-Anonymous function remains at code generation
+Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batch.ur:35:51-38:22 is not mapped for client JavaScript (needs `jsFunc` in the project file).
 
-    --> /Users/jacksmith/prog/urweb/demo/batchFun.ur:18:14-18:55
+    --> /Users/jacksmith/prog/urweb/demo/batch.ur:35:51-38:22
 
 
-ERROR ur: compiler_job_diagnostic kind="error" compilation_id=044c3bed-38d8-456c-be25-ef4c5000966f compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=230 catalog_message=Anonymous function remains at code generation
-[044c3bed-38d8-456c-be25-ef4c5000966f]
--- ERROR ----------- /Users/jacksmith/prog/urweb/lib/ur/top.ur
+ WARN ur: compiler_job_diagnostic kind="warning" compilation_id=395a373d-21a6-43cf-8078-61acfed4af51 compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=316 catalog_message=Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batch.ur:35:51-38:22 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+[395a373d-21a6-43cf-8078-61acfed4af51]
+-- WARNING --------- /Users/jacksmith/prog/urweb/demo/batch.ur
 
-Anonymous function remains at code generation
+Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batch.ur:35:51-38:22 is not mapped for client JavaScript (needs `jsFunc` in the project file).
 
-    --> /Users/jacksmith/prog/urweb/lib/ur/top.ur:156:46-156:56
+    --> /Users/jacksmith/prog/urweb/demo/batch.ur:35:51-38:22
 
 
-ERROR ur: compiler_job_diagnostic kind="error" compilation_id=044c3bed-38d8-456c-be25-ef4c5000966f compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=230 catalog_message=Anonymous function remains at code generation
-[044c3bed-38d8-456c-be25-ef4c5000966f]
--- ERROR -------- /Users/jacksmith/prog/urweb/demo/batchFun.ur
+ WARN ur: compiler_job_diagnostic kind="warning" compilation_id=395a373d-21a6-43cf-8078-61acfed4af51 compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=316 catalog_message=Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batch.ur:36:10-36:0 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+[395a373d-21a6-43cf-8078-61acfed4af51]
+-- WARNING --------- /Users/jacksmith/prog/urweb/demo/batch.ur
 
-Anonymous function remains at code generation
+Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batch.ur:36:10-36:0 is not mapped for client JavaScript (needs `jsFunc` in the project file).
 
-    --> /Users/jacksmith/prog/urweb/demo/batchFun.ur:11:51-11:67
+    --> /Users/jacksmith/prog/urweb/demo/batch.ur:36:10-36:0
 
 
-ERROR ur: compiler_job_diagnostic kind="error" compilation_id=044c3bed-38d8-456c-be25-ef4c5000966f compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=230 catalog_message=Anonymous function remains at code generation
-[044c3bed-38d8-456c-be25-ef4c5000966f]
--- ERROR -------- /Users/jacksmith/prog/urweb/demo/batchFun.ur
+ WARN ur: compiler_job_diagnostic kind="warning" compilation_id=395a373d-21a6-43cf-8078-61acfed4af51 compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=316 catalog_message=Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batch.ur:36:10-36:0 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+[395a373d-21a6-43cf-8078-61acfed4af51]
+-- WARNING --------- /Users/jacksmith/prog/urweb/demo/batch.ur
 
-Anonymous function remains at code generation
+Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batch.ur:36:10-36:0 is not mapped for client JavaScript (needs `jsFunc` in the project file).
 
-    --> /Users/jacksmith/prog/urweb/demo/batchFun.ur:19:17-19:57
+    --> /Users/jacksmith/prog/urweb/demo/batch.ur:36:10-36:0
 
 
-ERROR ur: compiler_job_diagnostic kind="error" compilation_id=044c3bed-38d8-456c-be25-ef4c5000966f compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=230 catalog_message=Anonymous function remains at code generation
-[044c3bed-38d8-456c-be25-ef4c5000966f]
--- ERROR ----------- /Users/jacksmith/prog/urweb/lib/ur/top.ur
+ WARN ur: compiler_job_diagnostic kind="warning" compilation_id=395a373d-21a6-43cf-8078-61acfed4af51 compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=316 catalog_message=Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batch.ur:36:15-36:26 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+[395a373d-21a6-43cf-8078-61acfed4af51]
+-- WARNING --------- /Users/jacksmith/prog/urweb/demo/batch.ur
 
-Anonymous function remains at code generation
+Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batch.ur:36:15-36:26 is not mapped for client JavaScript (needs `jsFunc` in the project file).
 
-    --> /Users/jacksmith/prog/urweb/lib/ur/top.ur:0:0-0:0
+    --> /Users/jacksmith/prog/urweb/demo/batch.ur:36:15-36:26
 
 
-ERROR ur: compiler_job_diagnostic kind="error" compilation_id=044c3bed-38d8-456c-be25-ef4c5000966f compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=230 catalog_message=Anonymous function remains at code generation
-[044c3bed-38d8-456c-be25-ef4c5000966f]
--- ERROR -------- /Users/jacksmith/prog/urweb/demo/batchFun.ur
+ WARN ur: compiler_job_diagnostic kind="warning" compilation_id=395a373d-21a6-43cf-8078-61acfed4af51 compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=316 catalog_message=Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batch.ur:36:15-36:26 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+[395a373d-21a6-43cf-8078-61acfed4af51]
+-- WARNING --------- /Users/jacksmith/prog/urweb/demo/batch.ur
 
-Anonymous function remains at code generation
+Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batch.ur:36:15-36:26 is not mapped for client JavaScript (needs `jsFunc` in the project file).
 
-    --> /Users/jacksmith/prog/urweb/demo/batchFun.ur:18:14-18:55
+    --> /Users/jacksmith/prog/urweb/demo/batch.ur:36:15-36:26
 
 
-ERROR ur: compiler_job_diagnostic kind="error" compilation_id=044c3bed-38d8-456c-be25-ef4c5000966f compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=230 catalog_message=Anonymous function remains at code generation
-[044c3bed-38d8-456c-be25-ef4c5000966f]
--- ERROR -------- /Users/jacksmith/prog/urweb/demo/batchFun.ur
+ WARN ur: compiler_job_diagnostic kind="warning" compilation_id=395a373d-21a6-43cf-8078-61acfed4af51 compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=316 catalog_message=Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batch.ur:36:27-36:37 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+[395a373d-21a6-43cf-8078-61acfed4af51]
+-- WARNING --------- /Users/jacksmith/prog/urweb/demo/batch.ur
 
-Anonymous function remains at code generation
+Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batch.ur:36:27-36:37 is not mapped for client JavaScript (needs `jsFunc` in the project file).
 
-    --> /Users/jacksmith/prog/urweb/demo/batchFun.ur:11:51-11:67
+    --> /Users/jacksmith/prog/urweb/demo/batch.ur:36:27-36:37
 
 
-ERROR ur: compiler_job_diagnostic kind="error" compilation_id=044c3bed-38d8-456c-be25-ef4c5000966f compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=230 catalog_message=Anonymous function remains at code generation
-[044c3bed-38d8-456c-be25-ef4c5000966f]
--- ERROR -------- /Users/jacksmith/prog/urweb/demo/batchFun.ur
+ WARN ur: compiler_job_diagnostic kind="warning" compilation_id=395a373d-21a6-43cf-8078-61acfed4af51 compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=316 catalog_message=Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batch.ur:36:27-36:37 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+[395a373d-21a6-43cf-8078-61acfed4af51]
+-- WARNING --------- /Users/jacksmith/prog/urweb/demo/batch.ur
 
-Anonymous function remains at code generation
+Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batch.ur:36:27-36:37 is not mapped for client JavaScript (needs `jsFunc` in the project file).
 
-    --> /Users/jacksmith/prog/urweb/demo/batchFun.ur:19:17-19:57
+    --> /Users/jacksmith/prog/urweb/demo/batch.ur:36:27-36:37
 
 
-ERROR ur: compiler_job_diagnostic kind="error" compilation_id=044c3bed-38d8-456c-be25-ef4c5000966f compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=230 catalog_message=Anonymous function remains at code generation
-[044c3bed-38d8-456c-be25-ef4c5000966f]
--- ERROR ----------- /Users/jacksmith/prog/urweb/lib/ur/top.ur
+ WARN ur: compiler_job_diagnostic kind="warning" compilation_id=395a373d-21a6-43cf-8078-61acfed4af51 compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=316 catalog_message=Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batch.ur:27:16-31:0 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+[395a373d-21a6-43cf-8078-61acfed4af51]
+-- WARNING --------- /Users/jacksmith/prog/urweb/demo/batch.ur
 
-Anonymous function remains at code generation
+Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batch.ur:27:16-31:0 is not mapped for client JavaScript (needs `jsFunc` in the project file).
 
-    --> /Users/jacksmith/prog/urweb/lib/ur/top.ur:0:0-0:0
+    --> /Users/jacksmith/prog/urweb/demo/batch.ur:27:16-31:0
 
 
-ERROR ur: compiler_job_diagnostic kind="error" compilation_id=044c3bed-38d8-456c-be25-ef4c5000966f compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=230 catalog_message=Anonymous function remains at code generation
-[044c3bed-38d8-456c-be25-ef4c5000966f]
--- ERROR -------- /Users/jacksmith/prog/urweb/demo/batchFun.ur
+ WARN ur: compiler_job_diagnostic kind="warning" compilation_id=395a373d-21a6-43cf-8078-61acfed4af51 compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=316 catalog_message=Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batch.ur:27:16-31:0 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+[395a373d-21a6-43cf-8078-61acfed4af51]
+-- WARNING --------- /Users/jacksmith/prog/urweb/demo/batch.ur
 
-Anonymous function remains at code generation
+Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batch.ur:27:16-31:0 is not mapped for client JavaScript (needs `jsFunc` in the project file).
 
-    --> /Users/jacksmith/prog/urweb/demo/batchFun.ur:18:14-18:55
+    --> /Users/jacksmith/prog/urweb/demo/batch.ur:27:16-31:0
 
 
--- COMPILE STOPPED -------------------------------------------
+ WARN ur: compiler_job_diagnostic kind="warning" compilation_id=395a373d-21a6-43cf-8078-61acfed4af51 compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=316 catalog_message=Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batch.ur:27:20-27:35 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+[395a373d-21a6-43cf-8078-61acfed4af51]
+-- WARNING --------- /Users/jacksmith/prog/urweb/demo/batch.ur
 
-I stopped after C back-end (CJR) because there were 19 hard error(s) above this line.
+Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batch.ur:27:20-27:35 is not mapped for client JavaScript (needs `jsFunc` in the project file).
 
-Each one uses the same layout as the Ur/Web compiler. Fix the first error first — later lines are often knock-on effects.
+    --> /Users/jacksmith/prog/urweb/demo/batch.ur:27:20-27:35
+
+
+ WARN ur: compiler_job_diagnostic kind="warning" compilation_id=395a373d-21a6-43cf-8078-61acfed4af51 compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=316 catalog_message=Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batch.ur:27:20-27:35 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+[395a373d-21a6-43cf-8078-61acfed4af51]
+-- WARNING --------- /Users/jacksmith/prog/urweb/demo/batch.ur
+
+Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batch.ur:27:20-27:35 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+
+    --> /Users/jacksmith/prog/urweb/demo/batch.ur:27:20-27:35
+
+
+ WARN ur: compiler_job_diagnostic kind="warning" compilation_id=395a373d-21a6-43cf-8078-61acfed4af51 compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=316 catalog_message=Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batch.ur:27:36-27:50 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+[395a373d-21a6-43cf-8078-61acfed4af51]
+-- WARNING --------- /Users/jacksmith/prog/urweb/demo/batch.ur
+
+Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batch.ur:27:36-27:50 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+
+    --> /Users/jacksmith/prog/urweb/demo/batch.ur:27:36-27:50
+
+
+ WARN ur: compiler_job_diagnostic kind="warning" compilation_id=395a373d-21a6-43cf-8078-61acfed4af51 compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=316 catalog_message=Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batch.ur:27:36-27:50 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+[395a373d-21a6-43cf-8078-61acfed4af51]
+-- WARNING --------- /Users/jacksmith/prog/urweb/demo/batch.ur
+
+Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batch.ur:27:36-27:50 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+
+    --> /Users/jacksmith/prog/urweb/demo/batch.ur:27:36-27:50
+
+
+ WARN ur: compiler_job_diagnostic kind="warning" compilation_id=395a373d-21a6-43cf-8078-61acfed4af51 compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=316 catalog_message=Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batch.ur:28:56-29:0 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+[395a373d-21a6-43cf-8078-61acfed4af51]
+-- WARNING --------- /Users/jacksmith/prog/urweb/demo/batch.ur
+
+Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batch.ur:28:56-29:0 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+
+    --> /Users/jacksmith/prog/urweb/demo/batch.ur:28:56-29:0
+
+
+ WARN ur: compiler_job_diagnostic kind="warning" compilation_id=395a373d-21a6-43cf-8078-61acfed4af51 compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=316 catalog_message=Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batch.ur:28:56-29:0 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+[395a373d-21a6-43cf-8078-61acfed4af51]
+-- WARNING --------- /Users/jacksmith/prog/urweb/demo/batch.ur
+
+Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batch.ur:28:56-29:0 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+
+    --> /Users/jacksmith/prog/urweb/demo/batch.ur:28:56-29:0
+
+
+ WARN ur: compiler_job_diagnostic kind="warning" compilation_id=395a373d-21a6-43cf-8078-61acfed4af51 compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=316 catalog_message=Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batch.ur:28:65-28:0 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+[395a373d-21a6-43cf-8078-61acfed4af51]
+-- WARNING --------- /Users/jacksmith/prog/urweb/demo/batch.ur
+
+Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batch.ur:28:65-28:0 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+
+    --> /Users/jacksmith/prog/urweb/demo/batch.ur:28:65-28:0
+
+
+ WARN ur: compiler_job_diagnostic kind="warning" compilation_id=395a373d-21a6-43cf-8078-61acfed4af51 compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=316 catalog_message=Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batch.ur:28:65-28:0 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+[395a373d-21a6-43cf-8078-61acfed4af51]
+-- WARNING --------- /Users/jacksmith/prog/urweb/demo/batch.ur
+
+Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batch.ur:28:65-28:0 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+
+    --> /Users/jacksmith/prog/urweb/demo/batch.ur:28:65-28:0
+
+
+ WARN ur: compiler_job_diagnostic kind="warning" compilation_id=395a373d-21a6-43cf-8078-61acfed4af51 compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=316 catalog_message=Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batch.ur:35:51-38:22 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+[395a373d-21a6-43cf-8078-61acfed4af51]
+-- WARNING --------- /Users/jacksmith/prog/urweb/demo/batch.ur
+
+Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batch.ur:35:51-38:22 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+
+    --> /Users/jacksmith/prog/urweb/demo/batch.ur:35:51-38:22
+
+
+ WARN ur: compiler_job_diagnostic kind="warning" compilation_id=395a373d-21a6-43cf-8078-61acfed4af51 compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=316 catalog_message=Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batch.ur:35:51-38:22 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+[395a373d-21a6-43cf-8078-61acfed4af51]
+-- WARNING --------- /Users/jacksmith/prog/urweb/demo/batch.ur
+
+Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batch.ur:35:51-38:22 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+
+    --> /Users/jacksmith/prog/urweb/demo/batch.ur:35:51-38:22
+
+
+ WARN ur: compiler_job_diagnostic kind="warning" compilation_id=395a373d-21a6-43cf-8078-61acfed4af51 compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=316 catalog_message=Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batch.ur:36:10-36:0 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+[395a373d-21a6-43cf-8078-61acfed4af51]
+-- WARNING --------- /Users/jacksmith/prog/urweb/demo/batch.ur
+
+Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batch.ur:36:10-36:0 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+
+    --> /Users/jacksmith/prog/urweb/demo/batch.ur:36:10-36:0
+
+
+ WARN ur: compiler_job_diagnostic kind="warning" compilation_id=395a373d-21a6-43cf-8078-61acfed4af51 compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=316 catalog_message=Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batch.ur:36:10-36:0 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+[395a373d-21a6-43cf-8078-61acfed4af51]
+-- WARNING --------- /Users/jacksmith/prog/urweb/demo/batch.ur
+
+Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batch.ur:36:10-36:0 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+
+    --> /Users/jacksmith/prog/urweb/demo/batch.ur:36:10-36:0
+
+
+ WARN ur: compiler_job_diagnostic kind="warning" compilation_id=395a373d-21a6-43cf-8078-61acfed4af51 compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=316 catalog_message=Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batch.ur:36:15-36:26 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+[395a373d-21a6-43cf-8078-61acfed4af51]
+-- WARNING --------- /Users/jacksmith/prog/urweb/demo/batch.ur
+
+Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batch.ur:36:15-36:26 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+
+    --> /Users/jacksmith/prog/urweb/demo/batch.ur:36:15-36:26
+
+
+ WARN ur: compiler_job_diagnostic kind="warning" compilation_id=395a373d-21a6-43cf-8078-61acfed4af51 compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=316 catalog_message=Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batch.ur:36:15-36:26 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+[395a373d-21a6-43cf-8078-61acfed4af51]
+-- WARNING --------- /Users/jacksmith/prog/urweb/demo/batch.ur
+
+Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batch.ur:36:15-36:26 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+
+    --> /Users/jacksmith/prog/urweb/demo/batch.ur:36:15-36:26
+
+
+ WARN ur: compiler_job_diagnostic kind="warning" compilation_id=395a373d-21a6-43cf-8078-61acfed4af51 compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=316 catalog_message=Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batch.ur:36:27-36:37 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+[395a373d-21a6-43cf-8078-61acfed4af51]
+-- WARNING --------- /Users/jacksmith/prog/urweb/demo/batch.ur
+
+Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batch.ur:36:27-36:37 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+
+    --> /Users/jacksmith/prog/urweb/demo/batch.ur:36:27-36:37
+
+
+ WARN ur: compiler_job_diagnostic kind="warning" compilation_id=395a373d-21a6-43cf-8078-61acfed4af51 compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=316 catalog_message=Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batch.ur:36:27-36:37 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+[395a373d-21a6-43cf-8078-61acfed4af51]
+-- WARNING --------- /Users/jacksmith/prog/urweb/demo/batch.ur
+
+Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batch.ur:36:27-36:37 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+
+    --> /Users/jacksmith/prog/urweb/demo/batch.ur:36:27-36:37
+
+
+ WARN ur: compiler_job_diagnostic kind="warning" compilation_id=395a373d-21a6-43cf-8078-61acfed4af51 compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=316 catalog_message=Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batchFun.ur:85:55-94:26 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+[395a373d-21a6-43cf-8078-61acfed4af51]
+-- WARNING -------- /Users/jacksmith/prog/urweb/demo/batchFun.ur
+
+Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batchFun.ur:85:55-94:26 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+
+    --> /Users/jacksmith/prog/urweb/demo/batchFun.ur:85:55-94:26
+
+
+ WARN ur: compiler_job_diagnostic kind="warning" compilation_id=395a373d-21a6-43cf-8078-61acfed4af51 compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=316 catalog_message=Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batchFun.ur:85:55-94:26 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+[395a373d-21a6-43cf-8078-61acfed4af51]
+-- WARNING -------- /Users/jacksmith/prog/urweb/demo/batchFun.ur
+
+Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batchFun.ur:85:55-94:26 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+
+    --> /Users/jacksmith/prog/urweb/demo/batchFun.ur:85:55-94:26
+
+
+ WARN ur: compiler_job_diagnostic kind="warning" compilation_id=395a373d-21a6-43cf-8078-61acfed4af51 compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=316 catalog_message=Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batchFun.ur:86:14-92:0 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+[395a373d-21a6-43cf-8078-61acfed4af51]
+-- WARNING -------- /Users/jacksmith/prog/urweb/demo/batchFun.ur
+
+Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batchFun.ur:86:14-92:0 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+
+    --> /Users/jacksmith/prog/urweb/demo/batchFun.ur:86:14-92:0
+
+
+ WARN ur: compiler_job_diagnostic kind="warning" compilation_id=395a373d-21a6-43cf-8078-61acfed4af51 compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=316 catalog_message=Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batchFun.ur:86:14-92:0 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+[395a373d-21a6-43cf-8078-61acfed4af51]
+-- WARNING -------- /Users/jacksmith/prog/urweb/demo/batchFun.ur
+
+Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batchFun.ur:86:14-92:0 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+
+    --> /Users/jacksmith/prog/urweb/demo/batchFun.ur:86:14-92:0
+
+
+ WARN ur: compiler_job_diagnostic kind="warning" compilation_id=395a373d-21a6-43cf-8078-61acfed4af51 compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=316 catalog_message=Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batchFun.ur:87:16-87:0 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+[395a373d-21a6-43cf-8078-61acfed4af51]
+-- WARNING -------- /Users/jacksmith/prog/urweb/demo/batchFun.ur
+
+Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batchFun.ur:87:16-87:0 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+
+    --> /Users/jacksmith/prog/urweb/demo/batchFun.ur:87:16-87:0
+
+
+ WARN ur: compiler_job_diagnostic kind="warning" compilation_id=395a373d-21a6-43cf-8078-61acfed4af51 compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=316 catalog_message=Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batchFun.ur:87:16-87:0 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+[395a373d-21a6-43cf-8078-61acfed4af51]
+-- WARNING -------- /Users/jacksmith/prog/urweb/demo/batchFun.ur
+
+Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batchFun.ur:87:16-87:0 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+
+    --> /Users/jacksmith/prog/urweb/demo/batchFun.ur:87:16-87:0
+
+
+ WARN ur: compiler_job_diagnostic kind="warning" compilation_id=395a373d-21a6-43cf-8078-61acfed4af51 compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=316 catalog_message=Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batchFun.ur:90:22-90:51 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+[395a373d-21a6-43cf-8078-61acfed4af51]
+-- WARNING -------- /Users/jacksmith/prog/urweb/demo/batchFun.ur
+
+Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batchFun.ur:90:22-90:51 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+
+    --> /Users/jacksmith/prog/urweb/demo/batchFun.ur:90:22-90:51
+
+
+ WARN ur: compiler_job_diagnostic kind="warning" compilation_id=395a373d-21a6-43cf-8078-61acfed4af51 compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=316 catalog_message=Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batchFun.ur:90:22-90:51 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+[395a373d-21a6-43cf-8078-61acfed4af51]
+-- WARNING -------- /Users/jacksmith/prog/urweb/demo/batchFun.ur
+
+Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batchFun.ur:90:22-90:51 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+
+    --> /Users/jacksmith/prog/urweb/demo/batchFun.ur:90:22-90:51
+
+
+ WARN ur: compiler_job_diagnostic kind="warning" compilation_id=395a373d-21a6-43cf-8078-61acfed4af51 compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=316 catalog_message=Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batchFun.ur:90:22-90:51 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+[395a373d-21a6-43cf-8078-61acfed4af51]
+-- WARNING -------- /Users/jacksmith/prog/urweb/demo/batchFun.ur
+
+Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batchFun.ur:90:22-90:51 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+
+    --> /Users/jacksmith/prog/urweb/demo/batchFun.ur:90:22-90:51
+
+
+ WARN ur: compiler_job_diagnostic kind="warning" compilation_id=395a373d-21a6-43cf-8078-61acfed4af51 compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=316 catalog_message=Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batchFun.ur:90:22-90:51 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+[395a373d-21a6-43cf-8078-61acfed4af51]
+-- WARNING -------- /Users/jacksmith/prog/urweb/demo/batchFun.ur
+
+Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batchFun.ur:90:22-90:51 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+
+    --> /Users/jacksmith/prog/urweb/demo/batchFun.ur:90:22-90:51
+
+
+ WARN ur: compiler_job_diagnostic kind="warning" compilation_id=395a373d-21a6-43cf-8078-61acfed4af51 compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=316 catalog_message=Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batchFun.ur:71:20-81:0 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+[395a373d-21a6-43cf-8078-61acfed4af51]
+-- WARNING -------- /Users/jacksmith/prog/urweb/demo/batchFun.ur
+
+Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batchFun.ur:71:20-81:0 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+
+    --> /Users/jacksmith/prog/urweb/demo/batchFun.ur:71:20-81:0
+
+
+ WARN ur: compiler_job_diagnostic kind="warning" compilation_id=395a373d-21a6-43cf-8078-61acfed4af51 compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=316 catalog_message=Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batchFun.ur:71:20-81:0 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+[395a373d-21a6-43cf-8078-61acfed4af51]
+-- WARNING -------- /Users/jacksmith/prog/urweb/demo/batchFun.ur
+
+Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batchFun.ur:71:20-81:0 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+
+    --> /Users/jacksmith/prog/urweb/demo/batchFun.ur:71:20-81:0
+
+
+ WARN ur: compiler_job_diagnostic kind="warning" compilation_id=395a373d-21a6-43cf-8078-61acfed4af51 compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=316 catalog_message=Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batchFun.ur:72:22-72:0 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+[395a373d-21a6-43cf-8078-61acfed4af51]
+-- WARNING -------- /Users/jacksmith/prog/urweb/demo/batchFun.ur
+
+Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batchFun.ur:72:22-72:0 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+
+    --> /Users/jacksmith/prog/urweb/demo/batchFun.ur:72:22-72:0
+
+
+ WARN ur: compiler_job_diagnostic kind="warning" compilation_id=395a373d-21a6-43cf-8078-61acfed4af51 compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=316 catalog_message=Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batchFun.ur:72:22-72:0 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+[395a373d-21a6-43cf-8078-61acfed4af51]
+-- WARNING -------- /Users/jacksmith/prog/urweb/demo/batchFun.ur
+
+Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batchFun.ur:72:22-72:0 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+
+    --> /Users/jacksmith/prog/urweb/demo/batchFun.ur:72:22-72:0
+
+
+ WARN ur: compiler_job_diagnostic kind="warning" compilation_id=395a373d-21a6-43cf-8078-61acfed4af51 compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=316 catalog_message=Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batchFun.ur:75:28-75:58 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+[395a373d-21a6-43cf-8078-61acfed4af51]
+-- WARNING -------- /Users/jacksmith/prog/urweb/demo/batchFun.ur
+
+Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batchFun.ur:75:28-75:58 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+
+    --> /Users/jacksmith/prog/urweb/demo/batchFun.ur:75:28-75:58
+
+
+ WARN ur: compiler_job_diagnostic kind="warning" compilation_id=395a373d-21a6-43cf-8078-61acfed4af51 compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=316 catalog_message=Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batchFun.ur:75:28-75:58 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+[395a373d-21a6-43cf-8078-61acfed4af51]
+-- WARNING -------- /Users/jacksmith/prog/urweb/demo/batchFun.ur
+
+Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batchFun.ur:75:28-75:58 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+
+    --> /Users/jacksmith/prog/urweb/demo/batchFun.ur:75:28-75:58
+
+
+ WARN ur: compiler_job_diagnostic kind="warning" compilation_id=395a373d-21a6-43cf-8078-61acfed4af51 compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=316 catalog_message=Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batchFun.ur:75:28-75:58 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+[395a373d-21a6-43cf-8078-61acfed4af51]
+-- WARNING -------- /Users/jacksmith/prog/urweb/demo/batchFun.ur
+
+Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batchFun.ur:75:28-75:58 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+
+    --> /Users/jacksmith/prog/urweb/demo/batchFun.ur:75:28-75:58
+
+
+ WARN ur: compiler_job_diagnostic kind="warning" compilation_id=395a373d-21a6-43cf-8078-61acfed4af51 compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=316 catalog_message=Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batchFun.ur:75:28-75:58 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+[395a373d-21a6-43cf-8078-61acfed4af51]
+-- WARNING -------- /Users/jacksmith/prog/urweb/demo/batchFun.ur
+
+Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batchFun.ur:75:28-75:58 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+
+    --> /Users/jacksmith/prog/urweb/demo/batchFun.ur:75:28-75:58
+
+
+ WARN ur: compiler_job_diagnostic kind="warning" compilation_id=395a373d-21a6-43cf-8078-61acfed4af51 compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=316 catalog_message=Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batchFun.ur:78:27-78:0 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+[395a373d-21a6-43cf-8078-61acfed4af51]
+-- WARNING -------- /Users/jacksmith/prog/urweb/demo/batchFun.ur
+
+Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batchFun.ur:78:27-78:0 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+
+    --> /Users/jacksmith/prog/urweb/demo/batchFun.ur:78:27-78:0
+
+
+ WARN ur: compiler_job_diagnostic kind="warning" compilation_id=395a373d-21a6-43cf-8078-61acfed4af51 compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=316 catalog_message=Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batchFun.ur:78:27-78:0 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+[395a373d-21a6-43cf-8078-61acfed4af51]
+-- WARNING -------- /Users/jacksmith/prog/urweb/demo/batchFun.ur
+
+Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batchFun.ur:78:27-78:0 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+
+    --> /Users/jacksmith/prog/urweb/demo/batchFun.ur:78:27-78:0
+
+
+ WARN ur: compiler_job_diagnostic kind="warning" compilation_id=395a373d-21a6-43cf-8078-61acfed4af51 compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=316 catalog_message=Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batchFun.ur:78:36-78:93 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+[395a373d-21a6-43cf-8078-61acfed4af51]
+-- WARNING -------- /Users/jacksmith/prog/urweb/demo/batchFun.ur
+
+Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batchFun.ur:78:36-78:93 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+
+    --> /Users/jacksmith/prog/urweb/demo/batchFun.ur:78:36-78:93
+
+
+ WARN ur: compiler_job_diagnostic kind="warning" compilation_id=395a373d-21a6-43cf-8078-61acfed4af51 compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=316 catalog_message=Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batchFun.ur:78:36-78:93 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+[395a373d-21a6-43cf-8078-61acfed4af51]
+-- WARNING -------- /Users/jacksmith/prog/urweb/demo/batchFun.ur
+
+Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batchFun.ur:78:36-78:93 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+
+    --> /Users/jacksmith/prog/urweb/demo/batchFun.ur:78:36-78:93
+
+
+ WARN ur: compiler_job_diagnostic kind="warning" compilation_id=395a373d-21a6-43cf-8078-61acfed4af51 compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=316 catalog_message=Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batchFun.ur:85:55-94:26 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+[395a373d-21a6-43cf-8078-61acfed4af51]
+-- WARNING -------- /Users/jacksmith/prog/urweb/demo/batchFun.ur
+
+Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batchFun.ur:85:55-94:26 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+
+    --> /Users/jacksmith/prog/urweb/demo/batchFun.ur:85:55-94:26
+
+
+ WARN ur: compiler_job_diagnostic kind="warning" compilation_id=395a373d-21a6-43cf-8078-61acfed4af51 compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=316 catalog_message=Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batchFun.ur:85:55-94:26 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+[395a373d-21a6-43cf-8078-61acfed4af51]
+-- WARNING -------- /Users/jacksmith/prog/urweb/demo/batchFun.ur
+
+Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batchFun.ur:85:55-94:26 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+
+    --> /Users/jacksmith/prog/urweb/demo/batchFun.ur:85:55-94:26
+
+
+ WARN ur: compiler_job_diagnostic kind="warning" compilation_id=395a373d-21a6-43cf-8078-61acfed4af51 compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=316 catalog_message=Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batchFun.ur:86:14-92:0 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+[395a373d-21a6-43cf-8078-61acfed4af51]
+-- WARNING -------- /Users/jacksmith/prog/urweb/demo/batchFun.ur
+
+Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batchFun.ur:86:14-92:0 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+
+    --> /Users/jacksmith/prog/urweb/demo/batchFun.ur:86:14-92:0
+
+
+ WARN ur: compiler_job_diagnostic kind="warning" compilation_id=395a373d-21a6-43cf-8078-61acfed4af51 compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=316 catalog_message=Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batchFun.ur:86:14-92:0 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+[395a373d-21a6-43cf-8078-61acfed4af51]
+-- WARNING -------- /Users/jacksmith/prog/urweb/demo/batchFun.ur
+
+Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batchFun.ur:86:14-92:0 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+
+    --> /Users/jacksmith/prog/urweb/demo/batchFun.ur:86:14-92:0
+
+
+ WARN ur: compiler_job_diagnostic kind="warning" compilation_id=395a373d-21a6-43cf-8078-61acfed4af51 compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=316 catalog_message=Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batchFun.ur:87:16-87:0 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+[395a373d-21a6-43cf-8078-61acfed4af51]
+-- WARNING -------- /Users/jacksmith/prog/urweb/demo/batchFun.ur
+
+Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batchFun.ur:87:16-87:0 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+
+    --> /Users/jacksmith/prog/urweb/demo/batchFun.ur:87:16-87:0
+
+
+ WARN ur: compiler_job_diagnostic kind="warning" compilation_id=395a373d-21a6-43cf-8078-61acfed4af51 compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=316 catalog_message=Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batchFun.ur:87:16-87:0 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+[395a373d-21a6-43cf-8078-61acfed4af51]
+-- WARNING -------- /Users/jacksmith/prog/urweb/demo/batchFun.ur
+
+Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batchFun.ur:87:16-87:0 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+
+    --> /Users/jacksmith/prog/urweb/demo/batchFun.ur:87:16-87:0
+
+
+ WARN ur: compiler_job_diagnostic kind="warning" compilation_id=395a373d-21a6-43cf-8078-61acfed4af51 compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=316 catalog_message=Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batchFun.ur:90:22-90:51 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+[395a373d-21a6-43cf-8078-61acfed4af51]
+-- WARNING -------- /Users/jacksmith/prog/urweb/demo/batchFun.ur
+
+Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batchFun.ur:90:22-90:51 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+
+    --> /Users/jacksmith/prog/urweb/demo/batchFun.ur:90:22-90:51
+
+
+ WARN ur: compiler_job_diagnostic kind="warning" compilation_id=395a373d-21a6-43cf-8078-61acfed4af51 compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=316 catalog_message=Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batchFun.ur:90:22-90:51 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+[395a373d-21a6-43cf-8078-61acfed4af51]
+-- WARNING -------- /Users/jacksmith/prog/urweb/demo/batchFun.ur
+
+Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batchFun.ur:90:22-90:51 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+
+    --> /Users/jacksmith/prog/urweb/demo/batchFun.ur:90:22-90:51
+
+
+ WARN ur: compiler_job_diagnostic kind="warning" compilation_id=395a373d-21a6-43cf-8078-61acfed4af51 compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=316 catalog_message=Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batchFun.ur:90:22-90:51 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+[395a373d-21a6-43cf-8078-61acfed4af51]
+-- WARNING -------- /Users/jacksmith/prog/urweb/demo/batchFun.ur
+
+Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batchFun.ur:90:22-90:51 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+
+    --> /Users/jacksmith/prog/urweb/demo/batchFun.ur:90:22-90:51
+
+
+ WARN ur: compiler_job_diagnostic kind="warning" compilation_id=395a373d-21a6-43cf-8078-61acfed4af51 compilation_correlation_diagnostic_id=477 catalog_diagnostic_id=316 catalog_message=Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batchFun.ur:90:22-90:51 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+[395a373d-21a6-43cf-8078-61acfed4af51]
+-- WARNING -------- /Users/jacksmith/prog/urweb/demo/batchFun.ur
+
+Call `Basis.attrOptional` at /Users/jacksmith/prog/urweb/demo/batchFun.ur:90:22-90:51 is not mapped for client JavaScript (needs `jsFunc` in the project file).
+
+    --> /Users/jacksmith/prog/urweb/demo/batchFun.ur:90:22-90:51
+
+
+/Users/jacksmith/prog/urweb/demo/ref.ur:71:153: error: invalid suffix '__uwf_Data' on floating constant
+   71 | uw_Basis_string __uwr_arg0_4 = uw_Basis_mstrcat(ctx, "UPDATE ", ({ struct __uws_11 tmp = {"10::int8"}; tmp; }), " SET uw_Data = ", uw_Basis_unAs(ctx, 0.__uwf_Data), " WHERE uw_Ref_IR_t", NULL)(ctx, uw_Basis_mstrcat(ctx, "(T_T.uw_id = ", uw_Basis_sqlifyInt(ctx, ({
+      |                                                                                                                                                         ^
+/Users/jacksmith/prog/urweb/demo/metaform.ur:16:409: error: incompatible integer to pointer conversion passing 'uw_unit' (aka 'int') to parameter of type 'uw_Basis_string' (aka 'char *') [-Wint-conversion]
+   16 | return(((uw_write(ctx, "<body"), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "class", "")), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "style", "")), 0), ((uw_write(ctx, ">\n"), 0), (((uw_write(ctx, "\n<li"), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "class", "")), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "style", "")), 0), ((uw_write(ctx, "> Tic = "), 0), (uw_Basis_htmlifyString_w(ctx, __uwr_x0_0.__uwf_A), ((uw_write(ctx, "</li>\n<li"), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "class", "")), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "style", "")), 0), ((uw_write(ctx, "> Tic = "), 0), (uw_Basis_htmlifyString_w(ctx, __uwr_x0_0.__uwf_A), ((uw_write(ctx, "</li>\n<li"), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "class", "")), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "style", "")), 0), ((uw_write(ctx, "> Tic = "), 0), (uw_Basis_htmlifyString_w(ctx, __uwr_x0_0.__uwf_A), (uw_write(ctx, "</li>\n"), 0)))))))))))))))), (uw_write(ctx, "\n</body>"), 0)))))));
+      |                                                                                                                                                                                                                                                                                                                                                                                                                         ^~~~~~~~~~~~~~~~~~
+/Users/jacksmith/prog/urweb/include/urweb/urweb_api.h:112:70: note: passing argument to parameter here
+  112 | uw_unit uw_Basis_htmlifyString_w(struct uw_context *, uw_Basis_string);
+      |                                                                      ^
+/Users/jacksmith/prog/urweb/demo/metaform.ur:16:653: error: incompatible integer to pointer conversion passing 'uw_unit' (aka 'int') to parameter of type 'uw_Basis_string' (aka 'char *') [-Wint-conversion]
+   16 | return(((uw_write(ctx, "<body"), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "class", "")), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "style", "")), 0), ((uw_write(ctx, ">\n"), 0), (((uw_write(ctx, "\n<li"), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "class", "")), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "style", "")), 0), ((uw_write(ctx, "> Tic = "), 0), (uw_Basis_htmlifyString_w(ctx, __uwr_x0_0.__uwf_A), ((uw_write(ctx, "</li>\n<li"), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "class", "")), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "style", "")), 0), ((uw_write(ctx, "> Tic = "), 0), (uw_Basis_htmlifyString_w(ctx, __uwr_x0_0.__uwf_A), ((uw_write(ctx, "</li>\n<li"), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "class", "")), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "style", "")), 0), ((uw_write(ctx, "> Tic = "), 0), (uw_Basis_htmlifyString_w(ctx, __uwr_x0_0.__uwf_A), (uw_write(ctx, "</li>\n"), 0)))))))))))))))), (uw_write(ctx, "\n</body>"), 0)))))));
+      |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             ^~~~~~~~~~~~~~~~~~
+/Users/jacksmith/prog/urweb/include/urweb/urweb_api.h:112:70: note: passing argument to parameter here
+  112 | uw_unit uw_Basis_htmlifyString_w(struct uw_context *, uw_Basis_string);
+      |                                                                      ^
+/Users/jacksmith/prog/urweb/demo/metaform.ur:16:897: error: incompatible integer to pointer conversion passing 'uw_unit' (aka 'int') to parameter of type 'uw_Basis_string' (aka 'char *') [-Wint-conversion]
+   16 | return(((uw_write(ctx, "<body"), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "class", "")), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "style", "")), 0), ((uw_write(ctx, ">\n"), 0), (((uw_write(ctx, "\n<li"), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "class", "")), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "style", "")), 0), ((uw_write(ctx, "> Tic = "), 0), (uw_Basis_htmlifyString_w(ctx, __uwr_x0_0.__uwf_A), ((uw_write(ctx, "</li>\n<li"), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "class", "")), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "style", "")), 0), ((uw_write(ctx, "> Tic = "), 0), (uw_Basis_htmlifyString_w(ctx, __uwr_x0_0.__uwf_A), ((uw_write(ctx, "</li>\n<li"), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "class", "")), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "style", "")), 0), ((uw_write(ctx, "> Tic = "), 0), (uw_Basis_htmlifyString_w(ctx, __uwr_x0_0.__uwf_A), (uw_write(ctx, "</li>\n"), 0)))))))))))))))), (uw_write(ctx, "\n</body>"), 0)))))));
+      |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 ^~~~~~~~~~~~~~~~~~
+/Users/jacksmith/prog/urweb/include/urweb/urweb_api.h:112:70: note: passing argument to parameter here
+  112 | uw_unit uw_Basis_htmlifyString_w(struct uw_context *, uw_Basis_string);
+      |                                                                      ^
+/Users/jacksmith/prog/urweb/demo/metaform.ur:16:407: error: incompatible integer to pointer conversion passing 'uw_unit' (aka 'int') to parameter of type 'uw_Basis_string' (aka 'char *') [-Wint-conversion]
+   16 | return(((uw_write(ctx, "<body"), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "class", "")), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "style", "")), 0), ((uw_write(ctx, ">\n"), 0), (((uw_write(ctx, "\n<li"), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "class", "")), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "style", "")), 0), ((uw_write(ctx, "> x = "), 0), (uw_Basis_htmlifyString_w(ctx, __uwr_x0_0.__uwf_X), ((uw_write(ctx, "</li>\n<li"), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "class", "")), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "style", "")), 0), ((uw_write(ctx, "> x = "), 0), (uw_Basis_htmlifyString_w(ctx, __uwr_x0_0.__uwf_X), (uw_write(ctx, "</li>\n"), 0))))))))))), (uw_write(ctx, "\n</body>"), 0)))))));
+      |                                                                                                                                                                                                                                                                                                                                                                                                                       ^~~~~~~~~~~~~~~~~~
+/Users/jacksmith/prog/urweb/include/urweb/urweb_api.h:112:70: note: passing argument to parameter here
+  112 | uw_unit uw_Basis_htmlifyString_w(struct uw_context *, uw_Basis_string);
+      |                                                                      ^
+/Users/jacksmith/prog/urweb/demo/metaform.ur:16:649: error: incompatible integer to pointer conversion passing 'uw_unit' (aka 'int') to parameter of type 'uw_Basis_string' (aka 'char *') [-Wint-conversion]
+   16 | return(((uw_write(ctx, "<body"), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "class", "")), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "style", "")), 0), ((uw_write(ctx, ">\n"), 0), (((uw_write(ctx, "\n<li"), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "class", "")), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "style", "")), 0), ((uw_write(ctx, "> x = "), 0), (uw_Basis_htmlifyString_w(ctx, __uwr_x0_0.__uwf_X), ((uw_write(ctx, "</li>\n<li"), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "class", "")), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "style", "")), 0), ((uw_write(ctx, "> x = "), 0), (uw_Basis_htmlifyString_w(ctx, __uwr_x0_0.__uwf_X), (uw_write(ctx, "</li>\n"), 0))))))))))), (uw_write(ctx, "\n</body>"), 0)))))));
+      |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         ^~~~~~~~~~~~~~~~~~
+/Users/jacksmith/prog/urweb/include/urweb/urweb_api.h:112:70: note: passing argument to parameter here
+  112 | uw_unit uw_Basis_htmlifyString_w(struct uw_context *, uw_Basis_string);
+      |                                                                      ^
+/Users/jacksmith/prog/urweb/demo/crud.ur:58:51: error: invalid suffix 'LL.__uwf_A' on integer constant
+   58 | })}; tmp; }), " SET uw_A = ", uw_Basis_unAs(ctx, 0LL.__uwf_A), ", uw_B = ", uw_Basis_unAs(ctx, 0LL.__uwf_B), ", uw_C = ", uw_Basis_unAs(ctx, 0LL.__uwf_C), ", uw_D = ", uw_Basis_unAs(ctx, 0LL.__uwf_D), " WHERE uw_Crud1_t1", NULL)(ctx, uw_Basis_mstrcat(ctx, "(T_T.uw_id = ", uw_Basis_sqlifyInt(ctx, __uwr_x1_0), ")", NULL));
+      |                                                   ^
+/Users/jacksmith/prog/urweb/demo/crud.ur:58:97: error: invalid suffix 'LL.__uwf_B' on integer constant
+   58 | })}; tmp; }), " SET uw_A = ", uw_Basis_unAs(ctx, 0LL.__uwf_A), ", uw_B = ", uw_Basis_unAs(ctx, 0LL.__uwf_B), ", uw_C = ", uw_Basis_unAs(ctx, 0LL.__uwf_C), ", uw_D = ", uw_Basis_unAs(ctx, 0LL.__uwf_D), " WHERE uw_Crud1_t1", NULL)(ctx, uw_Basis_mstrcat(ctx, "(T_T.uw_id = ", uw_Basis_sqlifyInt(ctx, __uwr_x1_0), ")", NULL));
+      |                                                                                                 ^
+/Users/jacksmith/prog/urweb/demo/crud.ur:58:143: error: invalid suffix 'LL.__uwf_C' on integer constant
+   58 | })}; tmp; }), " SET uw_A = ", uw_Basis_unAs(ctx, 0LL.__uwf_A), ", uw_B = ", uw_Basis_unAs(ctx, 0LL.__uwf_B), ", uw_C = ", uw_Basis_unAs(ctx, 0LL.__uwf_C), ", uw_D = ", uw_Basis_unAs(ctx, 0LL.__uwf_D), " WHERE uw_Crud1_t1", NULL)(ctx, uw_Basis_mstrcat(ctx, "(T_T.uw_id = ", uw_Basis_sqlifyInt(ctx, __uwr_x1_0), ")", NULL));
+      |                                                                                                                                               ^
+/Users/jacksmith/prog/urweb/demo/crud.ur:58:189: error: invalid suffix 'LL.__uwf_D' on integer constant
+   58 | })}; tmp; }), " SET uw_A = ", uw_Basis_unAs(ctx, 0LL.__uwf_A), ", uw_B = ", uw_Basis_unAs(ctx, 0LL.__uwf_B), ", uw_C = ", uw_Basis_unAs(ctx, 0LL.__uwf_C), ", uw_D = ", uw_Basis_unAs(ctx, 0LL.__uwf_D), " WHERE uw_Crud1_t1", NULL)(ctx, uw_Basis_mstrcat(ctx, "(T_T.uw_id = ", uw_Basis_sqlifyInt(ctx, __uwr_x1_0), ")", NULL));
+      |                                                                                                                                                                                             ^
+/Users/jacksmith/prog/urweb/demo/crud.ur:73:54: error: invalid suffix 'LL.__uwf_Name' on integer constant
+   73 | })}; tmp; }), " SET uw_Name = ", uw_Basis_unAs(ctx, 0LL.__uwf_Name), ", uw_Ready = ", uw_Basis_unAs(ctx, 0LL.__uwf_Ready), " WHERE uw_Crud2_t", NULL)(ctx, uw_Basis_mstrcat(ctx, "(T_T.uw_id = ", uw_Basis_sqlifyInt(ctx, __uwr_x1_0), ")", NULL));
+      |                                                      ^
+/Users/jacksmith/prog/urweb/demo/crud.ur:73:107: error: invalid suffix 'LL.__uwf_Ready' on integer constant
+   73 | })}; tmp; }), " SET uw_Name = ", uw_Basis_unAs(ctx, 0LL.__uwf_Name), ", uw_Ready = ", uw_Basis_unAs(ctx, 0LL.__uwf_Ready), " WHERE uw_Crud2_t", NULL)(ctx, uw_Basis_mstrcat(ctx, "(T_T.uw_id = ", uw_Basis_sqlifyInt(ctx, __uwr_x1_0), ")", NULL));
+      |                                                                                                           ^
+/Users/jacksmith/prog/urweb/demo/crud.ur:50:252: error: invalid suffix 'LL.__uwf_Text' on integer constant
+   50 | uw_Basis_string __uwr_arg0_3 = uw_Basis_mstrcat(ctx, "UPDATE ", ({ struct __uws_28 tmp = {uw_Basis_sqlifyString(ctx, uw_Basis_strcat(ctx, __uwr_x0_1.__uwf_Text.__uwf_A, __uwr_x0_1.__uwf_Text.__uwf_B))}; tmp; }), " SET uw_Text = ", uw_Basis_unAs(ctx, 0LL.__uwf_Text), " WHERE uw_Crud3_t", NULL)(ctx, uw_Basis_mstrcat(ctx, "(T_T.uw_id = ", uw_Basis_sqlifyInt(ctx, __uwr_x1_0), ")", NULL));
+      |                                                                                                                                                                                                                                                            ^
+/Users/jacksmith/prog/urweb/demo/chat.ur:126:86: error: incompatible integer to pointer conversion passing 'uw_Basis_int' (aka 'long long') to parameter of type 'uw_Basis_string' (aka 'char *') [-Wint-conversion]
+  126 | acc = uw_Basis_send(ctx, __uwr_r_6.__uwf_T.__uwf_Channel, uw_Basis_urlifyString(ctx, __uwr_line_1));
+      |                                                                                      ^~~~~~~~~~~~
+/Users/jacksmith/prog/urweb/include/urweb/urweb_api.h:134:65: note: passing argument to parameter here
+  134 | char *uw_Basis_urlifyString(struct uw_context *, uw_Basis_string);
+      |                                                                 ^
+/Users/jacksmith/prog/urweb/demo/chat.ur:12:14: error: incompatible pointer to integer conversion initializing 'uw_Basis_int' (aka 'long long') with an expression of type 'uw_Basis_string' (aka 'char *') [-Wint-conversion]
+   12 | uw_Basis_int arg1 = __uwr_x_1;
+      |              ^      ~~~~~~~~~
+/Users/jacksmith/prog/urweb/demo/chat.ur:13:36: error: too few arguments to function call, expected 5, have 3
+   13 | __uwn_lam_2907_2907(ctx, arg0, arg1);
+      | ~~~~~~~~~~~~~~~~~~~                ^
+/Users/jacksmith/prog/urweb/demo/chat.ur:31:16: note: '__uwn_lam_2907_2907' declared here
+   31 | static uw_unit __uwn_lam_2907_2907(uw_context ctx, uw_Basis_int __uwr_id_0, uw_Basis_int __uwr_line_1, uw_Basis_string __uwr___2, uw_unit __uwr___3) {
+      |                ^                   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/Users/jacksmith/prog/urweb/demo/chat.ur:202:10: error: member reference base type 'uw_Basis_client' (aka 'unsigned int') is not a structure or union
+  202 | __uwr_r_5.__uwf_T.__uwf_Channel;
+      | ~~~~~~~~~^~~~~~~~
+/Users/jacksmith/prog/urweb/demo/demo.ur:2:403: error: called object type 'long long' is not a function or function pointer
+    2 | return(((uw_write(ctx, "<body"), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "class", "")), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "style", "")), 0), ((uw_write(ctx, ">\n0<br"), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "class", "")), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "style", "")), 0), ((uw_write(ctx, "></br>\n"), 0), (uw_Basis_htmlifyInt_w(ctx, (0 + 0LL)(ctx, (0 + 1LL)(ctx, 0LL))), ((uw_write(ctx, "<br"), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "class", "")), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "style", "")), 0), ((uw_write(ctx, "></br>\n"), 0), (uw_Basis_htmlifyInt_w(ctx, (0 + 2LL)(ctx, (0 + 3LL)(ctx, (0 + 4LL)(ctx, 0LL)))), (uw_write(ctx, "\n</body>"), 0)))))))))))))));
+      |                                                                                                                                                                                                                                                                                                                                                                                                          ~~~~~~~~~^
+/Users/jacksmith/prog/urweb/demo/demo.ur:2:669: error: called object type 'long long' is not a function or function pointer
+    2 | return(((uw_write(ctx, "<body"), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "class", "")), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "style", "")), 0), ((uw_write(ctx, ">\n0<br"), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "class", "")), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "style", "")), 0), ((uw_write(ctx, "></br>\n"), 0), (uw_Basis_htmlifyInt_w(ctx, (0 + 0LL)(ctx, (0 + 1LL)(ctx, 0LL))), ((uw_write(ctx, "<br"), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "class", "")), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "style", "")), 0), ((uw_write(ctx, "></br>\n"), 0), (uw_Basis_htmlifyInt_w(ctx, (0 + 2LL)(ctx, (0 + 3LL)(ctx, (0 + 4LL)(ctx, 0LL)))), (uw_write(ctx, "\n</body>"), 0)))))))))))))));
+      |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    ~~~~~~~~~^
+fatal error: too many errors emitted, stopping now [-ferror-limit=]
+20 errors generated.
+-- C BUILD ---------------------------------------------------
+
+The C compiler (`cc`, exit exit status: 1) rejected the generated file `/Users/jacksmith/prog/urweb/demo/demo.c`.
+
+Ur/Web already produced this C from your sources; the problem is now in the C toolchain. Typical fixes: check `-I` paths to the runtime headers, `-ccompiler`, or run the same command manually to see the exact line.

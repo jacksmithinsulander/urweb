@@ -875,7 +875,8 @@ fn swap_exp_vars_pat_node(lower: usize, len: usize, e: &Exp) -> Exp {
 ///
 /// Returns:
 /// - `Yes(subs)` — definitely matches; `subs` is a list of (name, typ, exp)
-///   bindings in the order they should be substituted (outermost first).
+///   bindings in pattern/source order. Case reduction applies them from
+///   innermost binder outward to respect de Bruijn indexing.
 /// - `No` — definitely doesn't match.
 /// - `Maybe` — can't tell statically.
 fn match_pat(subs: Vec<(String, LocTyp, LocExp)>, p: &LocPat, e: &LocExp) -> MatchResult {
@@ -1225,10 +1226,6 @@ fn query_row_type(qm: &QueryMeta, span: &Span) -> LocTyp {
 fn function_like_parts(t: &LocTyp) -> Option<(LocTyp, LocTyp)> {
     match &t.node {
         Typ::Fun(dom, ran) => Some((*dom.clone(), *ran.clone())),
-        Typ::Transaction(ran) => Some((
-            Located::new(Typ::Record(Vec::new()), t.span.clone()),
-            *ran.clone(),
-        )),
         _ => None,
     }
 }
@@ -1396,7 +1393,26 @@ fn reduce_children(env: &Env, e: LocExp, ctx: &ReduceCtx, settings: &Settings) -
         }
         Exp::Write(inner) => Exp::Write(Box::new(reduce_exp(env, *inner, ctx, settings))),
         Exp::Unop(op, inner) => Exp::Unop(op, Box::new(reduce_exp(env, *inner, ctx, settings))),
-        Exp::Field(inner, x) => Exp::Field(Box::new(reduce_exp(env, *inner, ctx, settings)), x),
+        Exp::Field(inner, x) => {
+            let (original_head, original_args) = strip_app_spine((*inner).clone());
+            let preserve_receiver_shape =
+                matches!(inner.node, Exp::App(_, _)) && app_head_is_projected_abs(&original_head);
+            debug_mono_reduce_field_child(
+                env,
+                &span,
+                &x,
+                inner.as_ref(),
+                &original_head,
+                &original_args,
+                preserve_receiver_shape,
+            );
+            let inner_r = if preserve_receiver_shape {
+                *inner
+            } else {
+                reduce_exp(env, *inner, ctx, settings)
+            };
+            Exp::Field(Box::new(inner_r), x)
+        }
         Exp::SignalReturn(inner) => {
             Exp::SignalReturn(Box::new(reduce_exp(env, *inner, ctx, settings)))
         }
@@ -1485,7 +1501,131 @@ fn reduce_node(env: &Env, e: Exp, span: &Span, ctx: &ReduceCtx, settings: &Setti
         // App(Abs(x, t, _, e1), e2) → beta reduction
         // ----------------------------------------------------------------
         Exp::App(f, arg) => {
+            if let Some(stripped) = strip_spurious_unit_app_in_env(env, (*f).clone(), arg.as_ref())
+            {
+                debug_mono_reduce_rule(span, "strip_spurious_unit_app");
+                return reduce_exp(env, stripped, ctx, settings).node;
+            }
+            if let Exp::Field(inner, _) = f.node.clone() {
+                if let Exp::Field(base, missing_field) = inner.node.clone() {
+                    if let Exp::Abs(_, _, ran, _) = base.node.clone() {
+                        if direct_field_result_typ(&ran, &missing_field).is_none() {
+                            return Exp::App(f, arg);
+                        }
+                    }
+                }
+            }
+            if let Exp::App(f2, arg1) = f.node.clone() {
+                if let Exp::Field(base, missing_field) = f2.node.clone() {
+                    if let Exp::Abs(_, _, ran, _) = base.node.clone() {
+                        if direct_field_result_typ(&ran, &missing_field).is_none()
+                            && mono_exp_has_direct_field_in_env(env, arg.as_ref(), &missing_field)
+                        {
+                            debug_mono_reduce_rule(
+                                span,
+                                "redirect_nested_missing_field_to_tail_arg",
+                            );
+                            let projected = Located::new(
+                                Exp::Field(Box::new((*arg).clone()), missing_field.clone()),
+                                f2.span.clone(),
+                            );
+                            let redirected =
+                                reapply_single_arg_if_function_like_in_env(env, projected, *arg1);
+                            return reduce_exp(env, redirected, ctx, settings).node;
+                        }
+                        if direct_field_result_typ(&ran, &missing_field).is_none()
+                            && mono_exp_has_direct_field_in_env(env, arg1.as_ref(), &missing_field)
+                        {
+                            debug_mono_reduce_rule(
+                                span,
+                                "redirect_nested_missing_field_to_earlier_arg",
+                            );
+                            let projected = Located::new(
+                                Exp::Field(Box::new((*arg1).clone()), missing_field.clone()),
+                                f2.span.clone(),
+                            );
+                            let redirected = reapply_single_arg_if_function_like_in_env(
+                                env,
+                                projected,
+                                (*arg).clone(),
+                            );
+                            return reduce_exp(env, redirected, ctx, settings).node;
+                        }
+                    }
+                }
+                if let Exp::Field(inner, subfield) = f2.node.clone() {
+                    if let Exp::Field(base, missing_field) = inner.node.clone() {
+                        if let Exp::Abs(_, _, ran, _) = base.node.clone() {
+                            if direct_field_result_typ(&ran, &missing_field).is_none()
+                                && mono_exp_has_direct_field_in_env(
+                                    env,
+                                    arg.as_ref(),
+                                    &missing_field,
+                                )
+                            {
+                                debug_mono_reduce_rule(
+                                    span,
+                                    "redirect_nested_subfield_to_tail_arg",
+                                );
+                                let projected = Located::new(
+                                    Exp::Field(
+                                        Box::new(Located::new(
+                                            Exp::Field(
+                                                Box::new((*arg).clone()),
+                                                missing_field.clone(),
+                                            ),
+                                            inner.span.clone(),
+                                        )),
+                                        subfield.clone(),
+                                    ),
+                                    f2.span.clone(),
+                                );
+                                let redirected = reapply_single_arg_if_function_like_in_env(
+                                    env, projected, *arg1,
+                                );
+                                return reduce_exp(env, redirected, ctx, settings).node;
+                            }
+                            if direct_field_result_typ(&ran, &missing_field).is_none()
+                                && mono_exp_has_direct_field_in_env(
+                                    env,
+                                    arg1.as_ref(),
+                                    &missing_field,
+                                )
+                            {
+                                debug_mono_reduce_rule(
+                                    span,
+                                    "redirect_nested_subfield_to_earlier_arg",
+                                );
+                                let projected = Located::new(
+                                    Exp::Field(
+                                        Box::new(Located::new(
+                                            Exp::Field(
+                                                Box::new((*arg1).clone()),
+                                                missing_field.clone(),
+                                            ),
+                                            inner.span.clone(),
+                                        )),
+                                        subfield.clone(),
+                                    ),
+                                    f2.span.clone(),
+                                );
+                                let redirected = reapply_single_arg_if_function_like_in_env(
+                                    env,
+                                    projected,
+                                    (*arg).clone(),
+                                );
+                                return reduce_exp(env, redirected, ctx, settings).node;
+                            }
+                        }
+                    }
+                }
+            }
             if let Exp::Abs(x, t, _, body) = f.node.clone() {
+                debug_mono_reduce_beta(span, f.as_ref(), arg.as_ref(), body.as_ref());
+                if is_erased_witness_app(&arg, &t) {
+                    let subst = sub_exp_in_exp(0, &arg, &body);
+                    return reduce_exp(env, subst, ctx, settings).node;
+                }
                 // Beta reduction
                 let impure_arg = impure_ctx(env, &arg, ctx, settings);
                 let cf = count_free(0, &body);
@@ -1532,6 +1672,48 @@ fn reduce_node(env: &Env, e: Exp, span: &Span, ctx: &ReduceCtx, settings: &Setti
                 } else {
                     Exp::App(f, arg)
                 }
+            } else if let Exp::Field(inner, field) = f.node.clone() {
+                if let Exp::Abs(_, _, ran, _) = inner.node.clone() {
+                    if direct_field_result_typ(&ran, &field).is_none()
+                        && mono_exp_has_direct_field_in_env(env, arg.as_ref(), &field)
+                    {
+                        debug_mono_reduce_rule(span, "redirect_simple_missing_field_to_arg");
+                        let projected = Located::new(
+                            Exp::Field(Box::new((*arg).clone()), field),
+                            f.span.clone(),
+                        );
+                        return reduce_exp(env, projected, ctx, settings).node;
+                    }
+                }
+                let applied_inner = Located::new(
+                    Exp::App(inner.clone(), Box::new((*arg).clone())),
+                    f.span.clone(),
+                );
+                if matches!(
+                    &inner.node,
+                    Exp::Abs(_, _, _, _)
+                        | Exp::App(_, _)
+                        | Exp::Field(_, _)
+                        | Exp::Record(_)
+                        | Exp::Let(_, _, _, _)
+                ) && !mono_exp_has_direct_field_in_env(env, &inner, &field)
+                    && mono_exp_has_direct_field_in_env(env, &applied_inner, &field)
+                {
+                    debug_mono_reduce_app_push(
+                        env,
+                        span,
+                        &field,
+                        &inner,
+                        &applied_inner,
+                        arg.as_ref(),
+                    );
+                    debug_mono_reduce_rule(span, "push_app_through_missing_field_projection");
+                    let pushed =
+                        Located::new(Exp::Field(Box::new(applied_inner), field), span.clone());
+                    reduce_exp(env, pushed, ctx, settings).node
+                } else {
+                    Exp::App(f, arg)
+                }
             } else if let Exp::Record(fields) = f.node.clone() {
                 if impure_ctx(env, &arg, ctx, settings) {
                     Exp::App(f, arg)
@@ -1574,13 +1756,18 @@ fn reduce_node(env: &Env, e: Exp, span: &Span, ctx: &ReduceCtx, settings: &Setti
             search_arms(env, *disc, arms, meta, span, ctx, settings)
         }
 
-        // Repair a malformed nested transaction thunk:
+        // Repair a malformed nested unit thunk:
         //   fn _ : {} => (fn _ : {} => e)
-        // when the outer function is supposed to return a plain value.
+        // when both thunk layers claim the same result type.
         Exp::Abs(x, dom, ran, body_box) => {
-            if is_unit_record_type(&dom) && function_like_parts(&ran).is_none() {
-                if let Exp::Abs(_, inner_dom, _, inner_body) = body_box.node.clone() {
-                    if is_unit_record_type(&inner_dom) && count_free(0, &inner_body) == 0 {
+            if is_unit_record_type(&dom) {
+                if let Exp::Abs(_, inner_dom, inner_ran, inner_body) = body_box.node.clone() {
+                    if is_unit_record_type(&inner_dom)
+                        && crate::monomorphized::utilities::typ::compare(&ran, &inner_ran)
+                            == std::cmp::Ordering::Equal
+                        && count_free(0, &inner_body) == 0
+                    {
+                        debug_mono_reduce_rule(span, "collapse_nested_unit_thunk");
                         let unit = Located::new(Exp::Record(Vec::new()), span.clone());
                         let collapsed = sub_exp_in_exp(0, &unit, &inner_body);
                         let env2 = env.push_rel(&x, dom.clone());
@@ -1597,9 +1784,18 @@ fn reduce_node(env: &Env, e: Exp, span: &Span, ctx: &ReduceCtx, settings: &Setti
         // ----------------------------------------------------------------
         Exp::Field(e1, x) => {
             let (head, args) = strip_app_spine(*e1);
+            debug_mono_reduce_field(env, &span, &x, &head, &args);
+            if !args.is_empty() && mono_exp_has_direct_field_in_env(env, &head, &x) {
+                debug_mono_reduce_rule(span, "project_head_before_reapply");
+                let projected_head =
+                    Located::new(Exp::Field(Box::new(head), x.clone()), span.clone());
+                return reduce_exp(env, reapply_app_spine(projected_head, args), ctx, settings)
+                    .node;
+            }
             match head.node {
                 Exp::Record(fields) => {
                     if let Some((_, projected, _)) = fields.iter().find(|(name, _, _)| name == &x) {
+                        debug_mono_reduce_rule(span, "project_record_field");
                         return reduce_exp(
                             env,
                             reapply_app_spine(projected.clone(), args),
@@ -1608,20 +1804,26 @@ fn reduce_node(env: &Env, e: Exp, span: &Span, ctx: &ReduceCtx, settings: &Setti
                         )
                         .node;
                     }
-                    if let Some((tail_head, tail_args)) = args.split_first() {
-                        let projected_tail = Located::new(
-                            Exp::Field(
-                                Box::new(reapply_app_spine(tail_head.clone(), tail_args.to_vec())),
-                                x.clone(),
-                            ),
-                            span.clone(),
-                        );
+                    if let Some(projected_tail) =
+                        project_missing_field_from_args_in_env(env, &args, &x, span)
+                    {
+                        debug_mono_reduce_rule(span, "project_record_missing_field_from_args");
                         return reduce_exp(env, projected_tail, ctx, settings).node;
                     }
                     yank_lets(Located::new(Exp::Record(fields), head.span), &x)
                 }
                 Exp::Abs(ax, dom, ran, body) => {
-                    if let Some(projected_ran) = projected_field_result_typ(&ran, &x) {
+                    if function_like_parts(&ran).is_some() {
+                        if let Some(projected_tail) =
+                            project_missing_field_from_args_in_env(env, &args, &x, span)
+                        {
+                            debug_mono_reduce_rule(span, "project_abs_missing_field_from_args");
+                            return reduce_exp(env, projected_tail, ctx, settings).node;
+                        }
+                    }
+
+                    if let Some(projected_ran) = direct_field_result_typ(&ran, &x) {
+                        debug_mono_reduce_rule(span, "push_field_through_abs");
                         let projected_body =
                             Located::new(Exp::Field(body, x.clone()), span.clone());
                         let projected_abs = Located::new(
@@ -1635,6 +1837,13 @@ fn reduce_node(env: &Env, e: Exp, span: &Span, ctx: &ReduceCtx, settings: &Setti
                             settings,
                         )
                         .node;
+                    }
+
+                    if let Some(projected_tail) =
+                        project_missing_field_from_args_in_env(env, &args, &x, span)
+                    {
+                        debug_mono_reduce_rule(span, "project_abs_field_from_args_fallback");
+                        return reduce_exp(env, projected_tail, ctx, settings).node;
                     }
 
                     yank_lets(
@@ -1666,11 +1875,41 @@ fn reduce_node(env: &Env, e: Exp, span: &Span, ctx: &ReduceCtx, settings: &Setti
             }
 
             // ----------------------------------------------------------------
+            // Let(x, t, (fn _ : {} => e'), body) when t is a plain value
+            //   → Let(x, t, (fn _ : {} => e') {}, body)
+            // ----------------------------------------------------------------
+            if let Exp::Abs(_, dom, ran, _) = e1_box.node.clone() {
+                if is_unit_record_type(&dom)
+                    && !matches!(&t1.node, Typ::Fun(_, _) | Typ::Transaction(_))
+                    && crate::monomorphized::utilities::typ::compare(&ran, &t1)
+                        == std::cmp::Ordering::Equal
+                {
+                    let forced = Located::new(
+                        Exp::App(
+                            Box::new((*e1_box).clone()),
+                            Box::new(Located::new(Exp::Record(Vec::new()), span.clone())),
+                        ),
+                        span.clone(),
+                    );
+                    let repaired = Located::new(
+                        Exp::Let(x1.clone(), t1.clone(), Box::new(forced), b2_box.clone()),
+                        span.clone(),
+                    );
+                    return reduce_exp(env, repaired, ctx, settings).node;
+                }
+            }
+
+            // ----------------------------------------------------------------
             // Let(x, t, e', Abs(x', unit_record_t, ran, e'')) when e' is pure
             //   → Abs(x', unit_record_t, ran, Let(x, t, lift(e'), swap(e'')))
             // ----------------------------------------------------------------
             if let Exp::Abs(x2, t2, ran2, body2) = b2_box.node.clone() {
-                if is_unit_record_type(&t2) && !impure_ctx(env, &e1_box, ctx, settings) {
+                if is_unit_record_type(&t2)
+                    && function_like_parts(&ran2).is_none()
+                    && !impure_ctx(env, &e1_box, ctx, settings)
+                {
+                    debug_mono_reduce_rule(span, "commute_let_into_unit_abs");
+                    debug_mono_reduce_unit_let(span, &t1, &e1_box, &ran2, &body2);
                     let env2 = env.push_rel(&x2, t2.clone());
                     let lifted_e1 = lift_exp_in_exp(0, &e1_box);
                     let swapped_body = swap_exp_vars(0, &body2);
@@ -1750,18 +1989,81 @@ fn is_unit_record_type(t: &LocTyp) -> bool {
     matches!(&t.node, Typ::Record(fields) if fields.is_empty())
 }
 
-fn projected_field_result_typ(result_typ: &LocTyp, field: &str) -> Option<LocTyp> {
+fn is_erased_witness_app(arg: &LocExp, dom: &LocTyp) -> bool {
+    is_erased_proof_arg(arg)
+        && match &dom.node {
+            Typ::Record(fields) if fields.is_empty() => false,
+            Typ::Ffi(module, name) if module == "Basis" && name == "int" => false,
+            _ => true,
+        }
+}
+
+fn direct_field_result_typ(result_typ: &LocTyp, field: &str) -> Option<LocTyp> {
     match &result_typ.node {
         Typ::Record(fields) => fields
             .iter()
             .find(|(name, _)| name == field)
             .map(|(_, typ)| typ.clone()),
-        Typ::Fun(dom, ran) => projected_field_result_typ(ran, field).map(|projected_ran| {
-            Located::new(
-                Typ::Fun(dom.clone(), Box::new(projected_ran)),
-                result_typ.span.clone(),
-            )
-        }),
+        _ => None,
+    }
+}
+
+fn drop_applied_fun_layers(t: &LocTyp, args_applied: usize) -> Option<LocTyp> {
+    let mut current = t.clone();
+    for _ in 0..args_applied {
+        match current.node {
+            Typ::Fun(_, ran) => current = *ran,
+            _ => return None,
+        }
+    }
+    Some(current)
+}
+
+fn mono_exp_result_typ_in_env(env: &Env, e: &LocExp) -> Option<LocTyp> {
+    match &e.node {
+        Exp::Prim(prim) => Some(Located::new(
+            Typ::Ffi(
+                "Basis".into(),
+                match prim {
+                    Prim::Int(_) => "int",
+                    Prim::Float(_) => "float",
+                    Prim::String(_, _) => "string",
+                    Prim::Char(_) => "char",
+                }
+                .into(),
+            ),
+            e.span.clone(),
+        )),
+        Exp::Rel(n) => env.lookup_rel(*n).ok().map(|(_, typ, _)| typ.clone()),
+        Exp::Named(n) => env.lookup_named(*n).ok().map(|(_, typ, _, _)| typ.clone()),
+        Exp::Record(fields) => Some(Located::new(
+            Typ::Record(
+                fields
+                    .iter()
+                    .map(|(name, _, typ)| (name.clone(), typ.clone()))
+                    .collect(),
+            ),
+            e.span.clone(),
+        )),
+        Exp::Abs(_, dom, ran, _) => Some(Located::new(
+            Typ::Fun(Box::new(dom.clone()), Box::new(ran.clone())),
+            e.span.clone(),
+        )),
+        Exp::Let(_, _, _, body) => mono_exp_result_typ_in_env(env, body),
+        Exp::Field(inner, projected) => {
+            mono_exp_result_typ_in_env(env, inner).and_then(|typ| match &typ.node {
+                Typ::Record(fields) => fields
+                    .iter()
+                    .find(|(name, _)| name == projected)
+                    .map(|(_, field_typ)| field_typ.clone()),
+                _ => None,
+            })
+        }
+        Exp::App(_, _) => {
+            let (head, args) = strip_app_spine(e.clone());
+            mono_exp_result_typ_in_env(env, &head)
+                .and_then(|typ| drop_applied_fun_layers(&typ, args.len()))
+        }
         _ => None,
     }
 }
@@ -1789,6 +2091,294 @@ fn reapply_app_spine(mut head: LocExp, args: Vec<LocExp>) -> LocExp {
         head = Located::new(Exp::App(Box::new(head), Box::new(arg)), span);
     }
     head
+}
+
+fn reapply_single_arg_if_function_like_in_env(env: &Env, head: LocExp, arg: LocExp) -> LocExp {
+    let Some(head_typ) = mono_exp_result_typ_in_env(env, &head) else {
+        return head;
+    };
+    let Some((dom, _)) = function_like_parts(&head_typ) else {
+        return head;
+    };
+
+    // When we redirected a missing-field projection onto a later row argument,
+    // the earlier partially-applied argument may actually be a continuation
+    // lambda (for the next row parameter), not an argument for the projected
+    // field itself. Reapplying it blindly recreates malformed terms like
+    // `cols.A.Show (fn r2 => ...)`.
+    if mono_exp_result_typ_in_env(env, &arg)
+        .is_some_and(|arg_typ| function_like_parts(&arg_typ).is_some())
+        && function_like_parts(&dom).is_none()
+    {
+        return head;
+    }
+
+    let span = head.span.clone();
+    Located::new(Exp::App(Box::new(head), Box::new(arg)), span)
+}
+
+fn is_unit_record_exp(e: &LocExp) -> bool {
+    matches!(&e.node, Exp::Record(fields) if fields.is_empty())
+}
+
+fn strip_spurious_unit_app_in_env(env: &Env, function: LocExp, arg: &LocExp) -> Option<LocExp> {
+    if !is_unit_record_exp(arg) {
+        return None;
+    }
+
+    let result_typ = mono_exp_result_typ_in_env(env, &function)?;
+    (function_like_parts(&result_typ).is_none()).then_some(function)
+}
+
+fn is_erased_proof_arg(e: &LocExp) -> bool {
+    matches!(&e.node, Exp::Record(fields) if fields.is_empty())
+        || matches!(&e.node, Exp::Prim(Prim::Int(0)))
+}
+
+fn mono_exp_has_direct_field_in_env(env: &Env, e: &LocExp, field: &str) -> bool {
+    mono_exp_result_typ_in_env(env, e).is_some_and(|typ| match &typ.node {
+        Typ::Record(fields) => fields.iter().any(|(name, _)| name == field),
+        _ => false,
+    })
+}
+
+fn debug_mono_reduce_field(env: &Env, span: &Span, field: &str, head: &LocExp, args: &[LocExp]) {
+    if std::env::var("URWEB_DEBUG_MONO_REDUCE_FIELD")
+        .ok()
+        .as_deref()
+        != Some("1")
+    {
+        return;
+    }
+    if !(span.file.ends_with("/lib/ur/top.ur") || span.file.ends_with("/demo/crud.ur")) {
+        return;
+    }
+    let head_typ = mono_exp_result_typ_in_env(env, head)
+        .map(|typ| format!("{:?}", typ.node))
+        .unwrap_or_else(|| "<unknown>".to_string());
+    let arg_summaries = args
+        .iter()
+        .map(|arg| {
+            let typ = mono_exp_result_typ_in_env(env, arg)
+                .map(|typ| format!("{:?}", typ.node))
+                .unwrap_or_else(|| "<unknown>".to_string());
+            format!("{:?}:{typ}", arg.node)
+        })
+        .collect::<Vec<_>>()
+        .join(" | ");
+    eprintln!(
+        "URWEB_DEBUG_MONO_REDUCE_FIELD {}:{} field={} head={:?} head_typ={} args=[{}]",
+        span.file, span.first.line, field, head.node, head_typ, arg_summaries
+    );
+}
+
+fn debug_mono_reduce_field_child(
+    env: &Env,
+    span: &Span,
+    field: &str,
+    inner: &LocExp,
+    head: &LocExp,
+    args: &[LocExp],
+    preserved: bool,
+) {
+    if std::env::var("URWEB_DEBUG_MONO_REDUCE_FIELD_CHILD")
+        .ok()
+        .as_deref()
+        != Some("1")
+    {
+        return;
+    }
+    if !(span.file.ends_with("/lib/ur/top.ur") || span.file.ends_with("/demo/crud.ur")) {
+        return;
+    }
+    let head_typ = mono_exp_result_typ_in_env(env, head)
+        .map(|typ| format!("{:?}", typ.node))
+        .unwrap_or_else(|| "<unknown>".to_string());
+    eprintln!(
+        "URWEB_DEBUG_MONO_REDUCE_FIELD_CHILD {}:{} field={} inner_kind={} head_kind={} args_len={} preserved={} head_typ={} inner={:?}",
+        span.file,
+        span.first.line,
+        field,
+        exp_kind(inner),
+        exp_kind(head),
+        args.len(),
+        preserved,
+        head_typ,
+        inner.node,
+    );
+}
+
+fn debug_mono_reduce_recover(
+    span: &Span,
+    field: &str,
+    idx: usize,
+    receiver: &LocExp,
+    args: &[LocExp],
+) {
+    if std::env::var("URWEB_DEBUG_MONO_REDUCE_FIELD")
+        .ok()
+        .as_deref()
+        != Some("1")
+    {
+        return;
+    }
+    if !(span.file.ends_with("/lib/ur/top.ur") || span.file.ends_with("/demo/crud.ur")) {
+        return;
+    }
+    let arg_summaries = args
+        .iter()
+        .map(|arg| format!("{:?}", arg.node))
+        .collect::<Vec<_>>()
+        .join(" | ");
+    eprintln!(
+        "URWEB_DEBUG_MONO_REDUCE_RECOVER {}:{} field={} idx={} receiver={:?} args=[{}]",
+        span.file, span.first.line, field, idx, receiver.node, arg_summaries
+    );
+}
+
+fn exp_kind(e: &LocExp) -> &'static str {
+    match &e.node {
+        Exp::Rel(_) => "Rel",
+        Exp::Named(_) => "Named",
+        Exp::Abs(_, _, _, _) => "Abs",
+        Exp::App(_, _) => "App",
+        Exp::Field(_, _) => "Field",
+        Exp::Record(_) => "Record",
+        Exp::Let(_, _, _, _) => "Let",
+        Exp::Case(_, _, _) => "Case",
+        Exp::Prim(_) => "Prim",
+        _ => "Other",
+    }
+}
+
+fn debug_mono_reduce_app_push(
+    env: &Env,
+    span: &Span,
+    field: &str,
+    inner: &LocExp,
+    applied_inner: &LocExp,
+    arg: &LocExp,
+) {
+    if std::env::var("URWEB_DEBUG_MONO_REDUCE_APP").ok().as_deref() != Some("1") {
+        return;
+    }
+    if !(span.file.ends_with("/lib/ur/top.ur") || span.file.ends_with("/demo/crud.ur")) {
+        return;
+    }
+    eprintln!(
+        "URWEB_DEBUG_MONO_REDUCE_APP {}:{} rule=push field={} inner_kind={} inner_has={} applied_kind={} applied_has={} arg_kind={} arg_has={}",
+        span.file,
+        span.first.line,
+        field,
+        exp_kind(inner),
+        mono_exp_has_direct_field_in_env(env, inner, field),
+        exp_kind(applied_inner),
+        mono_exp_has_direct_field_in_env(env, applied_inner, field),
+        exp_kind(arg),
+        mono_exp_has_direct_field_in_env(env, arg, field),
+    );
+}
+
+fn debug_mono_reduce_rule(span: &Span, rule: &str) {
+    if std::env::var("URWEB_DEBUG_MONO_REDUCE_RULES")
+        .ok()
+        .as_deref()
+        != Some("1")
+    {
+        return;
+    }
+    if !(span.file.ends_with("/lib/ur/top.ur") || span.file.ends_with("/demo/crud.ur")) {
+        return;
+    }
+    eprintln!(
+        "URWEB_DEBUG_MONO_REDUCE_RULE {}:{} rule={}",
+        span.file, span.first.line, rule
+    );
+}
+
+fn debug_mono_reduce_unit_let(
+    span: &Span,
+    t1: &LocTyp,
+    e1: &LocExp,
+    ran2: &LocTyp,
+    body2: &LocExp,
+) {
+    if std::env::var("URWEB_DEBUG_MONO_REDUCE_UNIT_LET")
+        .ok()
+        .as_deref()
+        != Some("1")
+    {
+        return;
+    }
+    if !span.file.ends_with("/lib/ur/top.ur") {
+        return;
+    }
+    eprintln!(
+        "URWEB_DEBUG_MONO_REDUCE_UNIT_LET {}:{} bind_typ={:?} bind_exp={:?} abs_ran={:?} abs_body={:?}",
+        span.file,
+        span.first.line,
+        t1.node,
+        e1.node,
+        ran2.node,
+        body2.node
+    );
+}
+
+fn debug_mono_reduce_beta(span: &Span, f: &LocExp, arg: &LocExp, body: &LocExp) {
+    if std::env::var("URWEB_DEBUG_MONO_REDUCE_BETA")
+        .ok()
+        .as_deref()
+        != Some("1")
+    {
+        return;
+    }
+    if !span.file.ends_with("/lib/ur/top.ur") || !(153..=157).contains(&span.first.line) {
+        return;
+    }
+    eprintln!(
+        "URWEB_DEBUG_MONO_REDUCE_BETA {}:{} fun={:?} arg={:?} body={:?}",
+        span.file, span.first.line, f.node, arg.node, body.node
+    );
+}
+
+fn app_head_is_projected_abs(head: &LocExp) -> bool {
+    match &head.node {
+        Exp::Abs(_, _, _, _) => true,
+        Exp::Field(inner, _) => {
+            matches!(inner.node, Exp::Abs(_, _, _, _))
+                || matches!(&inner.node, Exp::Field(inner2, _) if matches!(inner2.node, Exp::Abs(_, _, _, _)))
+        }
+        _ => false,
+    }
+}
+
+fn project_missing_field_from_args_in_env(
+    env: &Env,
+    args: &[LocExp],
+    field: &str,
+    span: &Span,
+) -> Option<LocExp> {
+    let direct_match = (0..args.len()).rev().find_map(|idx| {
+        let arg = &args[idx];
+        if is_erased_proof_arg(arg) || !mono_exp_has_direct_field_in_env(env, arg, field) {
+            return None;
+        }
+        Some((idx, arg.clone()))
+    });
+    let fallback_match = (0..args.len()).rev().find_map(|idx| {
+        let arg = &args[idx];
+        if is_erased_proof_arg(arg) || mono_exp_has_direct_field_in_env(env, arg, field) {
+            return None;
+        }
+        let receiver = reapply_app_spine(arg.clone(), args[idx + 1..].to_vec());
+        mono_exp_has_direct_field_in_env(env, &receiver, field).then_some((idx, receiver))
+    });
+    let (idx, receiver) = direct_match.or(fallback_match)?;
+    debug_mono_reduce_recover(span, field, idx, &receiver, args);
+    Some(Located::new(
+        Exp::Field(Box::new(receiver), field.to_string()),
+        span.clone(),
+    ))
 }
 
 /// The "yank lets" optimization for field projection:
@@ -1931,7 +2521,7 @@ fn search_arms(
                 let mut current_body = body.clone();
                 let mut remaining = n_subs as isize - 1;
 
-                for (sx, st, se) in subs.into_iter() {
+                for (sx, st, se) in subs.into_iter().rev() {
                     if count_free(0, &current_body) > 1 {
                         // Use ELet to avoid duplication
                         let lifted = multi_lift(remaining.max(0) as usize, &se);
@@ -1994,7 +2584,15 @@ fn do_let(
         do_sub(e_prime, b)
     };
 
-    if impure_ctx(env, &e_prime, ctx, settings) {
+    let rhs_is_abs = matches!(&e_prime.node, Exp::Abs(_, _, _, _));
+    let uses = count_free(0, &b);
+    let rhs_impure = impure_ctx(env, &e_prime, ctx, settings);
+
+    if rhs_is_abs && uses == 1 {
+        return do_sub(&e_prime, &b);
+    }
+
+    if rhs_impure {
         // The binding is impure — check if we can still safely reorder/inline
         let effs_eprime: Vec<Event> = summarize(0, &e_prime)
             .into_iter()
@@ -2028,7 +2626,6 @@ fn do_let(
         }
     } else {
         // Pure binding
-        let uses = count_free(0, &b);
         let is_record = matches!(&e_prime.node, Exp::Record(_));
         let proj_only = is_record && which_proj(0, &b).is_some();
 
@@ -2403,6 +3000,65 @@ mod tests {
     }
 
     #[test]
+    fn test_beta_reduction_drops_erased_witness_binder_before_runtime_arg() {
+        let settings = Settings::new();
+        let ctx = ReduceCtx {
+            timpures: HashSet::new(),
+            impures: HashSet::new(),
+            uses: HashMap::new(),
+            yanked_case: Cell::new(false),
+            full_mode: false,
+        };
+        let env = Env::empty();
+        let span = Span::dummy();
+        let meta_t = Located::new(
+            Typ::Record(vec![("NewState".into(), dummy_typ())]),
+            span.clone(),
+        );
+        let body = Located::new(
+            Exp::Abs(
+                "row".into(),
+                meta_t.clone(),
+                dummy_typ(),
+                Box::new(Located::new(
+                    Exp::Field(
+                        Box::new(Located::new(Exp::Rel(0), span.clone())),
+                        "NewState".into(),
+                    ),
+                    span.clone(),
+                )),
+            ),
+            span.clone(),
+        );
+        let app = Located::new(
+            Exp::App(
+                Box::new(Located::new(
+                    Exp::Abs("m".into(), meta_t, dummy_typ(), Box::new(body)),
+                    span.clone(),
+                )),
+                Box::new(Located::new(Exp::Record(vec![]), span.clone())),
+            ),
+            span,
+        );
+
+        let result = reduce_exp(&env, app, &ctx, &settings);
+        assert!(
+            matches!(
+                result.node,
+                Exp::Abs(_, _, _, ref body)
+                    if matches!(
+                        body.node,
+                        Exp::Field(ref inner, ref name)
+                            if name == "NewState"
+                                && matches!(inner.node, Exp::Rel(0))
+                    )
+            ),
+            "Expected erased witness binder to be dropped before runtime arg, got {:?}",
+            result.node
+        );
+    }
+
+    #[test]
     fn test_let_inlining_single_use() {
         // let x = 42 in x  →  42
         let settings = Settings::new();
@@ -2697,6 +3353,800 @@ mod tests {
     }
 
     #[test]
+    fn test_field_projection_falls_through_abs_tail_args() {
+        let settings = Settings::new();
+        let ctx = ReduceCtx {
+            timpures: HashSet::new(),
+            impures: HashSet::new(),
+            uses: HashMap::new(),
+            yanked_case: Cell::new(false),
+            full_mode: false,
+        };
+        let env = Env::empty();
+        let unit_t = Located::dummy(Typ::Record(vec![]));
+        let int_t = dummy_typ();
+        let b_record_t = Located::dummy(Typ::Record(vec![("B".into(), int_t.clone())]));
+        let unit_e = Located::dummy(Exp::Record(vec![]));
+        let combined = Located::dummy(Exp::App(
+            Box::new(Located::dummy(Exp::App(
+                Box::new(Located::dummy(Exp::Abs(
+                    "_".into(),
+                    unit_t.clone(),
+                    b_record_t,
+                    Box::new(Located::dummy(Exp::Record(vec![(
+                        "B".into(),
+                        prim_int(9),
+                        int_t.clone(),
+                    )]))),
+                ))),
+                Box::new(unit_e.clone()),
+            ))),
+            Box::new(Located::dummy(Exp::Record(vec![(
+                "A".into(),
+                prim_int(7),
+                int_t.clone(),
+            )]))),
+        ));
+        let projected = Located::dummy(Exp::Field(Box::new(combined), "A".into()));
+
+        let result = reduce_exp(&env, projected, &ctx, &settings);
+        assert!(
+            matches!(result.node, Exp::Prim(Prim::Int(7))),
+            "Expected projection to continue into abs tail args, got {:?}",
+            result.node
+        );
+    }
+
+    #[test]
+    fn test_field_projection_skips_erased_proof_args() {
+        let settings = Settings::new();
+        let ctx = ReduceCtx {
+            timpures: HashSet::new(),
+            impures: HashSet::new(),
+            uses: HashMap::new(),
+            yanked_case: Cell::new(false),
+            full_mode: false,
+        };
+        let env = Env::empty();
+        let int_t = dummy_typ();
+        let combined = Located::dummy(Exp::App(
+            Box::new(Located::dummy(Exp::App(
+                Box::new(Located::dummy(Exp::Record(vec![(
+                    "B".into(),
+                    prim_int(9),
+                    int_t.clone(),
+                )]))),
+                Box::new(Located::dummy(Exp::Prim(Prim::Int(0)))),
+            ))),
+            Box::new(Located::dummy(Exp::Record(vec![(
+                "A".into(),
+                prim_int(7),
+                int_t.clone(),
+            )]))),
+        ));
+        let projected = Located::dummy(Exp::Field(Box::new(combined), "A".into()));
+
+        let result = reduce_exp(&env, projected, &ctx, &settings);
+        assert!(
+            matches!(result.node, Exp::Prim(Prim::Int(7))),
+            "Expected projection to skip erased proof args, got {:?}",
+            result.node
+        );
+    }
+
+    #[test]
+    fn test_field_projection_prefers_arg_that_can_supply_field() {
+        let settings = Settings::new();
+        let ctx = ReduceCtx {
+            timpures: HashSet::new(),
+            impures: HashSet::new(),
+            uses: HashMap::new(),
+            yanked_case: Cell::new(false),
+            full_mode: false,
+        };
+        let env = Env::empty();
+        let int_t = dummy_typ();
+        let combined = Located::dummy(Exp::App(
+            Box::new(Located::dummy(Exp::App(
+                Box::new(Located::dummy(Exp::Record(vec![(
+                    "B".into(),
+                    prim_int(9),
+                    int_t.clone(),
+                )]))),
+                Box::new(Located::dummy(Exp::Record(vec![(
+                    "A".into(),
+                    prim_int(7),
+                    int_t.clone(),
+                )]))),
+            ))),
+            Box::new(Located::dummy(Exp::Record(vec![(
+                "C".into(),
+                prim_int(13),
+                int_t.clone(),
+            )]))),
+        ));
+        let projected = Located::dummy(Exp::Field(Box::new(combined), "A".into()));
+
+        let result = reduce_exp(&env, projected, &ctx, &settings);
+        assert!(
+            matches!(result.node, Exp::Prim(Prim::Int(7))),
+            "Expected projection to prefer the arg supplying the field, got {:?}",
+            result.node
+        );
+    }
+
+    #[test]
+    fn test_field_projection_prefers_direct_arg_over_earlier_reapplied_receiver() {
+        let settings = Settings::new();
+        let ctx = ReduceCtx {
+            timpures: HashSet::new(),
+            impures: HashSet::new(),
+            uses: HashMap::new(),
+            yanked_case: Cell::new(false),
+            full_mode: false,
+        };
+        let env = Env::empty();
+        let int_t = dummy_typ();
+        let a_record_t = Located::dummy(Typ::Record(vec![("A".into(), int_t.clone())]));
+        let earlier_receiver = Located::dummy(Exp::Abs(
+            "row".into(),
+            a_record_t.clone(),
+            a_record_t.clone(),
+            Box::new(Located::dummy(Exp::Record(vec![(
+                "A".into(),
+                prim_int(1),
+                int_t.clone(),
+            )]))),
+        ));
+        let direct_row =
+            Located::dummy(Exp::Record(vec![("A".into(), prim_int(7), int_t.clone())]));
+        let combined = Located::dummy(Exp::App(
+            Box::new(Located::dummy(Exp::App(
+                Box::new(Located::dummy(Exp::Record(vec![(
+                    "B".into(),
+                    prim_int(9),
+                    int_t.clone(),
+                )]))),
+                Box::new(earlier_receiver),
+            ))),
+            Box::new(direct_row),
+        ));
+        let projected = Located::dummy(Exp::Field(Box::new(combined), "A".into()));
+
+        let result = reduce_exp(&env, projected, &ctx, &settings);
+        assert!(
+            matches!(result.node, Exp::Prim(Prim::Int(7))),
+            "Expected direct arg to beat earlier reapplied receiver, got {:?}",
+            result.node
+        );
+    }
+
+    #[test]
+    fn test_app_pushes_through_missing_field_projection() {
+        let settings = Settings::new();
+        let ctx = ReduceCtx {
+            timpures: HashSet::new(),
+            impures: HashSet::new(),
+            uses: HashMap::new(),
+            yanked_case: Cell::new(false),
+            full_mode: false,
+        };
+        let env = Env::empty();
+        let unit_t = Located::dummy(Typ::Record(vec![]));
+        let int_t = dummy_typ();
+        let b_record_t = Located::dummy(Typ::Record(vec![("B".into(), int_t.clone())]));
+        let unit_e = Located::dummy(Exp::Record(vec![]));
+        let projected_app = Located::dummy(Exp::App(
+            Box::new(Located::dummy(Exp::App(
+                Box::new(Located::dummy(Exp::Field(
+                    Box::new(Located::dummy(Exp::Abs(
+                        "_".into(),
+                        unit_t.clone(),
+                        b_record_t,
+                        Box::new(Located::dummy(Exp::Record(vec![(
+                            "B".into(),
+                            prim_int(9),
+                            int_t.clone(),
+                        )]))),
+                    ))),
+                    "A".into(),
+                ))),
+                Box::new(unit_e.clone()),
+            ))),
+            Box::new(Located::dummy(Exp::Record(vec![(
+                "A".into(),
+                prim_int(7),
+                int_t.clone(),
+            )]))),
+        ));
+
+        let result = reduce_exp(&env, projected_app, &ctx, &settings);
+        assert!(
+            matches!(result.node, Exp::Prim(Prim::Int(7))),
+            "Expected app to push through missing field projection, got {:?}",
+            result.node
+        );
+    }
+
+    #[test]
+    fn test_app_redirects_simple_missing_field_to_row_arg() {
+        let settings = Settings::new();
+        let ctx = ReduceCtx {
+            timpures: HashSet::new(),
+            impures: HashSet::new(),
+            uses: HashMap::new(),
+            yanked_case: Cell::new(false),
+            full_mode: false,
+        };
+        let env = Env::empty();
+        let unit_t = Located::dummy(Typ::Record(vec![]));
+        let int_t = dummy_typ();
+        let row_t = Located::dummy(Typ::Record(vec![("A".into(), int_t.clone())]));
+        let curried_acc = Located::dummy(Exp::Abs(
+            "r".into(),
+            row_t.clone(),
+            Located::dummy(Typ::Fun(Box::new(unit_t.clone()), Box::new(int_t.clone()))),
+            Box::new(Located::dummy(Exp::Abs(
+                "_".into(),
+                unit_t,
+                int_t.clone(),
+                Box::new(prim_int(0)),
+            ))),
+        ));
+        let projected_app = Located::dummy(Exp::App(
+            Box::new(Located::dummy(Exp::Field(
+                Box::new(curried_acc),
+                "A".into(),
+            ))),
+            Box::new(Located::dummy(Exp::Record(vec![(
+                "A".into(),
+                prim_int(7),
+                int_t,
+            )]))),
+        ));
+
+        let result = reduce_exp(&env, projected_app, &ctx, &settings);
+        assert!(
+            matches!(result.node, Exp::Prim(Prim::Int(7))),
+            "Expected simple missing field projection to redirect to row arg, got {:?}",
+            result.node
+        );
+    }
+
+    #[test]
+    fn test_app_redirects_nested_missing_field_to_tail_arg() {
+        let settings = Settings::new();
+        let ctx = ReduceCtx {
+            timpures: HashSet::new(),
+            impures: HashSet::new(),
+            uses: HashMap::new(),
+            yanked_case: Cell::new(false),
+            full_mode: false,
+        };
+        let env = Env::empty();
+        let unit_t = Located::dummy(Typ::Record(vec![]));
+        let int_t = dummy_typ();
+        let inject_fun_t =
+            Located::dummy(Typ::Fun(Box::new(unit_t.clone()), Box::new(int_t.clone())));
+        let meta_t = Located::dummy(Typ::Record(vec![("Inject".into(), inject_fun_t.clone())]));
+        let b_record_t = Located::dummy(Typ::Record(vec![("B".into(), meta_t.clone())]));
+        let unit_e = Located::dummy(Exp::Record(vec![]));
+        let projected_app = Located::dummy(Exp::App(
+            Box::new(Located::dummy(Exp::App(
+                Box::new(Located::dummy(Exp::Field(
+                    Box::new(Located::dummy(Exp::Field(
+                        Box::new(Located::dummy(Exp::Abs(
+                            "_".into(),
+                            unit_t.clone(),
+                            b_record_t,
+                            Box::new(Located::dummy(Exp::Record(vec![(
+                                "B".into(),
+                                Located::dummy(Exp::Record(vec![(
+                                    "Inject".into(),
+                                    Located::dummy(Exp::Abs(
+                                        "_".into(),
+                                        unit_t.clone(),
+                                        int_t.clone(),
+                                        Box::new(prim_int(9)),
+                                    )),
+                                    inject_fun_t.clone(),
+                                )])),
+                                meta_t.clone(),
+                            )]))),
+                        ))),
+                        "A".into(),
+                    ))),
+                    "Inject".into(),
+                ))),
+                Box::new(unit_e.clone()),
+            ))),
+            Box::new(Located::dummy(Exp::Record(vec![(
+                "A".into(),
+                Located::dummy(Exp::Record(vec![(
+                    "Inject".into(),
+                    Located::dummy(Exp::Abs(
+                        "_".into(),
+                        unit_t.clone(),
+                        int_t.clone(),
+                        Box::new(prim_int(7)),
+                    )),
+                    inject_fun_t,
+                )])),
+                meta_t,
+            )]))),
+        ));
+
+        let result = reduce_exp(&env, projected_app, &ctx, &settings);
+        assert!(
+            matches!(result.node, Exp::Prim(Prim::Int(7))),
+            "Expected nested missing field projection to redirect to tail arg, got {:?}",
+            result.node
+        );
+    }
+
+    #[test]
+    fn test_app_redirects_nested_missing_field_to_earlier_arg() {
+        let settings = Settings::new();
+        let ctx = ReduceCtx {
+            timpures: HashSet::new(),
+            impures: HashSet::new(),
+            uses: HashMap::new(),
+            yanked_case: Cell::new(false),
+            full_mode: false,
+        };
+        let env = Env::empty();
+        let unit_t = Located::dummy(Typ::Record(vec![]));
+        let int_t = dummy_typ();
+        let row_t = Located::dummy(Typ::Record(vec![("A".into(), int_t.clone())]));
+        let unit_e = Located::dummy(Exp::Record(vec![]));
+        let projected_app = Located::dummy(Exp::App(
+            Box::new(Located::dummy(Exp::App(
+                Box::new(Located::dummy(Exp::Field(
+                    Box::new(Located::dummy(Exp::Abs(
+                        "_".into(),
+                        row_t.clone(),
+                        Located::dummy(Typ::Fun(Box::new(unit_t.clone()), Box::new(int_t.clone()))),
+                        Box::new(Located::dummy(Exp::Abs(
+                            "_".into(),
+                            unit_t.clone(),
+                            int_t.clone(),
+                            Box::new(prim_int(0)),
+                        ))),
+                    ))),
+                    "A".into(),
+                ))),
+                Box::new(Located::dummy(Exp::Record(vec![(
+                    "A".into(),
+                    prim_int(7),
+                    int_t.clone(),
+                )]))),
+            ))),
+            Box::new(unit_e),
+        ));
+
+        let result = reduce_exp(&env, projected_app, &ctx, &settings);
+        assert!(
+            matches!(result.node, Exp::Prim(Prim::Int(7))),
+            "Expected nested missing field projection to redirect to earlier arg, got {:?}",
+            result.node
+        );
+    }
+
+    #[test]
+    fn test_project_missing_field_prefers_later_row_arg_when_both_match() {
+        let env = Env::empty();
+        let span = Span::dummy();
+        let int_t = dummy_typ();
+        let first = Located::dummy(Exp::Record(vec![("A".into(), prim_int(7), int_t.clone())]));
+        let second = Located::dummy(Exp::Record(vec![("A".into(), prim_int(9), int_t.clone())]));
+
+        let projected = project_missing_field_from_args_in_env(&env, &[first, second], "A", &span)
+            .expect("field should be recoverable");
+        let reduced = reduce_exp(
+            &env,
+            projected,
+            &ReduceCtx {
+                timpures: HashSet::new(),
+                impures: HashSet::new(),
+                uses: HashMap::new(),
+                yanked_case: Cell::new(false),
+                full_mode: false,
+            },
+            &Settings::new(),
+        );
+        assert!(
+            matches!(reduced.node, Exp::Prim(Prim::Int(9))),
+            "Expected later row argument to win when both supply the field, got {:?}",
+            reduced.node
+        );
+    }
+
+    #[test]
+    fn test_reapply_single_arg_skips_function_like_continuation_for_scalar_field() {
+        let env = Env::empty();
+        let int_t = dummy_typ();
+        let string_t = Located::dummy(Typ::Ffi("Basis".into(), "string".into()));
+        let show_fun_t = Located::dummy(Typ::Fun(
+            Box::new(int_t.clone()),
+            Box::new(string_t.clone()),
+        ));
+        let meta_t = Located::dummy(Typ::Record(vec![("Show".into(), show_fun_t.clone())]));
+        let row_t = Located::dummy(Typ::Record(vec![("A".into(), meta_t.clone())]));
+        let head = Located::dummy(Exp::Field(
+            Box::new(Located::dummy(Exp::Field(
+                Box::new(Located::dummy(Exp::Record(vec![(
+                    "A".into(),
+                    Located::dummy(Exp::Record(vec![(
+                        "Show".into(),
+                        Located::dummy(Exp::Abs(
+                            "_".into(),
+                            int_t.clone(),
+                            string_t,
+                            Box::new(Located::dummy(Exp::Prim(Prim::String(
+                                StringMode::Normal,
+                                "ok".into(),
+                            )))),
+                        )),
+                        show_fun_t,
+                    )])),
+                    meta_t,
+                )]))),
+                "A".into(),
+            ))),
+            "Show".into(),
+        ));
+        let continuation =
+            Located::dummy(Exp::Abs("r2".into(), row_t, int_t, Box::new(prim_int(7))));
+
+        let result = reapply_single_arg_if_function_like_in_env(&env, head.clone(), continuation);
+        assert_eq!(
+            format!("{:?}", result.node),
+            format!("{:?}", head.node),
+            "Expected continuation lambda not to be reapplied to scalar field head"
+        );
+    }
+
+    #[test]
+    fn test_reapply_single_arg_keeps_non_function_like_arg() {
+        let env = Env::empty();
+        let int_t = dummy_typ();
+        let string_t = Located::dummy(Typ::Ffi("Basis".into(), "string".into()));
+        let show_fun_t = Located::dummy(Typ::Fun(
+            Box::new(int_t.clone()),
+            Box::new(string_t.clone()),
+        ));
+        let head = Located::dummy(Exp::Field(
+            Box::new(Located::dummy(Exp::Record(vec![(
+                "Show".into(),
+                Located::dummy(Exp::Abs(
+                    "_".into(),
+                    int_t.clone(),
+                    string_t,
+                    Box::new(Located::dummy(Exp::Prim(Prim::String(
+                        StringMode::Normal,
+                        "ok".into(),
+                    )))),
+                )),
+                show_fun_t,
+            )]))),
+            "Show".into(),
+        ));
+
+        let result = reapply_single_arg_if_function_like_in_env(
+            &env,
+            head,
+            Located::dummy(Exp::Record(vec![])),
+        );
+        assert!(
+            matches!(result.node, Exp::App(_, _)),
+            "Expected non-function-like arg to keep reapplication, got {:?}",
+            result.node
+        );
+    }
+
+    #[test]
+    fn test_app_redirects_nested_missing_field_before_applying_mixed_record() {
+        let settings = Settings::new();
+        let ctx = ReduceCtx {
+            timpures: HashSet::new(),
+            impures: HashSet::new(),
+            uses: HashMap::new(),
+            yanked_case: Cell::new(false),
+            full_mode: false,
+        };
+        let env = Env::empty();
+        let unit_t = Located::dummy(Typ::Record(vec![]));
+        let int_t = dummy_typ();
+        let string_t = Located::dummy(Typ::Ffi("Basis".into(), "string".into()));
+        let show_fun_t = Located::dummy(Typ::Fun(
+            Box::new(int_t.clone()),
+            Box::new(string_t.clone()),
+        ));
+        let meta_t = Located::dummy(Typ::Record(vec![
+            ("Name".into(), string_t.clone()),
+            ("Show".into(), show_fun_t.clone()),
+        ]));
+        let b_record_t = Located::dummy(Typ::Record(vec![("B".into(), meta_t.clone())]));
+        let unit_e = Located::dummy(Exp::Record(vec![]));
+        let projected_app = Located::dummy(Exp::App(
+            Box::new(Located::dummy(Exp::App(
+                Box::new(Located::dummy(Exp::Field(
+                    Box::new(Located::dummy(Exp::Field(
+                        Box::new(Located::dummy(Exp::Abs(
+                            "_".into(),
+                            unit_t.clone(),
+                            b_record_t,
+                            Box::new(Located::dummy(Exp::Record(vec![(
+                                "B".into(),
+                                Located::dummy(Exp::Record(vec![
+                                    (
+                                        "Name".into(),
+                                        Located::dummy(Exp::Prim(Prim::String(
+                                            StringMode::Normal,
+                                            "ignored".into(),
+                                        ))),
+                                        string_t.clone(),
+                                    ),
+                                    (
+                                        "Show".into(),
+                                        Located::dummy(Exp::Abs(
+                                            "_".into(),
+                                            unit_t.clone(),
+                                            int_t.clone(),
+                                            Box::new(prim_int(9)),
+                                        )),
+                                        show_fun_t.clone(),
+                                    ),
+                                ])),
+                                meta_t.clone(),
+                            )]))),
+                        ))),
+                        "A".into(),
+                    ))),
+                    "Show".into(),
+                ))),
+                Box::new(unit_e.clone()),
+            ))),
+            Box::new(Located::dummy(Exp::Record(vec![(
+                "A".into(),
+                Located::dummy(Exp::Record(vec![
+                    (
+                        "Name".into(),
+                        Located::dummy(Exp::Prim(Prim::String(StringMode::Normal, "n".into()))),
+                        string_t,
+                    ),
+                    (
+                        "Show".into(),
+                        Located::dummy(Exp::Abs(
+                            "_".into(),
+                            unit_t,
+                            int_t.clone(),
+                            Box::new(prim_int(7)),
+                        )),
+                        show_fun_t,
+                    ),
+                ])),
+                meta_t,
+            )]))),
+        ));
+
+        let result = reduce_exp(&env, projected_app, &ctx, &settings);
+        assert!(
+            matches!(result.node, Exp::Prim(Prim::Int(7))),
+            "Expected mixed-record missing field projection to project before applying, got {:?}",
+            result.node
+        );
+    }
+
+    #[test]
+    fn test_app_preserves_direct_field_projection_on_projected_record() {
+        let settings = Settings::new();
+        let ctx = ReduceCtx {
+            timpures: HashSet::new(),
+            impures: HashSet::new(),
+            uses: HashMap::new(),
+            yanked_case: Cell::new(false),
+            full_mode: false,
+        };
+        let env = Env::empty();
+        let int_t = dummy_typ();
+        let string_t = Located::dummy(Typ::Ffi("Basis".into(), "string".into()));
+        let show_fun_t = Located::dummy(Typ::Fun(
+            Box::new(int_t.clone()),
+            Box::new(string_t.clone()),
+        ));
+        let meta_t = Located::dummy(Typ::Record(vec![("Show".into(), show_fun_t.clone())]));
+        let holder = Located::dummy(Exp::Record(vec![(
+            "A".into(),
+            Located::dummy(Exp::Record(vec![(
+                "Show".into(),
+                Located::dummy(Exp::Abs(
+                    "x".into(),
+                    int_t.clone(),
+                    string_t.clone(),
+                    Box::new(Located::dummy(Exp::Prim(Prim::String(
+                        StringMode::Normal,
+                        "ok".into(),
+                    )))),
+                )),
+                show_fun_t,
+            )])),
+            meta_t,
+        )]));
+        let applied = Located::dummy(Exp::App(
+            Box::new(Located::dummy(Exp::Field(
+                Box::new(Located::dummy(Exp::Field(Box::new(holder), "A".into()))),
+                "Show".into(),
+            ))),
+            Box::new(prim_int(7)),
+        ));
+
+        let result = reduce_exp(&env, applied, &ctx, &settings);
+        assert!(matches!(
+            result.node,
+            Exp::Prim(Prim::String(StringMode::Normal, ref value)) if value == "ok"
+        ));
+    }
+
+    #[test]
+    fn test_field_projects_direct_field_from_head_before_applying_arg() {
+        let settings = Settings::new();
+        let ctx = ReduceCtx {
+            timpures: HashSet::new(),
+            impures: HashSet::new(),
+            uses: HashMap::new(),
+            yanked_case: Cell::new(false),
+            full_mode: false,
+        };
+        let env = Env::empty();
+        let int_t = dummy_typ();
+        let string_t = Located::dummy(Typ::Ffi("Basis".into(), "string".into()));
+        let show_fun_t = Located::dummy(Typ::Fun(
+            Box::new(int_t.clone()),
+            Box::new(string_t.clone()),
+        ));
+        let meta_t = Located::dummy(Typ::Record(vec![("Show".into(), show_fun_t.clone())]));
+        let holder = Located::dummy(Exp::Record(vec![(
+            "A".into(),
+            Located::dummy(Exp::Record(vec![(
+                "Show".into(),
+                Located::dummy(Exp::Abs(
+                    "x".into(),
+                    int_t.clone(),
+                    string_t.clone(),
+                    Box::new(Located::dummy(Exp::Prim(Prim::String(
+                        StringMode::Normal,
+                        "ok".into(),
+                    )))),
+                )),
+                show_fun_t,
+            )])),
+            meta_t,
+        )]));
+        let malformed = Located::dummy(Exp::Field(
+            Box::new(Located::dummy(Exp::App(
+                Box::new(Located::dummy(Exp::Field(Box::new(holder), "A".into()))),
+                Box::new(prim_int(7)),
+            ))),
+            "Show".into(),
+        ));
+
+        let result = reduce_exp(&env, malformed, &ctx, &settings);
+        assert!(matches!(
+            result.node,
+            Exp::Prim(Prim::String(StringMode::Normal, ref value)) if value == "ok"
+        ));
+    }
+
+    #[test]
+    fn test_app_preserves_direct_field_projection_on_projected_rel_record() {
+        let settings = Settings::new();
+        let ctx = ReduceCtx {
+            timpures: HashSet::new(),
+            impures: HashSet::new(),
+            uses: HashMap::new(),
+            yanked_case: Cell::new(false),
+            full_mode: false,
+        };
+        let int_t = dummy_typ();
+        let string_t = Located::dummy(Typ::Ffi("Basis".into(), "string".into()));
+        let show_fun_t = Located::dummy(Typ::Fun(
+            Box::new(int_t.clone()),
+            Box::new(string_t.clone()),
+        ));
+        let meta_t = Located::dummy(Typ::Record(vec![("Show".into(), show_fun_t.clone())]));
+        let holder_t = Located::dummy(Typ::Record(vec![("A".into(), meta_t.clone())]));
+        let holder = Located::dummy(Exp::Record(vec![(
+            "A".into(),
+            Located::dummy(Exp::Record(vec![(
+                "Show".into(),
+                Located::dummy(Exp::Abs(
+                    "x".into(),
+                    int_t.clone(),
+                    string_t.clone(),
+                    Box::new(Located::dummy(Exp::Prim(Prim::String(
+                        StringMode::Normal,
+                        "ok".into(),
+                    )))),
+                )),
+                show_fun_t,
+            )])),
+            meta_t,
+        )]));
+        let env = Env::empty().push_rel_opt("cols", holder_t, Some(holder));
+        let applied = Located::dummy(Exp::App(
+            Box::new(Located::dummy(Exp::Field(
+                Box::new(Located::dummy(Exp::Field(
+                    Box::new(Located::dummy(Exp::Rel(0))),
+                    "A".into(),
+                ))),
+                "Show".into(),
+            ))),
+            Box::new(prim_int(7)),
+        ));
+
+        let result = reduce_exp(&env, applied, &ctx, &settings);
+        assert!(matches!(
+            result.node,
+            Exp::Prim(Prim::String(StringMode::Normal, ref value)) if value == "ok"
+        ));
+    }
+
+    #[test]
+    fn test_field_projects_direct_field_from_rel_head_before_applying_arg() {
+        let settings = Settings::new();
+        let ctx = ReduceCtx {
+            timpures: HashSet::new(),
+            impures: HashSet::new(),
+            uses: HashMap::new(),
+            yanked_case: Cell::new(false),
+            full_mode: false,
+        };
+        let int_t = dummy_typ();
+        let string_t = Located::dummy(Typ::Ffi("Basis".into(), "string".into()));
+        let show_fun_t = Located::dummy(Typ::Fun(
+            Box::new(int_t.clone()),
+            Box::new(string_t.clone()),
+        ));
+        let meta_t = Located::dummy(Typ::Record(vec![("Show".into(), show_fun_t.clone())]));
+        let holder_t = Located::dummy(Typ::Record(vec![("A".into(), meta_t.clone())]));
+        let holder = Located::dummy(Exp::Record(vec![(
+            "A".into(),
+            Located::dummy(Exp::Record(vec![(
+                "Show".into(),
+                Located::dummy(Exp::Abs(
+                    "x".into(),
+                    int_t.clone(),
+                    string_t.clone(),
+                    Box::new(Located::dummy(Exp::Prim(Prim::String(
+                        StringMode::Normal,
+                        "ok".into(),
+                    )))),
+                )),
+                show_fun_t,
+            )])),
+            meta_t,
+        )]));
+        let env = Env::empty().push_rel_opt("cols", holder_t, Some(holder));
+        let malformed = Located::dummy(Exp::Field(
+            Box::new(Located::dummy(Exp::App(
+                Box::new(Located::dummy(Exp::Field(
+                    Box::new(Located::dummy(Exp::Rel(0))),
+                    "A".into(),
+                ))),
+                Box::new(prim_int(7)),
+            ))),
+            "Show".into(),
+        ));
+
+        let result = reduce_exp(&env, malformed, &ctx, &settings);
+        assert!(matches!(
+            result.node,
+            Exp::Prim(Prim::String(StringMode::Normal, ref value)) if value == "ok"
+        ));
+    }
+
+    #[test]
     fn test_let_inlines_pure_record_used_only_via_field_projections() {
         let settings = Settings::new();
         let ctx = ReduceCtx {
@@ -2823,6 +4273,77 @@ mod tests {
         let p = Located::dummy(Pat::Prim(Prim::Int(1)));
         let e = prim_int(42);
         assert!(matches!(match_pat(vec![], &p, &e), MatchResult::No));
+    }
+
+    #[test]
+    fn test_case_reduction_substitutes_pattern_binders_innermost_first() {
+        let settings = Settings::new();
+        let ctx = ReduceCtx {
+            timpures: HashSet::new(),
+            impures: HashSet::new(),
+            uses: HashMap::new(),
+            yanked_case: Cell::new(false),
+            full_mode: false,
+        };
+        let env = Env::empty();
+        let int_t = dummy_typ();
+        let pair_t = Located::dummy(Typ::Record(vec![
+            ("head".into(), int_t.clone()),
+            ("tail".into(), int_t.clone()),
+        ]));
+        let dt_ref: DatatypeRef = Arc::new(Mutex::new(DatatypeDef {
+            kind: DatatypeKind::Default,
+            constrs: vec![("Cons".into(), 7001, Some(pair_t.clone()))],
+        }));
+        let list_t = Located::dummy(Typ::Datatype(7000, dt_ref));
+        let pattern = Located::dummy(Pat::Con(
+            DatatypeKind::Default,
+            crate::monomorphized::PatCon::Var(7001),
+            Some(Box::new(Located::dummy(Pat::Record(vec![
+                (
+                    "1".into(),
+                    Located::dummy(Pat::Var("head".into(), int_t.clone())),
+                    int_t.clone(),
+                ),
+                (
+                    "2".into(),
+                    Located::dummy(Pat::Var("tail".into(), int_t.clone())),
+                    int_t.clone(),
+                ),
+            ])))),
+        ));
+        let disc = Located::dummy(Exp::Con(
+            DatatypeKind::Default,
+            crate::monomorphized::PatCon::Var(7001),
+            Some(Box::new(Located::dummy(Exp::Record(vec![
+                ("1".into(), prim_int(1), int_t.clone()),
+                ("2".into(), prim_int(2), int_t.clone()),
+            ])))),
+        ));
+        let body = Located::dummy(Exp::Record(vec![
+            ("head".into(), rel(1), int_t.clone()),
+            ("tail".into(), rel(0), int_t.clone()),
+        ]));
+        let case = Located::dummy(Exp::Case(
+            Box::new(disc),
+            vec![(pattern, body)],
+            CaseMeta {
+                disc: list_t,
+                result: pair_t,
+            },
+        ));
+
+        let result = reduce_exp(&env, case, &ctx, &settings);
+        match result.node {
+            Exp::Record(fields) => {
+                assert!(matches!(fields[0].1.node, Exp::Prim(Prim::Int(1))));
+                assert!(matches!(fields[1].1.node, Exp::Prim(Prim::Int(2))));
+            }
+            other => panic!(
+                "Expected reduced record with preserved binder order, got {:?}",
+                other
+            ),
+        }
     }
 
     #[test]

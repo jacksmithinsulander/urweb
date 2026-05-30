@@ -23,6 +23,7 @@ use crate::core::unpoly::instantiate_cargs;
 use crate::core::untangling::untangle;
 use crate::core::utilities::constructor as con_util;
 use crate::core::utilities::file as file_util;
+use crate::core::utilities::kind as kind_util;
 use crate::core::*;
 use crate::diagnostics::{DiagnosticId, DiagnosticLocale, DiagnosticPayload};
 use crate::error_types::{ErrorReporter, Located, Span};
@@ -35,6 +36,10 @@ use crate::error_types::{ErrorReporter, Located, Span};
 /// Used when wrapping a body in a new outer lambda.
 fn lift_exp_in_exp(depth: usize, e: LocatedExpression) -> LocatedExpression {
     lift_exp_by(depth, 1, e)
+}
+
+fn lift_con_in_exp(e: LocatedExpression) -> LocatedExpression {
+    crate::core::local_reduction::shift_exp(e, 0, 0, 0, 1)
 }
 
 fn lift_exp_by(depth: usize, by: usize, e: LocatedExpression) -> LocatedExpression {
@@ -196,11 +201,9 @@ fn sub_exp_in_exp(
             span,
         ),
         Expression::CAbs(x, k, b) => {
-            // Constructor binder — no exp binder, but lift con refs in rep?
-            // The SML does: bind = fn ((xn, rep), U.Exp.RelC _) => (xn, liftConInExp 0 rep)
-            // For simplicity we don't lift cons in rep (they're Named, not Rel in this pass)
+            let rep2 = lift_con_in_exp(rep.clone());
             Located::new(
-                Expression::CAbs(x, k, Box::new(sub_exp_in_exp(xn, rep, *b))),
+                Expression::CAbs(x, k, Box::new(sub_exp_in_exp(xn, &rep2, *b))),
                 span,
             )
         }
@@ -590,6 +593,41 @@ fn get_app(e: &LocatedExpression) -> Option<AppSpine> {
     })
 }
 
+fn count_value_fun_args(typ: &LocatedConstructor) -> usize {
+    let mut count = 0;
+    let mut current = typ;
+    while let Constructor::TFun(_, ran) = &current.node {
+        count += 1;
+        current = ran;
+    }
+    count
+}
+
+fn is_extraneous_erased_zero_witness_arg(arg: &LocatedExpression) -> bool {
+    matches!(arg.node, Expression::Prim(Prim::Int(0)))
+}
+
+fn strip_extraneous_erased_zero_witness_args(
+    typ: &LocatedConstructor,
+    xs: Vec<LocatedExpression>,
+) -> Vec<LocatedExpression> {
+    let arity = count_value_fun_args(typ);
+    if xs.len() <= arity {
+        return xs;
+    }
+
+    let mut extras_to_drop = xs.len() - arity;
+    let mut filtered = Vec::with_capacity(arity);
+    for arg in xs {
+        if extras_to_drop > 0 && is_extraneous_erased_zero_witness_arg(&arg) {
+            extras_to_drop -= 1;
+            continue;
+        }
+        filtered.push(arg);
+    }
+    filtered
+}
+
 // ---------------------------------------------------------------------------
 // calc_const_args
 // ---------------------------------------------------------------------------
@@ -708,6 +746,146 @@ fn cmp_exp(a: &LocatedExpression, b: &LocatedExpression) -> Ordering {
     cmp_exp_node(&a.node, &b.node)
 }
 
+fn cmp_datatype_kind(a: DatatypeKind, b: DatatypeKind) -> Ordering {
+    fn disc(kind: DatatypeKind) -> u8 {
+        match kind {
+            DatatypeKind::Enum => 0,
+            DatatypeKind::Option => 1,
+            DatatypeKind::Default => 2,
+        }
+    }
+
+    disc(a).cmp(&disc(b))
+}
+
+fn cmp_failure_mode(a: FailureMode, b: FailureMode) -> Ordering {
+    fn disc(mode: FailureMode) -> u8 {
+        match mode {
+            FailureMode::Error => 0,
+            FailureMode::None => 1,
+        }
+    }
+
+    disc(a).cmp(&disc(b))
+}
+
+fn cmp_slice_by<T>(a: &[T], b: &[T], mut cmp: impl FnMut(&T, &T) -> Ordering) -> Ordering {
+    a.len().cmp(&b.len()).then_with(|| {
+        for (left, right) in a.iter().zip(b.iter()) {
+            let ord = cmp(left, right);
+            if ord != Ordering::Equal {
+                return ord;
+            }
+        }
+        Ordering::Equal
+    })
+}
+
+fn cmp_option_by<T>(a: Option<&T>, b: Option<&T>, cmp: impl Fn(&T, &T) -> Ordering) -> Ordering {
+    match (a, b) {
+        (None, None) => Ordering::Equal,
+        (None, Some(_)) => Ordering::Less,
+        (Some(_), None) => Ordering::Greater,
+        (Some(left), Some(right)) => cmp(left, right),
+    }
+}
+
+fn cmp_pattern_constructor(a: &PatternConstructor, b: &PatternConstructor) -> Ordering {
+    fn disc(pattern_constructor: &PatternConstructor) -> u8 {
+        match pattern_constructor {
+            PatternConstructor::Var(_) => 0,
+            PatternConstructor::Ffi { .. } => 1,
+        }
+    }
+
+    let da = disc(a);
+    let db = disc(b);
+    if da != db {
+        return da.cmp(&db);
+    }
+
+    match (a, b) {
+        (PatternConstructor::Var(x), PatternConstructor::Var(y)) => x.cmp(y),
+        (
+            PatternConstructor::Ffi {
+                module: module_left,
+                datatyp: datatype_left,
+                params: params_left,
+                con: con_left,
+                arg: arg_left,
+                kind: kind_left,
+            },
+            PatternConstructor::Ffi {
+                module: module_right,
+                datatyp: datatype_right,
+                params: params_right,
+                con: con_right,
+                arg: arg_right,
+                kind: kind_right,
+            },
+        ) => module_left
+            .cmp(module_right)
+            .then_with(|| datatype_left.cmp(datatype_right))
+            .then_with(|| cmp_slice_by(params_left, params_right, |left, right| left.cmp(right)))
+            .then_with(|| con_left.cmp(con_right))
+            .then_with(|| cmp_option_by(arg_left.as_ref(), arg_right.as_ref(), con_util::compare))
+            .then_with(|| cmp_datatype_kind(*kind_left, *kind_right)),
+        _ => Ordering::Equal,
+    }
+}
+
+fn cmp_pattern(a: &LocatedPattern, b: &LocatedPattern) -> Ordering {
+    fn disc(pattern: &Pattern) -> u8 {
+        match pattern {
+            Pattern::Var(_, _) => 0,
+            Pattern::Prim(_) => 1,
+            Pattern::Constructor(_, _, _, _) => 2,
+            Pattern::Record(_) => 3,
+        }
+    }
+
+    let da = disc(&a.node);
+    let db = disc(&b.node);
+    if da != db {
+        return da.cmp(&db);
+    }
+
+    match (&a.node, &b.node) {
+        (Pattern::Var(name_left, ty_left), Pattern::Var(name_right, ty_right)) => name_left
+            .cmp(name_right)
+            .then_with(|| con_util::compare(ty_left, ty_right)),
+        (Pattern::Prim(left), Pattern::Prim(right)) => left.cmp(right),
+        (
+            Pattern::Constructor(kind_left, pc_left, args_left, sub_left),
+            Pattern::Constructor(kind_right, pc_right, args_right, sub_right),
+        ) => cmp_datatype_kind(*kind_left, *kind_right)
+            .then_with(|| cmp_pattern_constructor(pc_left, pc_right))
+            .then_with(|| cmp_slice_by(args_left, args_right, con_util::compare))
+            .then_with(|| cmp_option_by(sub_left.as_deref(), sub_right.as_deref(), cmp_pattern)),
+        (Pattern::Record(fields_left), Pattern::Record(fields_right)) => {
+            cmp_slice_by(fields_left, fields_right, |left, right| {
+                left.0
+                    .cmp(&right.0)
+                    .then_with(|| cmp_pattern(&left.1, &right.1))
+                    .then_with(|| con_util::compare(&left.2, &right.2))
+            })
+        }
+        _ => Ordering::Equal,
+    }
+}
+
+fn cmp_field_meta(a: &FieldMeta, b: &FieldMeta) -> Ordering {
+    con_util::compare(&a.field, &b.field).then_with(|| con_util::compare(&a.rest, &b.rest))
+}
+
+fn cmp_rest_meta(a: &RestMeta, b: &RestMeta) -> Ordering {
+    con_util::compare(&a.rest, &b.rest)
+}
+
+fn cmp_case_meta(a: &CaseMeta, b: &CaseMeta) -> Ordering {
+    con_util::compare(&a.disc, &b.disc).then_with(|| con_util::compare(&a.result, &b.result))
+}
+
 fn cmp_exp_node(a: &Expression, b: &Expression) -> Ordering {
     fn disc(e: &Expression) -> u8 {
         match e {
@@ -741,21 +919,93 @@ fn cmp_exp_node(a: &Expression, b: &Expression) -> Ordering {
         return da.cmp(&db);
     }
     match (a, b) {
-        (Expression::Prim(pa), Expression::Prim(pb)) => {
-            // Use debug repr for ordering (simple but correct)
-            format!("{pa:?}").cmp(&format!("{pb:?}"))
-        }
+        (Expression::Prim(pa), Expression::Prim(pb)) => pa.cmp(pb),
         (Expression::Rel(x), Expression::Rel(y)) => x.cmp(y),
         (Expression::Named(x), Expression::Named(y)) => x.cmp(y),
+        (
+            Expression::Constructor(kind_left, pc_left, args_left, arg_left),
+            Expression::Constructor(kind_right, pc_right, args_right, arg_right),
+        ) => cmp_datatype_kind(*kind_left, *kind_right)
+            .then_with(|| cmp_pattern_constructor(pc_left, pc_right))
+            .then_with(|| cmp_slice_by(args_left, args_right, con_util::compare))
+            .then_with(|| cmp_option_by(arg_left.as_deref(), arg_right.as_deref(), cmp_exp)),
         (Expression::Ffi(m1, x1), Expression::Ffi(m2, x2)) => m1.cmp(m2).then_with(|| x1.cmp(x2)),
+        (Expression::FfiApp(m1, x1, es1), Expression::FfiApp(m2, x2, es2)) => {
+            m1.cmp(m2).then_with(|| x1.cmp(x2)).then_with(|| {
+                cmp_slice_by(es1, es2, |left, right| {
+                    cmp_exp(&left.0, &right.0).then_with(|| con_util::compare(&left.1, &right.1))
+                })
+            })
+        }
         (Expression::App(f1, a1), Expression::App(f2, a2)) => {
             cmp_exp(f1, f2).then_with(|| cmp_exp(a1, a2))
         }
-        (Expression::Rel(_), _)
-        | (Expression::Named(_), _)
-        | (Expression::Ffi(_, _), _)
-        | (Expression::App(_, _), _) => Ordering::Equal, // same discriminant handled above
-        // For other variants just use Equal (they won't appear as spec keys in practice)
+        (Expression::Abs(x1, t1, rt1, body1), Expression::Abs(x2, t2, rt2, body2)) => x1
+            .cmp(x2)
+            .then_with(|| con_util::compare(t1, t2))
+            .then_with(|| con_util::compare(rt1, rt2))
+            .then_with(|| cmp_exp(body1, body2)),
+        (Expression::CApp(f1, c1), Expression::CApp(f2, c2)) => {
+            cmp_exp(f1, f2).then_with(|| con_util::compare(c1, c2))
+        }
+        (Expression::CAbs(x1, k1, body1), Expression::CAbs(x2, k2, body2)) => x1
+            .cmp(x2)
+            .then_with(|| kind_util::compare(k1, k2))
+            .then_with(|| cmp_exp(body1, body2)),
+        (Expression::KAbs(x1, body1), Expression::KAbs(x2, body2)) => {
+            x1.cmp(x2).then_with(|| cmp_exp(body1, body2))
+        }
+        (Expression::KApp(f1, k1), Expression::KApp(f2, k2)) => {
+            cmp_exp(f1, f2).then_with(|| kind_util::compare(k1, k2))
+        }
+        (Expression::Record(fields1), Expression::Record(fields2)) => {
+            cmp_slice_by(fields1, fields2, |left, right| {
+                con_util::compare(&left.0, &right.0)
+                    .then_with(|| cmp_exp(&left.1, &right.1))
+                    .then_with(|| con_util::compare(&left.2, &right.2))
+            })
+        }
+        (Expression::Field(e1, c1, meta1), Expression::Field(e2, c2, meta2)) => cmp_exp(e1, e2)
+            .then_with(|| con_util::compare(c1, c2))
+            .then_with(|| cmp_field_meta(meta1, meta2)),
+        (Expression::Concat(e1a, c1a, e1b, c1b), Expression::Concat(e2a, c2a, e2b, c2b)) => {
+            cmp_exp(e1a, e2a)
+                .then_with(|| con_util::compare(c1a, c2a))
+                .then_with(|| cmp_exp(e1b, e2b))
+                .then_with(|| con_util::compare(c1b, c2b))
+        }
+        (Expression::Cut(e1, c1, meta1), Expression::Cut(e2, c2, meta2)) => cmp_exp(e1, e2)
+            .then_with(|| con_util::compare(c1, c2))
+            .then_with(|| cmp_field_meta(meta1, meta2)),
+        (Expression::CutMulti(e1, c1, meta1), Expression::CutMulti(e2, c2, meta2)) => {
+            cmp_exp(e1, e2)
+                .then_with(|| con_util::compare(c1, c2))
+                .then_with(|| cmp_rest_meta(meta1, meta2))
+        }
+        (Expression::Case(e1, arms1, meta1), Expression::Case(e2, arms2, meta2)) => cmp_exp(e1, e2)
+            .then_with(|| {
+                cmp_slice_by(arms1, arms2, |left, right| {
+                    cmp_pattern(&left.0, &right.0).then_with(|| cmp_exp(&left.1, &right.1))
+                })
+            })
+            .then_with(|| cmp_case_meta(meta1, meta2)),
+        (Expression::Write(e1), Expression::Write(e2)) => cmp_exp(e1, e2),
+        (Expression::Closure(f1, xs1), Expression::Closure(f2, xs2)) => {
+            f1.cmp(f2).then_with(|| cmp_slice_by(xs1, xs2, cmp_exp))
+        }
+        (Expression::Let(x1, t1, e11, e12), Expression::Let(x2, t2, e21, e22)) => x1
+            .cmp(x2)
+            .then_with(|| con_util::compare(t1, t2))
+            .then_with(|| cmp_exp(e11, e21))
+            .then_with(|| cmp_exp(e12, e22)),
+        (
+            Expression::ServerCall(f1, xs1, t1, mode1),
+            Expression::ServerCall(f2, xs2, t2, mode2),
+        ) => f1
+            .cmp(f2)
+            .then_with(|| cmp_slice_by(xs1, xs2, cmp_exp))
+            .then_with(|| con_util::compare(t1, t2))
+            .then_with(|| cmp_failure_mode(*mode1, *mode2)),
         _ => Ordering::Equal,
     }
 }
@@ -850,6 +1100,126 @@ struct State {
     /// Accumulated new DVal decls (name, id, typ, body, tag).
     decls: Vec<(String, usize, LocatedConstructor, LocatedExpression, String)>,
     specialized: HashSet<usize>,
+}
+
+fn debug_especialize_fold_enabled() -> bool {
+    std::env::var("URWEB_DEBUG_ESPECIALIZE_FOLD")
+        .ok()
+        .as_deref()
+        == Some("1")
+}
+
+fn debug_especialize_args_enabled() -> bool {
+    std::env::var("URWEB_DEBUG_ESPECIALIZE_ARGS")
+        .ok()
+        .as_deref()
+        == Some("1")
+}
+
+fn debug_especialize_fold(name: &str, span: &Span, stage: &str, detail: impl FnOnce() -> String) {
+    let in_top_fold = span.file.ends_with("/lib/ur/top.ur")
+        && matches!(
+            span.first.line,
+            143 | 144
+                | 145
+                | 146
+                | 147
+                | 148
+                | 149
+                | 150
+                | 151
+                | 152
+                | 153
+                | 154
+                | 155
+                | 156
+                | 157
+                | 158
+                | 159
+                | 160
+                | 161
+                | 162
+        );
+    if !debug_especialize_fold_enabled() || !(matches!(name, "foldR" | "foldR2") || in_top_fold) {
+        return;
+    }
+    eprintln!(
+        "URWEB_DEBUG_ESPECIALIZE_FOLD {name} {stage} {}:{} {}",
+        span.file,
+        span.first.line,
+        detail()
+    );
+}
+
+fn debug_especialize_args(
+    name: &str,
+    span: &Span,
+    stage: &str,
+    typ: &LocatedConstructor,
+    xs: &[LocatedExpression],
+) {
+    if !debug_especialize_args_enabled() {
+        return;
+    }
+    if !(span.file.ends_with("/lib/ur/top.ur") || span.file.ends_with("/demo/crud.ur")) {
+        return;
+    }
+    eprintln!(
+        "URWEB_DEBUG_ESPECIALIZE_ARGS {name} {stage} {}:{} arity={} xs=[{}]",
+        span.file,
+        span.first.line,
+        count_value_fun_args(typ),
+        xs.iter()
+            .map(|arg| format!("{:?}", arg.node))
+            .collect::<Vec<_>>()
+            .join(" | "),
+    );
+}
+
+fn live_value_ids(file: &File) -> HashSet<usize> {
+    let mut live = HashSet::new();
+    for decl in file {
+        match &decl.node {
+            Declaration::Val(_, id, _, _, _)
+            | Declaration::Sequence(_, id, _)
+            | Declaration::View(_, id, _, _, _)
+            | Declaration::Cookie(_, id, _, _)
+            | Declaration::Style(_, id, _) => {
+                live.insert(*id);
+            }
+            Declaration::ValRec(bindings) => {
+                for (_, id, _, _, _) in bindings {
+                    live.insert(*id);
+                }
+            }
+            Declaration::Table { id, .. } => {
+                live.insert(*id);
+            }
+            Declaration::Constructor(_, _, _, _)
+            | Declaration::Datatype(_)
+            | Declaration::Export(_, _, _)
+            | Declaration::Index(_, _)
+            | Declaration::Database(_)
+            | Declaration::Task(_, _)
+            | Declaration::Policy(_)
+            | Declaration::OnError(_) => {}
+        }
+    }
+    live
+}
+
+fn prune_specialization_state(
+    file: &File,
+    funcs: &mut HashMap<usize, FuncInfo>,
+    specialized: &mut HashSet<usize>,
+) {
+    let live = live_value_ids(file);
+    funcs.retain(|id, _| live.contains(id));
+    for func in funcs.values_mut() {
+        func.args
+            .retain(|_, specialized_id| live.contains(specialized_id));
+    }
+    specialized.retain(|id| live.contains(id));
 }
 
 // ---------------------------------------------------------------------------
@@ -971,6 +1341,9 @@ fn rewrite_exp(
                 return rewrite_exp_default(env, e, known, st, errors);
             };
 
+            debug_especialize_args(&fi.name, &detail_span, "raw", &typ, &xs);
+            let xs = strip_extraneous_erased_zero_witness_args(&typ, xs);
+            debug_especialize_args(&fi.name, &detail_span, "filtered", &typ, &xs);
             let old_xs = xs.clone();
 
             // Find the prefix of args to specialize on.
@@ -1049,6 +1422,12 @@ fn rewrite_exp(
             let Some((mut new_body, mut new_typ)) = sub_result else {
                 return rewrite_exp_default(env, e, known, st, errors);
             };
+            debug_especialize_fold(&name, &new_body.span, "sub_body", || {
+                format!(
+                    "f_prime={f_prime} fxs={:?} remaining={:?} body={:?} typ={:?}",
+                    fxs_prime, remaining_xs, new_body.node, new_typ.node
+                )
+            });
 
             // Wrap in lambdas for the captured free variables (foldl → increasing order).
             for &n in &fvs_sorted {
@@ -1070,9 +1449,21 @@ fn rewrite_exp(
             // We use the file-level reduce on a synthetic file.
             // For now use the expression-level reduce from local_reduction.
             new_body = crate::core::local_reduction::reduce_exp_with_errors(new_body, errors);
+            debug_especialize_fold(&name, &new_body.span, "reduced", || {
+                format!(
+                    "f_prime={f_prime} body={:?} typ={:?}",
+                    new_body.node, new_typ.node
+                )
+            });
 
             // Recursively rewrite the new body.
             new_body = rewrite_exp(env, new_body, known, st, errors);
+            debug_especialize_fold(&name, &new_body.span, "rewritten", || {
+                format!(
+                    "f_prime={f_prime} body={:?} typ={:?}",
+                    new_body.node, new_typ.node
+                )
+            });
 
             // Emit as new decl.
             st.decls.push((name, f_prime, new_typ, new_body, tag));
@@ -1504,6 +1895,9 @@ fn especialize_loop(
     if changed {
         let file = untangle(file);
         let file = shake(file);
+        let mut funcs = funcs;
+        let mut specialized = specialized;
+        prune_specialization_state(&file, &mut funcs, &mut specialized);
         especialize_loop(funcs, specialized, file, iterations + 1, errors)
     } else {
         file
@@ -1540,6 +1934,10 @@ mod tests {
 
     fn dummy_con() -> LocatedConstructor {
         dummy(Constructor::Unit)
+    }
+
+    fn ffi_con(name: &str) -> LocatedConstructor {
+        dummy(Constructor::Ffi("Basis".into(), name.into()))
     }
 
     /// Empty file passes through unchanged.
@@ -1758,6 +2156,43 @@ mod tests {
         assert!(matches!(app.value_args[0].node, Expression::Named(33)));
     }
 
+    #[test]
+    fn strip_extraneous_erased_zero_witness_args_drops_leading_zero() {
+        let typ = dummy(Constructor::TFun(
+            Box::new(ffi_con("int")),
+            Box::new(dummy(Constructor::TFun(
+                Box::new(ffi_con("string")),
+                Box::new(dummy_con()),
+            ))),
+        ));
+        let xs = vec![
+            dummy(Expression::Prim(crate::primitives::Prim::Int(0))),
+            dummy(Expression::Named(10)),
+            dummy(Expression::Named(20)),
+        ];
+
+        let filtered = strip_extraneous_erased_zero_witness_args(&typ, xs);
+        assert_eq!(filtered.len(), 2);
+        assert!(matches!(filtered[0].node, Expression::Named(10)));
+        assert!(matches!(filtered[1].node, Expression::Named(20)));
+    }
+
+    #[test]
+    fn strip_extraneous_erased_zero_witness_args_keeps_runtime_zero_when_arity_matches() {
+        let typ = dummy(Constructor::TFun(
+            Box::new(ffi_con("int")),
+            Box::new(dummy_con()),
+        ));
+        let xs = vec![dummy(Expression::Prim(crate::primitives::Prim::Int(0)))];
+
+        let filtered = strip_extraneous_erased_zero_witness_args(&typ, xs);
+        assert_eq!(filtered.len(), 1);
+        assert!(matches!(
+            filtered[0].node,
+            Expression::Prim(crate::primitives::Prim::Int(0))
+        ));
+    }
+
     // --- Plan: Catch Missed Mutants - especialize ---
 
     #[test]
@@ -1801,6 +2236,36 @@ mod tests {
         let body = dummy(Expression::Rel(2));
         let result = sub_exp_in_exp(0, &rep, body);
         assert!(matches!(result.node, Expression::Rel(1)));
+    }
+
+    #[test]
+    fn test_sub_exp_lifts_constructor_refs_under_cabs() {
+        let meta = FieldMeta {
+            field: dummy_con(),
+            rest: dummy_con(),
+        };
+        let rep = dummy(Expression::Field(
+            Box::new(dummy(Expression::Rel(0))),
+            dummy(Constructor::Rel(0)),
+            meta,
+        ));
+        let body = dummy(Expression::CAbs(
+            "nm".into(),
+            Box::new(dummy(Kind::Name)),
+            Box::new(dummy(Expression::Rel(0))),
+        ));
+
+        let result = sub_exp_in_exp(0, &rep, body);
+        let Expression::CAbs(_, _, inner) = result.node else {
+            panic!("expected CAbs")
+        };
+        let Expression::Field(_, field_c, _) = inner.node else {
+            panic!("expected field projection")
+        };
+        assert!(
+            matches!(field_c.node, Constructor::Rel(1)),
+            "constructor references in the substituted expression must lift under CAbs"
+        );
     }
 
     #[test]
@@ -1927,6 +2392,26 @@ mod tests {
     }
 
     #[test]
+    fn test_cmp_exp_node_distinguishes_distinct_abs_bodies() {
+        use std::cmp::Ordering;
+
+        let left = Expression::Abs(
+            "x".into(),
+            dummy_con(),
+            dummy_con(),
+            Box::new(dummy(Expression::Rel(0))),
+        );
+        let right = Expression::Abs(
+            "x".into(),
+            dummy_con(),
+            dummy_con(),
+            Box::new(dummy(Expression::Rel(1))),
+        );
+
+        assert_ne!(cmp_exp_node(&left, &right), Ordering::Equal);
+    }
+
+    #[test]
     fn test_build_known_constructor_tfun() {
         // Constructor(id, TFun(...)) -> id in known.
         let tfun = dummy(Constructor::TFun(
@@ -2021,5 +2506,62 @@ mod tests {
         );
         assert_eq!(fxs.len(), 1, "function domain should collect one arg");
         assert!(remaining.is_empty());
+    }
+
+    #[test]
+    fn rewrite_exp_default_refreshes_abs_result_type_from_rewritten_body() {
+        let int_t = ffi_con("int");
+        let string_t = ffi_con("string");
+        let unit_t = dummy_con();
+        let inner = dummy(Expression::Abs(
+            "line".into(),
+            string_t.clone(),
+            unit_t.clone(),
+            Box::new(dummy(Expression::Named(1))),
+        ));
+        let stale_ran = dummy(Constructor::TFun(
+            Box::new(int_t.clone()),
+            Box::new(dummy(Constructor::TFun(
+                Box::new(string_t.clone()),
+                Box::new(unit_t.clone()),
+            ))),
+        ));
+        let outer = dummy(Expression::Abs(
+            "id".into(),
+            int_t,
+            stale_ran,
+            Box::new(inner),
+        ));
+
+        let known = HashSet::new();
+        let mut st = State {
+            max_name: 0,
+            funcs: HashMap::from([(
+                1,
+                FuncInfo {
+                    name: "unit".into(),
+                    args: BTreeMap::new(),
+                    body: dummy(Expression::Record(vec![])),
+                    typ: unit_t.clone(),
+                    tag: String::new(),
+                    const_args: 0,
+                },
+            )]),
+            decls: vec![],
+            specialized: HashSet::new(),
+        };
+        let mut errors = None;
+        let rewritten = rewrite_exp_default(&[], outer, &known, &mut st, &mut errors);
+
+        let Expression::Abs(_, _, ran, _) = rewritten.node else {
+            panic!("expected outer lambda");
+        };
+        let Constructor::TFun(dom, body_ran) = ran.node else {
+            panic!("expected repaired function result type");
+        };
+        assert!(
+            matches!(&dom.node, Constructor::Ffi(module, name) if module == "Basis" && name == "string")
+        );
+        assert!(matches!(body_ran.node, Constructor::Unit));
     }
 }

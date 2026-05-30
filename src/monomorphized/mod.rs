@@ -12,6 +12,7 @@ pub mod endpoints;
 pub mod environment;
 pub mod filecache;
 pub mod fuse;
+pub mod hoist_functions;
 pub mod iflow;
 pub mod jscomp;
 pub mod mono_opt;

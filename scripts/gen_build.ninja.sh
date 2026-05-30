@@ -226,7 +226,7 @@ echo ""
 
 # ── samu rust — build Rust compiler (always rebuilds) ────────────────────────
 echo "rule rust_build_rule"
-echo "  command = cd \$srcdir && CARGO_TARGET_DIR=\$srcdir/target cargo build --release && mkdir -p \$builddir/bin && cp \$srcdir/target/release/ur-compile \$builddir/bin/urweb-rust && chmod 755 \$builddir/bin/urweb-rust"
+echo "  command = mkdir -p \$srcdir/target/release/deps && cd \$srcdir && CARGO_TARGET_DIR=\$srcdir/target cargo build --release && mkdir -p \$builddir/bin && cp \$srcdir/target/release/ur-compile \$builddir/bin/urweb-rust && chmod 755 \$builddir/bin/urweb-rust"
 echo "  description = Build Rust compiler — bin/urweb-rust"
 echo "  pool = console"
 echo ""

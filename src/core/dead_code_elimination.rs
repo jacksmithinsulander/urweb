@@ -20,12 +20,18 @@
 //!
 //! Mirrors `shake.sml`.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{hash_map::Entry, BTreeSet, HashMap};
 
 use crate::core::{
     Constructor, Declaration, Expression, LocatedConstructor, LocatedDeclaration,
     LocatedExpression, LocatedPattern, Pattern, PatternConstructor,
 };
+
+fn debug_shake_target_id() -> Option<usize> {
+    std::env::var("URWEB_DEBUG_SHAKE_ID")
+        .ok()
+        .and_then(|raw| raw.parse::<usize>().ok())
+}
 
 // ---------------------------------------------------------------------------
 // ExpressionDef — what an expression id depends on
@@ -50,6 +56,29 @@ struct ExpressionDef {
     /// Expression-level sub-trees to traverse for [`Expression::Named`] /
     /// [`Expression::ServerCall`] refs.
     expression_deps: Vec<LocatedExpression>,
+}
+
+fn merge_expression_def(existing: &mut ExpressionDef, incoming: ExpressionDef) {
+    for mutual_id in incoming.mutual_group_ids {
+        if !existing.mutual_group_ids.contains(&mutual_id) {
+            existing.mutual_group_ids.push(mutual_id);
+        }
+    }
+    existing.constructor_deps.extend(incoming.constructor_deps);
+    existing.expression_deps.extend(incoming.expression_deps);
+}
+
+fn insert_expression_def(
+    expression_defs: &mut HashMap<usize, ExpressionDef>,
+    id: usize,
+    def: ExpressionDef,
+) {
+    match expression_defs.entry(id) {
+        Entry::Occupied(mut existing) => merge_expression_def(existing.get_mut(), def),
+        Entry::Vacant(slot) => {
+            slot.insert(def);
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -114,10 +143,30 @@ impl Shaker {
     /// the mutual-recursion group is also marked (so a `ValRec` group is
     /// always kept or dropped as a unit).
     fn mark_expression_used(&mut self, id: usize) {
+        if debug_shake_target_id() == Some(id) {
+            eprintln!(
+                "URWEB_DEBUG_SHAKE mark_expression_used id={id} already_used={}",
+                self.used_expressions.contains(&id)
+            );
+        }
         if !self.used_expressions.insert(id) {
             return; // already visited
         }
         if let Some(def) = self.expression_defs.get(&id).cloned() {
+            if debug_shake_target_id() == Some(id) {
+                eprintln!(
+                    "URWEB_DEBUG_SHAKE expand_expression id={id} mutuals={} constructor_deps={} expression_deps={}",
+                    def.mutual_group_ids.len(),
+                    def.constructor_deps.len(),
+                    def.expression_deps.len()
+                );
+                for expr in &def.expression_deps {
+                    eprintln!(
+                        "URWEB_DEBUG_SHAKE expression_dep id={id} expr={:?}",
+                        expr.node
+                    );
+                }
+            }
             for constructor in def.constructor_deps {
                 self.collect_named_from_constructor(&constructor);
             }
@@ -393,7 +442,8 @@ fn build_definition_maps(
             }
 
             Declaration::Val(_name, id, val_type, val_body, _comment) => {
-                expression_defs.insert(
+                insert_expression_def(
+                    &mut expression_defs,
                     *id,
                     ExpressionDef {
                         mutual_group_ids: vec![],
@@ -410,7 +460,8 @@ fn build_definition_maps(
                     .map(|(_name, id, _ty, _body, _comment)| *id)
                     .collect();
                 for (_name, id, val_type, val_body, _comment) in bindings {
-                    expression_defs.insert(
+                    insert_expression_def(
+                        &mut expression_defs,
                         *id,
                         ExpressionDef {
                             mutual_group_ids: all_ids_in_group.clone(),
@@ -432,7 +483,8 @@ fn build_definition_maps(
             } => {
                 // The table's deps: column type, pk type, unique type (cons)
                 // and policy expression, pk expression (exps).
-                expression_defs.insert(
+                insert_expression_def(
+                    &mut expression_defs,
                     *id,
                     ExpressionDef {
                         mutual_group_ids: vec![],
@@ -444,7 +496,8 @@ fn build_definition_maps(
 
             Declaration::Sequence(_name, id, _sql_name) => {
                 // Sequences have no type or body deps.
-                expression_defs.insert(
+                insert_expression_def(
+                    &mut expression_defs,
                     *id,
                     ExpressionDef {
                         mutual_group_ids: vec![],
@@ -455,7 +508,8 @@ fn build_definition_maps(
             }
 
             Declaration::View(_name, id, _sql_name, view_exp, view_con) => {
-                expression_defs.insert(
+                insert_expression_def(
+                    &mut expression_defs,
                     *id,
                     ExpressionDef {
                         mutual_group_ids: vec![],
@@ -466,7 +520,8 @@ fn build_definition_maps(
             }
 
             Declaration::Cookie(_name, id, cookie_type, _sql_name) => {
-                expression_defs.insert(
+                insert_expression_def(
+                    &mut expression_defs,
                     *id,
                     ExpressionDef {
                         mutual_group_ids: vec![],
@@ -477,7 +532,8 @@ fn build_definition_maps(
             }
 
             Declaration::Style(_name, id, _sql_name) => {
-                expression_defs.insert(
+                insert_expression_def(
+                    &mut expression_defs,
                     *id,
                     ExpressionDef {
                         mutual_group_ids: vec![],
@@ -651,10 +707,22 @@ pub fn shake_slicing_for_db(file: crate::core::File) -> crate::core::File {
 fn shake_with_options(file: crate::core::File, slice_for_db: bool) -> crate::core::File {
     // Phase 2: build definition maps.
     let (constructor_defs, expression_defs) = build_definition_maps(&file);
+    if let Some(target_id) = debug_shake_target_id() {
+        eprintln!(
+            "URWEB_DEBUG_SHAKE defs target_id={target_id} has_expression_def={}",
+            expression_defs.contains_key(&target_id)
+        );
+    }
 
     // Phase 1 + 3: seed from roots and close transitively.
     let mut shaker = Shaker::new(constructor_defs, expression_defs);
     seed_roots_from_file(&mut shaker, &file, slice_for_db);
+    if let Some(target_id) = debug_shake_target_id() {
+        eprintln!(
+            "URWEB_DEBUG_SHAKE after_seed target_id={target_id} used={}",
+            shaker.used_expressions.contains(&target_id)
+        );
+    }
 
     let used_constructors = shaker.used_constructors;
     let used_expressions = shaker.used_expressions;
@@ -1106,6 +1174,92 @@ mod tests {
                 .iter()
                 .all(|d| !matches!(&d.node, Declaration::ValRec(_))),
             "unreachable ValRec must be entirely removed"
+        );
+    }
+
+    #[test]
+    fn self_recursive_helper_reached_through_plain_alias_is_kept() {
+        let file = vec![
+            Located::new(
+                Declaration::ValRec(vec![(
+                    "helper".into(),
+                    10,
+                    unit_con(),
+                    named_exp(10),
+                    String::new(),
+                )]),
+                dummy_span(),
+            ),
+            val_decl(11, named_exp(10)),
+            export_decl(11),
+        ];
+
+        let result = shake(file);
+        assert!(
+            result.iter().any(|d| matches!(
+                &d.node,
+                Declaration::ValRec(bindings)
+                    if bindings.iter().any(|(_, id, _, _, _)| *id == 10)
+            )),
+            "self-recursive helper must survive when a plain alias points to it"
+        );
+        assert!(
+            result
+                .iter()
+                .any(|d| matches!(&d.node, Declaration::Val(_, id, _, _, _) if *id == 11)),
+            "alias value must also survive"
+        );
+    }
+
+    #[test]
+    fn duplicate_expression_id_alias_keeps_original_dependencies() {
+        let file = vec![
+            Located::new(
+                Declaration::ValRec(vec![
+                    (
+                        "helper".into(),
+                        10,
+                        unit_con(),
+                        named_exp(10),
+                        String::new(),
+                    ),
+                    (
+                        "length".into(),
+                        11,
+                        unit_con(),
+                        named_exp(10),
+                        String::new(),
+                    ),
+                ]),
+                dummy_span(),
+            ),
+            Located::new(
+                Declaration::Val(
+                    "length".into(),
+                    11,
+                    unit_con(),
+                    named_exp(11),
+                    String::new(),
+                ),
+                dummy_span(),
+            ),
+            export_decl(11),
+        ];
+
+        let result = shake(file);
+        assert!(
+            result.iter().any(|d| matches!(
+                &d.node,
+                Declaration::ValRec(bindings)
+                    if bindings.iter().any(|(_, id, _, _, _)| *id == 10)
+            )),
+            "duplicate-id alias must not erase the recursive helper dependency"
+        );
+        assert!(
+            result
+                .iter()
+                .any(|d| matches!(&d.node, Declaration::Val(_, id, _, _, _) if *id == 11)),
+            "the alias declaration sharing the same id should still be preserved"
         );
     }
 

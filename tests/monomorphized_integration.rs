@@ -13,7 +13,10 @@ use ur::monomorphized::{environment, Exp, Pat, PatCon, Typ};
 fn mono_classify_datatype_enum() {
     let constrs: Vec<(String, usize, Option<ur::monomorphized::LocTyp>)> =
         vec![("A".into(), 0, None), ("B".into(), 1, None)];
-    assert_eq!(utilities::classify_datatype(&constrs), DatatypeKind::Enum);
+    assert_eq!(
+        utilities::classify_datatype(0, &constrs),
+        DatatypeKind::Enum
+    );
 }
 
 #[test]
@@ -21,7 +24,10 @@ fn mono_classify_datatype_option() {
     let unit = Located::dummy(Typ::Source);
     let constrs: Vec<(String, usize, Option<ur::monomorphized::LocTyp>)> =
         vec![("None".into(), 0, None), ("Some".into(), 1, Some(unit))];
-    assert_eq!(utilities::classify_datatype(&constrs), DatatypeKind::Option);
+    assert_eq!(
+        utilities::classify_datatype(0, &constrs),
+        DatatypeKind::Option
+    );
 }
 
 #[test]
@@ -32,7 +38,7 @@ fn mono_classify_datatype_default() {
         ("B".into(), 1, Some(unit)),
     ];
     assert_eq!(
-        utilities::classify_datatype(&constrs),
+        utilities::classify_datatype(0, &constrs),
         DatatypeKind::Default
     );
 }

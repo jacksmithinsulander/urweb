@@ -27,8 +27,27 @@ pub fn sort_fields<T>(fields: &mut [(String, T)]) {
 // classify_datatype — same logic as core::utilities::classify_datatype
 // ---------------------------------------------------------------------------
 
+fn typ_mentions_datatype_id(t: &LocTyp, datatype_id: usize) -> bool {
+    match &t.node {
+        Typ::Fun(dom, ran) => {
+            typ_mentions_datatype_id(dom, datatype_id) || typ_mentions_datatype_id(ran, datatype_id)
+        }
+        Typ::Record(fields) => fields
+            .iter()
+            .any(|(_, field_t)| typ_mentions_datatype_id(field_t, datatype_id)),
+        Typ::Datatype(id, _) => *id == datatype_id,
+        Typ::Ffi(..) | Typ::Source => false,
+        Typ::Option(inner) | Typ::List(inner) | Typ::Signal(inner) | Typ::Transaction(inner) => {
+            typ_mentions_datatype_id(inner, datatype_id)
+        }
+    }
+}
+
 /// Classify a Mono datatype's representation kind from its constructor list.
-pub fn classify_datatype(constrs: &[(String, usize, Option<LocTyp>)]) -> DatatypeKind {
+pub fn classify_datatype(
+    datatype_id: usize,
+    constrs: &[(String, usize, Option<LocTyp>)],
+) -> DatatypeKind {
     let mut nullary = 0usize;
     let mut unary = 0usize;
     for (_, _, arg) in constrs {
@@ -40,7 +59,13 @@ pub fn classify_datatype(constrs: &[(String, usize, Option<LocTyp>)]) -> Datatyp
     }
     if unary == 0 {
         DatatypeKind::Enum
-    } else if nullary == 1 && unary == 1 {
+    } else if nullary == 1
+        && unary == 1
+        && !constrs
+            .iter()
+            .filter_map(|(_, _, arg)| arg.as_ref())
+            .any(|arg| typ_mentions_datatype_id(arg, datatype_id))
+    {
         DatatypeKind::Option
     } else {
         DatatypeKind::Default
@@ -1238,7 +1263,7 @@ mod tests {
     fn classify_datatype_enum() {
         let constrs: Vec<(String, usize, Option<LocTyp>)> =
             vec![("A".into(), 0, None), ("B".into(), 1, None)];
-        assert_eq!(classify_datatype(&constrs), DatatypeKind::Enum);
+        assert_eq!(classify_datatype(0, &constrs), DatatypeKind::Enum);
     }
 
     #[test]
@@ -1246,14 +1271,14 @@ mod tests {
         let unit = Located::dummy(Typ::Record(vec![]));
         let constrs: Vec<(String, usize, Option<LocTyp>)> =
             vec![("None".into(), 0, None), ("Some".into(), 1, Some(unit))];
-        assert_eq!(classify_datatype(&constrs), DatatypeKind::Option);
+        assert_eq!(classify_datatype(0, &constrs), DatatypeKind::Option);
     }
 
     #[test]
     fn classify_datatype_default() {
         let unit = Located::dummy(Typ::Record(vec![]));
         let constrs: Vec<(String, usize, Option<LocTyp>)> = vec![("C".into(), 0, Some(unit))];
-        assert_eq!(classify_datatype(&constrs), DatatypeKind::Default);
+        assert_eq!(classify_datatype(0, &constrs), DatatypeKind::Default);
     }
 
     #[test]
@@ -1352,7 +1377,39 @@ mod tests {
             ("B".into(), 1, None),
             ("C".into(), 2, Some(unit)),
         ];
-        assert_eq!(classify_datatype(&constrs), DatatypeKind::Default);
+        assert_eq!(classify_datatype(0, &constrs), DatatypeKind::Default);
+    }
+
+    #[test]
+    fn classify_datatype_recursive_unary_defaults() {
+        let span = crate::error_types::Span::dummy();
+        let datatype_id = 42usize;
+        let recursive = Located::new(
+            Typ::Datatype(
+                datatype_id,
+                std::sync::Arc::new(std::sync::Mutex::new(crate::monomorphized::DatatypeDef {
+                    kind: DatatypeKind::Default,
+                    constrs: Vec::new(),
+                })),
+            ),
+            span.clone(),
+        );
+        let payload = Located::new(
+            Typ::Record(vec![
+                (
+                    "1".into(),
+                    Located::dummy(Typ::Ffi("Basis".into(), "int".into())),
+                ),
+                ("2".into(), recursive),
+            ]),
+            span,
+        );
+        let constrs: Vec<(String, usize, Option<LocTyp>)> =
+            vec![("Nil".into(), 0, None), ("Cons".into(), 1, Some(payload))];
+        assert_eq!(
+            classify_datatype(datatype_id, &constrs),
+            DatatypeKind::Default
+        );
     }
 
     #[test]

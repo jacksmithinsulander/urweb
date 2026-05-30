@@ -4,7 +4,7 @@
 //!
 //! Mirrors `SideCheck.check` in `sidecheck.sml`.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::diagnostics::{DiagnosticId, DiagnosticPayload};
 use crate::error_types::{ErrorReporter, Span};
@@ -76,6 +76,14 @@ fn warn_getenv_name_not_compile_time_string(
             );
         }
     }
+}
+
+fn debug_side_trace_enabled() -> bool {
+    std::env::var("URWEB_DEBUG_SIDE_TRACE").ok().as_deref() == Some("1")
+}
+
+fn debug_side_trace_span(span: &Span) -> bool {
+    span.file.ends_with("/demo/chat.ur") || span.file.ends_with("/demo/listEdit.ur")
 }
 
 // ---------------------------------------------------------------------------
@@ -266,6 +274,159 @@ fn check_exp(
     }
 }
 
+fn collect_named_ids_any(e: &LocExp, named_ids: &mut HashSet<usize>) {
+    match &e.node {
+        Exp::Named(n) => {
+            named_ids.insert(*n);
+        }
+        Exp::App(f, arg)
+        | Exp::Seq(f, arg)
+        | Exp::Strcat(f, arg)
+        | Exp::Binop(_, _, f, arg)
+        | Exp::SignalBind(f, arg)
+        | Exp::Setval(f, arg) => {
+            collect_named_ids_any(f, named_ids);
+            collect_named_ids_any(arg, named_ids);
+        }
+        Exp::Abs(_, _, _, body)
+        | Exp::Write(body)
+        | Exp::Unop(_, body)
+        | Exp::Field(body, _)
+        | Exp::SignalReturn(body)
+        | Exp::SignalSource(body)
+        | Exp::Sleep(body)
+        | Exp::Spawn(body)
+        | Exp::Nextval(body)
+        | Exp::Dml(body, _)
+        | Exp::Error(body, _)
+        | Exp::Redirect(body, _)
+        | Exp::Uurlify(body, _, _)
+        | Exp::Recv(body, _)
+        | Exp::ServerCall(body, _, _, _)
+        | Exp::JavaScript(_, body) => collect_named_ids_any(body, named_ids),
+        Exp::Con(_, _, Some(inner)) | Exp::Some(_, inner) => {
+            collect_named_ids_any(inner, named_ids)
+        }
+        Exp::Let(_, _, bound, body) => {
+            collect_named_ids_any(bound, named_ids);
+            collect_named_ids_any(body, named_ids);
+        }
+        Exp::FfiApp(_, _, args) => {
+            for (arg, _) in args {
+                collect_named_ids_any(arg, named_ids);
+            }
+        }
+        Exp::Record(fields) => {
+            for (_, arg, _) in fields {
+                collect_named_ids_any(arg, named_ids);
+            }
+        }
+        Exp::Case(disc, arms, _) => {
+            collect_named_ids_any(disc, named_ids);
+            for (_, arm) in arms {
+                collect_named_ids_any(arm, named_ids);
+            }
+        }
+        Exp::ReturnBlob {
+            blob, mime_type, ..
+        } => {
+            if let Some(blob) = blob {
+                collect_named_ids_any(blob, named_ids);
+            }
+            collect_named_ids_any(mime_type, named_ids);
+        }
+        Exp::Query(qm) => {
+            collect_named_ids_any(&qm.query, named_ids);
+            collect_named_ids_any(&qm.body, named_ids);
+            collect_named_ids_any(&qm.initial, named_ids);
+        }
+        Exp::Closure(n, envs) => {
+            named_ids.insert(*n);
+            for env in envs {
+                collect_named_ids_any(env, named_ids);
+            }
+        }
+        Exp::Prim(_) | Exp::Rel(_) | Exp::Ffi(_, _) | Exp::None(_) | Exp::Con(_, _, None) => {}
+    }
+}
+
+fn collect_named_ids_in_javascript(e: &LocExp, named_ids: &mut HashSet<usize>) {
+    match &e.node {
+        Exp::JavaScript(_, body) => collect_named_ids_any(body, named_ids),
+        Exp::App(f, arg)
+        | Exp::Seq(f, arg)
+        | Exp::Strcat(f, arg)
+        | Exp::Binop(_, _, f, arg)
+        | Exp::SignalBind(f, arg)
+        | Exp::Setval(f, arg) => {
+            collect_named_ids_in_javascript(f, named_ids);
+            collect_named_ids_in_javascript(arg, named_ids);
+        }
+        Exp::Abs(_, _, _, body)
+        | Exp::Write(body)
+        | Exp::Unop(_, body)
+        | Exp::Field(body, _)
+        | Exp::SignalReturn(body)
+        | Exp::SignalSource(body)
+        | Exp::Sleep(body)
+        | Exp::Spawn(body)
+        | Exp::Nextval(body)
+        | Exp::Dml(body, _)
+        | Exp::Error(body, _)
+        | Exp::Redirect(body, _)
+        | Exp::Uurlify(body, _, _)
+        | Exp::Recv(body, _)
+        | Exp::ServerCall(body, _, _, _)
+        | Exp::Con(_, _, Some(body))
+        | Exp::Some(_, body) => collect_named_ids_in_javascript(body, named_ids),
+        Exp::Let(_, _, bound, body) => {
+            collect_named_ids_in_javascript(bound, named_ids);
+            collect_named_ids_in_javascript(body, named_ids);
+        }
+        Exp::FfiApp(_, _, args) => {
+            for (arg, _) in args {
+                collect_named_ids_in_javascript(arg, named_ids);
+            }
+        }
+        Exp::Record(fields) => {
+            for (_, arg, _) in fields {
+                collect_named_ids_in_javascript(arg, named_ids);
+            }
+        }
+        Exp::Case(disc, arms, _) => {
+            collect_named_ids_in_javascript(disc, named_ids);
+            for (_, arm) in arms {
+                collect_named_ids_in_javascript(arm, named_ids);
+            }
+        }
+        Exp::ReturnBlob {
+            blob, mime_type, ..
+        } => {
+            if let Some(blob) = blob {
+                collect_named_ids_in_javascript(blob, named_ids);
+            }
+            collect_named_ids_in_javascript(mime_type, named_ids);
+        }
+        Exp::Query(qm) => {
+            collect_named_ids_in_javascript(&qm.query, named_ids);
+            collect_named_ids_in_javascript(&qm.body, named_ids);
+            collect_named_ids_in_javascript(&qm.initial, named_ids);
+        }
+        Exp::Closure(n, envs) => {
+            named_ids.insert(*n);
+            for env in envs {
+                collect_named_ids_in_javascript(env, named_ids);
+            }
+        }
+        Exp::Prim(_)
+        | Exp::Rel(_)
+        | Exp::Named(_)
+        | Exp::Ffi(_, _)
+        | Exp::None(_)
+        | Exp::Con(_, _, None) => {}
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Public entry point
 // ---------------------------------------------------------------------------
@@ -284,20 +445,110 @@ pub fn check(file: File, settings: &Settings, errors: &mut ErrorReporter) -> (Fi
         .filter(|(_, side, _)| !matches!(side, Sidedness::ServerOnly))
         .map(|(n, _, _)| *n)
         .collect();
+    if debug_side_trace_enabled() {
+        eprintln!("URWEB_DEBUG_SIDE client_ids={client_ids:?}");
+    }
 
     let mut env_vars: HashSet<String> = HashSet::new();
     let mut warned_dynamic = false;
+    let mut decl_bodies: HashMap<usize, &LocExp> = HashMap::new();
 
     for d in decls {
         match &d.node {
             Decl::Val(_, n, _, e, _) => {
-                if !client_ids.contains(n) {
+                decl_bodies.insert(*n, e);
+            }
+            Decl::ValRec(vis) => {
+                for (_, n, _, e, _) in vis {
+                    decl_bodies.insert(*n, e);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut client_helper_ids: HashSet<usize> = HashSet::new();
+    let mut worklist: VecDeque<usize> = VecDeque::new();
+    for d in decls {
+        match &d.node {
+            Decl::Val(_, n, _, e, _) if client_ids.contains(n) => {
+                let mut refs = HashSet::new();
+                collect_named_ids_in_javascript(e, &mut refs);
+                for id in refs {
+                    if client_helper_ids.insert(id) {
+                        worklist.push_back(id);
+                    }
+                }
+            }
+            Decl::ValRec(vis) => {
+                for (_, n, _, e, _) in vis {
+                    if client_ids.contains(n) {
+                        let mut refs = HashSet::new();
+                        collect_named_ids_in_javascript(e, &mut refs);
+                        for id in refs {
+                            if client_helper_ids.insert(id) {
+                                worklist.push_back(id);
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    while let Some(id) = worklist.pop_front() {
+        if let Some(body) = decl_bodies.get(&id) {
+            let mut refs = HashSet::new();
+            collect_named_ids_any(body, &mut refs);
+            for next in refs {
+                if client_helper_ids.insert(next) {
+                    worklist.push_back(next);
+                }
+            }
+        }
+    }
+
+    for d in decls {
+        match &d.node {
+            Decl::Val(_, n, _, e, _) => {
+                if debug_side_trace_enabled() && debug_side_trace_span(&d.span) {
+                    eprintln!(
+                        "URWEB_DEBUG_SIDE decl=Val id={} span={}:{} client={} helper={} body={:?}",
+                        n,
+                        d.span.file,
+                        d.span.first.line,
+                        client_ids.contains(n),
+                        false,
+                        e.node
+                    );
+                }
+                if !client_ids.contains(n) && !client_helper_ids.contains(n) {
                     check_exp(e, 0, settings, errors, &mut env_vars, &mut warned_dynamic);
                 }
             }
             Decl::ValRec(vis) => {
                 // Skip entire group if any member is client-side
-                let any_client = vis.iter().any(|(_, n, _, _, _)| client_ids.contains(n));
+                let any_client = vis
+                    .iter()
+                    .any(|(_, n, _, _, _)| client_ids.contains(n) || client_helper_ids.contains(n));
+                if debug_side_trace_enabled() {
+                    for (name, n, _, e, _) in vis {
+                        if debug_side_trace_span(&e.span) {
+                            eprintln!(
+                                "URWEB_DEBUG_SIDE decl=ValRecMember name={} id={} span={}:{} client={} helper={} any_client={} body={:?}",
+                                name,
+                                n,
+                                e.span.file,
+                                e.span.first.line,
+                                client_ids.contains(n),
+                                client_helper_ids.contains(n),
+                                any_client,
+                                e.node
+                            );
+                        }
+                    }
+                }
                 match any_client {
                     true => {}
                     false => {
@@ -325,7 +576,7 @@ pub fn check(file: File, settings: &Settings, errors: &mut ErrorReporter) -> (Fi
 mod tests {
     use super::*;
     use crate::error_types::{CompileError, Located};
-    use crate::monomorphized::Typ;
+    use crate::monomorphized::{JavaScriptMode, Typ};
     use crate::primitives::StringMode;
 
     #[test]
@@ -382,6 +633,132 @@ mod tests {
         assert!(
             matches!(errors.errors.as_slice(), [CompileError::WarningAt { .. }]),
             "expected exactly one getenv static-name warning, got {:?}",
+            errors.errors
+        );
+        assert!(env_vars.is_empty());
+    }
+
+    #[test]
+    fn client_only_ffi_reachable_only_from_javascript_helper_is_allowed() {
+        let settings = Settings::default();
+        let mut errors = ErrorReporter::new_silent();
+        let span = Span::dummy();
+        let unit_type = Located::dummy(Typ::Record(vec![]));
+        let string_type = Located::dummy(Typ::Ffi("Basis".into(), "string".into()));
+
+        let helper_body = Located::new(
+            Exp::FfiApp(
+                "Basis".into(),
+                "alert".into(),
+                vec![(
+                    Located::dummy(Exp::Prim(Prim::String(
+                        StringMode::Normal,
+                        "clicked".into(),
+                    ))),
+                    string_type,
+                )],
+            ),
+            span.clone(),
+        );
+        let helper_decl = Located::new(
+            Decl::Val(
+                "handler".into(),
+                1,
+                unit_type.clone(),
+                helper_body,
+                String::new(),
+            ),
+            span.clone(),
+        );
+
+        let js_use = Located::new(
+            Exp::JavaScript(
+                JavaScriptMode::Attribute,
+                Box::new(Located::new(Exp::Named(1), span.clone())),
+            ),
+            span.clone(),
+        );
+        let page_decl = Located::new(
+            Decl::Val("page".into(), 2, unit_type.clone(), js_use, String::new()),
+            span.clone(),
+        );
+
+        let file = (
+            vec![helper_decl, page_decl],
+            vec![(
+                2,
+                Sidedness::ServerAndPull,
+                crate::monomorphized::DbMode::NoDb,
+            )],
+        );
+        let (_, env_vars) = check(file, &settings, &mut errors);
+
+        assert!(
+            !errors.has_errors(),
+            "helpers used only from JavaScript should not trip the server-only client-FFI check: {:?}",
+            errors.errors
+        );
+        assert!(env_vars.is_empty());
+    }
+
+    #[test]
+    fn client_only_ffi_reachable_only_from_javascript_closure_helper_is_allowed() {
+        let settings = Settings::default();
+        let mut errors = ErrorReporter::new_silent();
+        let span = Span::dummy();
+        let unit_type = Located::dummy(Typ::Record(vec![]));
+        let string_type = Located::dummy(Typ::Ffi("Basis".into(), "string".into()));
+
+        let helper_body = Located::new(
+            Exp::FfiApp(
+                "Basis".into(),
+                "alert".into(),
+                vec![(
+                    Located::dummy(Exp::Prim(Prim::String(
+                        StringMode::Normal,
+                        "clicked".into(),
+                    ))),
+                    string_type,
+                )],
+            ),
+            span.clone(),
+        );
+        let helper_decl = Located::new(
+            Decl::Val(
+                "handler".into(),
+                1,
+                unit_type.clone(),
+                helper_body,
+                String::new(),
+            ),
+            span.clone(),
+        );
+
+        let js_use = Located::new(
+            Exp::JavaScript(
+                JavaScriptMode::Attribute,
+                Box::new(Located::new(Exp::Closure(1, vec![]), span.clone())),
+            ),
+            span.clone(),
+        );
+        let page_decl = Located::new(
+            Decl::Val("page".into(), 2, unit_type.clone(), js_use, String::new()),
+            span.clone(),
+        );
+
+        let file = (
+            vec![helper_decl, page_decl],
+            vec![(
+                2,
+                Sidedness::ServerAndPull,
+                crate::monomorphized::DbMode::NoDb,
+            )],
+        );
+        let (_, env_vars) = check(file, &settings, &mut errors);
+
+        assert!(
+            !errors.has_errors(),
+            "closure helpers used only from JavaScript should not trip the server-only client-FFI check: {:?}",
             errors.errors
         );
         assert!(env_vars.is_empty());

@@ -38,6 +38,11 @@ fn split_val_rec(
     span: crate::error_types::Span,
 ) -> Vec<LocDecl> {
     let group_ids: BTreeSet<usize> = vis.iter().map(|(_, n, _, _, _)| *n).collect();
+    let all_refs_local = vis.iter().all(|(_, _, _, e, _)| {
+        find_all_named_refs(e)
+            .iter()
+            .all(|referenced_id| group_ids.contains(referenced_id))
+    });
 
     // For each member, compute the set of group members its body references.
     let dep_map: BTreeMap<usize, BTreeSet<usize>> = vis
@@ -45,7 +50,11 @@ fn split_val_rec(
         .map(|(_, n, _, e, _)| (*n, find_deps(e, &group_ids)))
         .collect();
 
-    let sccs = tarjan_sccs_topological(&group_ids, &dep_map);
+    let sccs = if all_refs_local {
+        tarjan_sccs_topological(&group_ids, &dep_map)
+    } else {
+        vec![group_ids.clone()]
+    };
 
     // Index by id for O(1) lookup.
     let by_id: BTreeMap<usize, (String, usize, LocTyp, LocExp, String)> = vis
@@ -76,29 +85,36 @@ fn split_val_rec(
 // ---------------------------------------------------------------------------
 
 fn find_deps(e: &LocExp, group: &BTreeSet<usize>) -> BTreeSet<usize> {
+    find_all_named_refs(e)
+        .into_iter()
+        .filter(|id| group.contains(id))
+        .collect()
+}
+
+fn find_all_named_refs(e: &LocExp) -> BTreeSet<usize> {
     let mut deps = BTreeSet::new();
-    collect_deps(e, group, &mut deps);
+    collect_all_named_refs(e, &mut deps);
     deps
 }
 
-fn collect_deps(e: &LocExp, group: &BTreeSet<usize>, deps: &mut BTreeSet<usize>) {
+fn collect_all_named_refs(e: &LocExp, deps: &mut BTreeSet<usize>) {
     if let Exp::Named(n) = &e.node {
-        if group.contains(n) {
-            deps.insert(*n);
-        }
+        deps.insert(*n);
     }
     match &e.node {
         Exp::Prim(_) | Exp::Rel(_) | Exp::Named(_) | Exp::Ffi(_, _) => {}
 
         Exp::Con(_, _, arg) => {
             if let Some(inner) = arg {
-                collect_deps(inner, group, deps);
+                collect_all_named_refs(inner, deps);
             }
         }
         Exp::None(_) => {}
-        Exp::Some(_, inner) => collect_deps(inner, group, deps),
+        Exp::Some(_, inner) => collect_all_named_refs(inner, deps),
 
-        Exp::FfiApp(_, _, args) => args.iter().for_each(|(e, _)| collect_deps(e, group, deps)),
+        Exp::FfiApp(_, _, args) => args
+            .iter()
+            .for_each(|(e, _)| collect_all_named_refs(e, deps)),
 
         Exp::App(e1, e2)
         | Exp::Binop(_, _, e1, e2)
@@ -106,8 +122,8 @@ fn collect_deps(e: &LocExp, group: &BTreeSet<usize>, deps: &mut BTreeSet<usize>)
         | Exp::Seq(e1, e2)
         | Exp::SignalBind(e1, e2)
         | Exp::Setval(e1, e2) => {
-            collect_deps(e1, group, deps);
-            collect_deps(e2, group, deps);
+            collect_all_named_refs(e1, deps);
+            collect_all_named_refs(e2, deps);
         }
 
         Exp::Abs(_, _, _, body)
@@ -119,46 +135,47 @@ fn collect_deps(e: &LocExp, group: &BTreeSet<usize>, deps: &mut BTreeSet<usize>)
         | Exp::Sleep(body)
         | Exp::Spawn(body)
         | Exp::Nextval(body)
-        | Exp::Dml(body, _) => collect_deps(body, group, deps),
+        | Exp::Dml(body, _) => collect_all_named_refs(body, deps),
 
         Exp::Record(xets) => xets
             .iter()
-            .for_each(|(_, e, _)| collect_deps(e, group, deps)),
+            .for_each(|(_, e, _)| collect_all_named_refs(e, deps)),
 
         Exp::Case(disc, arms, _) => {
-            collect_deps(disc, group, deps);
-            arms.iter().for_each(|(_, e)| collect_deps(e, group, deps));
+            collect_all_named_refs(disc, deps);
+            arms.iter()
+                .for_each(|(_, e)| collect_all_named_refs(e, deps));
         }
 
         Exp::Error(e1, _)
         | Exp::Redirect(e1, _)
         | Exp::Uurlify(e1, _, _)
         | Exp::ServerCall(e1, _, _, _)
-        | Exp::Recv(e1, _) => collect_deps(e1, group, deps),
+        | Exp::Recv(e1, _) => collect_all_named_refs(e1, deps),
 
         Exp::ReturnBlob {
             blob, mime_type, ..
         } => {
             if let Some(b) = blob {
-                collect_deps(b, group, deps);
+                collect_all_named_refs(b, deps);
             }
-            collect_deps(mime_type, group, deps);
+            collect_all_named_refs(mime_type, deps);
         }
 
         Exp::Let(_, _, e1, e2) => {
-            collect_deps(e1, group, deps);
-            collect_deps(e2, group, deps);
+            collect_all_named_refs(e1, deps);
+            collect_all_named_refs(e2, deps);
         }
 
-        Exp::Closure(_, envs) => envs.iter().for_each(|e| collect_deps(e, group, deps)),
+        Exp::Closure(_, envs) => envs.iter().for_each(|e| collect_all_named_refs(e, deps)),
 
         Exp::Query(qm) => {
-            collect_deps(&qm.query, group, deps);
-            collect_deps(&qm.body, group, deps);
-            collect_deps(&qm.initial, group, deps);
+            collect_all_named_refs(&qm.query, deps);
+            collect_all_named_refs(&qm.body, deps);
+            collect_all_named_refs(&qm.initial, deps);
         }
 
-        Exp::JavaScript(_, inner) => collect_deps(inner, group, deps),
+        Exp::JavaScript(_, inner) => collect_all_named_refs(inner, deps),
     }
 }
 

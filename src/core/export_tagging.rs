@@ -134,7 +134,7 @@ fn tag_it(
     state: &mut State,
     source_names: &HashMap<usize, String>,
     uf: &UnionFind,
-    _env: &Env,
+    env: &Env,
     error_reporter: &mut impl FnMut(&Span, DiagnosticPayload),
 ) -> LocatedExpression {
     let span = e.span.clone();
@@ -167,7 +167,7 @@ fn tag_it(
             };
 
             // Check for duplicate URL prefixes
-            let src_name = source_names.get(&f).cloned().unwrap_or_default();
+            let src_name = export_source_name(f, source_names, env);
             match state.by_tag.get(&src_name) {
                 None => {
                     state.by_tag.insert(src_name.clone(), (ek, f));
@@ -211,6 +211,84 @@ fn export_kind_discriminant(export_kind: &ExportKind) -> u8 {
     }
 }
 
+fn export_source_name(id: usize, source_names: &HashMap<usize, String>, env: &Env) -> String {
+    source_names
+        .get(&id)
+        .filter(|source| !source.is_empty())
+        .cloned()
+        .or_else(|| {
+            env.lookup_e_named(id)
+                .ok()
+                .map(|(name, _)| format!("{name}_{id}"))
+        })
+        .unwrap_or_else(|| format!("anon_{id}"))
+}
+
+fn basis_head_name(expression: &LocatedExpression) -> Option<&str> {
+    match &expression.node {
+        Expression::Ffi(module, name) if module == "Basis" => Some(name.as_str()),
+        Expression::App(function, _)
+        | Expression::CApp(function, _)
+        | Expression::KApp(function, _) => basis_head_name(function),
+        _ => None,
+    }
+}
+
+fn rewrite_tag_attrs(
+    attrs: LocatedExpression,
+    state: &mut State,
+    source_names: &HashMap<usize, String>,
+    uf: &UnionFind,
+    env: &Env,
+    error_reporter: &mut impl FnMut(&Span, DiagnosticPayload),
+) -> LocatedExpression {
+    let span = attrs.span.clone();
+    match attrs.node {
+        Expression::Record(fields) => Located {
+            node: Expression::Record(
+                fields
+                    .into_iter()
+                    .map(|(field, value, value_type)| {
+                        let rewritten = match &field.node {
+                            Constructor::Name(name) if name == "Link" => tag_it(
+                                value,
+                                ExportKind::Link(Effect::ReadCookieWrite),
+                                "Link",
+                                state,
+                                source_names,
+                                uf,
+                                env,
+                                error_reporter,
+                            ),
+                            Constructor::Name(name) if name == "Action" => tag_it(
+                                value,
+                                ExportKind::Action(Effect::ReadCookieWrite),
+                                "Action",
+                                state,
+                                source_names,
+                                uf,
+                                env,
+                                error_reporter,
+                            ),
+                            _ => rewrite_exp(value, state, source_names, uf, env, error_reporter),
+                        };
+                        (field, rewritten, value_type)
+                    })
+                    .collect(),
+            ),
+            span,
+        },
+        other => rewrite_exp(
+            Located { node: other, span },
+            state,
+            source_names,
+            uf,
+            env,
+            error_reporter,
+        ),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Expression rewriter
 // ---------------------------------------------------------------------------
@@ -228,8 +306,42 @@ fn rewrite_exp(
         // Basis.tag application — rewrite Link/Action attributes
         // This matches the nested ECApp/EApp pattern for Basis.tag
         Expression::App(outer_f, xml) => {
-            // Try to detect the Basis.tag pattern by checking if the head
-            // function involves EFfi("Basis", "tag")
+            // The attrs record sits one App inside the outer XML-body application.
+            if let Expression::App(inner, attrs) = &outer_f.node {
+                if basis_head_name(inner).is_some_and(|name| name == "tag")
+                    && matches!(attrs.node, Expression::Record(_))
+                {
+                    let new_inner = rewrite_exp(
+                        (**inner).clone(),
+                        state,
+                        source_names,
+                        uf,
+                        env,
+                        error_reporter,
+                    );
+                    let new_attrs = rewrite_tag_attrs(
+                        (**attrs).clone(),
+                        state,
+                        source_names,
+                        uf,
+                        env,
+                        error_reporter,
+                    );
+                    let new_xml = rewrite_exp(*xml, state, source_names, uf, env, error_reporter);
+                    let span_f = outer_f.span.clone();
+                    return Located {
+                        node: Expression::App(
+                            Box::new(Located {
+                                node: Expression::App(Box::new(new_inner), Box::new(new_attrs)),
+                                span: span_f,
+                            }),
+                            Box::new(new_xml),
+                        ),
+                        span,
+                    };
+                }
+            }
+
             let f = rewrite_exp(*outer_f, state, source_names, uf, env, error_reporter);
             let xml = rewrite_exp(*xml, state, source_names, uf, env, error_reporter);
             Located {
@@ -522,6 +634,7 @@ fn make_wrapper(
     f_id: usize,
     f_type: &LocatedConstructor,
     f_name: &str,
+    source_name: &str,
     cn: usize,
     span: &Span,
 ) -> (LocatedDeclaration, LocatedDeclaration) {
@@ -548,12 +661,7 @@ fn make_wrapper(
 
     let (args, _result) = unravel_type(f_type);
 
-    let wrap_type: LocatedConstructor = Located::new(
-        Constructor::TFun(Box::new(unit_type.clone()), Box::new(unit_type.clone())),
-        span.clone(),
-    );
-
-    let body = if args.is_empty() {
+    let (wrap_type, body) = if args.is_empty() {
         // wrap_f () = write (f ())
         let app = Located::new(
             Expression::App(
@@ -562,7 +670,13 @@ fn make_wrapper(
             ),
             span.clone(),
         );
-        Located::new(Expression::Write(Box::new(app)), span.clone())
+        (
+            Located::new(
+                Constructor::TFun(Box::new(unit_type.clone()), Box::new(unit_type.clone())),
+                span.clone(),
+            ),
+            Located::new(Expression::Write(Box::new(app)), span.clone()),
+        )
     } else {
         // wrap_f x0 x1 ... () = write (f x0 x1 ... ())
         let n = args.len();
@@ -602,7 +716,28 @@ fn make_wrapper(
                 (lambda, k + 1, fn_t)
             },
         );
-        abs
+        let (_, _, wrapped_t) = args.iter().rev().enumerate().fold(
+            (
+                Located::new(Expression::Record(vec![]), span.clone()),
+                0usize,
+                Located::new(
+                    Constructor::TFun(Box::new(unit_type.clone()), Box::new(unit_type.clone())),
+                    span.clone(),
+                ),
+            ),
+            |(_dummy_inner, k, rest_t), (_i, arg_t)| {
+                let fn_t = Located::new(
+                    Constructor::TFun(Box::new(arg_t.clone()), Box::new(rest_t.clone())),
+                    span.clone(),
+                );
+                (
+                    Located::new(Expression::Record(vec![]), span.clone()),
+                    k + 1,
+                    fn_t,
+                )
+            },
+        );
+        (wrapped_t, abs)
     };
 
     let val_decl = Located::new(
@@ -611,7 +746,7 @@ fn make_wrapper(
             cn,
             wrap_type,
             body,
-            String::new(),
+            source_name.to_string(),
         ),
         span.clone(),
     );
@@ -663,7 +798,7 @@ pub fn tag(file: File, error_reporter: &mut impl FnMut(&Span, DiagnosticPayload)
         // Check for DExport conflicts with byTag
         let d = match &d.node {
             Declaration::Export(ek, n, _) => {
-                let src_name = source_names.get(n).cloned().unwrap_or_default();
+                let src_name = export_source_name(*n, &source_names, &env);
                 match state.by_tag.get(&src_name) {
                     None => d,
                     Some((ek2, _n2)) => {
@@ -742,7 +877,9 @@ pub fn tag(file: File, error_reporter: &mut impl FnMut(&Span, DiagnosticPayload)
                 .ok()
                 .map(|(name, t)| (name.clone(), t.clone()))
             {
-                let (val_d, export_d) = make_wrapper(f, &f_type, &f_name, cn, &d_span);
+                let source_name = export_source_name(f, &source_names, &env);
+                let (val_d, export_d) =
+                    make_wrapper(f, &f_type, &f_name, &source_name, cn, &d_span);
                 new_val_decls.push(val_d);
                 new_export_decls.push(export_d);
             }
@@ -915,5 +1052,223 @@ mod tests {
             .iter()
             .any(|d| matches!(d.node, Declaration::Export(_, _, _))));
         Ok(()) // return success to the test harness
+    }
+
+    fn unit_con() -> LocatedConstructor {
+        Located::dummy(Constructor::Unit)
+    }
+
+    #[test]
+    fn make_wrapper_type_keeps_explicit_arguments() -> anyhow::Result<()> {
+        let span = Span::dummy();
+        let int_con = Located::new(Constructor::Ffi("Basis".into(), "int".into()), span.clone());
+        let handler_t = Located::new(
+            Constructor::TFun(
+                Box::new(int_con.clone()),
+                Box::new(Located::new(
+                    Constructor::TFun(Box::new(unit_con()), Box::new(unit_con())),
+                    span.clone(),
+                )),
+            ),
+            span.clone(),
+        );
+
+        let (wrap_decl, _) = make_wrapper(7, &handler_t, "handler", "Handler/main", 9, &span);
+        let Declaration::Val(_, _, wrap_t, _, _) = wrap_decl.node else {
+            anyhow::bail!("expected make_wrapper to return a val declaration");
+        };
+
+        assert!(matches!(
+            wrap_t.node,
+            Constructor::TFun(ref dom, ref ran)
+                if matches!(dom.node, Constructor::Ffi(ref module, ref name) if module == "Basis" && name == "int")
+                    && matches!(ran.node, Constructor::TFun(_, _))
+        ));
+        Ok(())
+    }
+
+    fn contains_closure(expression: &LocatedExpression) -> bool {
+        match &expression.node {
+            Expression::Closure(_, _) => true,
+            Expression::App(function, argument) => {
+                contains_closure(function) || contains_closure(argument)
+            }
+            Expression::Abs(_, _, _, body)
+            | Expression::CApp(body, _)
+            | Expression::CAbs(_, _, body)
+            | Expression::KApp(body, _)
+            | Expression::KAbs(_, body)
+            | Expression::Write(body) => contains_closure(body),
+            Expression::Let(_, _, first, second) | Expression::Concat(first, _, second, _) => {
+                contains_closure(first) || contains_closure(second)
+            }
+            Expression::Case(disc, arms, _) => {
+                contains_closure(disc) || arms.iter().any(|(_, arm)| contains_closure(arm))
+            }
+            Expression::Record(fields) => {
+                fields.iter().any(|(_, value, _)| contains_closure(value))
+            }
+            Expression::Field(record, _, _) => contains_closure(record),
+            Expression::FfiApp(_, _, args) => args.iter().any(|(arg, _)| contains_closure(arg)),
+            Expression::ServerCall(_, args, _, _) => args.iter().any(contains_closure),
+            _ => false,
+        }
+    }
+
+    #[test]
+    fn tag_rewrites_basis_tag_link_attrs_into_closures() -> anyhow::Result<()> {
+        let span = Span::dummy();
+        let unit = Located::new(Expression::Record(vec![]), span.clone());
+        let link_target = Located::new(
+            Expression::App(
+                Box::new(Located::new(Expression::Named(1), span.clone())),
+                Box::new(unit.clone()),
+            ),
+            span.clone(),
+        );
+        let attrs = Located::new(
+            Expression::Record(vec![(
+                Located::new(Constructor::Name("Link".into()), span.clone()),
+                link_target,
+                unit_con(),
+            )]),
+            span.clone(),
+        );
+        let basis_tag = Located::new(Expression::Ffi("Basis".into(), "tag".into()), span.clone());
+        let tag_head = Located::new(
+            Expression::App(
+                Box::new(basis_tag),
+                Box::new(Located::new(Expression::Prim(Prim::Int(0)), span.clone())),
+            ),
+            span.clone(),
+        );
+        let tagged_page = Located::new(
+            Expression::App(
+                Box::new(Located::new(
+                    Expression::App(Box::new(tag_head), Box::new(attrs)),
+                    span.clone(),
+                )),
+                Box::new(Located::new(Expression::Prim(Prim::Int(1)), span.clone())),
+            ),
+            span.clone(),
+        );
+        let file: crate::core::File = vec![
+            Located::new(
+                Declaration::Val(
+                    "main".into(),
+                    1,
+                    unit_con(),
+                    Located::new(Expression::Prim(Prim::Int(0)), span.clone()),
+                    "Hello/main".into(),
+                ),
+                span.clone(),
+            ),
+            Located::new(
+                Declaration::Val("page".into(), 2, unit_con(), tagged_page, "page".into()),
+                span,
+            ),
+        ];
+
+        let out = tag(file, &mut |_, _| {});
+
+        assert!(
+            out.iter()
+                .any(|decl| matches!(decl.node, Declaration::Export(_, _, _))),
+            "tagging a Basis.tag link attribute should synthesize an Export"
+        );
+        assert!(
+            out.iter().any(|decl| {
+                matches!(
+                    &decl.node,
+                    Declaration::Val(name, _, _, _, source)
+                        if name == "wrap_main" && source == "Hello/main"
+                )
+            }),
+            "generated wrappers should keep the source path used for URL generation"
+        );
+        assert!(
+            out.iter().any(|decl| match &decl.node {
+                Declaration::Val(_, _, _, body, _) => contains_closure(body),
+                Declaration::ValRec(bindings) => {
+                    bindings
+                        .iter()
+                        .any(|(_, _, _, body, _)| contains_closure(body))
+                }
+                _ => false,
+            }),
+            "tagging a Basis.tag link attribute should rewrite the attribute payload to a Closure"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn tag_wrapper_falls_back_to_name_and_id_when_source_missing() -> anyhow::Result<()> {
+        let span = Span::dummy();
+        let unit = Located::new(Expression::Record(vec![]), span.clone());
+        let link_target = Located::new(
+            Expression::App(
+                Box::new(Located::new(Expression::Named(7), span.clone())),
+                Box::new(unit.clone()),
+            ),
+            span.clone(),
+        );
+        let attrs = Located::new(
+            Expression::Record(vec![(
+                Located::new(Constructor::Name("Link".into()), span.clone()),
+                link_target,
+                unit_con(),
+            )]),
+            span.clone(),
+        );
+        let tag_head = Located::new(
+            Expression::App(
+                Box::new(Located::new(
+                    Expression::Ffi("Basis".into(), "tag".into()),
+                    span.clone(),
+                )),
+                Box::new(Located::new(Expression::Prim(Prim::Int(0)), span.clone())),
+            ),
+            span.clone(),
+        );
+        let tagged_page = Located::new(
+            Expression::App(
+                Box::new(Located::new(
+                    Expression::App(Box::new(tag_head), Box::new(attrs)),
+                    span.clone(),
+                )),
+                Box::new(Located::new(Expression::Prim(Prim::Int(1)), span.clone())),
+            ),
+            span.clone(),
+        );
+        let file: crate::core::File = vec![
+            Located::new(
+                Declaration::Val(
+                    "pageA".into(),
+                    7,
+                    unit_con(),
+                    Located::new(Expression::Prim(Prim::Int(0)), span.clone()),
+                    String::new(),
+                ),
+                span.clone(),
+            ),
+            Located::new(
+                Declaration::Val("page".into(), 8, unit_con(), tagged_page, "page".into()),
+                span,
+            ),
+        ];
+
+        let out = tag(file, &mut |_, _| {});
+
+        assert!(
+            out.iter().any(|decl| {
+                matches!(
+                    &decl.node,
+                    Declaration::Val(name, _, _, _, source)
+                        if name == "wrap_pageA" && source == "pageA_7"
+                )
+            }),
+            "lifted local pages need a stable fallback source stem for generated wrappers"
+        );
+        Ok(())
     }
 }

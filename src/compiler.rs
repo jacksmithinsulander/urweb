@@ -89,6 +89,663 @@ fn anyhow_phase_incomplete(settings: &Settings, phase_label: &str) -> anyhow::Er
     )
 }
 
+fn debug_core_before_mono(file: &crate::core::File) {
+    if std::env::var("URWEB_DEBUG_CORE_BEFORE_MONO")
+        .ok()
+        .as_deref()
+        != Some("1")
+    {
+        return;
+    }
+
+    fn interesting_span(span: &crate::error_types::Span) -> bool {
+        (span.file.ends_with("/lib/ur/top.ur")
+            && matches!(span.first.line, 139 | 140 | 159 | 160 | 161))
+            || (span.file.ends_with("/demo/metaform.ur") && (8..=24).contains(&span.first.line))
+            || (span.file.ends_with("/demo/crud.ur") && (8..=32).contains(&span.first.line))
+            || (span.file.ends_with("/demo/listShop.ur") && (8..=32).contains(&span.first.line))
+            || (span.file.ends_with("/demo/listFun.ur") && (8..=30).contains(&span.first.line))
+            || (span.file.ends_with("/demo/list.ur") && (1..=20).contains(&span.first.line))
+    }
+
+    fn binder_label(binder: &crate::core::utilities::Binder) -> String {
+        match binder {
+            crate::core::utilities::Binder::RelK(name) => format!("RelK({name})"),
+            crate::core::utilities::Binder::RelC(name, kind) => {
+                format!("RelC({name}: {:?})", kind.node)
+            }
+            crate::core::utilities::Binder::NamedC(name, id, kind, _) => {
+                format!("NamedC({name}#{id}: {:?})", kind.node)
+            }
+            crate::core::utilities::Binder::RelE(name, con) => {
+                format!("RelE({name}: {:?})", con.node)
+            }
+            crate::core::utilities::Binder::NamedE(name, id, con) => {
+                format!("NamedE({name}#{id}: {:?})", con.node)
+            }
+        }
+    }
+
+    fn debug_expr_tree(label: &str, expr: &crate::core::LocatedExpression) {
+        crate::core::utilities::expression::fold_b(
+            expr,
+            &[],
+            (),
+            &|_, _, ()| (),
+            &|_, _, ()| (),
+            &|context, expression, ()| {
+                if interesting_span(&expression.span) {
+                    let binders = context
+                        .iter()
+                        .map(binder_label)
+                        .collect::<Vec<_>>()
+                        .join(" -> ");
+                    eprintln!(
+                        "URWEB_DEBUG_CORE_BEFORE_MONO decl={label} {}:{} binders=[{}] exp={:?}",
+                        expression.span.file, expression.span.first.line, binders, expression.node
+                    );
+                }
+            },
+        );
+    }
+
+    for decl in file {
+        match &decl.node {
+            crate::core::Declaration::Val(name, id, _, expr, _) => {
+                debug_expr_tree(&format!("Val({name}#{id})"), expr);
+            }
+            crate::core::Declaration::ValRec(bindings) => {
+                for (name, id, _, expr, _) in bindings {
+                    debug_expr_tree(&format!("ValRec({name}#{id})"), expr);
+                }
+            }
+            crate::core::Declaration::Table {
+                sql_name,
+                id,
+                exp,
+                pk_exp,
+                ..
+            } => {
+                debug_expr_tree(&format!("Table({sql_name}#{id})"), exp);
+                debug_expr_tree(&format!("TablePk({sql_name}#{id})"), pk_exp);
+            }
+            crate::core::Declaration::View(name, id, _, expr, _) => {
+                debug_expr_tree(&format!("View({name}#{id})"), expr);
+            }
+            crate::core::Declaration::Task(first, second) => {
+                debug_expr_tree("Task(first)", first);
+                debug_expr_tree("Task(second)", second);
+            }
+            crate::core::Declaration::Policy(expr) => {
+                debug_expr_tree("Policy", expr);
+            }
+            crate::core::Declaration::Index(first, second) => {
+                debug_expr_tree("Index(first)", first);
+                debug_expr_tree("Index(second)", second);
+            }
+            crate::core::Declaration::Constructor(_, _, _, _)
+            | crate::core::Declaration::Datatype(_)
+            | crate::core::Declaration::Export(_, _, _)
+            | crate::core::Declaration::Sequence(_, _, _)
+            | crate::core::Declaration::Database(_)
+            | crate::core::Declaration::Cookie(_, _, _, _)
+            | crate::core::Declaration::Style(_, _, _)
+            | crate::core::Declaration::OnError(_) => {}
+        }
+    }
+
+    if let Some(target_id) = std::env::var("URWEB_DEBUG_CORE_DECL_ID")
+        .ok()
+        .and_then(|raw| raw.parse::<usize>().ok())
+    {
+        fn expr_mentions_named(expr: &crate::core::LocatedExpression, target_id: usize) -> bool {
+            let found = std::cell::Cell::new(false);
+            crate::core::utilities::expression::fold_b(
+                expr,
+                &[],
+                (),
+                &|_, _, ()| (),
+                &|_, _, ()| (),
+                &|_, expression, ()| {
+                    if matches!(expression.node, crate::core::Expression::Named(id) if id == target_id)
+                    {
+                        found.set(true);
+                    }
+                },
+            );
+            found.get()
+        }
+
+        for decl in file {
+            match &decl.node {
+                crate::core::Declaration::Val(name, id, typ, expr, _) if *id == target_id => {
+                    eprintln!(
+                        "URWEB_DEBUG_CORE_DECL decl=Val({name}#{id}) {}:{} typ={:?} expr={:?}",
+                        decl.span.file, decl.span.first.line, typ.node, expr.node
+                    );
+                }
+                crate::core::Declaration::ValRec(bindings) => {
+                    for (name, id, typ, expr, _) in bindings {
+                        if *id == target_id {
+                            eprintln!(
+                                "URWEB_DEBUG_CORE_DECL decl=ValRec({name}#{id}) {}:{} typ={:?} expr={:?}",
+                                decl.span.file, decl.span.first.line, typ.node, expr.node
+                            );
+                        }
+                        if expr_mentions_named(expr, target_id) {
+                            eprintln!(
+                                "URWEB_DEBUG_CORE_REF decl=ValRec({name}#{id}) {}:{} typ={:?} expr={:?}",
+                                decl.span.file, decl.span.first.line, typ.node, expr.node
+                            );
+                        }
+                    }
+                }
+                crate::core::Declaration::Val(name, id, typ, expr, _)
+                    if expr_mentions_named(expr, target_id) =>
+                {
+                    eprintln!(
+                        "URWEB_DEBUG_CORE_REF decl=Val({name}#{id}) {}:{} typ={:?} expr={:?}",
+                        decl.span.file, decl.span.first.line, typ.node, expr.node
+                    );
+                }
+                crate::core::Declaration::Table { sql_name, id, .. } if *id == target_id => {
+                    eprintln!(
+                        "URWEB_DEBUG_CORE_DECL decl=Table({sql_name}#{id}) {}:{}",
+                        decl.span.file, decl.span.first.line
+                    );
+                }
+                crate::core::Declaration::View(name, id, _, expr, typ) if *id == target_id => {
+                    eprintln!(
+                        "URWEB_DEBUG_CORE_DECL decl=View({name}#{id}) {}:{} typ={:?} expr={:?}",
+                        decl.span.file, decl.span.first.line, typ.node, expr.node
+                    );
+                }
+                crate::core::Declaration::Sequence(name, id, sql_name) if *id == target_id => {
+                    eprintln!(
+                        "URWEB_DEBUG_CORE_DECL decl=Sequence({name}#{id}:{sql_name}) {}:{}",
+                        decl.span.file, decl.span.first.line
+                    );
+                }
+                crate::core::Declaration::Cookie(name, id, typ, sql_name) if *id == target_id => {
+                    eprintln!(
+                        "URWEB_DEBUG_CORE_DECL decl=Cookie({name}#{id}:{sql_name}) {}:{} typ={:?}",
+                        decl.span.file, decl.span.first.line, typ.node
+                    );
+                }
+                crate::core::Declaration::Style(name, id, sql_name) if *id == target_id => {
+                    eprintln!(
+                        "URWEB_DEBUG_CORE_DECL decl=Style({name}#{id}:{sql_name}) {}:{}",
+                        decl.span.file, decl.span.first.line
+                    );
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+fn debug_mono_stage(stage: &str, file: &crate::monomorphized::File) {
+    if std::env::var("URWEB_DEBUG_MONO_STAGE").ok().as_deref() != Some("1") {
+        return;
+    }
+
+    fn should_dump_decl(stage: &str, label: &str) -> bool {
+        matches!(stage, "after mono_opt(1)" | "after mono_reduce")
+            && matches!(label, "ValRec(list#1779)" | "Val(list#1779)")
+    }
+
+    fn interesting_span(span: &crate::error_types::Span) -> bool {
+        span.file.ends_with("/lib/ur/top.ur") && matches!(span.first.line, 156 | 215)
+    }
+
+    fn exp_kind(expr: &crate::monomorphized::LocExp) -> &'static str {
+        match &expr.node {
+            crate::monomorphized::Exp::Rel(_) => "Rel",
+            crate::monomorphized::Exp::Named(_) => "Named",
+            crate::monomorphized::Exp::Abs(_, _, _, _) => "Abs",
+            crate::monomorphized::Exp::App(_, _) => "App",
+            crate::monomorphized::Exp::Field(_, _) => "Field",
+            crate::monomorphized::Exp::Record(_) => "Record",
+            crate::monomorphized::Exp::Let(_, _, _, _) => "Let",
+            crate::monomorphized::Exp::Prim(crate::primitives::Prim::String(_, _)) => "PrimString",
+            crate::monomorphized::Exp::Prim(_) => "Prim",
+            _ => "Other",
+        }
+    }
+
+    fn should_print(expr: &crate::monomorphized::LocExp) -> bool {
+        matches!(expr.node, crate::monomorphized::Exp::Field(_, _))
+    }
+
+    fn walk(stage: &str, label: &str, expr: &crate::monomorphized::LocExp) {
+        if interesting_span(&expr.span) && should_print(expr) {
+            if let crate::monomorphized::Exp::Field(inner, field) = &expr.node {
+                eprintln!(
+                    "URWEB_DEBUG_MONO_STAGE stage={} decl={} {}:{} field={} inner_kind={} inner_span={}:{}",
+                    stage,
+                    label,
+                    expr.span.file,
+                    expr.span.first.line,
+                    field,
+                    exp_kind(inner),
+                    inner.span.file,
+                    inner.span.first.line,
+                );
+            }
+        }
+
+        use crate::monomorphized::Exp;
+        match &expr.node {
+            Exp::Con(_, _, Some(inner))
+            | Exp::Some(_, inner)
+            | Exp::Abs(_, _, _, inner)
+            | Exp::Write(inner)
+            | Exp::Unop(_, inner)
+            | Exp::Field(inner, _)
+            | Exp::JavaScript(_, inner)
+            | Exp::SignalReturn(inner)
+            | Exp::SignalSource(inner)
+            | Exp::Nextval(inner)
+            | Exp::Sleep(inner)
+            | Exp::Spawn(inner)
+            | Exp::Uurlify(inner, _, _)
+            | Exp::Dml(inner, _)
+            | Exp::Redirect(inner, _)
+            | Exp::Error(inner, _)
+            | Exp::ServerCall(inner, _, _, _)
+            | Exp::Recv(inner, _) => walk(stage, label, inner),
+            Exp::App(f, arg)
+            | Exp::Strcat(f, arg)
+            | Exp::Seq(f, arg)
+            | Exp::Binop(_, _, f, arg)
+            | Exp::SignalBind(f, arg)
+            | Exp::Setval(f, arg) => {
+                walk(stage, label, f);
+                walk(stage, label, arg);
+            }
+            Exp::Let(_, _, bound, body) => {
+                walk(stage, label, bound);
+                walk(stage, label, body);
+            }
+            Exp::FfiApp(_, _, args) => {
+                for (arg, _) in args {
+                    walk(stage, label, arg);
+                }
+            }
+            Exp::Record(fields) => {
+                for (_, inner, _) in fields {
+                    walk(stage, label, inner);
+                }
+            }
+            Exp::Case(disc, arms, _) => {
+                walk(stage, label, disc);
+                for (_, arm) in arms {
+                    walk(stage, label, arm);
+                }
+            }
+            Exp::ReturnBlob {
+                blob, mime_type, ..
+            } => {
+                if let Some(inner) = blob.as_ref() {
+                    walk(stage, label, inner);
+                }
+                walk(stage, label, mime_type);
+            }
+            Exp::Closure(_, envs) => {
+                for env in envs {
+                    walk(stage, label, env);
+                }
+            }
+            Exp::Query(meta) => {
+                walk(stage, label, &meta.query);
+                walk(stage, label, &meta.body);
+                walk(stage, label, &meta.initial);
+            }
+            Exp::Prim(_)
+            | Exp::Rel(_)
+            | Exp::Named(_)
+            | Exp::Ffi(_, _)
+            | Exp::None(_)
+            | Exp::Con(_, _, None) => {}
+        }
+    }
+
+    for decl in &file.0 {
+        match &decl.node {
+            crate::monomorphized::Decl::Val(name, id, _, expr, _) => {
+                let label = format!("Val({name}#{id})");
+                if should_dump_decl(stage, &label) {
+                    eprintln!(
+                        "URWEB_DEBUG_MONO_DECL stage={} decl={} expr={:?}",
+                        stage, label, expr.node
+                    );
+                }
+                walk(stage, &label, expr);
+            }
+            crate::monomorphized::Decl::ValRec(bindings) => {
+                for (name, id, _, expr, _) in bindings {
+                    let label = format!("ValRec({name}#{id})");
+                    if should_dump_decl(stage, &label) {
+                        eprintln!(
+                            "URWEB_DEBUG_MONO_DECL stage={} decl={} expr={:?}",
+                            stage, label, expr.node
+                        );
+                    }
+                    walk(stage, &label, expr);
+                }
+            }
+            crate::monomorphized::Decl::Table(name, _, pe, ce) => {
+                walk(stage, &format!("Table({name})/pe"), pe);
+                walk(stage, &format!("Table({name})/ce"), ce);
+            }
+            crate::monomorphized::Decl::View(name, _, expr) => {
+                walk(stage, &format!("View({name})"), expr);
+            }
+            crate::monomorphized::Decl::Task(first, second) => {
+                walk(stage, "Task(first)", first);
+                walk(stage, "Task(second)", second);
+            }
+            crate::monomorphized::Decl::Policy(pol) => match pol {
+                crate::monomorphized::Policy::Client(expr)
+                | crate::monomorphized::Policy::Insert(expr)
+                | crate::monomorphized::Policy::Delete(expr)
+                | crate::monomorphized::Policy::Update(expr)
+                | crate::monomorphized::Policy::Sequence(expr) => walk(stage, "Policy", expr),
+            },
+            _ => {}
+        }
+    }
+}
+
+fn debug_validate_core_named_refs(stage: &str, file: &crate::core::File) {
+    if std::env::var("URWEB_DEBUG_CORE_VALIDATE").ok().as_deref() != Some("1") {
+        return;
+    }
+    let target_id = std::env::var("URWEB_DEBUG_CORE_DECL_ID")
+        .ok()
+        .and_then(|raw| raw.parse::<usize>().ok());
+
+    fn interesting_span(span: &crate::error_types::Span) -> bool {
+        (span.file.ends_with("/lib/ur/top.ur")
+            && matches!(span.first.line, 139 | 140 | 159 | 160 | 161))
+            || (span.file.ends_with("/demo/metaform.ur") && (8..=24).contains(&span.first.line))
+            || (span.file.ends_with("/demo/crud.ur") && (8..=32).contains(&span.first.line))
+            || (span.file.ends_with("/demo/listShop.ur") && (8..=32).contains(&span.first.line))
+            || (span.file.ends_with("/demo/listFun.ur") && (8..=30).contains(&span.first.line))
+            || (span.file.ends_with("/demo/list.ur") && (1..=20).contains(&span.first.line))
+    }
+
+    fn decl_label(decl: &crate::core::Declaration) -> &'static str {
+        match decl {
+            crate::core::Declaration::Constructor(_, _, _, _) => "Constructor",
+            crate::core::Declaration::Datatype(_) => "Datatype",
+            crate::core::Declaration::Val(_, _, _, _, _) => "Val",
+            crate::core::Declaration::ValRec(_) => "ValRec",
+            crate::core::Declaration::Export(_, _, _) => "Export",
+            crate::core::Declaration::Table { .. } => "Table",
+            crate::core::Declaration::Index(_, _) => "Index",
+            crate::core::Declaration::Sequence(_, _, _) => "Sequence",
+            crate::core::Declaration::View(_, _, _, _, _) => "View",
+            crate::core::Declaration::Database(_) => "Database",
+            crate::core::Declaration::Cookie(_, _, _, _) => "Cookie",
+            crate::core::Declaration::Style(_, _, _) => "Style",
+            crate::core::Declaration::Task(_, _) => "Task",
+            crate::core::Declaration::Policy(_) => "Policy",
+            crate::core::Declaration::OnError(_) => "OnError",
+        }
+    }
+
+    let mut declared_ids = std::collections::BTreeSet::new();
+    let mut target_declared = false;
+    for decl in file {
+        match &decl.node {
+            crate::core::Declaration::Val(_, id, _, _, _)
+            | crate::core::Declaration::Sequence(_, id, _)
+            | crate::core::Declaration::View(_, id, _, _, _)
+            | crate::core::Declaration::Cookie(_, id, _, _)
+            | crate::core::Declaration::Style(_, id, _) => {
+                declared_ids.insert(*id);
+                if target_id == Some(*id) {
+                    target_declared = true;
+                }
+            }
+            crate::core::Declaration::ValRec(bindings) => {
+                for (_, id, _, _, _) in bindings {
+                    declared_ids.insert(*id);
+                    if target_id == Some(*id) {
+                        target_declared = true;
+                    }
+                }
+            }
+            crate::core::Declaration::Table { id, .. } => {
+                declared_ids.insert(*id);
+                if target_id == Some(*id) {
+                    target_declared = true;
+                }
+            }
+            crate::core::Declaration::Constructor(_, _, _, _)
+            | crate::core::Declaration::Datatype(_)
+            | crate::core::Declaration::Export(_, _, _)
+            | crate::core::Declaration::Index(_, _)
+            | crate::core::Declaration::Database(_)
+            | crate::core::Declaration::Task(_, _)
+            | crate::core::Declaration::Policy(_)
+            | crate::core::Declaration::OnError(_) => {}
+        }
+    }
+
+    fn validate_expr(
+        stage: &str,
+        decl: &crate::core::Declaration,
+        label: &str,
+        expr: &crate::core::LocatedExpression,
+        declared_ids: &std::collections::BTreeSet<usize>,
+        target_id: Option<usize>,
+        target_uses: &std::cell::RefCell<Vec<String>>,
+    ) {
+        crate::core::utilities::expression::fold_b(
+            expr,
+            &[],
+            (),
+            &|_, _, ()| (),
+            &|_, _, ()| (),
+            &|_, expression, ()| {
+                if !interesting_span(&expression.span) {
+                    return;
+                }
+                let missing_id = match &expression.node {
+                    crate::core::Expression::Named(id)
+                    | crate::core::Expression::Closure(id, _)
+                    | crate::core::Expression::ServerCall(id, _, _, _) => {
+                        if target_id == Some(*id) {
+                            target_uses.borrow_mut().push(format!(
+                                "{}({label}) {}:{} {:?}",
+                                decl_label(decl),
+                                expression.span.file,
+                                expression.span.first.line,
+                                expression.node
+                            ));
+                        }
+                        (!declared_ids.contains(id)).then_some(*id)
+                    }
+                    _ => None,
+                };
+                if let Some(id) = missing_id {
+                    eprintln!(
+                        "URWEB_DEBUG_CORE_VALIDATE stage={stage} decl={}({label}) {}:{} missing_id={id} expr={:?}",
+                        decl_label(decl),
+                        expression.span.file,
+                        expression.span.first.line,
+                        expression.node
+                    );
+                }
+            },
+        );
+    }
+
+    let target_uses = std::cell::RefCell::new(Vec::new());
+    for decl in file {
+        match &decl.node {
+            crate::core::Declaration::Val(name, id, typ, expr, _) => {
+                if target_id == Some(*id) {
+                    eprintln!(
+                        "URWEB_DEBUG_CORE_TARGET_DECL stage={stage} decl=Val({name}#{id}) {}:{} typ={:?} expr={:?}",
+                        decl.span.file,
+                        decl.span.first.line,
+                        typ.node,
+                        expr.node
+                    );
+                }
+                validate_expr(
+                    stage,
+                    &decl.node,
+                    &format!("{name}#{id}"),
+                    expr,
+                    &declared_ids,
+                    target_id,
+                    &target_uses,
+                );
+            }
+            crate::core::Declaration::ValRec(bindings) => {
+                for (name, id, typ, expr, _) in bindings {
+                    if target_id == Some(*id) {
+                        eprintln!(
+                            "URWEB_DEBUG_CORE_TARGET_DECL stage={stage} decl=ValRec({name}#{id}) {}:{} typ={:?} expr={:?}",
+                            decl.span.file,
+                            decl.span.first.line,
+                            typ.node,
+                            expr.node
+                        );
+                    }
+                    validate_expr(
+                        stage,
+                        &decl.node,
+                        &format!("{name}#{id}"),
+                        expr,
+                        &declared_ids,
+                        target_id,
+                        &target_uses,
+                    );
+                }
+            }
+            crate::core::Declaration::Table {
+                sql_name,
+                id,
+                exp,
+                pk_exp,
+                ..
+            } => {
+                validate_expr(
+                    stage,
+                    &decl.node,
+                    &format!("{sql_name}#{id}:exp"),
+                    exp,
+                    &declared_ids,
+                    target_id,
+                    &target_uses,
+                );
+                validate_expr(
+                    stage,
+                    &decl.node,
+                    &format!("{sql_name}#{id}:pk"),
+                    pk_exp,
+                    &declared_ids,
+                    target_id,
+                    &target_uses,
+                );
+            }
+            crate::core::Declaration::View(name, id, _, expr, _) => {
+                validate_expr(
+                    stage,
+                    &decl.node,
+                    &format!("{name}#{id}"),
+                    expr,
+                    &declared_ids,
+                    target_id,
+                    &target_uses,
+                );
+            }
+            crate::core::Declaration::Task(first, second) => {
+                validate_expr(
+                    stage,
+                    &decl.node,
+                    "first",
+                    first,
+                    &declared_ids,
+                    target_id,
+                    &target_uses,
+                );
+                validate_expr(
+                    stage,
+                    &decl.node,
+                    "second",
+                    second,
+                    &declared_ids,
+                    target_id,
+                    &target_uses,
+                );
+            }
+            crate::core::Declaration::Policy(expr) => {
+                validate_expr(
+                    stage,
+                    &decl.node,
+                    "policy",
+                    expr,
+                    &declared_ids,
+                    target_id,
+                    &target_uses,
+                );
+            }
+            crate::core::Declaration::Index(first, second) => {
+                validate_expr(
+                    stage,
+                    &decl.node,
+                    "first",
+                    first,
+                    &declared_ids,
+                    target_id,
+                    &target_uses,
+                );
+                validate_expr(
+                    stage,
+                    &decl.node,
+                    "second",
+                    second,
+                    &declared_ids,
+                    target_id,
+                    &target_uses,
+                );
+            }
+            crate::core::Declaration::Constructor(_, _, _, _)
+            | crate::core::Declaration::Datatype(_)
+            | crate::core::Declaration::Export(_, _, _)
+            | crate::core::Declaration::Sequence(_, _, _)
+            | crate::core::Declaration::Database(_)
+            | crate::core::Declaration::Cookie(_, _, _, _)
+            | crate::core::Declaration::Style(_, _, _)
+            | crate::core::Declaration::OnError(_) => {}
+        }
+    }
+
+    if let Some(target_id) = target_id {
+        eprintln!(
+            "URWEB_DEBUG_CORE_VALIDATE_SUMMARY stage={stage} target_id={target_id} declared={} uses={}",
+            target_declared,
+            target_uses.borrow().len()
+        );
+        for use_site in target_uses.into_inner() {
+            eprintln!(
+                "URWEB_DEBUG_CORE_VALIDATE_USE stage={stage} target_id={target_id} {use_site}"
+            );
+        }
+    }
+}
+
+fn debug_validate_core_stage(stage: &str, file: crate::core::File) -> crate::core::File {
+    debug_validate_core_named_refs(stage, &file);
+    file
+}
+
 // ---------------------------------------------------------------------------
 // Job description (mirrors `compiler.sml`'s `job` record)
 // ---------------------------------------------------------------------------
@@ -1716,6 +2373,11 @@ pub fn mono_post_js_cleanup(
     mono_shake(file)
 }
 
+/// Hoist closed anonymous Mono functions into named helpers before CJR lowering.
+pub fn mono_hoist_closed_functions(file: crate::monomorphized::File) -> crate::monomorphized::File {
+    crate::monomorphized::hoist_functions::hoist_closed_functions(file)
+}
+
 /// Collect HTTP endpoint metadata while returning the file unchanged.
 ///
 /// # Returns
@@ -1858,6 +2520,16 @@ pub fn js_compile(
     errors: &mut ErrorReporter,
 ) -> Option<String> {
     crate::monomorphized::jscomp::js_compile(file, settings, errors)
+}
+
+/// Run the JavaScript compilation pass and return the rewritten Mono file plus
+/// the emitted script, if any.
+pub fn js_compile_file(
+    file: &crate::monomorphized::File,
+    settings: &Settings,
+    errors: &mut ErrorReporter,
+) -> (crate::monomorphized::File, Option<String>) {
+    crate::monomorphized::jscomp::js_compile_file(file, settings, errors)
 }
 
 // ---------------------------------------------------------------------------
@@ -2489,23 +3161,89 @@ fn run_compile(urp_path: &Path, settings: &mut Settings) -> Result<PathBuf> {
     // Phase 5: corify
     let core_file = corify(expl_file, settings, &mut errors)
         .ok_or_else(|| anyhow_phase_incomplete(settings, "corify"))?;
+    let core_file = debug_validate_core_stage("after corify", core_file);
     crate::compiler_tracing::log_phase_complete(settings, "explify_corify", phase_t);
 
     phase_t = Instant::now();
     // Core passes
-    let core_file = core_untangle(core_file);
-    let mut core_recovery_reporter: Option<&mut ErrorReporter> = Some(&mut errors);
-    let core_file = core_reduce_local_with_errors(core_file, &mut core_recovery_reporter);
-    let core_file = core_shake(core_file);
-    let core_file = core_especialize_with_errors(core_file, &mut core_recovery_reporter);
+    let core_file = debug_validate_core_stage("after core_untangle(1)", core_untangle(core_file));
+    let core_file = {
+        let mut core_recovery_reporter: Option<&mut ErrorReporter> = Some(&mut errors);
+        debug_validate_core_stage(
+            "after core_reduce_local(1)",
+            core_reduce_local_with_errors(core_file, &mut core_recovery_reporter),
+        )
+    };
+    let core_file = debug_validate_core_stage("after core_shake(1)", core_shake(core_file));
+    let core_file = {
+        let mut core_recovery_reporter: Option<&mut ErrorReporter> = Some(&mut errors);
+        debug_validate_core_stage(
+            "after core_especialize(1)",
+            core_especialize_with_errors(core_file, &mut core_recovery_reporter),
+        )
+    };
+    let core_file = debug_validate_core_stage("after core_shake(2)", core_shake(core_file));
     let core_file = core_rpcify(core_file, settings, &mut errors)
         .ok_or_else(|| anyhow_phase_incomplete(settings, "rpcify"))?;
-    let core_file = core_reduce(core_file, settings);
-    let core_file = core_unpoly(core_file);
-    let core_file = core_specialize(core_file);
+    let core_file = debug_validate_core_stage("after core_rpcify", core_file);
+    let core_file = debug_validate_core_stage("after core_untangle(2)", core_untangle(core_file));
+    let core_file = debug_validate_core_stage("after core_shake(3)", core_shake(core_file));
+    let core_file = {
+        let mut core_recovery_reporter: Option<&mut ErrorReporter> = Some(&mut errors);
+        debug_validate_core_stage(
+            "after core_especialize(2)",
+            core_especialize_with_errors(core_file, &mut core_recovery_reporter),
+        )
+    };
+    let core_file = debug_validate_core_stage("after core_untangle(3)", core_untangle(core_file));
+    let core_file = debug_validate_core_stage("after core_shake(4)", core_shake(core_file));
+    if std::env::var("URWEB_DEBUG_CORE_BEFORE_MONO")
+        .ok()
+        .as_deref()
+        == Some("1")
+    {
+        eprintln!("URWEB_DEBUG_STAGE before_tag");
+    }
+    debug_core_before_mono(&core_file);
     let core_file = core_tag(core_file, settings, &mut errors)
         .ok_or_else(|| anyhow_phase_incomplete(settings, "tag"))?;
-    let core_file = core_effectize(core_file, settings);
+    let core_file = debug_validate_core_stage("after core_tag", core_file);
+    let core_file =
+        debug_validate_core_stage("after core_reduce(1)", core_reduce(core_file, settings));
+    let core_file = debug_validate_core_stage("after core_shake(5)", core_shake(core_file));
+    let core_file = debug_validate_core_stage("after core_unpoly(1)", core_unpoly(core_file));
+    let core_file =
+        debug_validate_core_stage("after core_specialize(1)", core_specialize(core_file));
+    let core_file = debug_validate_core_stage("after core_shake(6)", core_shake(core_file));
+    let core_file = {
+        let mut core_recovery_reporter: Option<&mut ErrorReporter> = Some(&mut errors);
+        debug_validate_core_stage(
+            "after core_especialize(3)",
+            core_especialize_with_errors(core_file, &mut core_recovery_reporter),
+        )
+    };
+    let core_file = debug_validate_core_stage("after core_shake(7)", core_shake(core_file));
+    let core_file = debug_validate_core_stage("after core_unpoly(2)", core_unpoly(core_file));
+    let core_file =
+        debug_validate_core_stage("after core_specialize(2)", core_specialize(core_file));
+    let core_file = debug_validate_core_stage("after core_shake(8)", core_shake(core_file));
+    let core_file = {
+        let mut core_recovery_reporter: Option<&mut ErrorReporter> = Some(&mut errors);
+        debug_validate_core_stage(
+            "after core_especialize(4)",
+            core_especialize_with_errors(core_file, &mut core_recovery_reporter),
+        )
+    };
+    let core_file =
+        debug_validate_core_stage("after core_specialize(3)", core_specialize(core_file));
+    let core_file =
+        debug_validate_core_stage("after core_reduce(2)", core_reduce(core_file, settings));
+    let core_file = debug_validate_core_stage("after core_shake(9)", core_shake(core_file));
+    let core_file =
+        debug_validate_core_stage("after core_effectize", core_effectize(core_file, settings));
+    let core_file =
+        debug_validate_core_stage("after core_reduce(3)", core_reduce(core_file, settings));
+    let core_file = debug_validate_core_stage("after core_shake(10)", core_shake(core_file));
 
     // Core checks: the ML compiler's acceptance boundary differs from our current Rust ports of
     // marshal/termination checking, which still report false positives on valid demo code.
@@ -2523,45 +3261,40 @@ fn run_compile(urp_path: &Path, settings: &mut Settings) -> Result<PathBuf> {
 
     phase_t = Instant::now();
     // Monoize
+    if std::env::var("URWEB_DEBUG_CORE_BEFORE_MONO")
+        .ok()
+        .as_deref()
+        == Some("1")
+    {
+        eprintln!("URWEB_DEBUG_STAGE before_mono");
+    }
+    debug_core_before_mono(&core_file);
     let mono_file = monoize(core_file, settings, &mut errors)
         .ok_or_else(|| anyhow_phase_incomplete(settings, "monomorphization"))?;
+    debug_mono_stage("after monoize", &mono_file);
 
     // Collect endpoint metadata (endpoints.sml) — side output, file unchanged.
     let (mono_file, _endpoints) = mono_endpoints(mono_file);
+    debug_mono_stage("after mono_endpoints", &mono_file);
 
     // Mono passes
     let mono_file = mono_untangle(mono_file);
+    debug_mono_stage("after mono_untangle(1)", &mono_file);
     let mono_file = mono_fuse(mono_file);
+    debug_mono_stage("after mono_fuse", &mono_file);
     // Run mono_opt BEFORE the first reduce, like SML's toMono_opt1 pass.
     // This unconditionally beta-reduces App(Abs, arg) patterns (including impure args),
     // eliminating anonymous lambdas before mono_reduce converts them to Let bindings.
     let mono_file = mono_opt(mono_file, settings, &mut errors);
+    debug_mono_stage("after mono_opt(1)", &mono_file);
     let mono_file = mono_reduce(mono_file, settings);
+    debug_mono_stage("after mono_reduce", &mono_file);
     let mono_file = mono_opt(mono_file, settings, &mut errors);
+    debug_mono_stage("after mono_opt(2)", &mono_file);
     let mono_file = mono_shake(mono_file);
+    debug_mono_stage("after mono_shake", &mono_file);
     let mono_file = mono_inline(mono_file, settings);
-
-    // Mono checks
-    let mono_file = mono_script_check(mono_file, settings, &mut errors);
-    mono_path_check(&mono_file, &mut errors);
-    let (mono_file, _env_vars) = mono_side_check(mono_file, settings, &mut errors);
-    let mono_file = mono_sig_check(mono_file);
-    let mono_file = mono_dbmode_check(mono_file);
-    bail_if_errors_reported(
-        &errors,
-        "Monomorphization checks",
-        settings.diagnostic_locale,
-    )?;
-
-    // Numeric narrowing analysis: constant-propagate through all declarations and
-    // record the smallest concrete numeric type (Int/Uint/Float × bit-width) for
-    // every variable whose value is statically known.  Passed to cjr_print so that
-    // C variable declarations use the narrowest type (e.g., `uint8_t` vs `uw_Basis_int`).
-    let narrowing_table = crate::monomorphized::numeric_narrowing::analyze(&mono_file);
-    tracing::debug!(
-        narrowed_decls = narrowing_table.len(),
-        "numeric narrowing analysis complete"
-    );
+    debug_mono_stage("after mono_inline(1)", &mono_file);
 
     crate::compiler_tracing::log_phase_complete(settings, "mono", phase_t);
 
@@ -2576,18 +3309,48 @@ fn run_compile(urp_path: &Path, settings: &mut Settings) -> Result<PathBuf> {
     // Name JavaScript fragments (name_js.sml) — hoist non-trivial EJavaScript
     // sub-expressions to top-level DVal bindings for app.js placement.
     let mono_file = mono_name_js(mono_file);
-    let mono_file = mono_filecache(mono_file, settings);
+    let mono_file = mono_untangle(mono_file);
+    let mono_file = mono_script_check(mono_file, settings, &mut errors);
+    let mono_file = mono_dbmode_check(mono_file);
 
+    // JS compilation may rewrite the Mono tree while extracting script fragments.
+    let (mono_file, _js) = js_compile_file(&mono_file, settings, &mut errors);
+    debug_mono_stage("after js_compile_file", &mono_file);
+    let mono_file = mono_post_js_cleanup(mono_file, settings, &mut errors);
+    debug_mono_stage("after mono_post_js_cleanup", &mono_file);
+    let mono_file = mono_inline(mono_file, settings);
+    debug_mono_stage("after mono_inline(2)", &mono_file);
+    mono_path_check(&mono_file, &mut errors);
+    let (mono_file, _env_vars) = mono_side_check(mono_file, settings, &mut errors);
+    debug_mono_stage("after mono_side_check", &mono_file);
+    let mono_file = mono_hoist_closed_functions(mono_file);
+    debug_mono_stage("after mono_hoist_closed_functions", &mono_file);
+    let mono_file = mono_sig_check(mono_file);
+    debug_mono_stage("after mono_sig_check", &mono_file);
+    let mono_file = mono_filecache(mono_file, settings);
+    debug_mono_stage("after mono_filecache", &mono_file);
     let mono_file = if settings.sqlcache {
         mono_sqlcache(mono_file, settings, &mut errors)
             .ok_or_else(|| anyhow_phase_incomplete(settings, "SQL cache"))?
     } else {
         mono_file
     };
-    let mono_file = mono_post_js_cleanup(mono_file, settings, &mut errors);
+    debug_mono_stage("after mono_sqlcache", &mono_file);
+    bail_if_errors_reported(
+        &errors,
+        "Monomorphization checks",
+        settings.diagnostic_locale,
+    )?;
 
-    // JS compilation
-    let _js = js_compile(&mono_file, settings, &mut errors);
+    // Numeric narrowing analysis: constant-propagate through the final Mono tree and
+    // record the smallest concrete numeric type (Int/Uint/Float × bit-width) for
+    // every variable whose value is statically known.  Passed to cjr_print so that
+    // C variable declarations use the narrowest type (e.g., `uint8_t` vs `uw_Basis_int`).
+    let narrowing_table = crate::monomorphized::numeric_narrowing::analyze(&mono_file);
+    tracing::debug!(
+        narrowed_decls = narrowing_table.len(),
+        "numeric narrowing analysis complete"
+    );
 
     // CJRize
     let cjr_file = cjrize(mono_file, &mut errors)
@@ -2714,22 +3477,88 @@ pub fn compile_to_outputs(urp_path: &Path, settings: &mut Settings) -> Result<(S
     let expl_file = crate::explicit::enum_desugar::desugar(expl_file);
     let core_file = corify(expl_file, settings, &mut errors)
         .ok_or_else(|| anyhow_phase_incomplete(settings, "corify"))?;
+    let core_file = debug_validate_core_stage("after corify", core_file);
     crate::compiler_tracing::log_phase_complete(settings, "explify_corify", phase_t);
 
     phase_t = Instant::now();
-    let core_file = core_untangle(core_file);
-    let mut core_recovery_reporter: Option<&mut ErrorReporter> = Some(&mut errors);
-    let core_file = core_reduce_local_with_errors(core_file, &mut core_recovery_reporter);
-    let core_file = core_shake(core_file);
-    let core_file = core_especialize_with_errors(core_file, &mut core_recovery_reporter);
+    let core_file = debug_validate_core_stage("after core_untangle(1)", core_untangle(core_file));
+    let core_file = {
+        let mut core_recovery_reporter: Option<&mut ErrorReporter> = Some(&mut errors);
+        debug_validate_core_stage(
+            "after core_reduce_local(1)",
+            core_reduce_local_with_errors(core_file, &mut core_recovery_reporter),
+        )
+    };
+    let core_file = debug_validate_core_stage("after core_shake(1)", core_shake(core_file));
+    let core_file = {
+        let mut core_recovery_reporter: Option<&mut ErrorReporter> = Some(&mut errors);
+        debug_validate_core_stage(
+            "after core_especialize(1)",
+            core_especialize_with_errors(core_file, &mut core_recovery_reporter),
+        )
+    };
+    let core_file = debug_validate_core_stage("after core_shake(2)", core_shake(core_file));
     let core_file = core_rpcify(core_file, settings, &mut errors)
         .ok_or_else(|| anyhow_phase_incomplete(settings, "rpcify"))?;
-    let core_file = core_reduce(core_file, settings);
-    let core_file = core_unpoly(core_file);
-    let core_file = core_specialize(core_file);
+    let core_file = debug_validate_core_stage("after core_rpcify", core_file);
+    let core_file = debug_validate_core_stage("after core_untangle(2)", core_untangle(core_file));
+    let core_file = debug_validate_core_stage("after core_shake(3)", core_shake(core_file));
+    let core_file = {
+        let mut core_recovery_reporter: Option<&mut ErrorReporter> = Some(&mut errors);
+        debug_validate_core_stage(
+            "after core_especialize(2)",
+            core_especialize_with_errors(core_file, &mut core_recovery_reporter),
+        )
+    };
+    let core_file = debug_validate_core_stage("after core_untangle(3)", core_untangle(core_file));
+    let core_file = debug_validate_core_stage("after core_shake(4)", core_shake(core_file));
+    if std::env::var("URWEB_DEBUG_CORE_BEFORE_MONO")
+        .ok()
+        .as_deref()
+        == Some("1")
+    {
+        eprintln!("URWEB_DEBUG_STAGE before_tag");
+    }
+    debug_core_before_mono(&core_file);
     let core_file = core_tag(core_file, settings, &mut errors)
         .ok_or_else(|| anyhow_phase_incomplete(settings, "tag"))?;
-    let core_file = core_effectize(core_file, settings);
+    let core_file = debug_validate_core_stage("after core_tag", core_file);
+    let core_file =
+        debug_validate_core_stage("after core_reduce(1)", core_reduce(core_file, settings));
+    let core_file = debug_validate_core_stage("after core_shake(5)", core_shake(core_file));
+    let core_file = debug_validate_core_stage("after core_unpoly(1)", core_unpoly(core_file));
+    let core_file =
+        debug_validate_core_stage("after core_specialize(1)", core_specialize(core_file));
+    let core_file = debug_validate_core_stage("after core_shake(6)", core_shake(core_file));
+    let core_file = {
+        let mut core_recovery_reporter: Option<&mut ErrorReporter> = Some(&mut errors);
+        debug_validate_core_stage(
+            "after core_especialize(3)",
+            core_especialize_with_errors(core_file, &mut core_recovery_reporter),
+        )
+    };
+    let core_file = debug_validate_core_stage("after core_shake(7)", core_shake(core_file));
+    let core_file = debug_validate_core_stage("after core_unpoly(2)", core_unpoly(core_file));
+    let core_file =
+        debug_validate_core_stage("after core_specialize(2)", core_specialize(core_file));
+    let core_file = debug_validate_core_stage("after core_shake(8)", core_shake(core_file));
+    let core_file = {
+        let mut core_recovery_reporter: Option<&mut ErrorReporter> = Some(&mut errors);
+        debug_validate_core_stage(
+            "after core_especialize(4)",
+            core_especialize_with_errors(core_file, &mut core_recovery_reporter),
+        )
+    };
+    let core_file =
+        debug_validate_core_stage("after core_specialize(3)", core_specialize(core_file));
+    let core_file =
+        debug_validate_core_stage("after core_reduce(2)", core_reduce(core_file, settings));
+    let core_file = debug_validate_core_stage("after core_shake(9)", core_shake(core_file));
+    let core_file =
+        debug_validate_core_stage("after core_effectize", core_effectize(core_file, settings));
+    let core_file =
+        debug_validate_core_stage("after core_reduce(3)", core_reduce(core_file, settings));
+    let core_file = debug_validate_core_stage("after core_shake(10)", core_shake(core_file));
 
     crate::compiler_tracing::log_phase_complete(settings, "core", phase_t);
 
@@ -2743,6 +3572,14 @@ pub fn compile_to_outputs(urp_path: &Path, settings: &mut Settings) -> Result<(S
     }
 
     phase_t = Instant::now();
+    if std::env::var("URWEB_DEBUG_CORE_BEFORE_MONO")
+        .ok()
+        .as_deref()
+        == Some("1")
+    {
+        eprintln!("URWEB_DEBUG_STAGE before_mono");
+    }
+    debug_core_before_mono(&core_file);
     let mono_file = monoize(core_file, settings, &mut errors)
         .ok_or_else(|| anyhow_phase_incomplete(settings, "monomorphization"))?;
     let (mono_file, _endpoints) = mono_endpoints(mono_file);
@@ -2753,16 +3590,6 @@ pub fn compile_to_outputs(urp_path: &Path, settings: &mut Settings) -> Result<(S
     let mono_file = mono_opt(mono_file, settings, &mut errors);
     let mono_file = mono_shake(mono_file);
     let mono_file = mono_inline(mono_file, settings);
-    let mono_file = mono_script_check(mono_file, settings, &mut errors);
-    mono_path_check(&mono_file, &mut errors);
-    let (mono_file, _env_vars) = mono_side_check(mono_file, settings, &mut errors);
-    let mono_file = mono_sig_check(mono_file);
-    let mono_file = mono_dbmode_check(mono_file);
-    bail_if_errors_reported(
-        &errors,
-        "Monomorphization checks",
-        settings.diagnostic_locale,
-    )?;
     crate::compiler_tracing::log_phase_complete(settings, "mono", phase_t);
 
     phase_t = Instant::now();
@@ -2773,16 +3600,29 @@ pub fn compile_to_outputs(urp_path: &Path, settings: &mut Settings) -> Result<(S
         mono_file
     };
     let mono_file = mono_name_js(mono_file);
+    let mono_file = mono_untangle(mono_file);
+    let mono_file = mono_script_check(mono_file, settings, &mut errors);
+    let mono_file = mono_dbmode_check(mono_file);
+    let (mono_file, _js) = js_compile_file(&mono_file, settings, &mut errors);
+    let mono_file = mono_post_js_cleanup(mono_file, settings, &mut errors);
+    let mono_file = mono_inline(mono_file, settings);
+    mono_path_check(&mono_file, &mut errors);
+    let (mono_file, _env_vars) = mono_side_check(mono_file, settings, &mut errors);
+    let mono_file = mono_hoist_closed_functions(mono_file);
+    let mono_file = mono_sig_check(mono_file);
     let mono_file = if settings.sqlcache {
         mono_sqlcache(mono_file, settings, &mut errors)
             .ok_or_else(|| anyhow_phase_incomplete(settings, "SQL cache"))?
     } else {
         mono_file
     };
-    let mono_file = mono_post_js_cleanup(mono_file, settings, &mut errors);
+    bail_if_errors_reported(
+        &errors,
+        "Monomorphization checks",
+        settings.diagnostic_locale,
+    )?;
     let narrowing_table = crate::monomorphized::numeric_narrowing::analyze(&mono_file);
 
-    let _js = js_compile(&mono_file, settings, &mut errors);
     let cjr_file = cjrize(mono_file, &mut errors)
         .ok_or_else(|| anyhow_phase_incomplete(settings, "C back-end lowering"))?;
     bail_if_errors_reported(&errors, "C back-end (CJR)", settings.diagnostic_locale)?;
@@ -3826,6 +4666,7 @@ db = "sqlite"
         std::fs::write(dir.path().join("x.ur"), "val x = 1")?;
         let mut settings = Settings {
             db_backend: Some(ProjectDb::sqlite()),
+            boot_linking: true,
             ..Default::default()
         };
         let result =
@@ -3845,6 +4686,66 @@ db = "sqlite"
             "C output must not be placeholder (catches replace with xyzzy mutant)"
         );
         Ok(()) // return success to the test harness
+    }
+
+    #[test]
+    fn compile_to_outputs_metaform1_avoids_erased_field_projections() -> anyhow::Result<()> {
+        let mut settings = Settings {
+            db_backend: Some(ProjectDb::sqlite()),
+            boot_linking: true,
+            ..Default::default()
+        };
+        let urp_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("demo")
+            .join("metaform1.urp");
+        let previous_boot_root = std::env::var_os(URWEB_BOOT_ROOT_ENV);
+        std::env::set_var(URWEB_BOOT_ROOT_ENV, env!("CARGO_MANIFEST_DIR"));
+
+        let result = compile_to_outputs(&urp_path, &mut settings)
+            .with_context(|| "compile_to_outputs must succeed for demo/metaform1.urp");
+
+        match &previous_boot_root {
+            None => std::env::remove_var(URWEB_BOOT_ROOT_ENV),
+            Some(value) => std::env::set_var(URWEB_BOOT_ROOT_ENV, value),
+        }
+
+        let (c_code, _sql_ddl) = result?;
+
+        assert!(
+            !c_code.contains(".__uwf__"),
+            "generated C must not contain unresolved field projections:\n{c_code}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn compile_to_outputs_crud1_avoids_zero_field_projections() -> anyhow::Result<()> {
+        let mut settings = Settings {
+            db_backend: Some(ProjectDb::sqlite()),
+            boot_linking: true,
+            ..Default::default()
+        };
+        let urp_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("demo")
+            .join("crud1.urp");
+        let previous_boot_root = std::env::var_os(URWEB_BOOT_ROOT_ENV);
+        std::env::set_var(URWEB_BOOT_ROOT_ENV, env!("CARGO_MANIFEST_DIR"));
+
+        let result = compile_to_outputs(&urp_path, &mut settings)
+            .with_context(|| "compile_to_outputs must succeed for demo/crud1.urp");
+
+        match &previous_boot_root {
+            None => std::env::remove_var(URWEB_BOOT_ROOT_ENV),
+            Some(value) => std::env::set_var(URWEB_BOOT_ROOT_ENV, value),
+        }
+
+        let (c_code, _sql_ddl) = result?;
+
+        assert!(
+            !c_code.contains("0LL.__uwf_"),
+            "generated C must not project fields from integer zero placeholders:\n{c_code}"
+        );
+        Ok(())
     }
 
     #[test]

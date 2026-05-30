@@ -32,7 +32,7 @@ sqlite3 *sqlite;
 sqlite3_stmt *stmt;
 uw_conn *conn;
 
-if (sqlite3_open("/tmp/metaform1.db", &sqlite) != SQLITE_OK) uw_error(ctx, FATAL, "Can't open SQLite database.");
+if (sqlite3_open("/private/tmp/metaform1.db", &sqlite) != SQLITE_OK) uw_error(ctx, FATAL, "Can't open SQLite database.");
 
 if (sqlite3_exec(sqlite, "PRAGMA foreign_keys = ON", NULL, NULL, NULL) != SQLITE_OK)
 uw_error(ctx, FATAL, "Can't enable foreign_keys for SQLite database");
@@ -114,6 +114,49 @@ static inline uw_Basis_string uw_Basis_attrOptional(
     return uw_Basis_mstrcat(ctx, " ", name, "=\"", val, "\"", NULL);
 }
 
+struct __uws_1 {
+uw_unit __uwf_A;
+uw_unit __uwf_B;
+uw_unit __uwf_C;
+};
+
+struct __uws_2 {
+uw_Basis_string __uwf_A;
+uw_Basis_string __uwf_B;
+uw_Basis_string __uwf_C;
+};
+
+/* Function prototypes */
+static uw_Basis_string __uwn_lam_1730_1730(uw_context, uw_unit, uw_unit);
+static uw_unit __uwn_lam_1731_1731(uw_context, struct __uws_1, uw_unit);
+static uw_unit __uwn_wrap_handler_1729(uw_context, struct __uws_1, uw_unit);
+static uw_unit __uwn_wrap_main_1728(uw_context, uw_unit, uw_unit);
+
+static char jslib[] = "";
+
+#line 137 "/Users/jacksmith/prog/urweb/lib/ur/top.ur"
+static uw_Basis_string __uwn_lam_1730_1730(uw_context ctx, uw_unit __uwr___0, uw_unit __uwr___1) {
+return("");
+}
+
+#line 15 "/Users/jacksmith/prog/urweb/demo/metaform.ur"
+static uw_unit __uwn_lam_1731_1731(uw_context ctx, struct __uws_1 __uwr_x0_0, uw_unit __uwr___1) {
+return(((uw_write(ctx, "<body"), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "class", "")), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "style", "")), 0), ((uw_write(ctx, ">\n"), 0), ((uw_write(ctx, uw_Basis_mstrcat(ctx, "\n<li", uw_Basis_attrOptional(ctx, "class", ""), uw_Basis_attrOptional(ctx, "style", ""), "> ", uw_Basis_htmlifyString(ctx, uw_Basis_mstrcat(ctx, "\n<li", uw_Basis_attrOptional(ctx, "class", ""), uw_Basis_attrOptional(ctx, "style", ""), "> ", uw_Basis_htmlifyString(ctx, uw_Basis_mstrcat(ctx, "\n<li", uw_Basis_attrOptional(ctx, "class", ""), uw_Basis_attrOptional(ctx, "style", ""), "> ", uw_Basis_htmlifyString(ctx, __uwn_lam_1730_1730.__uwf_A), " = ", uw_Basis_htmlifyString(ctx, 0.__uwf_A), "</li>\n", 0, NULL).__uwf_A), " = ", uw_Basis_htmlifyString(ctx, 0.__uwf_A), "</li>\n", 0, NULL).__uwf_A), " = Tic</li>\n", 0, NULL)(ctx, __uwr_x0_0)), 0), (uw_write(ctx, "\n</body>"), 0)))))));
+}
+
+#line 15 "/Users/jacksmith/prog/urweb/demo/metaform.ur"
+static uw_unit __uwn_wrap_handler_1729(uw_context ctx, struct __uws_1 __uwr_x_0, uw_unit __uwr_x_1) {
+return(({
+struct __uws_1 arg0 = __uwr_x_0;
+uw_unit arg1 = __uwr_x_1;
+__uwn_lam_1731_1731(ctx, arg0, arg1);
+}));
+}
+
+static uw_unit __uwn_wrap_main_1728(uw_context ctx, uw_unit __uwr_x0_0, uw_unit __uwr___1) {
+return(((uw_write(ctx, "<body"), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "class", "")), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "style", "")), 0), ((uw_write(ctx, ">\n<form method=\"post\" action=\"/Metaform1/handler\">\n"), 0), ((uw_write(ctx, uw_Basis_mstrcat(ctx, "\n<li", uw_Basis_attrOptional(ctx, "class", ""), uw_Basis_attrOptional(ctx, "style", ""), "> ", uw_Basis_htmlifyString(ctx, uw_Basis_mstrcat(ctx, "\n<li", uw_Basis_attrOptional(ctx, "class", ""), uw_Basis_attrOptional(ctx, "style", ""), "> ", uw_Basis_htmlifyString(ctx, uw_Basis_mstrcat(ctx, "\n<li", uw_Basis_attrOptional(ctx, "class", ""), uw_Basis_attrOptional(ctx, "style", ""), "> ", uw_Basis_htmlifyString(ctx, "".__uwf_A), ": <div", uw_Basis_attrOptional(ctx, "class", ""), uw_Basis_attrOptional(ctx, "style", ""), "></div></li>\n", 0, "\n", NULL).__uwf_A), ": <div", uw_Basis_attrOptional(ctx, "class", ""), uw_Basis_attrOptional(ctx, "style", ""), "></div></li>\n", 0, "\n", NULL).__uwf_A), ": <div", uw_Basis_attrOptional(ctx, "class", ""), uw_Basis_attrOptional(ctx, "style", ""), "></div></li>\n", 0, "\n", NULL)(ctx, ({ struct __uws_2 tmp = {"Tic", "Tac", "Toe"}; tmp; }))), 0), ((uw_write(ctx, "\n<input type=\"submit\""), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "class", "")), 0), ((uw_write(ctx, uw_Basis_attrOptional(ctx, "style", "")), 0), (uw_write(ctx, " action=\"/Metaform1/handler\" />\n</form>\n</body>"), 0))))))))));
+}
+
 static void uw_setup_limits(void) {
 }
 
@@ -158,6 +201,48 @@ static int uw_check_meta(const char *m) {
 }
 
 static void uw_handle(uw_context ctx, char *request) {
+if (!strncmp(request, "/Metaform1/handler", 18) && (request[18] == 0 || request[18] == '/')) {
+request += 18;
+if (*request == '/') ++request;
+uw_write_header(ctx, "Content-type: text/html; charset=utf-8\r\n");
+uw_write(ctx, uw_begin_html5);
+uw_mayReturnIndirectly(ctx);
+uw_set_could_write_db(ctx, 0);
+uw_set_at_most_one_query(ctx, 0);
+uw_set_needs_push(ctx, 0);
+uw_set_needs_sig(ctx, 0);
+uw_login(ctx);
+{
+struct __uws_1 arg0 = ({
+uw_unit uwr_A = uw_Basis_unurlifyUnit(ctx, &request);
+uw_unit uwr_B = uw_Basis_unurlifyUnit(ctx, &request);
+uw_unit uwr_C = uw_Basis_unurlifyUnit(ctx, &request);
+struct __uws_1 tmp = { uwr_A, uwr_B, uwr_C };
+tmp;
+});
+__uwn_wrap_handler_1729(ctx, arg0, 0);
+uw_write(ctx, "</html>");
+return;
+}
+}
+if (!strncmp(request, "/Metaform1/main", 15) && (request[15] == 0 || request[15] == '/')) {
+request += 15;
+if (*request == '/') ++request;
+uw_write_header(ctx, "Content-type: text/html; charset=utf-8\r\n");
+uw_write(ctx, uw_begin_html5);
+uw_mayReturnIndirectly(ctx);
+uw_set_could_write_db(ctx, 0);
+uw_set_at_most_one_query(ctx, 0);
+uw_set_needs_push(ctx, 0);
+uw_set_needs_sig(ctx, 0);
+uw_login(ctx);
+{
+uw_unit arg0 = uw_Basis_unurlifyUnit(ctx, &request);
+__uwn_wrap_main_1728(ctx, arg0, 0);
+uw_write(ctx, "</html>");
+return;
+}
+}
 uw_clear_headers(ctx);
 uw_write_header(ctx, uw_supports_direct_status ? "HTTP/1.1 404 Not Found\r\n" : "Status: 404 Not Found\r\n");
 uw_write_header(ctx, "Content-type: text/plain\r\n");

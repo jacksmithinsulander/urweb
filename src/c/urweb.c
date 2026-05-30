@@ -1772,6 +1772,12 @@ uw_unit uw_Basis_set_client_source(uw_context ctx, uw_Basis_source src, uw_Basis
   return uw_unit_v;
 }
 
+uw_Basis_string uw_Basis_get_client_source(uw_context ctx, uw_Basis_source src) {
+  (void)src;
+  uw_error(ctx, FATAL, "Attempt to read client source using inappropriate context");
+  return "";
+}
+
 static void uw_check(uw_context ctx, size_t extra) {
   ctx_uw_buffer_check(ctx, "page", &ctx->page, extra);
 }

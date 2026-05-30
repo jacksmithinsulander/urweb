@@ -75,6 +75,12 @@ fn split_val_rec_into_sccs(
         .map(|(_name, id, _ty, _body, _comment)| *id)
         .collect();
 
+    let all_refs_local = bindings.iter().all(|(_name, _id, _ty, body, _comment)| {
+        find_all_global_deps_in_expression(body)
+            .iter()
+            .all(|referenced_id| group_ids.contains(referenced_id))
+    });
+
     // Build the within-group dependency map: for each member, which other
     // group members does its body reference?
     let dependency_map: BTreeMap<usize, BTreeSet<usize>> = bindings
@@ -84,8 +90,11 @@ fn split_val_rec_into_sccs(
         })
         .collect();
 
-    // Compute SCCs in topological order (dependencies first).
-    let sccs = tarjan_sccs_topological(&group_ids, &dependency_map);
+    let sccs = if all_refs_local {
+        tarjan_sccs_topological(&group_ids, &dependency_map)
+    } else {
+        vec![group_ids.clone()]
+    };
 
     // Build an index from id to binding, preserving the original binding data.
     let binding_by_id: BTreeMap<
@@ -137,6 +146,13 @@ fn find_group_deps_in_expression(
     expression: &LocatedExpression,
     group_ids: &BTreeSet<usize>,
 ) -> BTreeSet<usize> {
+    find_all_global_deps_in_expression(expression)
+        .into_iter()
+        .filter(|id| group_ids.contains(id))
+        .collect()
+}
+
+fn find_all_global_deps_in_expression(expression: &LocatedExpression) -> BTreeSet<usize> {
     use crate::core::utilities::expression;
     expression::fold(
         expression,
@@ -154,9 +170,7 @@ fn find_group_deps_in_expression(
                 _ => None,
             };
             if let Some(id) = referenced_id {
-                if group_ids.contains(&id) {
-                    state.insert(id);
-                }
+                state.insert(id);
             }
             state
         },
@@ -624,18 +638,17 @@ mod tests {
 
     #[test]
     fn external_named_references_do_not_create_deps() {
-        // Catches mutant: Named refs outside the group create spurious deps.
-        // f1 references id=99 (outside group); f2 is independent.
+        // External refs keep the block intact so later declarations stay visible.
         let file = vec![val_rec(vec![(1, named_exp(99)), (2, prim_exp())])];
         let result = untangle(file);
-        // Both should become independent DVal nodes.
-        let val_count = result
-            .iter()
-            .filter(|d| matches!(&d.node, Declaration::Val(_, _, _, _, _)))
-            .count();
         assert_eq!(
-            val_count, 2,
-            "external refs must not create within-group edges"
+            result.len(),
+            1,
+            "external refs must preserve the original block"
+        );
+        assert!(
+            matches!(&result[0].node, Declaration::ValRec(bindings) if bindings.len() == 2),
+            "external refs must keep the original DValRec intact"
         );
     }
 

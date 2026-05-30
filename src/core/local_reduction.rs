@@ -651,7 +651,9 @@ pub(crate) fn simplify_con(
                     simplify_con(&extended_environment, *body)
                 }
                 // Map reduction: (Map dom ran f) (Record(...))
-                Constructor::App(ref map_f, _) if matches!(map_f.node, Constructor::Map(_, _)) => {
+                Constructor::App(ref map_f, ref mapper)
+                    if matches!(map_f.node, Constructor::Map(_, _)) =>
+                {
                     if let Constructor::Map(_, ran) = &map_f.node {
                         let ran = *ran.clone();
                         match &simplified_argument.node {
@@ -666,10 +668,7 @@ pub(crate) fn simplify_con(
                                 let mut expanded = fields.clone();
                                 let (first_x, first_c) = expanded.remove(0);
                                 let applied = mk(Constructor::App(
-                                    Box::new(Located {
-                                        node: simplified_function.node.clone(),
-                                        span: span.clone(),
-                                    }),
+                                    Box::new((**mapper).clone()),
                                     Box::new(first_c),
                                 ));
                                 let new_rec = mk(Constructor::Record(
@@ -677,9 +676,10 @@ pub(crate) fn simplify_con(
                                     vec![(first_x, applied)],
                                 ));
                                 let rest_rec = mk(Constructor::Record(Box::new(dom_k), expanded));
+                                let map_app = Constructor::App(map_f.clone(), mapper.clone());
                                 let rest_applied = mk(Constructor::App(
                                     Box::new(Located {
-                                        node: simplified_function.node,
+                                        node: map_app,
                                         span: span.clone(),
                                     }),
                                     Box::new(rest_rec),
@@ -933,6 +933,15 @@ fn rebuild_case_after_simplifying_arms(
     }
 }
 
+fn is_erased_zero_witness_app(arg: &LocatedExpression, dom: &LocatedConstructor) -> bool {
+    matches!(arg.node, Expression::Prim(Prim::Int(0)))
+        && match &dom.node {
+            Constructor::Unit => false,
+            Constructor::Ffi(module, name) if module == "Basis" && name == "int" => false,
+            _ => true,
+        }
+}
+
 /// Simplifies an expression in the given environment (beta and lookup of Known).
 ///
 /// # Arguments
@@ -1005,7 +1014,10 @@ pub(crate) fn simplify_exp(
             let simplified_function = simplify_exp(environment, *function_expression, errors);
             let simplified_argument = simplify_exp(environment, *argument_expression, errors);
             match simplified_function.node {
-                Expression::Abs(_, _, _, body) => {
+                Expression::Abs(x, dom, ran, body) => {
+                    if is_erased_zero_witness_app(&simplified_argument, &dom) {
+                        return Located::new(Expression::Abs(x, dom, ran, body), span);
+                    }
                     let extended_environment =
                         prepend(EnvItem::Known(simplified_argument), &de_known(environment));
                     // Reborrow errors for the beta-reduction body call.
@@ -1674,6 +1686,69 @@ mod tests {
     }
 
     #[test]
+    fn reduce_exp_drops_spurious_zero_witness_app_before_record_binder() {
+        let string_t = Located::dummy(Constructor::Ffi("Basis".into(), "string".into()));
+        let record_t = Located::dummy(Constructor::Record(
+            Box::new(Located::dummy(crate::core::Kind::Type)),
+            vec![(
+                Located::dummy(Constructor::Name("A".into())),
+                string_t.clone(),
+            )],
+        ));
+        let field_meta = crate::core::FieldMeta {
+            field: string_t.clone(),
+            rest: Located::dummy(Constructor::Record(
+                Box::new(Located::dummy(crate::core::Kind::Type)),
+                vec![],
+            )),
+        };
+        let lam = Located::dummy(Expression::Abs(
+            "fs".into(),
+            record_t,
+            string_t,
+            Box::new(Located::dummy(Expression::Field(
+                Box::new(Located::dummy(Expression::Rel(0))),
+                Located::dummy(Constructor::Name("A".into())),
+                field_meta,
+            ))),
+        ));
+        let app = Located::dummy(Expression::App(
+            Box::new(lam),
+            Box::new(Located::dummy(Expression::Prim(Prim::Int(0)))),
+        ));
+
+        let out = reduce_exp(app);
+        assert!(matches!(
+            out.node,
+            Expression::Abs(_, _, _, ref body)
+                if matches!(
+                    body.node,
+                    Expression::Field(ref receiver, ref field, _)
+                        if matches!(receiver.node, Expression::Rel(0))
+                            && matches!(field.node, Constructor::Name(ref name) if name == "A")
+                )
+        ));
+    }
+
+    #[test]
+    fn reduce_exp_keeps_real_int_zero_argument() {
+        let int_t = Located::dummy(Constructor::Ffi("Basis".into(), "int".into()));
+        let lam = Located::dummy(Expression::Abs(
+            "n".into(),
+            int_t.clone(),
+            int_t,
+            Box::new(Located::dummy(Expression::Rel(0))),
+        ));
+        let app = Located::dummy(Expression::App(
+            Box::new(lam),
+            Box::new(Located::dummy(Expression::Prim(Prim::Int(0)))),
+        ));
+
+        let out = reduce_exp(app);
+        assert!(matches!(out.node, Expression::Prim(Prim::Int(0))));
+    }
+
+    #[test]
     fn reduce_con_unit_unchanged() {
         let c = Located::dummy(Constructor::Unit);
         let out = reduce_con(c);
@@ -1928,6 +2003,58 @@ mod tests {
         };
         assert!(fields.is_empty());
         assert!(matches!(kind.node, crate::core::Kind::Type));
+    }
+
+    #[test]
+    fn reduce_con_map_applies_mapper_to_each_field_value() {
+        let type_k = Located::dummy(crate::core::Kind::Type);
+        let tuple_k = Located::dummy(crate::core::Kind::Tuple(vec![
+            type_k.clone(),
+            type_k.clone(),
+        ]));
+        let row_k = Located::dummy(crate::core::Kind::Record(Box::new(tuple_k.clone())));
+
+        let mapper = Located::dummy(Constructor::Abs(
+            "t".into(),
+            Box::new(tuple_k),
+            Box::new(Located::dummy(Constructor::Proj(
+                Box::new(Located::dummy(Constructor::Rel(0))),
+                1,
+            ))),
+        ));
+
+        let field_value = Located::dummy(Constructor::Tuple(vec![
+            Located::dummy(Constructor::Ffi("Basis".into(), "string".into())),
+            Located::dummy(Constructor::Ffi("Basis".into(), "int".into())),
+        ]));
+
+        let row = Located::dummy(Constructor::Record(
+            Box::new(row_k.clone()),
+            vec![(Located::dummy(Constructor::Name("A".into())), field_value)],
+        ));
+
+        let app = Located::dummy(Constructor::App(
+            Box::new(Located::dummy(Constructor::App(
+                Box::new(Located::dummy(Constructor::Map(
+                    Box::new(row_k),
+                    Box::new(type_k.clone()),
+                ))),
+                Box::new(mapper),
+            ))),
+            Box::new(row),
+        ));
+
+        let out = reduce_con(app);
+        let Constructor::Record(_, fields) = out.node else {
+            panic!("expected Record, got {:?}", out)
+        };
+        assert_eq!(fields.len(), 1);
+        let value = &fields[0].1;
+        assert!(
+            matches!(value.node, Constructor::Ffi(ref module, ref name) if module == "Basis" && name == "string"),
+            "expected mapper result to reduce to the tuple's first component, got {:?}",
+            value.node
+        );
     }
 
     #[test]

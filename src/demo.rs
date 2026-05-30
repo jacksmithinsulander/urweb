@@ -77,10 +77,6 @@ pub fn make(prefix: &str, dirname: &str, settings: &mut Settings, guided: bool) 
         writeln!(f, "val main : unit -> transaction page")?;
     }
 
-    // demo.ur — will be extended as we process each sub-project
-    let mut demo_ur_body = String::new();
-    demo_ur_body.push_str("fun main () = return <xml><body>\n");
-
     // Read prose file
     let prose_path = dir.join("prose");
     let prose_locale = settings.diagnostic_locale;
@@ -104,6 +100,7 @@ pub fn make(prefix: &str, dirname: &str, settings: &mut Settings, guided: bool) 
     let mut combined_safe_gets: Vec<String> = Vec::new();
     let mut combined_timeout: u32 = 0;
     let mut found_first_urp = false;
+    let mut demo_ur_content = String::from("fun main () : transaction page = return <xml><body>\n");
 
     // intro.html writer — written until the first .urp line
     let intro_path = out_dir.join("intro.html");
@@ -141,9 +138,7 @@ pub fn make(prefix: &str, dirname: &str, settings: &mut Settings, guided: bool) 
             demos_content.push_str(&format!(
                 "<li> <a target=\"staging\" href=\"{base}.html\">{name}</a></li>\n"
             ));
-
-            // demo.ur entry
-            demo_ur_body.push_str(&format!(
+            demo_ur_content.push_str(&format!(
                 "  <li> <a link={{{name}.main ()}}>{name}</a></li>\n"
             ));
 
@@ -268,8 +263,8 @@ pub fn make(prefix: &str, dirname: &str, settings: &mut Settings, guided: bool) 
     fs::write(&demos_path, &demos_content)?;
 
     // Close demo.ur
-    demo_ur_body.push_str("</body></xml>\n");
-    fs::write(dir.join("demo.ur"), &demo_ur_body)?;
+    demo_ur_content.push_str("</body></xml>\n");
+    fs::write(dir.join("demo.ur"), &demo_ur_content)?;
 
     // Write demo.urp
     let demo_urp_path = dir.join("demo.urp");
@@ -451,6 +446,25 @@ mod tests {
             "expected capitalized demo title in nav, got {demos:?}"
         );
         Ok(()) // return success to the test harness
+    }
+
+    #[test]
+    fn make_emits_typed_demo_links_in_demo_ur() -> anyhow::Result<()> {
+        let dir = tempdir()?;
+        let root = dir.path();
+        write_minimal_demo_files(root)?;
+        let mut settings = Settings::default();
+        let _ = make_demo(root, &mut settings)?;
+        let demo_ur = fs::read_to_string(root.join("demo.ur")).with_context(|| "demo.ur")?;
+        assert!(
+            demo_ur.contains("<a link={Widget.main ()}>Widget</a>"),
+            "expected typed route link in demo.ur, got {demo_ur:?}"
+        );
+        assert!(
+            !demo_ur.contains("bless "),
+            "demo.ur should not hardcode bless URLs, got {demo_ur:?}"
+        );
+        Ok(())
     }
 
     #[test]

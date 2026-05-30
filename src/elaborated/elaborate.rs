@@ -15221,6 +15221,21 @@ fn instantiate_rule_witness(
         })
 }
 
+fn apply_class_rule_hypothesis_witnesses(
+    span: &Span,
+    witness: elab::LocatedExpression,
+    hypothesis_witnesses: Vec<elab::LocatedExpression>,
+) -> elab::LocatedExpression {
+    hypothesis_witnesses
+        .into_iter()
+        .fold(witness, |applied_witness, hypothesis_witness| {
+            Located::new(
+                elab::Expression::App(Box::new(applied_witness), Box::new(hypothesis_witness)),
+                span.clone(),
+            )
+        })
+}
+
 fn snapshot_class_resolution_attempt(
     class: &elab::LocatedConstructor,
     head: &elab::LocatedConstructor,
@@ -15292,12 +15307,19 @@ fn try_resolve_class_rule(
         quantifier_kinds.len(),
     ) {
         true => {
-            let all_hypotheses_satisfied = inst_hyps.iter().all(|hypothesis| {
-                resolve_class(elaboration_environment, hypothesis, span).is_some()
-            });
-            match all_hypotheses_satisfied {
-                true => Some((inst_witness, inst_head)),
-                false => {
+            let resolved_hypothesis_witnesses: Option<Vec<_>> = inst_hyps
+                .iter()
+                .map(|hypothesis| {
+                    resolve_class(elaboration_environment, hypothesis, span)
+                        .map(|(hypothesis_witness, _)| hypothesis_witness)
+                })
+                .collect();
+            match resolved_hypothesis_witnesses {
+                Some(hypothesis_witnesses) => Some((
+                    apply_class_rule_hypothesis_witnesses(span, inst_witness, hypothesis_witnesses),
+                    inst_head,
+                )),
+                None => {
                     restore_class_match_snapshots(constructor_snapshots, kind_snapshots);
                     None
                 }
@@ -15336,11 +15358,18 @@ fn probe_resolve_class_rule(
         &inst_head,
         quantifier_kinds.len(),
     ) {
-        let all_hypotheses_satisfied = inst_hyps
+        let resolved_hypothesis_witnesses: Option<Vec<_>> = inst_hyps
             .iter()
-            .all(|hypothesis| resolve_class(elaboration_environment, hypothesis, span).is_some());
-        if all_hypotheses_satisfied {
-            Some((inst_witness, inst_head))
+            .map(|hypothesis| {
+                resolve_class(elaboration_environment, hypothesis, span)
+                    .map(|(hypothesis_witness, _)| hypothesis_witness)
+            })
+            .collect();
+        if let Some(hypothesis_witnesses) = resolved_hypothesis_witnesses {
+            Some((
+                apply_class_rule_hypothesis_witnesses(span, inst_witness, hypothesis_witnesses),
+                inst_head,
+            ))
         } else {
             None
         }
@@ -19250,6 +19279,75 @@ end
             resolve_class(&fixture.elaboration_environment, &class_goal, &span).is_some(),
             "show string should still resolve after ambiguity guarding",
         );
+        Ok(())
+    }
+
+    #[test]
+    fn basis_open_applies_show_option_hypothesis_witness() -> anyhow::Result<()> {
+        let Some(fixture) = top_query_test_fixture() else {
+            return Ok(());
+        };
+        let span = fixture.basis_decl_span.clone();
+        let show_id = match fixture.elaboration_environment.lookup_c("show") {
+            VarLookup::Named(id, _) => id,
+            other_lookup => panic!(
+                "expected show class after open Basis, got {:?}",
+                other_lookup
+            ),
+        };
+        let option_head = basis_named_con(&fixture.elaboration_environment, &span, "option");
+        let string_type = basis_named_con(&fixture.elaboration_environment, &span, "string");
+        let option_string_type = Located::new(
+            elab::Constructor::App(Box::new(option_head), Box::new(string_type)),
+            span.clone(),
+        );
+        let class_goal = Located::new(
+            elab::Constructor::App(
+                Box::new(Located::new(
+                    elab::Constructor::Named(show_id),
+                    span.clone(),
+                )),
+                Box::new(option_string_type),
+            ),
+            span.clone(),
+        );
+
+        let Some((witness, matched_head)) =
+            resolve_class(&fixture.elaboration_environment, &class_goal, &span)
+        else {
+            panic!("show (option string) should resolve through Top.show_option");
+        };
+
+        assert!(
+            unify_cons(
+                &mut ElabCtx::new(),
+                &fixture.elaboration_environment,
+                &span,
+                &class_goal,
+                &matched_head,
+            )
+            .is_ok(),
+            "resolved show (option string) head should still unify with the original goal",
+        );
+
+        match &witness.node {
+            elab::Expression::App(function, argument) => {
+                assert!(
+                    matches!(&function.node, elab::Expression::CApp(_, _)),
+                    "expected show(option string) witness to keep its instantiated class-rule head, got {}",
+                    crate::elaborated::type_display::format_expression(&witness),
+                );
+                assert!(
+                    !matches!(&argument.node, elab::Expression::Unif(_)),
+                    "expected show(option string) witness to apply a resolved class hypothesis, got {}",
+                    crate::elaborated::type_display::format_expression(&witness),
+                );
+            }
+            other_expression => panic!(
+                "expected show(option string) witness to apply its class hypothesis, got {:?}",
+                other_expression
+            ),
+        }
         Ok(())
     }
 

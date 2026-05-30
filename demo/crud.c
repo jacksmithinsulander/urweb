@@ -32,7 +32,7 @@ sqlite3 *sqlite;
 sqlite3_stmt *stmt;
 uw_conn *conn;
 
-if (sqlite3_open("/tmp/urweb-batchfun.db", &sqlite) != SQLITE_OK) uw_error(ctx, FATAL, "Can't open SQLite database.");
+if (sqlite3_open("/tmp/urweb-crud.db", &sqlite) != SQLITE_OK) uw_error(ctx, FATAL, "Can't open SQLite database.");
 
 if (sqlite3_exec(sqlite, "PRAGMA foreign_keys = ON", NULL, NULL, NULL) != SQLITE_OK)
 uw_error(ctx, FATAL, "Can't enable foreign_keys for SQLite database");
@@ -113,6 +113,8 @@ static inline uw_Basis_string uw_Basis_attrOptional(
     if (val == NULL || val[0] == '\0') return "";
     return uw_Basis_mstrcat(ctx, " ", name, "=\"", val, "\"", NULL);
 }
+
+static char jslib[] = "";
 
 static void uw_setup_limits(void) {
 }

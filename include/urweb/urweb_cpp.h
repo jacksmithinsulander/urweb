@@ -85,6 +85,7 @@ char *uw_recordingReadScript(struct uw_context *);
 
 uw_Basis_source uw_Basis_new_client_source(struct uw_context *, uw_Basis_string);
 uw_unit uw_Basis_set_client_source(struct uw_context *, uw_Basis_source, uw_Basis_string);
+uw_Basis_string uw_Basis_get_client_source(struct uw_context *, uw_Basis_source);
 
 void uw_set_script_header(struct uw_context *, const char*);
 char *uw_Basis_get_settings(struct uw_context *, uw_unit);
