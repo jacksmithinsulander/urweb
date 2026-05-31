@@ -1620,11 +1620,10 @@ fn reduce_node(env: &Env, e: Exp, span: &Span, ctx: &ReduceCtx, settings: &Setti
                     }
                 }
             }
-            if let Exp::Abs(x, t, _, body) = f.node.clone() {
+            if let Exp::Abs(x, t, ran, body) = f.node.clone() {
                 debug_mono_reduce_beta(span, f.as_ref(), arg.as_ref(), body.as_ref());
                 if is_erased_witness_app(&arg, &t) {
-                    let subst = sub_exp_in_exp(0, &arg, &body);
-                    return reduce_exp(env, subst, ctx, settings).node;
+                    return Exp::Abs(x, t, ran, body);
                 }
                 // Beta reduction
                 let impure_arg = impure_ctx(env, &arg, ctx, settings);
@@ -1990,12 +1989,17 @@ fn is_unit_record_type(t: &LocTyp) -> bool {
 }
 
 fn is_erased_witness_app(arg: &LocExp, dom: &LocTyp) -> bool {
-    is_erased_proof_arg(arg)
-        && match &dom.node {
+    match &arg.node {
+        Exp::Record(fields) if fields.is_empty() => {
+            !matches!(&dom.node, Typ::Record(fields) if fields.is_empty())
+        }
+        Exp::Prim(Prim::Int(0)) => match &dom.node {
             Typ::Record(fields) if fields.is_empty() => false,
             Typ::Ffi(module, name) if module == "Basis" && name == "int" => false,
             _ => true,
-        }
+        },
+        _ => false,
+    }
 }
 
 fn direct_field_result_typ(result_typ: &LocTyp, field: &str) -> Option<LocTyp> {
@@ -2004,6 +2008,18 @@ fn direct_field_result_typ(result_typ: &LocTyp, field: &str) -> Option<LocTyp> {
             .iter()
             .find(|(name, _)| name == field)
             .map(|(_, typ)| typ.clone()),
+        Typ::Fun(dom, ran) => direct_field_result_typ(ran, field).map(|projected_ran| {
+            Located::new(
+                Typ::Fun(dom.clone(), Box::new(projected_ran)),
+                result_typ.span.clone(),
+            )
+        }),
+        Typ::Transaction(ran) => direct_field_result_typ(ran, field).map(|projected_ran| {
+            Located::new(
+                Typ::Transaction(Box::new(projected_ran)),
+                result_typ.span.clone(),
+            )
+        }),
         _ => None,
     }
 }
@@ -2121,8 +2137,22 @@ fn is_unit_record_exp(e: &LocExp) -> bool {
     matches!(&e.node, Exp::Record(fields) if fields.is_empty())
 }
 
+fn record_value_distributes_application(e: &LocExp) -> bool {
+    matches!(
+        &e.node,
+        Exp::Record(fields)
+            if !fields.is_empty()
+                && fields
+                    .iter()
+                    .all(|(_, _, field_t)| function_like_parts(field_t).is_some())
+    )
+}
+
 fn strip_spurious_unit_app_in_env(env: &Env, function: LocExp, arg: &LocExp) -> Option<LocExp> {
     if !is_unit_record_exp(arg) {
+        return None;
+    }
+    if record_value_distributes_application(&function) {
         return None;
     }
 
@@ -3054,6 +3084,56 @@ mod tests {
                     )
             ),
             "Expected erased witness binder to be dropped before runtime arg, got {:?}",
+            result.node
+        );
+    }
+
+    #[test]
+    fn test_beta_reduction_drops_empty_record_witness_before_int_argument() {
+        let settings = Settings::new();
+        let ctx = ReduceCtx {
+            timpures: HashSet::new(),
+            impures: HashSet::new(),
+            uses: HashMap::new(),
+            yanked_case: Cell::new(false),
+            full_mode: false,
+        };
+        let env = Env::empty();
+        let int_t = dummy_typ();
+        let step = Located::dummy(Exp::Abs(
+            "n".into(),
+            int_t.clone(),
+            Located::dummy(Typ::Fun(Box::new(int_t.clone()), Box::new(int_t.clone()))),
+            Box::new(Located::dummy(Exp::Abs(
+                "acc".into(),
+                int_t.clone(),
+                int_t.clone(),
+                Box::new(Located::dummy(Exp::Binop(
+                    crate::monomorphized::BinopIntness::Int,
+                    "+".into(),
+                    Box::new(rel(1)),
+                    Box::new(rel(0)),
+                ))),
+            ))),
+        ));
+        let malformed = mk_app(
+            mk_app(
+                mk_app(step, Located::dummy(Exp::Record(vec![]))),
+                prim_int(1),
+            ),
+            prim_int(0),
+        );
+
+        let result = reduce_exp(&env, malformed, &ctx, &settings);
+        assert!(
+            matches!(
+                result.node,
+                Exp::Binop(_, ref op, ref left, ref right)
+                    if op == "+"
+                        && matches!(left.node, Exp::Prim(Prim::Int(1)))
+                        && matches!(right.node, Exp::Prim(Prim::Int(0)))
+            ),
+            "Expected empty-record witness to be dropped before int argument, got {:?}",
             result.node
         );
     }

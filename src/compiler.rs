@@ -289,9 +289,83 @@ fn debug_mono_stage(stage: &str, file: &crate::monomorphized::File) {
         return;
     }
 
+    let dump_file_filter = std::env::var("URWEB_DEBUG_MONO_DUMP_FILE").ok();
+    let dump_stage_filter = std::env::var("URWEB_DEBUG_MONO_DUMP_STAGE").ok();
+    let dump_decl_span_filter = std::env::var("URWEB_DEBUG_MONO_DECL_SPAN_FILE").ok();
+
     fn should_dump_decl(stage: &str, label: &str) -> bool {
         matches!(stage, "after mono_opt(1)" | "after mono_reduce")
             && matches!(label, "ValRec(list#1779)" | "Val(list#1779)")
+    }
+
+    fn expr_mentions_file(expr: &crate::monomorphized::LocExp, file_suffix: &str) -> bool {
+        if expr.span.file.ends_with(file_suffix) {
+            return true;
+        }
+
+        use crate::monomorphized::Exp;
+        match &expr.node {
+            Exp::Con(_, _, Some(inner))
+            | Exp::Some(_, inner)
+            | Exp::Abs(_, _, _, inner)
+            | Exp::Write(inner)
+            | Exp::Unop(_, inner)
+            | Exp::Field(inner, _)
+            | Exp::JavaScript(_, inner)
+            | Exp::SignalReturn(inner)
+            | Exp::SignalSource(inner)
+            | Exp::Nextval(inner)
+            | Exp::Sleep(inner)
+            | Exp::Spawn(inner)
+            | Exp::Uurlify(inner, _, _)
+            | Exp::Dml(inner, _)
+            | Exp::Redirect(inner, _)
+            | Exp::Error(inner, _)
+            | Exp::ServerCall(inner, _, _, _)
+            | Exp::Recv(inner, _) => expr_mentions_file(inner, file_suffix),
+            Exp::App(f, arg)
+            | Exp::Strcat(f, arg)
+            | Exp::Seq(f, arg)
+            | Exp::Binop(_, _, f, arg)
+            | Exp::SignalBind(f, arg)
+            | Exp::Setval(f, arg) => {
+                expr_mentions_file(f, file_suffix) || expr_mentions_file(arg, file_suffix)
+            }
+            Exp::Let(_, _, bound, body) => {
+                expr_mentions_file(bound, file_suffix) || expr_mentions_file(body, file_suffix)
+            }
+            Exp::FfiApp(_, _, args) => args
+                .iter()
+                .any(|(arg, _)| expr_mentions_file(arg, file_suffix)),
+            Exp::Record(fields) => fields
+                .iter()
+                .any(|(_, inner, _)| expr_mentions_file(inner, file_suffix)),
+            Exp::Case(disc, arms, _) => {
+                expr_mentions_file(disc, file_suffix)
+                    || arms
+                        .iter()
+                        .any(|(_, arm)| expr_mentions_file(arm, file_suffix))
+            }
+            Exp::ReturnBlob {
+                blob, mime_type, ..
+            } => {
+                blob.as_ref()
+                    .is_some_and(|inner| expr_mentions_file(inner, file_suffix))
+                    || expr_mentions_file(mime_type, file_suffix)
+            }
+            Exp::Closure(_, envs) => envs.iter().any(|env| expr_mentions_file(env, file_suffix)),
+            Exp::Query(meta) => {
+                expr_mentions_file(&meta.query, file_suffix)
+                    || expr_mentions_file(&meta.body, file_suffix)
+                    || expr_mentions_file(&meta.initial, file_suffix)
+            }
+            Exp::Prim(_)
+            | Exp::Rel(_)
+            | Exp::Named(_)
+            | Exp::Ffi(_, _)
+            | Exp::None(_)
+            | Exp::Con(_, _, None) => false,
+        }
     }
 
     fn interesting_span(span: &crate::error_types::Span) -> bool {
@@ -412,8 +486,30 @@ fn debug_mono_stage(stage: &str, file: &crate::monomorphized::File) {
 
     for decl in &file.0 {
         match &decl.node {
-            crate::monomorphized::Decl::Val(name, id, _, expr, _) => {
+            crate::monomorphized::Decl::Val(name, id, typ, expr, _) => {
                 let label = format!("Val({name}#{id})");
+                if let Some(file_suffix) = dump_decl_span_filter.as_deref() {
+                    let stage_matches = dump_stage_filter
+                        .as_deref()
+                        .is_none_or(|wanted| wanted == stage);
+                    if stage_matches && decl.span.file.ends_with(file_suffix) {
+                        eprintln!(
+                            "URWEB_DEBUG_MONO_DECL_SPAN stage={} decl={} {}:{} typ={:?} expr={:?}",
+                            stage, label, decl.span.file, decl.span.first.line, typ.node, expr.node
+                        );
+                    }
+                }
+                if let Some(file_suffix) = dump_file_filter.as_deref() {
+                    let stage_matches = dump_stage_filter
+                        .as_deref()
+                        .is_none_or(|wanted| wanted == stage);
+                    if stage_matches && expr_mentions_file(expr, file_suffix) {
+                        eprintln!(
+                            "URWEB_DEBUG_MONO_DUMP stage={} decl={} expr={:?}",
+                            stage, label, expr.node
+                        );
+                    }
+                }
                 if should_dump_decl(stage, &label) {
                     eprintln!(
                         "URWEB_DEBUG_MONO_DECL stage={} decl={} expr={:?}",
@@ -423,8 +519,30 @@ fn debug_mono_stage(stage: &str, file: &crate::monomorphized::File) {
                 walk(stage, &label, expr);
             }
             crate::monomorphized::Decl::ValRec(bindings) => {
-                for (name, id, _, expr, _) in bindings {
+                for (name, id, typ, expr, _) in bindings {
                     let label = format!("ValRec({name}#{id})");
+                    if let Some(file_suffix) = dump_decl_span_filter.as_deref() {
+                        let stage_matches = dump_stage_filter
+                            .as_deref()
+                            .is_none_or(|wanted| wanted == stage);
+                        if stage_matches && decl.span.file.ends_with(file_suffix) {
+                            eprintln!(
+                                "URWEB_DEBUG_MONO_DECL_SPAN stage={} decl={} {}:{} typ={:?} expr={:?}",
+                                stage, label, decl.span.file, decl.span.first.line, typ.node, expr.node
+                            );
+                        }
+                    }
+                    if let Some(file_suffix) = dump_file_filter.as_deref() {
+                        let stage_matches = dump_stage_filter
+                            .as_deref()
+                            .is_none_or(|wanted| wanted == stage);
+                        if stage_matches && expr_mentions_file(expr, file_suffix) {
+                            eprintln!(
+                                "URWEB_DEBUG_MONO_DUMP stage={} decl={} expr={:?}",
+                                stage, label, expr.node
+                            );
+                        }
+                    }
                     if should_dump_decl(stage, &label) {
                         eprintln!(
                             "URWEB_DEBUG_MONO_DECL stage={} decl={} expr={:?}",
@@ -4690,6 +4808,10 @@ db = "sqlite"
 
     #[test]
     fn compile_to_outputs_metaform1_avoids_erased_field_projections() -> anyhow::Result<()> {
+        let _guard = crate::compiler_diagnostics::lock_for_compile(
+            &crate::compiler_diagnostics::TEST_CWD_LOCK,
+            "compile_to_outputs metaform1 URWEB_BOOT_ROOT",
+        );
         let mut settings = Settings {
             db_backend: Some(ProjectDb::sqlite()),
             boot_linking: true,
@@ -4720,6 +4842,10 @@ db = "sqlite"
 
     #[test]
     fn compile_to_outputs_crud1_avoids_zero_field_projections() -> anyhow::Result<()> {
+        let _guard = crate::compiler_diagnostics::lock_for_compile(
+            &crate::compiler_diagnostics::TEST_CWD_LOCK,
+            "compile_to_outputs crud1 URWEB_BOOT_ROOT",
+        );
         let mut settings = Settings {
             db_backend: Some(ProjectDb::sqlite()),
             boot_linking: true,

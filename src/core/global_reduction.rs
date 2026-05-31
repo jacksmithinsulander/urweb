@@ -721,7 +721,7 @@ impl Reducer {
                         self.reduce_con(&inner, *body)
                     }
                     // Map(dom,ran) applied to a record → expand
-                    Constructor::App(ref map_node, _)
+                    Constructor::App(ref map_node, ref mapper)
                         if matches!(map_node.node, Constructor::Map(_, _)) =>
                     {
                         if let Constructor::Map(_, ref ran) = map_node.node {
@@ -750,15 +750,18 @@ impl Reducer {
                                         ),
                                         span.clone(),
                                     );
-                                    // f_red applied to first.1
-                                    let f_first = Located::new(
-                                        Constructor::App(
-                                            Box::new(f_red.clone()),
-                                            Box::new(first.1.clone()),
+                                    // Apply the mapper to the current field value and recurse with
+                                    // the full map application on the tail record.
+                                    let f_first = self.reduce_con(
+                                        &de_known(env),
+                                        Located::new(
+                                            Constructor::App(
+                                                Box::new((**mapper).clone()),
+                                                Box::new(first.1.clone()),
+                                            ),
+                                            span.clone(),
                                         ),
-                                        span.clone(),
                                     );
-                                    // f_red applied to tail_rec
                                     let f_tail = Located::new(
                                         Constructor::App(
                                             Box::new(f_red.clone()),
@@ -2560,6 +2563,61 @@ mod tests {
             "Record + Record must reduce to merged Record"
         );
         Ok(()) // return success to the test harness
+    }
+
+    #[test]
+    fn reduce_con_map_applies_mapper_to_each_field_value() -> anyhow::Result<()> {
+        let type_k = Located::dummy(crate::core::Kind::Type);
+        let tuple_k = Located::dummy(crate::core::Kind::Tuple(vec![
+            type_k.clone(),
+            type_k.clone(),
+        ]));
+        let row_k = Located::dummy(crate::core::Kind::Record(Box::new(tuple_k.clone())));
+
+        let mapper = Located::dummy(Constructor::Abs(
+            "t".into(),
+            Box::new(tuple_k),
+            Box::new(Located::dummy(Constructor::Proj(
+                Box::new(Located::dummy(Constructor::Rel(0))),
+                1,
+            ))),
+        ));
+
+        let field_value = Located::dummy(Constructor::Tuple(vec![
+            Located::dummy(Constructor::Ffi("Basis".into(), "string".into())),
+            Located::dummy(Constructor::Ffi("Basis".into(), "int".into())),
+        ]));
+
+        let row = Located::dummy(Constructor::Record(
+            Box::new(row_k.clone()),
+            vec![(Located::dummy(Constructor::Name("A".into())), field_value)],
+        ));
+
+        let app = Located::dummy(Constructor::App(
+            Box::new(Located::dummy(Constructor::App(
+                Box::new(Located::dummy(Constructor::Map(
+                    Box::new(row_k),
+                    Box::new(type_k),
+                ))),
+                Box::new(mapper),
+            ))),
+            Box::new(row),
+        ));
+
+        let out = Reducer::new().reduce_con(&[], app);
+        let Constructor::Record(_, fields) = out.node else {
+            anyhow::bail!("expected Record, got {:?}", out)
+        };
+        assert_eq!(fields.len(), 1);
+        assert!(
+            matches!(
+                fields[0].1.node,
+                Constructor::Ffi(ref module, ref name) if module == "Basis" && name == "string"
+            ),
+            "expected mapper result to reduce to the tuple's first component, got {:?}",
+            fields[0].1.node
+        );
+        Ok(())
     }
 
     #[test]

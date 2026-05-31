@@ -205,6 +205,37 @@ fn with_rel_types<T>(types: Vec<mono::LocTyp>, f: impl FnOnce() -> T) -> T {
     })
 }
 
+fn mono_pat_bound_types_into(pat: &mono::LocPat, out: &mut Vec<mono::LocTyp>) {
+    match &pat.node {
+        mono::Pat::Var(_, typ) => out.push(typ.clone()),
+        mono::Pat::Prim(_) => {}
+        mono::Pat::Con(_, _, Some(inner)) => mono_pat_bound_types_into(inner, out),
+        mono::Pat::Con(_, _, None) => {}
+        mono::Pat::Record(fields) => {
+            for (_, inner, _) in fields {
+                mono_pat_bound_types_into(inner, out);
+            }
+        }
+        mono::Pat::None(_) => {}
+        mono::Pat::Some(_, inner) => mono_pat_bound_types_into(inner, out),
+    }
+}
+
+fn with_rel_pattern_binders<T>(pat: &mono::LocPat, f: impl FnOnce() -> T) -> T {
+    let mut bound_types = Vec::new();
+    mono_pat_bound_types_into(pat, &mut bound_types);
+    CJRIZE_REL_TYPES.with(|slot| {
+        for typ in &bound_types {
+            slot.borrow_mut().insert(0, typ.clone());
+        }
+        let out = f();
+        for _ in 0..bound_types.len() {
+            slot.borrow_mut().remove(0);
+        }
+        out
+    })
+}
+
 fn debug_validate_named_enabled() -> bool {
     std::env::var("URWEB_DEBUG_CJR_VALIDATE").ok().as_deref() == Some("1")
 }
@@ -1031,6 +1062,24 @@ fn mono_expr_result_typ_for_eta(e: &mono::LocExp) -> Option<mono::LocTyp> {
         mono::Exp::Let(_, _, _, body) => mono_expr_result_typ_for_eta(body),
         _ => None,
     }
+}
+
+fn rebuild_decl_fun_type_from_exp(exp: &mono::LocExp) -> Option<mono::LocTyp> {
+    match &exp.node {
+        mono::Exp::Abs(_, dom, ran, body) => {
+            let refreshed_ran = rebuild_decl_fun_type_from_exp(body).unwrap_or_else(|| ran.clone());
+            Some(Located::new(
+                mono::Typ::Fun(Box::new(dom.clone()), Box::new(refreshed_ran)),
+                exp.span.clone(),
+            ))
+        }
+        mono::Exp::Let(_, _, _, body) => rebuild_decl_fun_type_from_exp(body),
+        _ => None,
+    }
+}
+
+fn refresh_decl_type_from_exp(fallback: mono::LocTyp, exp: &mono::LocExp) -> mono::LocTyp {
+    rebuild_decl_fun_type_from_exp(exp).unwrap_or(fallback)
 }
 
 fn mono_exp_needs_transaction_eta(e: &mono::LocExp) -> bool {
@@ -1886,12 +1935,15 @@ fn is_unit_record_typ(t: &mono::LocTyp) -> bool {
 }
 
 fn is_erased_mono_witness_app(arg: &mono::LocExp, dom: &mono::LocTyp) -> bool {
-    is_erased_mono_proof_arg(arg)
-        && match &dom.node {
+    match &arg.node {
+        mono::Exp::Record(fields) if fields.is_empty() => !is_unit_record_typ(dom),
+        mono::Exp::Prim(Prim::Int(0)) => match &dom.node {
             mono::Typ::Record(fields) if fields.is_empty() => false,
             mono::Typ::Ffi(module, name) if module == "Basis" && name == "int" => false,
             _ => true,
-        }
+        },
+        _ => false,
+    }
 }
 
 fn is_non_function_mono_typ(t: &mono::LocTyp) -> bool {
@@ -1931,6 +1983,35 @@ fn record_field_typ(record_typ: &mono::LocTyp, field: &str) -> Option<mono::LocT
             .map(|(_, typ)| typ.clone()),
         _ => None,
     }
+}
+
+fn current_rel_typ(index: usize) -> Option<mono::LocTyp> {
+    CJRIZE_REL_TYPES.with(|slot| slot.borrow().get(index).cloned())
+}
+
+fn current_rel_has_direct_field(index: usize, field: &str) -> bool {
+    current_rel_typ(index)
+        .and_then(|typ| record_field_typ(&typ, field))
+        .is_some()
+}
+
+fn nearest_rel_with_direct_field(field: &str) -> Option<usize> {
+    CJRIZE_REL_TYPES.with(|slot| {
+        slot.borrow()
+            .iter()
+            .position(|typ| record_field_typ(typ, field).is_some())
+    })
+}
+
+fn mono_query_row_type(qm: &mono::QueryMeta, span: &Span) -> mono::LocTyp {
+    let mut fields = qm.exps.clone();
+    fields.extend(qm.tables.iter().map(|(table, xts)| {
+        (
+            table.clone(),
+            Located::new(mono::Typ::Record(xts.clone()), span.clone()),
+        )
+    }));
+    Located::new(mono::Typ::Record(fields), span.clone())
 }
 
 fn projected_field_result_typ(result_typ: &mono::LocTyp, field: &str) -> Option<mono::LocTyp> {
@@ -2120,8 +2201,21 @@ fn reapply_mono_app_spine(mut head: mono::LocExp, args: Vec<mono::LocExp>) -> mo
     head
 }
 
+fn mono_record_distributes_application(e: &mono::LocExp) -> bool {
+    matches!(
+        &e.node,
+        mono::Exp::Record(fields)
+            if !fields.is_empty()
+                && fields
+                    .iter()
+                    .all(|(_, _, field_t)| matches!(field_t.node, mono::Typ::Fun(..)))
+    )
+}
+
 fn strip_spurious_app(function: mono::LocExp, arg: &mono::LocExp) -> Option<mono::LocExp> {
     if is_unit_record_exp(arg)
+        && !matches!(function.node, mono::Exp::Abs(_, _, _, _))
+        && !mono_record_distributes_application(&function)
         && mono_exp_result_typ(&function)
             .is_some_and(|result_typ| is_non_function_mono_typ(&result_typ))
     {
@@ -2373,11 +2467,9 @@ fn reduce_head_apps_for_cjr(e: mono::LocExp) -> mono::LocExp {
                 }
             }
             match f.node {
-                mono::Exp::Abs(_, dom, _, body) => {
+                mono::Exp::Abs(x, dom, ran, body) => {
                     if is_erased_mono_witness_app(&arg, &dom) {
-                        reduce_head_apps_for_cjr(crate::monomorphized::environment::sub_exp_in_exp(
-                            0, &arg, &body,
-                        ))
+                        Located::new(mono::Exp::Abs(x, dom, ran, body), f.span)
                     } else {
                         reduce_head_apps_for_cjr(crate::monomorphized::environment::sub_exp_in_exp(
                             0, &arg, &body,
@@ -2550,6 +2642,45 @@ fn reduce_head_apps_for_cjr(e: mono::LocExp) -> mono::LocExp {
                         .collect::<Vec<_>>()
                 )
             });
+            if args.is_empty() {
+                if let mono::Exp::Rel(rel) = head.node {
+                    if !current_rel_has_direct_field(rel, &field) {
+                        if let Some(correct_rel) = nearest_rel_with_direct_field(&field) {
+                            if correct_rel != rel {
+                                let projected_head = Located::new(
+                                    mono::Exp::Field(
+                                        Box::new(Located::new(
+                                            mono::Exp::Rel(correct_rel),
+                                            head_span.clone(),
+                                        )),
+                                        field.clone(),
+                                    ),
+                                    head_span,
+                                );
+                                return reduce_head_apps_for_cjr(reapply_mono_app_spine(
+                                    projected_head,
+                                    args,
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+            if let mono::Exp::Rel(rel) = head.node {
+                if rel > 0
+                    && current_rel_has_direct_field(0, &field)
+                    && !current_rel_has_direct_field(rel, &field)
+                {
+                    let projected_head = Located::new(
+                        mono::Exp::Field(
+                            Box::new(Located::new(mono::Exp::Rel(0), head_span.clone())),
+                            field.clone(),
+                        ),
+                        head_span,
+                    );
+                    return reduce_head_apps_for_cjr(reapply_mono_app_spine(projected_head, args));
+                }
+            }
             if !args.is_empty() && mono_exp_has_direct_field(&head, &field) {
                 let projected_head =
                     Located::new(mono::Exp::Field(Box::new(head), field.clone()), head_span);
@@ -2708,7 +2839,11 @@ fn reduce_head_apps_for_cjr(e: mono::LocExp) -> mono::LocExp {
             mono::Exp::Case(
                 Box::new(reduce_head_apps_for_cjr(*disc)),
                 arms.into_iter()
-                    .map(|(pat, arm)| (pat, reduce_head_apps_for_cjr(arm)))
+                    .map(|(pat, arm)| {
+                        let reduced_arm =
+                            with_rel_pattern_binders(&pat, || reduce_head_apps_for_cjr(arm));
+                        (pat, reduced_arm)
+                    })
                     .collect(),
                 meta,
             ),
@@ -2760,17 +2895,23 @@ fn reduce_head_apps_for_cjr(e: mono::LocExp) -> mono::LocExp {
             mono::Exp::Closure(n, envs.into_iter().map(reduce_head_apps_for_cjr).collect()),
             loc,
         ),
-        mono::Exp::Query(qm) => Located::new(
-            mono::Exp::Query(mono::QueryMeta {
-                exps: qm.exps,
-                tables: qm.tables,
-                state: qm.state,
-                query: Box::new(reduce_head_apps_for_cjr(*qm.query)),
-                body: Box::new(reduce_head_apps_for_cjr(*qm.body)),
-                initial: Box::new(reduce_head_apps_for_cjr(*qm.initial)),
-            }),
-            loc,
-        ),
+        mono::Exp::Query(qm) => {
+            let row_t = mono_query_row_type(&qm, &loc);
+            let state_t = qm.state.clone();
+            Located::new(
+                mono::Exp::Query(mono::QueryMeta {
+                    exps: qm.exps,
+                    tables: qm.tables,
+                    state: qm.state,
+                    query: Box::new(reduce_head_apps_for_cjr(*qm.query)),
+                    body: Box::new(with_rel_binder(row_t, || {
+                        with_rel_binder(state_t, || reduce_head_apps_for_cjr(*qm.body))
+                    })),
+                    initial: Box::new(reduce_head_apps_for_cjr(*qm.initial)),
+                }),
+                loc,
+            )
+        }
         mono::Exp::Dml(inner, mode) => Located::new(
             mono::Exp::Dml(Box::new(reduce_head_apps_for_cjr(*inner)), mode),
             loc,
@@ -2863,12 +3004,13 @@ fn cify_decl(
         }
 
         mono::Decl::Val(x, n, t, e, _s) => {
-            if type_has_signal(&t.node) {
+            let refreshed_t = refresh_decl_type_from_exp(t.clone(), e);
+            if type_has_signal(&refreshed_t.node) {
                 return (None, None);
             }
             // For script declarations, stub out the body.
             let effective_e = if _s == "<script>" {
-                stub_body(t, &loc)
+                stub_body(&refreshed_t, &loc)
             } else {
                 e.clone()
             };
@@ -2885,17 +3027,17 @@ fn cify_decl(
                 );
             }
 
-            let ct = cify_typ(t, sm);
+            let ct = cify_typ(&refreshed_t, sm);
             debug_chat_cjr(&loc, "decl", || {
                 format!(
                     "name={x} id={n} mono_t={:?} cjr_t={:?} exp={:?}",
-                    t.node, ct.node, e.node
+                    refreshed_t.node, ct.node, e.node
                 )
             });
             debug_cjr_pre_unravel(&loc, "val", || {
                 format!(
                     "name={x} id={n} mono_t={:?} cjr_t={:?} exp={:?}",
-                    t.node, ct.node, effective_e.node
+                    refreshed_t.node, ct.node, effective_e.node
                 )
             });
 
@@ -2904,7 +3046,7 @@ fn cify_decl(
                     let mut args = Vec::new();
                     let mut mono_args = Vec::new();
                     let (mono_ran, ran, body) = unravel_fun_full(
-                        t.clone(),
+                        refreshed_t.clone(),
                         ct.clone(),
                         effective_e,
                         &loc,
@@ -2969,7 +3111,9 @@ fn cify_decl(
             // Drop signal-typed members.
             let vis: Vec<_> = vis
                 .iter()
-                .filter(|(_, _, t, _, _)| !type_has_signal(&t.node))
+                .filter(|(_, _, t, e, _)| {
+                    !type_has_signal(&refresh_decl_type_from_exp(t.clone(), e).node)
+                })
                 .collect();
             if vis.is_empty() {
                 return (None, None);
@@ -3000,8 +3144,9 @@ fn cify_decl(
                 .map(|(x, n, t, e, s)| {
                     let label = format!("valrec:{x}:{n}");
                     with_current_decl(label.clone(), || {
+                        let refreshed_t = refresh_decl_type_from_exp(t.clone(), e);
                         let effective_e = if any_script_member || *s == "<script>" {
-                            stub_body(t, &loc)
+                            stub_body(&refreshed_t, &loc)
                         } else {
                             e.clone()
                         };
@@ -3016,11 +3161,11 @@ fn cify_decl(
                                 effective_e
                             );
                         }
-                        let ct = cify_typ(t, sm);
+                        let ct = cify_typ(&refreshed_t, sm);
                         debug_cjr_pre_unravel(&loc, "valrec", || {
                             format!(
                                 "name={x} id={n} mono_t={:?} cjr_t={:?} exp={:?}",
-                                t.node, ct.node, effective_e.node
+                                refreshed_t.node, ct.node, effective_e.node
                             )
                         });
                         match &ct.node {
@@ -3028,7 +3173,7 @@ fn cify_decl(
                                 let mut args = Vec::new();
                                 let mut mono_args = Vec::new();
                                 let (mono_ran, ran, body) = unravel_fun_full(
-                                    t.clone(),
+                                    refreshed_t,
                                     ct,
                                     effective_e,
                                     &loc,
@@ -3378,12 +3523,12 @@ pub fn cjrize(file: mono::File, errors: &mut ErrorReporter) -> Option<cjr::File>
         match &mono_decl.node {
             mono::Decl::Val(_, n, t, e, _) => {
                 named.insert(*n, e.clone());
-                named_types.insert(*n, t.clone());
+                named_types.insert(*n, refresh_decl_type_from_exp(t.clone(), e));
             }
             mono::Decl::ValRec(vis) => {
                 for (_, n, t, e, _) in vis {
                     named.insert(*n, e.clone());
-                    named_types.insert(*n, t.clone());
+                    named_types.insert(*n, refresh_decl_type_from_exp(t.clone(), e));
                 }
             }
             _ => {}
@@ -3619,6 +3764,385 @@ mod tests {
                             && matches!(inner.node, mono::Exp::Rel(0))
                 )
         ));
+        Ok(())
+    }
+
+    #[test]
+    fn reduce_head_apps_drops_empty_record_witness_even_for_int_domain() -> anyhow::Result<()> {
+        let span = Span::dummy();
+        let int_t = Located::new(mono::Typ::Ffi("Basis".into(), "int".into()), span.clone());
+        let step = Located::new(
+            mono::Exp::Abs(
+                "n".into(),
+                int_t.clone(),
+                Located::new(
+                    mono::Typ::Fun(Box::new(int_t.clone()), Box::new(int_t.clone())),
+                    span.clone(),
+                ),
+                Box::new(Located::new(
+                    mono::Exp::Abs(
+                        "acc".into(),
+                        int_t.clone(),
+                        int_t.clone(),
+                        Box::new(Located::new(
+                            mono::Exp::Binop(
+                                mono::BinopIntness::Int,
+                                "+".into(),
+                                Box::new(Located::new(mono::Exp::Rel(1), span.clone())),
+                                Box::new(Located::new(mono::Exp::Rel(0), span.clone())),
+                            ),
+                            span.clone(),
+                        )),
+                    ),
+                    span.clone(),
+                )),
+            ),
+            span.clone(),
+        );
+        let malformed = Located::new(
+            mono::Exp::App(
+                Box::new(Located::new(
+                    mono::Exp::App(
+                        Box::new(Located::new(
+                            mono::Exp::App(
+                                Box::new(step),
+                                Box::new(Located::new(mono::Exp::Record(vec![]), span.clone())),
+                            ),
+                            span.clone(),
+                        )),
+                        Box::new(Located::new(mono::Exp::Prim(Prim::Int(1)), span.clone())),
+                    ),
+                    span.clone(),
+                )),
+                Box::new(Located::new(mono::Exp::Prim(Prim::Int(0)), span.clone())),
+            ),
+            span.clone(),
+        );
+
+        let reduced = reduce_head_apps_for_cjr(malformed);
+        assert!(
+            matches!(
+                reduced.node,
+                mono::Exp::Binop(_, ref op, ref left, ref right)
+                    if op == "+"
+                        && matches!(left.node, mono::Exp::Prim(Prim::Int(1)))
+                        && matches!(right.node, mono::Exp::Prim(Prim::Int(0)))
+            ),
+            "unexpected reduced expression: {:?}",
+            reduced.node
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn reduce_head_apps_preserves_real_zero_int_runtime_args() -> anyhow::Result<()> {
+        let span = Span::dummy();
+        let int_t = Located::new(mono::Typ::Ffi("Basis".into(), "int".into()), span.clone());
+        let step = Located::new(
+            mono::Exp::Abs(
+                "n".into(),
+                int_t.clone(),
+                Located::new(
+                    mono::Typ::Fun(Box::new(int_t.clone()), Box::new(int_t.clone())),
+                    span.clone(),
+                ),
+                Box::new(Located::new(
+                    mono::Exp::Abs(
+                        "acc".into(),
+                        int_t.clone(),
+                        int_t.clone(),
+                        Box::new(Located::new(
+                            mono::Exp::Binop(
+                                mono::BinopIntness::Int,
+                                "+".into(),
+                                Box::new(Located::new(mono::Exp::Rel(1), span.clone())),
+                                Box::new(Located::new(mono::Exp::Rel(0), span.clone())),
+                            ),
+                            span.clone(),
+                        )),
+                    ),
+                    span.clone(),
+                )),
+            ),
+            span.clone(),
+        );
+        let applied = Located::new(
+            mono::Exp::App(
+                Box::new(Located::new(
+                    mono::Exp::App(
+                        Box::new(step),
+                        Box::new(Located::new(mono::Exp::Prim(Prim::Int(0)), span.clone())),
+                    ),
+                    span.clone(),
+                )),
+                Box::new(Located::new(mono::Exp::Prim(Prim::Int(1)), span.clone())),
+            ),
+            span.clone(),
+        );
+
+        let reduced = reduce_head_apps_for_cjr(applied);
+        assert!(matches!(
+            reduced.node,
+            mono::Exp::Binop(_, ref op, ref left, ref right)
+                if op == "+"
+                    && matches!(left.node, mono::Exp::Prim(Prim::Int(0)))
+                    && matches!(right.node, mono::Exp::Prim(Prim::Int(1)))
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn reduce_head_apps_preserves_real_unit_thunk_beta_reduction() -> anyhow::Result<()> {
+        let span = Span::dummy();
+        let unit_t = Located::new(mono::Typ::Record(vec![]), span.clone());
+        let int_t = Located::new(mono::Typ::Ffi("Basis".into(), "int".into()), span.clone());
+        let applied = Located::new(
+            mono::Exp::App(
+                Box::new(Located::new(
+                    mono::Exp::Abs(
+                        "_".into(),
+                        unit_t.clone(),
+                        int_t,
+                        Box::new(Located::new(mono::Exp::Rel(1), span.clone())),
+                    ),
+                    span.clone(),
+                )),
+                Box::new(Located::new(mono::Exp::Record(vec![]), span.clone())),
+            ),
+            span.clone(),
+        );
+
+        let reduced = reduce_head_apps_for_cjr(applied);
+        assert!(
+            matches!(reduced.node, mono::Exp::Rel(0)),
+            "unexpected reduced expression: {:?}",
+            reduced.node
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn reduce_head_apps_pushes_unit_app_through_case_arm_binder() -> anyhow::Result<()> {
+        let span = Span::dummy();
+        let unit_t = Located::new(mono::Typ::Record(vec![]), span.clone());
+        let int_t = Located::new(mono::Typ::Ffi("Basis".into(), "int".into()), span.clone());
+        let option_int_t = Located::new(mono::Typ::Option(Box::new(int_t.clone())), span.clone());
+        let case = Located::new(
+            mono::Exp::Case(
+                Box::new(Located::new(mono::Exp::Rel(0), span.clone())),
+                vec![
+                    (
+                        Located::new(
+                            mono::Pat::Some(
+                                int_t.clone(),
+                                Box::new(Located::new(
+                                    mono::Pat::Var("r".into(), int_t.clone()),
+                                    span.clone(),
+                                )),
+                            ),
+                            span.clone(),
+                        ),
+                        Located::new(
+                            mono::Exp::Abs(
+                                "_".into(),
+                                unit_t.clone(),
+                                int_t.clone(),
+                                Box::new(Located::new(mono::Exp::Rel(1), span.clone())),
+                            ),
+                            span.clone(),
+                        ),
+                    ),
+                    (
+                        Located::new(mono::Pat::None(int_t.clone()), span.clone()),
+                        Located::new(
+                            mono::Exp::Abs(
+                                "_".into(),
+                                unit_t.clone(),
+                                int_t.clone(),
+                                Box::new(Located::new(mono::Exp::Prim(Prim::Int(0)), span.clone())),
+                            ),
+                            span.clone(),
+                        ),
+                    ),
+                ],
+                mono::CaseMeta {
+                    disc: option_int_t.clone(),
+                    result: Located::new(
+                        mono::Typ::Fun(Box::new(unit_t.clone()), Box::new(int_t.clone())),
+                        span.clone(),
+                    ),
+                },
+            ),
+            span.clone(),
+        );
+        let applied = Located::new(
+            mono::Exp::App(
+                Box::new(case),
+                Box::new(Located::new(mono::Exp::Record(vec![]), span.clone())),
+            ),
+            span.clone(),
+        );
+
+        let reduced = reduce_head_apps_for_cjr(applied);
+        assert!(
+            matches!(
+                reduced.node,
+                mono::Exp::Case(_, ref arms, _)
+                    if matches!(arms[0].1.node, mono::Exp::Rel(0))
+                        && matches!(arms[1].1.node, mono::Exp::Prim(Prim::Int(0)))
+            ),
+            "unexpected reduced expression: {:?}",
+            reduced.node
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn reduce_head_apps_recovers_case_arm_projection_from_bound_row() -> anyhow::Result<()> {
+        let span = Span::dummy();
+        let unit_t = Located::new(mono::Typ::Record(vec![]), span.clone());
+        let channel_t = Located::new(
+            mono::Typ::Ffi("Basis".into(), "channel".into()),
+            span.clone(),
+        );
+        let client_t = Located::new(
+            mono::Typ::Ffi("Basis".into(), "client".into()),
+            span.clone(),
+        );
+        let inner_row_t = Located::new(
+            mono::Typ::Record(vec![("Channel".into(), channel_t.clone())]),
+            span.clone(),
+        );
+        let case_row_t = Located::new(
+            mono::Typ::Record(vec![("T".into(), inner_row_t.clone())]),
+            span.clone(),
+        );
+        let case = Located::new(
+            mono::Exp::Case(
+                Box::new(Located::new(mono::Exp::Rel(0), span.clone())),
+                vec![(
+                    Located::new(mono::Pat::Var("r".into(), case_row_t.clone()), span.clone()),
+                    Located::new(
+                        mono::Exp::Abs(
+                            "_".into(),
+                            unit_t.clone(),
+                            channel_t.clone(),
+                            Box::new(Located::new(
+                                mono::Exp::Field(
+                                    Box::new(Located::new(
+                                        mono::Exp::Field(
+                                            Box::new(Located::new(mono::Exp::Rel(2), span.clone())),
+                                            "T".into(),
+                                        ),
+                                        span.clone(),
+                                    )),
+                                    "Channel".into(),
+                                ),
+                                span.clone(),
+                            )),
+                        ),
+                        span.clone(),
+                    ),
+                )],
+                mono::CaseMeta {
+                    disc: case_row_t.clone(),
+                    result: Located::new(
+                        mono::Typ::Transaction(Box::new(channel_t.clone())),
+                        span.clone(),
+                    ),
+                },
+            ),
+            span.clone(),
+        );
+        let applied = Located::new(
+            mono::Exp::App(
+                Box::new(case),
+                Box::new(Located::new(mono::Exp::Record(vec![]), span.clone())),
+            ),
+            span.clone(),
+        );
+
+        let reduced = with_rel_types(vec![client_t], || reduce_head_apps_for_cjr(applied));
+        assert!(
+            matches!(
+                reduced.node,
+                mono::Exp::Case(_, ref arms, ref meta)
+                    if matches!(meta.result.node, mono::Typ::Ffi(ref module, ref name) if module == "Basis" && name == "channel")
+                        && matches!(
+                            arms[0].1.node,
+                            mono::Exp::Field(ref outer, ref channel_field)
+                                if channel_field == "Channel"
+                                    && matches!(
+                                        outer.node,
+                                        mono::Exp::Field(ref inner, ref t_field)
+                                            if t_field == "T"
+                                                && matches!(inner.node, mono::Exp::Rel(0))
+                                    )
+                        )
+            ),
+            "unexpected reduced expression: {:?}",
+            reduced.node
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn reduce_head_apps_recovers_query_body_projection_from_row_binder() -> anyhow::Result<()> {
+        let span = Span::dummy();
+        let unit_t = Located::new(mono::Typ::Record(vec![]), span.clone());
+        let channel_t = Located::new(
+            mono::Typ::Ffi("Basis".into(), "channel".into()),
+            span.clone(),
+        );
+        let inner_row_t = Located::new(
+            mono::Typ::Record(vec![("Channel".into(), channel_t.clone())]),
+            span.clone(),
+        );
+        let malformed_body = Located::new(
+            mono::Exp::Field(
+                Box::new(Located::new(
+                    mono::Exp::Field(
+                        Box::new(Located::new(mono::Exp::Rel(0), span.clone())),
+                        "T".into(),
+                    ),
+                    span.clone(),
+                )),
+                "Channel".into(),
+            ),
+            span.clone(),
+        );
+        let query = Located::new(
+            mono::Exp::Query(mono::QueryMeta {
+                exps: vec![("T".into(), inner_row_t)],
+                tables: vec![],
+                state: unit_t.clone(),
+                query: Box::new(Located::new(mono::Exp::Record(vec![]), span.clone())),
+                body: Box::new(malformed_body),
+                initial: Box::new(Located::new(mono::Exp::Record(vec![]), span.clone())),
+            }),
+            span.clone(),
+        );
+
+        let reduced = reduce_head_apps_for_cjr(query);
+        assert!(
+            matches!(
+                reduced.node,
+                mono::Exp::Query(ref qm)
+                    if matches!(
+                        qm.body.node,
+                        mono::Exp::Field(ref outer, ref channel_field)
+                            if channel_field == "Channel"
+                                && matches!(
+                                    outer.node,
+                                    mono::Exp::Field(ref inner, ref t_field)
+                                        if t_field == "T"
+                                            && matches!(inner.node, mono::Exp::Rel(1))
+                                )
+                    )
+            ),
+            "unexpected reduced expression: {:?}",
+            reduced.node
+        );
         Ok(())
     }
 

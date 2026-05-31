@@ -1287,6 +1287,19 @@ fn sub_body(
     }
 }
 
+fn refresh_abs_result_type_from_body(
+    fallback: LocatedConstructor,
+    body: &LocatedExpression,
+) -> LocatedConstructor {
+    match &body.node {
+        Expression::Abs(_, dom, ran, _) => Located::new(
+            Constructor::TFun(Box::new(dom.clone()), Box::new(ran.clone())),
+            body.span.clone(),
+        ),
+        _ => fallback,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // The main rewrite: exp
 // ---------------------------------------------------------------------------
@@ -1530,6 +1543,7 @@ fn rewrite_exp_default(
             let mut new_env = vec![(x.clone(), t.clone())];
             new_env.extend_from_slice(env);
             let body = rewrite_exp(&new_env, *body, known, st, errors);
+            let rt = refresh_abs_result_type_from_body(rt, &body);
             Located::new(Expression::Abs(x, t, rt, Box::new(body)), span)
         }
         Expression::CApp(f, c) => {

@@ -278,6 +278,61 @@ fn is_unboxable(t: &LocTyp) -> bool {
     }
 }
 
+fn is_file(t: &LocTyp) -> bool {
+    matches!(&t.node, Typ::Ffi(m, x) if m == "Basis" && x == "file")
+}
+
+fn is_string(t: &LocTyp) -> bool {
+    matches!(&t.node, Typ::Ffi(m, x) if m == "Basis" && (x == "string" || x == "queryString"))
+}
+
+fn exact_list_record_id(env: &CjrEnv, t: &LocTyp) -> Option<usize> {
+    let Typ::Record(record_id) = t.node else {
+        return None;
+    };
+    let fields = env.lookup_struct(record_id)?;
+    match fields.as_slice() {
+        [(_, _head_t), (_, tail_t)] => match &tail_t.node {
+            Typ::List(_, tail_id) if *tail_id == record_id => Some(record_id),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn exact_list_constructor(env: &CjrEnv, pc: &PatCon) -> Option<(String, Option<LocTyp>, usize)> {
+    let PatCon::Var(constructor_id) = pc else {
+        return None;
+    };
+    let (name, payload, datatype_id) = env.lookup_constructor(*constructor_id)?.clone();
+    let (_, constrs) = env.lookup_datatype(datatype_id)?;
+    if constrs.len() != 2
+        || !constrs
+            .iter()
+            .any(|(constructor_name, _, payload)| constructor_name == "Nil" && payload.is_none())
+    {
+        return None;
+    }
+    let cons_payload = constrs.iter().find_map(|(constructor_name, _, payload)| {
+        (constructor_name == "Cons")
+            .then_some(payload.as_ref())
+            .flatten()
+    })?;
+    let list_id = exact_list_record_id(env, cons_payload)?;
+    match name.as_str() {
+        "Nil" if payload.is_none() => Some((name, payload, list_id)),
+        "Cons"
+            if payload
+                .as_ref()
+                .and_then(|payload_t| exact_list_record_id(env, payload_t))
+                == Some(list_id) =>
+        {
+            Some((name, payload, list_id))
+        }
+        _ => None,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Type printing
 // ---------------------------------------------------------------------------
@@ -469,6 +524,20 @@ fn p_pat_match(env: &CjrEnv, disc: &str, pat: &LocPat) -> String {
             crate::primitives::Prim::Char(c) => format!("({} == '{}')", disc, c),
         },
         Pat::Con(dk, pc, po) => {
+            if let Some((constructor_name, _, _)) = exact_list_constructor(env, pc) {
+                let base = match constructor_name.as_str() {
+                    "Nil" => format!("({} == NULL)", disc),
+                    "Cons" => format!("({} != NULL)", disc),
+                    _ => unreachable!("unexpected exact-list constructor"),
+                };
+                return match po {
+                    None => base,
+                    Some(inner_pat) => {
+                        let inner = p_pat_match(env, &format!("(*{})", disc), inner_pat);
+                        format!("{} && {}", base, inner)
+                    }
+                };
+            }
             let base = match dk {
                 DatatypeKind::Enum => format!("({} == {})", disc, p_pat_con(env, pc)),
                 DatatypeKind::Default => format!("({}->tag == {})", disc, p_pat_con(env, pc)),
@@ -550,6 +619,9 @@ fn p_pat_bind(env: &mut CjrEnv, disc: &str, pat: &LocPat) -> String {
         Pat::Prim(_) => String::new(),
         Pat::Con(_, _, None) => String::new(),
         Pat::Con(dk, pc, Some(inner_pat)) => {
+            if exact_list_constructor(env, pc).is_some() {
+                return p_pat_bind(env, &format!("(*{})", disc), inner_pat);
+            }
             let disc2 = match dk {
                 DatatypeKind::Enum => disc.to_string(),
                 DatatypeKind::Default => format!("({}->data.{})", disc, con_field_name(env, pc)),
@@ -660,6 +732,23 @@ pub fn p_exp(env: &CjrEnv, e: &LocExp, settings: &Settings) -> String {
         }
 
         Exp::Con(DatatypeKind::Default, pc, eo) => {
+            if let Some((constructor_name, payload_t, list_id)) = exact_list_constructor(env, pc) {
+                return match (constructor_name.as_str(), eo) {
+                    ("Nil", _) => "NULL".to_string(),
+                    ("Cons", Some(inner_e)) => {
+                        let payload_t = payload_t.unwrap_or_else(|| {
+                            crate::error_types::Located::dummy(Typ::Record(list_id))
+                        });
+                        let payload_s = p_typ_base(env, &payload_t);
+                        let val_s = p_exp(env, inner_e, settings);
+                        format!(
+                            "({{\n{payload_s} *tmp = uw_malloc(ctx, sizeof({payload_s}));\n*tmp = {val_s};\ntmp;\n}})"
+                        )
+                    }
+                    ("Cons", None) => "NULL".to_string(),
+                    _ => unreachable!("unexpected exact-list constructor"),
+                };
+            }
             let (xd, xc, xn) = pat_con_info(env, pc);
             let mut out = format!(
                 "({{\nstruct {0} *tmp = uw_malloc(ctx, sizeof(struct {0}));\ntmp->tag = {1};\n",
@@ -2792,21 +2881,47 @@ fn p_page(
     settings: &Settings,
 ) -> String {
     cjr_test_tick();
-    // Strip the url_prefix from the path (already included in the path from cjrize)
-    let path_c = path.replace('"', "\\\"").replace('\n', "\\n");
-    let path_len = path.len();
+    let dispatch_path = if settings.url_prefix == "/" || path.starts_with(&settings.url_prefix) {
+        path.to_string()
+    } else {
+        format!("{}{}", settings.url_prefix.trim_end_matches('/'), path)
+    };
+    let path_c = dispatch_path.replace('"', "\\\"").replace('\n', "\\n");
+    let path_len = dispatch_path.len();
 
     let could_write = matches!(ek, ExportKind::Action(_) | ExportKind::Rpc(_));
     let could_write_db = !matches!(dbmode, DbMode::NoDb);
     let needs_push = matches!(side, Sidedness::ServerAndPullAndPush);
     let is_rpc = matches!(ek, ExportKind::Rpc(_));
 
-    // For Action exports, the last argument is a record of form inputs.
-    // For Link/Extern/Rpc, all args are URL-parsed.
-    let (url_ts, has_form_inputs) = match ek {
-        ExportKind::Action(_) if ts.len() >= 2 => (&ts[..ts.len() - 2], true),
-        _ if !ts.is_empty() => (&ts[..ts.len() - 1], false),
-        _ => (&ts[..0], false),
+    // Read-only exports normally parse their final argument from the URL.
+    // File uploads are the exception: they must come from the form-input API
+    // even when the surrounding export is not a mutating action.
+    let file_form_index = |idx: usize| {
+        ts.get(idx).and_then(|t| match &t.node {
+            Typ::Record(struct_id)
+                if env
+                    .lookup_struct(*struct_id)
+                    .is_some_and(|fields| fields.iter().any(|(_, field_t)| is_file(field_t))) =>
+            {
+                Some(idx)
+            }
+            _ => None,
+        })
+    };
+    let fallback_file_form_index = ts
+        .len()
+        .checked_sub(2)
+        .and_then(file_form_index)
+        .or_else(|| ts.len().checked_sub(1).and_then(file_form_index));
+    let form_arg_index = match ek {
+        ExportKind::Action(_) if ts.len() >= 2 => Some(ts.len() - 2),
+        _ => fallback_file_form_index,
+    };
+    let (url_ts, has_form_inputs) = match form_arg_index {
+        Some(form_idx) => (&ts[..form_idx], true),
+        None if !ts.is_empty() => (&ts[..ts.len() - 1], false),
+        None => (&ts[..0], false),
     };
 
     let mut body = String::new();
@@ -2829,7 +2944,7 @@ fn p_page(
     }
 
     // CSRF check for write actions
-    if could_write && !settings.no_xsrf_protection.contains(path) {
+    if could_write && !settings.no_xsrf_protection.contains(&dispatch_path) {
         body.push_str(
             "{\n\
              uw_Basis_string sig = uw_Basis_requestHeader(ctx, \"UrWeb-Sig\");\n\
@@ -2891,21 +3006,52 @@ fn p_page(
 
     // Parse form inputs (Action-specific)
     if has_form_inputs {
-        // The second-to-last argument is the form record struct id
-        if let Some(form_t) = ts.get(ts.len() - 2) {
+        if let Some(form_t) = form_arg_index.and_then(|idx| ts.get(idx)) {
             if let Typ::Record(struct_id) = &form_t.node {
                 let fields = env.structs.get(struct_id).cloned().unwrap_or_default();
+                let includes_file = fields.iter().any(|(_, field_t)| is_file(field_t));
                 let arg_idx = url_ts.len();
                 if fields.is_empty() {
                     body.push_str(&format!("uw_unit arg{} = 0;\n", arg_idx));
                 } else {
                     for (fi, (x, ft)) in fields.iter().enumerate() {
+                        let field_ident = ident(x);
                         let ft_s = p_typ(env, ft);
+                        let input_num = format!("uw_input_num(\"{}\")", x);
+                        if is_file(ft) {
+                            body.push_str(&format!(
+                                "{} uw_input_{} = uw_get_file_input(ctx, {});\n",
+                                ft_s, field_ident, input_num
+                            ));
+                            continue;
+                        }
+
+                        let request_var = format!("request_input_{fi}");
+                        let getter = match &ft.node {
+                            Typ::Ffi(module, name) if module == "Basis" && name == "bool" => {
+                                "uw_get_optional_input"
+                            }
+                            _ => "uw_get_input",
+                        };
                         body.push_str(&format!(
-                            "{} uw_input_{x} = uw_Basis_unurlifyString(ctx, &request);\n",
-                            ft_s
+                            "char *{} = {}(ctx, {});\n",
+                            request_var, getter, input_num
                         ));
-                        let _ = fi;
+                        if getter == "uw_get_input" {
+                            body.push_str(&format!(
+                                "if ({} == NULL)\nuw_error(ctx, FATAL, \"Missing input {}\");\n",
+                                request_var, x
+                            ));
+                        }
+                        let field_value = if includes_file && is_string(ft) {
+                            request_var
+                        } else {
+                            unurlify_req(&request_var, ft, env, true)
+                        };
+                        body.push_str(&format!(
+                            "{} uw_input_{} = {};\n",
+                            ft_s, field_ident, field_value
+                        ));
                     }
                     body.push_str(&format!("struct __uws_{} uw_inputs = {{ ", struct_id));
                     let field_inits: Vec<String> = fields
@@ -3711,6 +3857,34 @@ mod tests {
             result
         );
         Ok(()) // return success to the test harness
+    }
+
+    #[test]
+    fn page_dispatch_includes_url_prefix() -> anyhow::Result<()> {
+        let mut settings = Settings::default();
+        settings.set_url_prefix("/Demo");
+        let ran = dummy(Typ::Ffi("Basis".into(), "unit".into()));
+        let export: ExportEntry = (
+            ExportKind::Link(Effect::ReadOnly),
+            "/Hello/main".into(),
+            0usize,
+            vec![ran.clone()],
+            ran,
+            Sidedness::ServerOnly,
+            DbMode::NoDb,
+            false,
+        );
+        let result = cjr_print(
+            &(vec![], vec![export]),
+            &settings,
+            &NarrowingTable::default(),
+        );
+        assert!(
+            result.contains("if (!strncmp(request, \"/Demo/Hello/main\", 16)"),
+            "dispatch should match the prefixed URL path, got:\n{}",
+            result
+        );
+        Ok(())
     }
 
     /// `inputs_len` matches SML (`max fnums + 1`, at least 1); no form fields → stub `uw_input_num`.

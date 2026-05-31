@@ -170,6 +170,15 @@ impl HoistClosedFunctions {
                     let helper_sql_name = helper_sql_name.unwrap_or(helper_name.as_str());
                     let helper_typ =
                         Located::new(Typ::Fun(Box::new(dom), Box::new(ran)), span.clone());
+                    if std::env::var("URWEB_DEBUG_HOIST_TYPES").ok().as_deref() == Some("1")
+                        && (span.file.ends_with("/demo/metaform.ur")
+                            || span.file.ends_with("/lib/ur/top.ur"))
+                    {
+                        eprintln!(
+                            "URWEB_DEBUG_HOIST_TYPES {}:{} helper={} typ={:?} abs={:?}",
+                            span.file, span.first.line, helper_name, helper_typ.node, abs.node
+                        );
+                    }
                     helpers.push(Located::new(
                         Decl::Val(
                             helper_name.clone(),
